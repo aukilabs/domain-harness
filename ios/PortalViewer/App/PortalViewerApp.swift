@@ -1,0 +1,523 @@
+import SwiftUI
+import ARKit
+import SceneKit
+import Vision
+import UniformTypeIdentifiers
+
+@main
+struct PortalViewerApp: App {
+    var body: some Scene {
+        WindowGroup { ViewerScreen() }
+    }
+}
+
+struct ViewerScreen: View {
+    @StateObject private var controller = ViewerController()
+    @StateObject private var peer = HomePeer()
+    @State private var importing = false
+    @State private var connecting = false
+    @State private var pairingError: String?
+    @Environment(\.scenePhase) private var phase
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            CameraView(controller: controller).ignoresSafeArea()
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Home Scene").font(.title2.bold())
+                Text(peer.detail).font(.subheadline.bold())
+                Text(controller.status).font(.subheadline)
+                Toggle("Share LiDAR depth", isOn: $controller.shareDepth)
+                Text(controller.depthStatus).font(.caption)
+                if controller.shareDepth && peer.state == "live" { Text(peer.depthDetail).font(.caption) }
+                HStack {
+                    Button(peer.running ? "Disconnect" : "Connect to Home") {
+                        if peer.running { peer.disconnect() } else { connecting = true }
+                    }
+                    Spacer()
+                    Button("Realign") { controller.realign() }
+                        .disabled(controller.map == nil)
+                }.buttonStyle(.bordered)
+                Text(peer.state == "live" ? "Live P2P · double-tap a surface to add a note" : "Waiting for Home · any visible map is cached")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+            .padding()
+        }
+        .onAppear {
+            peer.onMap = { controller.load($0) }
+            controller.onPose = { peer.publishPose($0) }
+            controller.onDepth = { peer.publishDepth($0) }
+            peer.onDisconnect = { controller.clear() }
+        }
+        .sheet(isPresented: $connecting) {
+            NavigationStack {
+                Form {
+                    Section("Home connection") {
+                        Button("Import Home connection profile") { importing = true }
+                        if let profile = peer.profile {
+                            Text("Peer: \(profile.peer_id)").font(.caption).textSelection(.enabled)
+                            Text("Domain: \(profile.domain_id)").font(.caption).textSelection(.enabled)
+                        }
+                        Text("Download runner connection from Home's viewer, then save it to Files on this iPhone.")
+                            .font(.caption)
+                        if let pairingError { Text(pairingError).foregroundStyle(.red) }
+                    }
+                    Section("Auki User · development environment") {
+                        TextField("Email", text: $peer.email)
+                            .textContentType(.username).keyboardType(.emailAddress)
+                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        SecureField("Password", text: $peer.password).textContentType(.password)
+                        Text("Use a User account with access to Home's Domain. Passwords are not saved.")
+                            .font(.caption)
+                        if peer.profile == nil {
+                            Text("Import Home's connection profile above to enable sign-in.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Button("Sign in and connect") {
+                            peer.connect()
+                            if peer.running { connecting = false }
+                        }.disabled(peer.profile == nil || peer.email.isEmpty || peer.password.isEmpty || peer.running)
+                    }
+                    Text(peer.detail)
+                }
+                .navigationTitle("Connect to Home")
+                .toolbar { Button("Done") { connecting = false } }
+            }
+            .fileImporter(isPresented: $importing, allowedContentTypes: [.json]) { result in
+                do {
+                    let url = try result.get()
+                    let access = url.startAccessingSecurityScopedResource()
+                    defer { if access { url.stopAccessingSecurityScopedResource() } }
+                    let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+                    guard size <= 32 * 1024 else { throw ViewerError("Connection profile is too large") }
+                    try peer.pair(Data(contentsOf: url))
+                    pairingError = nil
+                } catch { pairingError = error.localizedDescription }
+            }
+        }
+        .sheet(item: $controller.placement, onDismiss: { controller.clearPlacement() }) { placement in
+            AnnotationEditor(peer: peer, placement: placement)
+        }
+        .onChange(of: phase) { _, value in
+            if value == .active { controller.start() } else { controller.pause() }
+            if value == .background { peer.disconnect(background: true) }
+        }
+    }
+}
+
+struct CameraView: UIViewRepresentable {
+    let controller: ViewerController
+    func makeUIView(context: Context) -> ARSCNView { controller.start(); return controller.view }
+    func updateUIView(_ uiView: ARSCNView, context: Context) {}
+}
+
+final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
+    @Published var status = "Connect to Home to receive its scene"
+    @Published var shareDepth = true {
+        didSet { if !shareDepth { onDepth?(nil); depthStatus = "Depth sharing off" } }
+    }
+    @Published var depthStatus = "Scan a Portal to share depth"
+    var onDepth: ((PhoneDepthSample?) -> Void)?
+    private let depthQueue = DispatchQueue(label: "home.phone.depth")
+    private var depthBusy = false
+    private var lastDepthCapture: TimeInterval = 0
+    private var depthAlignment: DepthAlignment?
+    var onPose: ((PhonePoseSample?) -> Void)?
+    private let poseSession = UUID().uuidString
+    private var lastPosePublication: TimeInterval = 0
+    @Published var placement: NotePlacement?
+    private(set) var map: PortalMap?
+    let view = ARSCNView(frame: .zero)
+    private let root = SCNNode()
+    private let visionQueue = DispatchQueue(label: "home.portal.vision")
+    private var busy = false
+    private var aligned = false
+    private var generation = 0
+    private var lastAttempt: TimeInterval = 0
+    private var cooldown = CalibrationCooldown()
+
+    override init() {
+        super.init()
+        view.scene = SCNScene()
+        view.scene.rootNode.addChildNode(root)
+        view.session.delegate = self
+        view.session.delegateQueue = .main
+        root.isHidden = true
+        let tap = UITapGestureRecognizer(target: self, action: #selector(doubleTap(_:)))
+        tap.numberOfTapsRequired = 2
+        view.addGestureRecognizer(tap)
+    }
+
+    func start() {
+        guard ARWorldTrackingConfiguration.isSupported else {
+            status = "AR requires a supported physical iPhone"; return
+        }
+        let config = ARWorldTrackingConfiguration()
+        config.worldAlignment = .gravity
+        if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
+            config.frameSemantics.insert(.sceneDepth)
+        } else { depthStatus = "This phone does not provide LiDAR scene depth" }
+        view.session.run(config)
+    }
+
+    func pause() {
+        view.session.pause()
+        invalidate()
+    }
+
+    func load(_ map: PortalMap) {
+        // Only changes to the calibration reference reset alignment.
+        guard self.map != map else { return }
+        let referenceChanged = self.map?.scenegraph != map.scenegraph
+        self.map = map
+        root.childNodes.forEach { $0.removeFromParentNode() }
+        for portal in map.scenegraph.anchors.values.sorted(by: { $0.anchor_id < $1.anchor_id }) {
+            let node = SCNNode()
+            node.simdTransform = portal.pose_in_map.matrix
+            let size = CGFloat(portal.side_length_m)
+            // An outline preserves the camera view of the printed marker.
+            for (w, h, px, py) in [(size, 0.004, 0.0, size/2), (size, 0.004, 0.0, -size/2),
+                                   (0.004, size, size/2, 0.0), (0.004, size, -size/2, 0.0)] {
+                let line = SCNNode(geometry: SCNPlane(width: w, height: h))
+                line.geometry?.firstMaterial?.diffuse.contents = UIColor.systemRed
+                line.geometry?.firstMaterial?.lightingModel = .constant
+                line.geometry?.firstMaterial?.isDoubleSided = true
+                line.position = SCNVector3(Float(px), Float(py), 0.002)
+                node.addChildNode(line)
+            }
+            let text = SCNText(string: portal.anchor_id, extrusionDepth: 0)
+            text.font = .systemFont(ofSize: 1, weight: .semibold)
+            text.firstMaterial?.diffuse.contents = UIColor.white
+            text.firstMaterial?.lightingModel = .constant
+            let label = SCNNode(geometry: text)
+            label.scale = SCNVector3(0.018, 0.018, 0.018)
+            label.position = SCNVector3(-Float(size/2), Float(size/2) + 0.015, 0)
+            let billboard = SCNBillboardConstraint()
+            label.constraints = [billboard]
+            node.addChildNode(label)
+            root.addChildNode(node)
+        }
+        renderScene(map.render)
+        if referenceChanged { realign() }
+        else if aligned { status = "Aligned · \(map.scenegraph.anchors.count) Portals · \(map.render?.voxels.count ?? 0) voxels" }
+    }
+
+    private func renderScene(_ scene: RenderScene?) {
+        guard let scene, scene.frame == map?.scenegraph.map.frame.id else { return }
+        // One indexed mesh per chunk avoids a SceneKit node for every voxel.
+        let corners: [SIMD3<Float>] = [SIMD3(-1,-1,-1), SIMD3(1,-1,-1), SIMD3(1,1,-1), SIMD3(-1,1,-1),
+                                       SIMD3(-1,-1,1), SIMD3(1,-1,1), SIMD3(1,1,1), SIMD3(-1,1,1)]
+        let faces: [UInt32] = [0,2,1,0,3,2,4,5,6,4,6,7,0,1,5,0,5,4,
+                               3,7,6,3,6,2,0,4,7,0,7,3,1,2,6,1,6,5]
+        if scene.voxel_size.isFinite && scene.voxel_size > 0 {
+            for start in stride(from: 0, to: scene.voxels.count, by: 8192) {
+                var vertices = [SCNVector3]()
+                var colors = [Float]()
+                var indices = [UInt32]()
+                for voxel in scene.voxels[start..<min(start + 8192, scene.voxels.count)] {
+                    guard voxel.center.count == 3, voxel.center.allSatisfy(\.isFinite) else { continue }
+                    let center = SIMD3(voxel.center[0], voxel.center[1], voxel.center[2])
+                    let rgb = voxel.linear_rgb?.count == 3 ? voxel.linear_rgb! : [0.08, 0.55, 0.85]
+                    let base = UInt32(vertices.count)
+                    for corner in corners {
+                        let p = center + corner * scene.voxel_size * 0.48
+                        vertices.append(SCNVector3(p.x, p.y, p.z))
+                        colors.append(contentsOf: rgb + [0.65])
+                    }
+                    indices.append(contentsOf: faces.map { base + $0 })
+                }
+                let colorData = colors.withUnsafeBytes { Data($0) }
+                let colorSource = SCNGeometrySource(data: colorData, semantic: .color,
+                    vectorCount: vertices.count, usesFloatComponents: true, componentsPerVector: 4,
+                    bytesPerComponent: 4, dataOffset: 0, dataStride: 16)
+                let geometry = SCNGeometry(sources: [SCNGeometrySource(vertices: vertices), colorSource],
+                    elements: [SCNGeometryElement(indices: indices, primitiveType: .triangles)])
+                let material = SCNMaterial()
+                material.lightingModel = .constant
+                material.isDoubleSided = true
+                geometry.materials = [material]
+                root.addChildNode(SCNNode(geometry: geometry))
+            }
+        }
+        for object in scene.objects { addLabel(object.label, at: object.position, color: .systemYellow) }
+        for note in scene.notes { addLabel(note.text, at: note.position, color: .white) }
+        if let runners = scene.local_mapping?.runners, !runners.isEmpty {
+            for (id, runner) in runners { addRobot(runner.robot_pose, name: String(id.suffix(8))) }
+        } else { addRobot(scene.local_mapping?.robot_pose, name: "Runner") }
+    }
+
+    private func addLabel(_ title: String, at position: [Float], color: UIColor) {
+        guard position.count == 3, position.allSatisfy(\.isFinite) else { return }
+        let text = SCNText(string: title, extrusionDepth: 0)
+        text.font = .systemFont(ofSize: 1, weight: .semibold)
+        text.flatness = 0.2
+        text.firstMaterial?.diffuse.contents = color
+        text.firstMaterial?.lightingModel = .constant
+        let label = SCNNode(geometry: text)
+        label.scale = SCNVector3(0.05, 0.05, 0.05)
+        label.position = SCNVector3(position[0], position[1], position[2])
+        label.constraints = [SCNBillboardConstraint()]
+        root.addChildNode(label)
+    }
+
+    private func addRobot(_ sample: RenderScene.RobotPose?, name: String) {
+        guard let pose = sample?.pose, pose.translation.count == 3, pose.rotation_xyzw.count == 4,
+              sample?.frame == map?.scenegraph.map.frame.id else { return }
+        let robot = SCNNode(geometry: SCNBox(width: 0.35, height: 0.2, length: 0.5, chamferRadius: 0.03))
+        robot.geometry?.firstMaterial?.diffuse.contents = UIColor.systemGreen
+        robot.geometry?.firstMaterial?.lightingModel = .constant
+        robot.simdTransform = pose.matrix
+        root.addChildNode(robot)
+        var position = pose.translation; position[1] += 0.3
+        addLabel(name, at: position, color: .systemGreen)
+    }
+
+    func clearPlacement() {
+        placement = nil
+        root.childNode(withName: "annotation-preview", recursively: false)?.removeFromParentNode()
+    }
+
+    @objc private func doubleTap(_ gesture: UITapGestureRecognizer) {
+        guard aligned, let map, let frame = view.session.currentFrame,
+              case .normal = frame.camera.trackingState, placement == nil else {
+            status = "Scan a Portal before placing a note."; return
+        }
+        let point = gesture.location(in: view)
+        let far = view.unprojectPoint(SCNVector3(Float(point.x), Float(point.y), 1))
+        let inverse = root.simdTransform.inverse
+        let worldOrigin = frame.camera.transform.columns.3
+        let localOrigin = inverse * worldOrigin
+        let localFar = inverse * SIMD4(far.x, far.y, far.z, 1)
+        let origin = SIMD3(localOrigin.x, localOrigin.y, localOrigin.z)
+        let direction = simd_normalize(SIMD3(localFar.x, localFar.y, localFar.z) - origin)
+        guard let hit = SceneRay.hit(origin: origin, direction: direction, scene: map.render) else {
+            status = "No floor or voxel at that point. Tap a surface within 40 metres."; return
+        }
+        let marker = SCNNode(geometry: SCNSphere(radius: 0.025))
+        marker.name = "annotation-preview"
+        marker.position = SCNVector3(hit.x, hit.y, hit.z)
+        marker.geometry?.firstMaterial?.diffuse.contents = UIColor.systemCyan
+        marker.geometry?.firstMaterial?.lightingModel = .constant
+        root.addChildNode(marker)
+        placement = NotePlacement(id: UUID().uuidString, frame: map.scenegraph.map.frame.id,
+            origin: [origin.x, origin.y, origin.z], direction: [direction.x, direction.y, direction.z])
+    }
+
+    func clear() {
+        clearPlacement()
+        map = nil
+        root.childNodes.forEach { $0.removeFromParentNode() }
+        invalidate()
+        status = "Connect to Home to receive its scene"
+    }
+
+    private func invalidate() {
+        onPose?(nil)
+        onDepth?(nil)
+        depthAlignment = nil
+        depthStatus = shareDepth ? "Scan a Portal to share depth" : "Depth sharing off"
+        generation += 1; aligned = false; cooldown.reset(); root.isHidden = true
+    }
+
+    func realign() {
+        invalidate()
+        status = "\(map?.scenegraph.anchors.count ?? 0) Portals loaded. Scan a known Portal."
+    }
+
+    func session(_ session: ARSession, didUpdate frame: ARFrame) {
+        guard case .normal = frame.camera.trackingState else {
+            if map != nil {
+                let message: String
+                switch frame.camera.trackingState {
+                case .limited(.initializing): message = "Camera tracking is starting. Move the phone slowly."
+                case .limited(.insufficientFeatures): message = "Camera needs more detail. Include the Portal's surroundings."
+                case .limited(.excessiveMotion): message = "Move the phone more slowly to scan."
+                case .limited(.relocalizing): message = "Recovering camera tracking. Look around slowly."
+                default: message = "Camera tracking unavailable. Tap Realign to try again."
+                }
+                if status != message { status = message }
+            }
+            return
+        }
+        if aligned {
+            root.isHidden = false
+            captureDepth(frame)
+            if let map, frame.timestamp - lastPosePublication >= 0.2 {
+                lastPosePublication = frame.timestamp
+                onPose?(PhonePoseSample(session: poseSession, timestamp: frame.timestamp,
+                    cameraInAR: frame.camera.transform, homeInAR: root.simdTransform,
+                    homeFrame: map.scenegraph.map.frame.id))
+            }
+        }
+        guard placement == nil, let map, !busy, cooldown.canScan(at: frame.timestamp),
+              frame.timestamp - lastAttempt > 0.25 else { return }
+        busy = true; lastAttempt = frame.timestamp
+        let capturedGeneration = generation
+        // Keep image, intrinsics and camera transform from the SAME ARFrame.
+        visionQueue.async {
+            let request = VNDetectBarcodesRequest()
+            request.symbologies = [.qr]
+            var feedback = "No QR detected. Move closer and keep the whole Portal visible."
+            do {
+                try VNImageRequestHandler(cvPixelBuffer: frame.capturedImage, orientation: .up).perform([request])
+            } catch {
+                feedback = "Camera scan failed. Tap Realign to try again."
+            }
+            let width = Float(CVPixelBufferGetWidth(frame.capturedImage))
+            let height = Float(CVPixelBufferGetHeight(frame.capturedImage))
+            var found: (String, simd_float4x4, simd_float4x4)?
+            for code in request.results ?? [] {
+                guard let payload = code.payloadStringValue else {
+                    feedback = "QR visible but unreadable. Move closer and avoid glare."
+                    continue
+                }
+                guard let portal = map.matching(payload) else {
+                    if let code = PortalMap.portalCode(payload) {
+                        feedback = "Portal \(code) is missing from Home's current snapshot."
+                    } else {
+                        feedback = "QR detected, but its payload format is not recognized as a Portal."
+                    }
+                    continue
+                }
+                feedback = "Recognized \(portal.anchor_id). Face it more directly and hold still."
+                let corners = [code.topLeft, code.topRight, code.bottomRight, code.bottomLeft]
+                    .map { SIMD2(Float($0.x) * width, (1 - Float($0.y)) * height) }
+                guard let pose = PortalPose.estimate(corners: corners, side: portal.side_length_m,
+                                                     intrinsics: frame.camera.intrinsics) else { continue }
+                let portalInAR = frame.camera.transform * pose
+                found = (portal.anchor_id, portalInAR * portal.pose_in_map.matrix.inverse, portalInAR)
+                break
+            }
+            let result = found
+            let scanFeedback = feedback
+            DispatchQueue.main.async {
+                self.busy = false
+                guard self.generation == capturedGeneration, self.placement == nil else { return }
+                guard case .normal = self.view.session.currentFrame?.camera.trackingState else { return }
+                guard let (id, transform, portalInAR) = result else {
+                    if !self.aligned { self.status = scanFeedback }
+                    return
+                }
+                self.root.simdTransform = transform
+                self.root.isHidden = false
+                self.aligned = true
+                if let portal = map.scenegraph.anchors[id] {
+                    let sessionFrame = "phone-ar:\(self.poseSession)"
+                    self.depthAlignment = DepthAlignment(timestamp_ns: UInt64(frame.timestamp * 1_000_000_000), portal_id: id,
+                        portal_to_session: .transform(portalInAR, from: portal.pose_in_map.from_frame_id, to: sessionFrame),
+                        session_to_home: .transform(transform.inverse, from: sessionFrame, to: map.scenegraph.map.frame.id))
+                }
+                // Start the one-second pause when calibration is applied, not
+                // when Vision began processing the captured frame.
+                self.cooldown.accept(at: self.view.session.currentFrame?.timestamp ?? frame.timestamp)
+                self.status = "Aligned with \(id) · \(self.map?.render?.voxels.count ?? 0) voxels"
+
+            }
+        }
+    }
+
+    private func captureDepth(_ frame: ARFrame) {
+        guard shareDepth, !depthBusy, let alignment = depthAlignment,
+              frame.timestamp - lastDepthCapture >= 0.5 else { return }
+        guard frame.sceneDepth != nil else {
+            depthStatus = "Waiting for LiDAR depth"; return
+        }
+        lastDepthCapture = frame.timestamp
+        depthBusy = true
+        let capturedGeneration = generation
+        let session = poseSession
+        depthQueue.async {
+            let sample = PhoneDepthCapture.read(frame, alignment: alignment, session: session)
+            DispatchQueue.main.async {
+                self.depthBusy = false
+                guard self.generation == capturedGeneration, self.aligned, self.shareDepth else { return }
+                guard let sample else { self.depthStatus = "No reliable depth here. Aim at nearby surfaces."; return }
+                self.depthStatus = "LiDAR active · \(sample.points.count) points per capture"
+                self.onDepth?(sample)
+            }
+        }
+    }
+
+    func session(_ session: ARSession, cameraDidChangeTrackingState camera: ARCamera) {
+        if case .normal = camera.trackingState { return }
+        invalidate()
+        status = "Tracking limited. Move slowly, then scan a known Portal again."
+    }
+    func sessionWasInterrupted(_ session: ARSession) {
+        invalidate(); status = "AR interrupted. Rescan a Portal when the camera returns."
+    }
+    func sessionInterruptionEnded(_ session: ARSession) { realign(); start() }
+    func session(_ session: ARSession, didFailWithError error: Error) {
+        invalidate(); status = error.localizedDescription
+    }
+}
+
+
+struct AnnotationEditor: View {
+    @ObservedObject var peer: HomePeer
+    let placement: NotePlacement
+    @State private var text = ""
+    @State private var saving = false
+    @State private var message = ""
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        NavigationStack {
+            Form {
+                TextField("Annotation", text: $text, axis: .vertical)
+                Text("Saved to Home and shared with connected viewers.").font(.caption)
+                if !message.isEmpty { Text(message) }
+                Button(saving ? "Saving…" : "Save to Home") {
+                    saving = peer.saveAnnotation(placement, text: text.trimmingCharacters(in: .whitespacesAndNewlines))
+                    message = saving ? "" : "Connect to Home before saving."
+                }.disabled(saving || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || text.count > 120)
+            }
+            .navigationTitle("Add annotation")
+            .toolbar { Button("Cancel") { dismiss() }.disabled(saving) }
+            .interactiveDismissDisabled(saving)
+            .onChange(of: peer.annotationResult) { _, result in
+                guard let result, result.id == placement.id else { return }
+                saving = false
+                if result.saved { dismiss() } else { message = result.detail }
+            }
+            .onChange(of: peer.state) { _, state in
+                if state != "live" { saving = false; message = "Home disconnected. Reconnect before saving." }
+            }
+        }
+    }
+}
+
+
+enum PhoneDepthCapture {
+    static func read(_ frame: ARFrame, alignment: DepthAlignment, session: String) -> PhoneDepthSample? {
+        guard let depth = frame.sceneDepth, let confidence = depth.confidenceMap else { return nil }
+        let buffer = depth.depthMap
+        guard CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_DepthFloat32,
+              CVPixelBufferGetPixelFormatType(confidence) == kCVPixelFormatType_OneComponent8 else { return nil }
+        CVPixelBufferLockBaseAddress(buffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        CVPixelBufferLockBaseAddress(confidence, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(confidence, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(buffer), let confidenceBase = CVPixelBufferGetBaseAddress(confidence) else { return nil }
+        let width = CVPixelBufferGetWidth(buffer), height = CVPixelBufferGetHeight(buffer)
+        guard CVPixelBufferGetWidth(confidence) == width, CVPixelBufferGetHeight(confidence) == height else { return nil }
+        let rowBytes = CVPixelBufferGetBytesPerRow(buffer), confidenceRow = CVPixelBufferGetBytesPerRow(confidence)
+        let step = max(1, Int(ceil(sqrt(Double(width * height) / 1500))))
+        let imageWidth = CVPixelBufferGetWidth(frame.capturedImage), imageHeight = CVPixelBufferGetHeight(frame.capturedImage)
+        var points = [[Float]]()
+        for y in stride(from: 0, to: height, by: step) {
+            let depths = base.advanced(by: y * rowBytes).assumingMemoryBound(to: Float32.self)
+            let confidences = confidenceBase.advanced(by: y * confidenceRow).assumingMemoryBound(to: UInt8.self)
+            for x in stride(from: 0, to: width, by: step) {
+                guard confidences[x] >= UInt8(ARConfidenceLevel.high.rawValue),
+                      let point = DepthProjection.point(x: x, y: y, depth: depths[x], width: width, height: height,
+                          imageWidth: imageWidth, imageHeight: imageHeight, intrinsics: frame.camera.intrinsics) else { continue }
+                points.append(point)
+                if points.count == 2048 { break }
+            }
+            if points.count == 2048 { break }
+        }
+        guard !points.isEmpty else { return nil }
+        return PhoneDepthSample(session: session, timestamp_ns: UInt64(frame.timestamp * 1_000_000_000),
+            camera_to_session: .transform(frame.camera.transform, from: "phone-camera:\(session)", to: "phone-ar:\(session)"),
+            alignment: alignment, points: points)
+    }
+}

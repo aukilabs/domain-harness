@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "domain_id": "b2881524-954d-4979-b715-240ed8f02807",
+  "convention": "opengl",
+  "units": "meters",
+  "transform_direction": "portal_local_to_domain_map",
+  "quaternion_order": "xyzw",
+  "rounded": true,
+  "height_note": "All stored y values are exactly zero. Actual mounting heights are not established.",
+  "portals": [
+    {"code":"2ZWHV5L6I04","position":[-11.3665,0,2.7806],"rotation":[-0.008589,-0.707055,-0.707055,0.008589]},
+    {"code":"5LGOJS334DB","position":[1.3941,0,6.2781],"rotation":[-0.707027,0.010608,0.010608,0.707027]},
+    {"code":"7956Q9STPFK","position":[-0.9111,0,0.0523],"rotation":[-0.706987,0.013031,0.013031,0.706987]},
+    {"code":"90221M8VMIC","position":[-2.1268,0,2.3943],"rotation":[-0.707059,0.008252,0.008252,0.707059]},
+    {"code":"CDH8INC2C9Q","position":[-4.2048,0,0.1334],"rotation":[-0.707054,0.008659,0.008659,0.707054]},
+    {"code":"CUIJ26GMNOX","position":[1.2201,0,1.2893],"rotation":[-0.707090,0.004916,0.004916,0.707090]},
+    {"code":"FNPUME0T93U","position":[0.0097,0,0.0037],"rotation":[-0.707104,0.001845,0.001845,0.707104]},
+    {"code":"HRIPLL40GL6","position":[-3.2922,0,3.8351],"rotation":[-0.259037,0.657951,0.657951,0.259037]},
+    {"code":"J1W1EMQ43K0","position":[-8.9935,0,3.6202],"rotation":[-0.707079,0.006273,0.006273,0.707079]},
+    {"code":"J62Z20W97LQ","position":[-11.2031,0,0.8137],"rotation":[-0.707105,0.001390,0.001390,0.707105]},
+    {"code":"NRD5WHJHH0S","position":[-5.1390,0,0.1646],"rotation":[-0.707107,0.000496,0.000496,0.707107]},
+    {"code":"Q62ED2G4A70","position":[1.3500,0,3.9903],"rotation":[-0.706884,0.017746,0.017746,0.706884]},
+    {"code":"UCOF1J40N7O","position":[-9.2878,0,0.2011],"rotation":[-0.707086,0.005372,0.005372,0.707086]}
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "name": "spatial-harness-viewer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "cargo run --locked",
+    "test": "cargo test --locked",
+    "demo": "node scripts/test-peer.mjs",
+    "test:browser": "playwright test",
+    "check": "cargo fmt --all -- --check && cargo clippy --locked --all-targets -- -D warnings"
+  },
+  "dependencies": {
+    "three": "0.180.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.1"
+  }
+}

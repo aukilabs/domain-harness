@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "measurement_basis": "encoded_square",
+  "portals": [
+    { "code": "2ZWHV5L6I04", "side_length_m": 0.05 },
+    { "code": "5LGOJS334DB", "side_length_m": 0.10 },
+    { "code": "7956Q9STPFK", "side_length_m": 0.15 },
+    { "code": "90221M8VMIC", "side_length_m": 0.15 },
+    { "code": "CDH8INC2C9Q", "side_length_m": 0.15 },
+    { "code": "CUIJ26GMNOX", "side_length_m": 0.10 },
+    { "code": "FNPUME0T93U", "side_length_m": 0.10 },
+    { "code": "HRIPLL40GL6", "side_length_m": 0.15 },
+    { "code": "J1W1EMQ43K0", "side_length_m": 0.15 },
+    { "code": "J62Z20W97LQ", "side_length_m": 0.15 },
+    { "code": "NRD5WHJHH0S", "side_length_m": 0.15 },
+    { "code": "Q62ED2G4A70", "side_length_m": 0.10 },
+    { "code": "UCOF1J40N7O", "side_length_m": 0.15 }
+  ]
+}

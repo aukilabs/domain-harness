@@ -1,0 +1,24 @@
+name: PortalViewer
+options:
+  deploymentTarget:
+    iOS: '17.0'
+targets:
+  PortalViewer:
+    type: application
+    platform: iOS
+    sources: [App]
+    dependencies:
+      - framework: ../PortalBridge/build/SpatialPortalBridge.xcframework
+        embed: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.spatialharness.PortalViewer
+        SWIFT_VERSION: '5.0'
+        TARGETED_DEVICE_FAMILY: '1'
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_NSCameraUsageDescription: Scan a Portal to display Home's scenegraph in augmented reality.
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: Connect directly to Home to receive its live Portal scenegraph.
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+        CODE_SIGN_STYLE: Automatic
+        OTHER_LDFLAGS: ['$(inherited)', '-lc++', '-liconv', '-framework', 'SystemConfiguration', '-framework', 'Security']

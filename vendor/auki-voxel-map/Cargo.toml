@@ -1,0 +1,28 @@
+[package]
+name = "auki-voxel-map"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89.0"
+license = "MIT"
+repository = "https://github.com/aukilabs/auki-sdk"
+
+description = "Portal-aligned single-writer voxel map Components"
+
+[dependencies]
+auki-components = { git = "https://github.com/aukilabs/auki-sdk.git", rev = "3342d589605846f5f45c1de5430dd22923555de2" }
+auki-scenegraph = { git = "https://github.com/aukilabs/auki-sdk.git", rev = "3342d589605846f5f45c1de5430dd22923555de2" }
+auki-mappers = { git = "https://github.com/aukilabs/auki-sdk.git", rev = "3342d589605846f5f45c1de5430dd22923555de2", default-features = false }
+auki-maps = { git = "https://github.com/aukilabs/auki-sdk.git", rev = "3342d589605846f5f45c1de5430dd22923555de2" }
+auki-registry = { git = "https://github.com/aukilabs/auki-sdk.git", rev = "3342d589605846f5f45c1de5430dd22923555de2" }
+auki-geometry = { git = "https://github.com/aukilabs/auki-sdk.git", rev = "3342d589605846f5f45c1de5430dd22923555de2" }
+auki-datatypes = { git = "https://github.com/aukilabs/auki-sdk.git", rev = "3342d589605846f5f45c1de5430dd22923555de2" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+prost = "0.13"
+thiserror = "2"
+
+[dev-dependencies]
+auki-qr-localizer = { git = "https://github.com/aukilabs/auki-sdk.git", rev = "3342d589605846f5f45c1de5430dd22923555de2" }
+
+[lints.rust]
+unsafe_code = "forbid"

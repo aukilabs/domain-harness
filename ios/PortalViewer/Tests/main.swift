@@ -1,0 +1,155 @@
+import Foundation
+import simd
+
+func check(_ condition: @autoclosure () -> Bool, _ message: String) {
+    if !condition() { fatalError(message) }
+}
+
+let k = simd_float3x3(SIMD3(1200, 0, 0), SIMD3(0, 1200, 0), SIMD3(960, 720, 1))
+let square: [SIMD3<Float>] = [SIMD3(-0.075, 0.075, 0), SIMD3(0.075, 0.075, 0),
+                            SIMD3(0.075, -0.075, 0), SIMD3(-0.075, -0.075, 0)]
+let conversion = simd_float4x4(diagonal: SIMD4<Float>(1, -1, -1, 1))
+for roll in [Float(0), 0.7, 1.57, 3.14] {
+    let rotation = simd_quatf(angle: roll, axis: SIMD3(0, 0, 1)) *
+        simd_quatf(angle: 0.3, axis: SIMD3(0, 1, 0)) * simd_quatf(angle: .pi, axis: SIMD3(1, 0, 0))
+    var optical = simd_float4x4(rotation)
+    optical.columns.3 = SIMD4(0.1, -0.05, 1.1, 1)
+    let pixels = square.map { p -> SIMD2<Float> in
+        let p4 = optical * SIMD4(p, 1)
+        let pixel = k * SIMD3(p4.x, p4.y, p4.z)
+        return SIMD2(pixel.x, pixel.y) / pixel.z
+    }
+    let solved = PortalPose.estimate(corners: pixels, side: 0.15, intrinsics: k)!
+    let expected = conversion * optical
+    check(simd_distance(solved.columns.3, expected.columns.3) < 0.0001, "metric translation")
+    check(abs(simd_dot(simd_quatf(solved).vector, simd_quatf(expected).vector)) > 0.99999, "rotation")
+    var portalInMap = simd_float4x4(simd_quatf(angle: 1.2, axis: SIMD3(0, 1, 0)))
+    portalInMap.columns.3 = SIMD4(-3, 0, 2, 1)
+    var cameraInAR = matrix_identity_float4x4
+    cameraInAR.columns.3 = SIMD4(1, 2, 3, 1)
+    let mapInAR = cameraInAR * solved * portalInMap.inverse
+    check(simd_distance((mapInAR * portalInMap).columns.3, (cameraInAR * expected).columns.3) < 0.0001,
+          "Home-to-AR alignment composition")
+}
+check(PortalPose.estimate(corners: Array(repeating: .zero, count: 4), side: 0.15, intrinsics: k) == nil,
+      "degenerate corners rejected")
+
+let frame: [String: Any] = ["id": "home", "convention": "opengl", "handedness": "right",
+                          "up_axis": "Y", "meters_per_unit": 1]
+let pose: [String: Any] = ["from_frame_id": "portal:ABC12345678", "to_frame_id": "home",
+                         "translation": [1, 0, 2], "rotation_wxyz": [1, 0, 0, 0]]
+let portal: [String: Any] = ["anchor_id": "ABC12345678", "payload": "ABC12345678",
+                           "side_length_m": 0.15, "pose_in_map": pose]
+func snapshot(frame: [String: Any], portal: [String: Any]) -> [String: Any] {
+    ["scenegraph": ["map": ["frame": frame], "anchors": ["ABC12345678": portal]]]
+}
+let direct = snapshot(frame: frame, portal: portal)
+for object in [direct, ["portals": direct]] {
+    let map = try PortalMap.load(JSONSerialization.data(withJSONObject: object))
+    check(map.scenegraph.anchors.count == 1, "direct and Home envelope import")
+    check(map == (try! PortalMap.load(JSONSerialization.data(withJSONObject: direct))),
+          "unchanged network Portals preserve AR alignment")
+    check(map.matching("https://r8.hr/ABC12345678") != nil, "known printed payload")
+    check(map.matching("https://other.example/ABC12345678") == nil, "unknown URL rejected")
+    check(map.matching("https://r8.hr/ABC12345678?other=1") == nil, "ambiguous URL rejected")
+}
+var wrong = frame; wrong["convention"] = "ros2_body"
+check((try? PortalMap.load(JSONSerialization.data(withJSONObject: snapshot(frame: wrong, portal: portal)))) == nil,
+      "wrong convention rejected")
+var wrongPose = pose; wrongPose["to_frame_id"] = "other"
+var wrongPortal = portal; wrongPortal["pose_in_map"] = wrongPose
+check((try? PortalMap.load(JSONSerialization.data(withJSONObject: snapshot(frame: frame, portal: wrongPortal)))) == nil,
+      "wrong destination rejected")
+wrongPortal = portal; wrongPortal["side_length_m"] = -1
+check((try? PortalMap.load(JSONSerialization.data(withJSONObject: snapshot(frame: frame, portal: wrongPortal)))) == nil,
+      "negative size rejected")
+print("Portal viewer checks passed: pose, rotated corners, alignment, import and invalid contracts")
+
+let pairing: [String: Any] = ["schema": "spatial-harness.home-connection/v1",
+    "peer_id": "test-peer", "domain_id": "b2881524-954d-4979-b715-240ed8f02807",
+    "routes": ["/ip4/192.168.9.142/tcp/4320"], "product_id": "canonical-scene",
+    "frame": "domain:b2881524-954d-4979-b715-240ed8f02807:home-origin-UCOF1J40N7O"]
+let loadedPairing = try HomeProfile.load(JSONSerialization.data(withJSONObject: pairing))
+check(loadedPairing.frame == pairing["frame"] as! String, "current Home origin preserved")
+check((try? HomeProfile.load(JSONSerialization.data(withJSONObject: direct))) == nil, "scene is not a pairing profile")
+var invalidPairing = pairing; invalidPairing["frame"] = ""
+check((try? HomeProfile.load(JSONSerialization.data(withJSONObject: invalidPairing))) == nil, "empty frame rejected")
+print("Home pairing checks passed")
+
+var cooldown = CalibrationCooldown()
+check(cooldown.canScan(at: 0), "first scan is immediate")
+cooldown.accept(at: 10)
+check(!cooldown.canScan(at: 10.99), "no repeat calibration within one second")
+check(cooldown.canScan(at: 11), "calibration resumes after one second")
+cooldown.reset()
+check(cooldown.canScan(at: 10.1), "explicit realign permits immediate scan")
+print("Single-scan calibration cooldown checks passed")
+
+let matchingMap = try PortalMap.load(JSONSerialization.data(withJSONObject: direct))
+for prefix in ["https://r8.hr", "HTTPS://R8.HR", "Https://R8.Hr"] {
+    check(matchingMap.matching(prefix + "/ABC12345678") != nil, "Galbot-compatible URL prefix casing")
+}
+for payload in ["HTTPS://R8.HR/abc12345678", "https://evil.example/ABC12345678",
+                "https://r8.hr/ABC12345678?x=1", "https://r8.hr/ABC12345678/",
+                "https://r8.hr/a/ABC12345678", "https://r8.hr/%41BC12345678"] {
+    check(matchingMap.matching(payload) == nil, "unknown or malformed identity rejected")
+}
+print("Galbot-compatible Portal payload checks passed")
+
+var fullScene = direct
+fullScene["render"] = ["frame": "home", "voxel_size": 0.1,
+    "voxels": [["center": [1,2,3], "linear_rgb": [0.2,0.3,0.4]]],
+    "objects": [["id": "chair", "label": "Chair", "position": [1,0,1]]],
+    "notes": [["id": "note", "text": "Hello", "position": [0,1,0]]]]
+let decodedScene = try PortalMap.load(JSONSerialization.data(withJSONObject: fullScene))
+check(decodedScene.render?.voxels.count == 1, "occupied geometry crosses bridge")
+check(decodedScene.render?.notes.first?.text == "Hello", "scene note preserved")
+check(decodedScene.scenegraph == matchingMap.scenegraph, "geometry updates preserve calibration reference")
+print("Full scene decoding checks passed")
+
+let floorHit = SceneRay.hit(origin: SIMD3(0,2,0), direction: SIMD3(0,-1,0), scene: nil)
+check(floorHit == SIMD3(0,0,0), "empty scene still intersects Home floor")
+check(SceneRay.hit(origin: SIMD3(0,2,0), direction: SIMD3(1,0,0), scene: nil) == nil, "parallel ray misses floor")
+check(SceneRay.hit(origin: SIMD3(0,2,0), direction: SIMD3(0,1,0), scene: nil) == nil, "floor behind camera rejected")
+check(SceneRay.hit(origin: SIMD3(0,2,0), direction: .zero, scene: nil) == nil, "zero direction rejected")
+let voxelHit = SceneRay.hit(origin: SIMD3(1,4,3), direction: SIMD3(0,-1,0), scene: decodedScene.render)!
+check(abs(voxelHit.y - 2.05) < 0.0001, "voxel in front of floor wins")
+let floorFirst = SceneRay.hit(origin: SIMD3(1,-1,3), direction: SIMD3(0,1,0), scene: decodedScene.render)!
+check(abs(floorFirst.y) < 0.0001, "floor in front of voxel wins")
+print("Screen-ray floor and voxel checks passed")
+
+var poseHomeInAR = simd_float4x4(simd_quatf(angle: .pi/2, axis: SIMD3(0,1,0)))
+poseHomeInAR.columns.3 = SIMD4(8,0,3,1)
+var expectedCameraHome = matrix_identity_float4x4
+expectedCameraHome.columns.3 = SIMD4(1,1.5,2,1)
+let phonePose = PhonePoseSample(session: "test", timestamp: 2, cameraInAR: poseHomeInAR * expectedCameraHome,
+                               homeInAR: poseHomeInAR, homeFrame: "home")
+check(simd_distance(phonePose.pose.matrix.columns.3, expectedCameraHome.columns.3) < 0.00001,
+      "published phone pose converts from AR into calibrated Home coordinates")
+check(phonePose.timestamp_ns == 2_000_000_000 && phonePose.pose.to_frame_id == "home", "capture clock and explicit destination survive encoding")
+print("Phone pose publication checks passed")
+
+var robotScene = fullScene
+var renderWithRobot = robotScene["render"] as! [String: Any]
+renderWithRobot["local_mapping"] = ["robot_pose": ["frame": "home",
+    "pose": ["translation": [1,2,3], "rotation_xyzw": [0,0,0,1]]]]
+robotScene["render"] = renderWithRobot
+let robotDecoded = try PortalMap.load(JSONSerialization.data(withJSONObject: robotScene))
+check(robotDecoded.render?.local_mapping?.robot_pose?.pose.matrix.columns.3 == SIMD4(1,2,3,1),
+      "live runner quaternion contract differs from Portal quaternion contract")
+print("Live runner geometry decoding checks passed")
+
+let depthIntrinsics = simd_float3x3(columns: (SIMD3(1000,0,0), SIMD3(0,1000,0), SIMD3(960,720,1)))
+let centerDepth = DepthProjection.point(x: 128, y: 96, depth: 2, width: 256, height: 192,
+                                      imageWidth: 1920, imageHeight: 1440, intrinsics: depthIntrinsics)!
+check(simd_distance(SIMD3(centerDepth[0],centerDepth[1],centerDepth[2]), SIMD3(0,0,-2)) < 0.00001,
+      "depth uses scaled intrinsics and looks along camera negative Z")
+let cornerDepth = DepthProjection.point(x: 160, y: 64, depth: 2, width: 256, height: 192,
+                                      imageWidth: 1920, imageHeight: 1440, intrinsics: depthIntrinsics)!
+check(abs(cornerDepth[0]-0.48)<0.00001 && abs(cornerDepth[1]-0.48)<0.00001,
+      "image right/up becomes camera right/up without display rotation")
+for invalid: Float in [0, -1, 6, .nan, .infinity] {
+    check(DepthProjection.point(x:128,y:96,depth:invalid,width:256,height:192,imageWidth:1920,imageHeight:1440,intrinsics:depthIntrinsics)==nil,
+          "invalid and out-of-range depth rejected")
+}
+print("Phone depth projection checks passed")
