@@ -1,0 +1,10 @@
+{
+  "schema": "spatial-harness.home-connection/v1",
+  "peer_id": "12D3KooWP7MFxucx3sPDvdYzXU8vBA1oRTmmx1ARGPxTRHQQYEu4",
+  "domain_id": "b2881524-954d-4979-b715-240ed8f02807",
+  "routes": [
+    "/ip4/192.168.9.87/tcp/4321"
+  ],
+  "frame": "galbot-local",
+  "product_id": "canonical-scene"
+}

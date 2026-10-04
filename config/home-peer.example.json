@@ -1,0 +1,42 @@
+{
+  "domain_id": "b2881524-954d-4979-b715-240ed8f02807",
+  "api_url": "https://api.dev.aukiverse.com/",
+  "dds_url": "https://dds.dev.aukiverse.com/",
+  "dms_url": "https://dms.dev.aukiverse.com/v1/",
+  "login": "app",
+  "identity_file": "../data/home-peer.identity",
+  "listen": [
+    "/ip4/0.0.0.0/tcp/4320"
+  ],
+  "advertise": [
+    "/ip4/192.168.9.142/tcp/4320"
+  ],
+  "relay": false,
+  "advertise_discovery": true,
+  "runner": null,
+  "runner_scene": {
+    "schema": "spatial-harness.home-connection/v1",
+    "peer_id": "12D3KooWKogrsBMYLjBduXcXzefB7HruGYGxsqJPVYEvgmo1hJy5",
+    "domain_id": "b2881524-954d-4979-b715-240ed8f02807",
+    "routes": [
+      "/ip4/192.168.9.95/tcp/4321"
+    ],
+    "frame": "galbot-local",
+    "product_id": "canonical-scene"
+  },
+  "runner_scenes": [
+    {
+      "name": "Galbot Echo (.87)",
+      "connection": {
+        "schema": "spatial-harness.home-connection/v1",
+        "peer_id": "12D3KooWP7MFxucx3sPDvdYzXU8vBA1oRTmmx1ARGPxTRHQQYEu4",
+        "domain_id": "b2881524-954d-4979-b715-240ed8f02807",
+        "routes": [
+          "/ip4/192.168.9.87/tcp/4321"
+        ],
+        "frame": "galbot-local",
+        "product_id": "canonical-scene"
+      }
+    }
+  ]
+}

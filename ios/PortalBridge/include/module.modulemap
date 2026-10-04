@@ -1,0 +1,4 @@
+module SpatialPortalBridge {
+    header "SpatialPortalBridge.h"
+    export *
+}
