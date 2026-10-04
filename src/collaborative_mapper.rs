@@ -27,7 +27,7 @@ pub struct LocalizedScan {
 }
 pub struct CollaborativeMap {
     pub frame: String,
-    pub revision: usize,
+
     pub voxels: Option<VoxelSnapshot>,
     owner: String,
     clock: auki_components::clock::ClockRegistryEntry,
@@ -66,7 +66,7 @@ impl CollaborativeMap {
         let reference = reference_in_frame(canonical, &frame)?;
         Ok(Self {
             frame,
-            revision: 0,
+
             voxels: None,
             owner: owner.into(),
             clock,
@@ -229,7 +229,7 @@ impl CollaborativeMap {
         *self.contributions.entry(peer.clone()).or_default() += 1;
         self.recent = recent;
         self.voxels = Some(saved);
-        self.revision += 1;
+
         Ok(true)
     }
     pub fn integrate_phone(&mut self, envelope: crate::mobile_depth::Envelope) -> Result<bool> {
@@ -259,7 +259,6 @@ impl CollaborativeMap {
         let value = self.peers.entry(peer.into()).or_insert_with(|| json!({}));
         value["status"] = json!(status);
         value["detail"] = json!(detail);
-        self.revision += 1;
     }
     pub fn peer_progress(
         &mut self,
@@ -287,7 +286,7 @@ impl CollaborativeMap {
         }
         self.peers
             .insert(peer.into(), metadata["local_mapping"].clone());
-        self.revision += 1;
+
         Ok(())
     }
     pub fn scene(&self) -> Result<Option<crate::network::CanonicalScene>> {
@@ -304,7 +303,7 @@ impl CollaborativeMap {
             schema: crate::network::SCENE_SCHEMA.into(),
             sdk_revision: crate::model::SDK_REV.into(),
             authority_peer_id: self.owner.clone(),
-            revision: self.revision,
+
             frame: self.frame.clone(),
             publication_clock: self.clock.clone(),
             portals: self.portals()?,

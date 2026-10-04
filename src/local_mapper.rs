@@ -170,7 +170,7 @@ pub fn canonical_origin(
 }
 pub struct LocalMap {
     pub frame: String,
-    pub revision: usize,
+
     pub home_portals: Option<crate::home_alignment::HomePortals>,
     pub origin: Option<Origin>,
     pub detail: String,
@@ -393,7 +393,7 @@ impl LocalMap {
         )?;
         Ok(Self {
             frame,
-            revision: 0,
+
             home_portals: None,
             origin: None,
             detail: if portal_origin {
@@ -497,7 +497,7 @@ impl LocalMap {
         let home = crate::home_alignment::HomePortals {
             portals: scene.portals,
             peer_id: scene.authority_peer_id,
-            revision: scene.revision,
+
             anchor,
         };
         home.align(&observed)?;
@@ -528,7 +528,6 @@ impl LocalMap {
                     self.origin = Some(establish_origin(timestamp_ns, self.clock.clone(), &pose)?);
                     self.initialize_voxels()?;
                     self.detail = "Robot boot origin · mapping measured geometry".into();
-                    self.revision += 1;
                 }
                 if let Some(origin) = &self.origin {
                     self.latest_pose =
@@ -952,7 +951,6 @@ impl LocalMap {
                 + 1;
             self.evidence.insert(short.into(),json!({"observations":n,"capture_timestamp_ns":s.timestamp_ns,"clock":self.clock,"camera_product":self.camera_reference(),"reprojection_rms_px":estimate.reprojection_rms_px,"latest_measured_pose":measured}));
             accepted += 1;
-            self.revision += 1;
         }
         if let Some(home) = &self.home_portals
             && let Some(anchor) = self.latest_shared_portal(&home.portals)
@@ -1109,7 +1107,7 @@ impl LocalMap {
                     colors,
                     origin: self.origin.clone().unwrap(),
                 });
-            self.revision += 1;
+
             return Ok(());
         }
         let mut update =
@@ -1145,7 +1143,7 @@ impl LocalMap {
         saved.accumulator()?;
         self.voxels = Some(saved);
         self.recent_voxels = recent;
-        self.revision += 1;
+
         Ok(())
     }
 }

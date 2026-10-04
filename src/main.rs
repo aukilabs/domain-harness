@@ -27,7 +27,7 @@ struct AppState {
     ar_frames: spatial_home::ar_preview::Frames,
     previews: tokio::sync::mpsc::Sender<spatial_home::sensor_preview::Request>,
     store: Arc<Mutex<Store>>,
-    revisions: tokio::sync::watch::Sender<usize>,
+    changes: tokio::sync::watch::Sender<()>,
     peer: tokio::sync::watch::Receiver<Value>,
     runner: tokio::sync::watch::Receiver<spatial_home::runner_pose::RunnerState>,
     mapping: tokio::sync::watch::Receiver<Value>,
@@ -212,7 +212,6 @@ async fn home_live_scene(State(s): State<Shared>) -> ApiResult {
             &mut view,
             &store.built.registries["mobile_presence"],
         );
-        view["presence_revision"] = json!(store.built.view.revision);
     }
     view["authority"] = json!("Home mapper");
     view["mode"] = json!("Home-built scenegraph from raw runner observations");
@@ -235,6 +234,11 @@ async fn home_live_status(State(s): State<Shared>) -> ApiResult {
 }
 async fn scene_sources(State(s): State<Shared>) -> ApiResult {
     let mut status = s.remote_scene.borrow().status_view();
+    let mut local = vec![json!({"id":"demo","name":"Home Server"})];
+    if s.home_live.borrow().scene.is_some() {
+        local.push(json!({"id":"home-live","name":"Home live map"}));
+    }
+    status["local"] = json!(local);
     status["runners"] = json!(
         s.runners
             .iter()
@@ -267,25 +271,59 @@ async fn delete_note(
     local_write(&headers)?;
     let mut store = lock(&s)?;
     spatial_home::notes::remove(&mut store, &id)?;
-    s.revisions.send_replace(store.built.view.revision);
+    s.changes.send_replace(());
     Ok(Json(json!({"deleted":id})))
+}
+async fn rename_note(
+    State(s): State<Shared>,
+    headers: HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(request): Json<serde_json::Value>,
+) -> ApiResult {
+    local_write(&headers)?;
+    let mut store = lock(&s)?;
+    let text = request["text"].as_str().unwrap_or_default().to_owned();
+    let details = request
+        .get("details")
+        .map(|v| serde_json::from_value(v.clone()))
+        .transpose()
+        .map_err(anyhow::Error::from)?;
+    let note = spatial_home::notes::update(&mut store, &id, text, details)?;
+    s.changes.send_replace(());
+    Ok(Json(json!(note)))
+}
+#[derive(Deserialize)]
+struct NewNoteRequest {
+    text: String,
+    portal: String,
+    height_m: f64,
+    #[serde(default)]
+    details: spatial_home::notes::NoteDetails,
 }
 async fn add_note(
     State(s): State<Shared>,
     headers: HeaderMap,
-    Json(note): Json<spatial_home::notes::NewNote>,
+    Json(note): Json<NewNoteRequest>,
 ) -> ApiResult {
     local_write(&headers)?;
     let mut store = lock(&s)?;
-    let note = spatial_home::notes::add(&mut store, note)?;
-    s.revisions.send_replace(store.built.view.revision);
+    let note = spatial_home::notes::add_detailed(
+        &mut store,
+        spatial_home::notes::NewNote {
+            text: note.text,
+            portal: note.portal,
+            height_m: note.height_m,
+        },
+        note.details,
+    )?;
+    s.changes.send_replace(());
     Ok(Json(json!(note)))
 }
 async fn domain_scene(State(s): State<Shared>) -> ApiResult {
     let s = lock(&s)?;
     let map = &s.built.domain_portals;
     Ok(Json(
-        json!({"revision":1,"frame":map.scenegraph.map.frame.id,"domain":map.scenegraph.map.domain_reference,"convention":"OpenGL · Y up · meters","voxel_size":0.1,"voxels":[],"objects":[],"sources":{},"integrated_observations":0,"portals":map.scenegraph.anchors.values().collect::<Vec<_>>(),"mode":"Stored domain poses · heights unverified"}),
+        json!({"frame":map.scenegraph.map.frame.id,"domain":map.scenegraph.map.domain_reference,"convention":"OpenGL · Y up · meters","voxel_size":0.1,"voxels":[],"objects":[],"sources":{},"integrated_observations":0,"portals":map.scenegraph.anchors.values().collect::<Vec<_>>(),"mode":"Stored domain poses · heights unverified"}),
     ))
 }
 async fn domain_snapshot(State(s): State<Shared>) -> ApiResult {
@@ -355,11 +393,9 @@ async fn contribute(
     let mut store = lock(&s)?;
     let applied = store.apply(Event::Contribution(c))?;
     if applied {
-        s.revisions.send_replace(store.built.view.revision);
+        s.changes.send_replace(());
     }
-    Ok(Json(
-        json!({"applied":applied,"revision":store.built.view.revision}),
-    ))
+    Ok(Json(json!({"applied":applied})))
 }
 async fn detect(
     State(s): State<Shared>,
@@ -370,11 +406,9 @@ async fn detect(
     let mut store = lock(&s)?;
     let applied = store.apply(Event::Detection(d))?;
     if applied {
-        s.revisions.send_replace(store.built.view.revision);
+        s.changes.send_replace(());
     }
-    Ok(Json(
-        json!({"applied":applied,"revision":store.built.view.revision}),
-    ))
+    Ok(Json(json!({"applied":applied,})))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -402,6 +436,24 @@ async fn label_pick(
     local_write(&headers)?;
     let live = s.home_live.borrow();
     if live.status_view()["status"] != "connected" {
+        if let spatial_home::picking::PickRequest::Scene {
+            frame,
+            origin,
+            direction,
+        } = &request
+            && frame == spatial_home::model::FRAME
+        {
+            let (voxels, size) = {
+                let store = lock(&s)?;
+                (store.built.view.voxels.clone(), store.built.view.voxel_size)
+            };
+            return Ok(Json(
+                s.picks
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("Picking unavailable"))?
+                    .pick_canonical(*origin, *direction, &voxels, size)?,
+            ));
+        }
         return Err(ApiError(anyhow::anyhow!("Home live voxel map unavailable")));
     }
     let scene = live
@@ -420,6 +472,8 @@ async fn label_pick(
 struct LabelSave {
     token: String,
     text: String,
+    #[serde(default)]
+    details: spatial_home::notes::NoteDetails,
 }
 async fn label_save(
     State(s): State<Shared>,
@@ -433,9 +487,14 @@ async fn label_save(
         .map_err(|_| anyhow::anyhow!("Picking unavailable"))?;
     let contact = picks.contact(&request.token)?;
     let mut store = lock(&s)?;
-    let note = spatial_home::notes::add_surface(&mut store, request.text, contact)?;
+    let note = spatial_home::notes::add_surface_detailed(
+        &mut store,
+        request.text,
+        contact,
+        request.details,
+    )?;
     picks.consume(&request.token);
-    s.revisions.send_replace(store.built.view.revision);
+    s.changes.send_replace(());
     Ok(Json(json!(note)))
 }
 async fn vendor(axum::extract::Path(name): axum::extract::Path<String>) -> Response {
@@ -487,8 +546,7 @@ async fn main() -> anyhow::Result<()> {
         Store::open_canonical(data)?
     }));
     spatial_home::notes::initialize(&mut store.lock().unwrap())?;
-    let (revisions, revision_rx) =
-        tokio::sync::watch::channel(store.lock().unwrap().built.view.revision);
+    let (changes, change_rx) = tokio::sync::watch::channel(());
     let (peer_tx, peer_rx) =
         tokio::sync::watch::channel(json!({"enabled":false,"status":"Disabled"}));
     let (runner_tx, runner_rx) =
@@ -551,7 +609,7 @@ async fn main() -> anyhow::Result<()> {
                 .iter()
                 .map(|(id, r)| (id.clone(), r.name.clone()))
                 .collect(),
-            revision_rx,
+            change_rx,
             peer_tx,
             settings.runner,
             settings.runner_scene,
@@ -561,7 +619,7 @@ async fn main() -> anyhow::Result<()> {
             runner_tx,
             spatial_home::runner_voxels::MappingTarget {
                 store: store.clone(),
-                revisions: revisions.clone(),
+                changes: changes.clone(),
                 status: mapping_tx,
             },
             preview_rx,
@@ -578,7 +636,7 @@ async fn main() -> anyhow::Result<()> {
         ar_frames,
         previews: preview_tx,
         store,
-        revisions,
+        changes,
         peer: peer_rx,
         runner: runner_rx,
         mapping: mapping_rx,
@@ -623,7 +681,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/robot-occupancy", get(robot_occupancy))
         .route("/api/scene", get(scene))
         .route("/api/notes", post(add_note))
-        .route("/api/notes/{id}", delete(delete_note))
+        .route("/api/notes/{id}", delete(delete_note).patch(rename_note))
         .route("/api/label-pick", post(label_pick))
         .route("/api/notes/from-pick", post(label_save))
         .route("/api/home-live-scene", get(home_live_scene))
@@ -648,7 +706,7 @@ async fn main() -> anyhow::Result<()> {
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
         .with_state(state);
     println!(
-        "Spatial Home: http://127.0.0.1:{port} — SDK PR #421; P2P {}",
+        "Spatial Home: http://127.0.0.1:{port} — SDK PR #425; P2P {}",
         if network.is_some() {
             "enabled"
         } else {

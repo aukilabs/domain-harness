@@ -1,7 +1,7 @@
 # Domain Harness
 
 A component-based spatial mapping prototype with a Home server, Galbot runners,
-and an iPhone Annotator. It uses [Auki SDK PR #421](https://github.com/aukilabs/auki-sdk/pull/421),
+and an iPhone Annotator. It uses [Auki SDK PR #425](https://github.com/aukilabs/auki-sdk/pull/425),
 pinned to `3342d589605846f5f45c1de5430dd22923555de2`.
 
 Home builds a canonical scenegraph from calibrated peer observations and lets

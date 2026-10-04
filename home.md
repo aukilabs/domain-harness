@@ -96,12 +96,12 @@ map are unchanged by this overlay. No portal backend APIs are used.
 
 Target responsibilities. The first local implementation reuses SDK MapComponent, MapAlignmentChecker, and VoxelMapComponent; authenticated canonical-scene publication is implemented; broader merge support remains in progress.
 
-- **Peer ingestion:** receive observations and scenegraphs from both iPhone and Bracketbot through the shared peer runtime, retaining source and revision metadata.
+- **Peer ingestion:** receive observations and scenegraphs from both iPhone and Bracketbot through the shared peer runtime, retaining source metadata.
 - **Accepted observation publisher (implemented):** distribute the same validated LiDAR and RGB-D inputs to independent mappers, preserving source identities, calibration and capture clocks.
 - **Frame alignment:** establish explicit transforms from contributing peers' frames into the canonical scenegraph frame.
 - **Canonical mapper:** create and update the canonical scenegraph from both observation inputs and peer-built scenegraphs; reconcile Portals, semantic objects, and topography.
 - **Voxel integrator:** integrate aligned phone and robot observations into the canonical raycastable voxel map; handle contributed voxel scenegraphs under the agreed merge rules.
-- **Scenegraph storage and publication:** persist canonical revisions and manually supplied Portal sizes, and serve them to peers and the visualizer.
+- **Scenegraph storage and publication:** persist canonical state and manually supplied Portal sizes, and serve them to peers and the visualizer.
 - **Runner pose reader:** subscribe to the pinned Galbot peer’s odometry and map-alignment Products; validate session/clock/frame contracts and all 13 reference anchors, then compose the pose into Home’s frame.
 - **Browser 3D visualizer:** display canonical voxels, Portals, semantic objects, and the live runner base pose with a forward arrow, focus control, and stale/lost state.
 
@@ -122,7 +122,7 @@ Implemented a local SDK-backed mapping and visualization slice; see [README.md](
 - The browser displays voxels, manually sized Portals, semantic objects, and camera rays. A synthetic book detection is projected onto an occupied voxel surface.
 - Replay, invalid-input rejection, restart recovery, and browser interactions are covered by tests.
 
-The Home Server now publishes a stable canonical-scene Buffer Product over authenticated SDK Component protocols, advertises an explicit connection profile, and pushes accepted revisions to readers. Galbot base LiDAR ingestion over P2P is now implemented. Right-wrist Galbot RGB-D now feeds both maps; next: iPhone input and broader source admission. General semantic scenegraph import and independent voxel-map reconciliation still need implementation; current scenegraph ingestion handles SDK Portal snapshots and accompanying observations.
+The Home Server now publishes a stable canonical-scene Buffer Product over authenticated SDK Component protocols, advertises an explicit connection profile, and pushes updated snapshots to readers. Galbot base LiDAR ingestion over P2P is now implemented. Right-wrist Galbot RGB-D now feeds both maps; next: iPhone input and broader source admission. General semantic scenegraph import and independent voxel-map reconciliation still need implementation; current scenegraph ingestion handles SDK Portal snapshots and accompanying observations.
 
 The old illustrative layout remains in [config/synthetic-room.json](config/synthetic-room.json) for explicit `SPATIAL_DEMO=1` tests. Default Home operation contains no synthetic geometry.
 
@@ -131,7 +131,7 @@ odometry-to-domain alignment from `HRIPLL40GL6`. Consume its alignment and pose
 Products with the explicit domain Z-up to Home Y-up conversion; this read-only
 subscription is now implemented and verified live. All 13 reference anchors are
 checked over P2P against Home’s supplied map before displaying the pose. The live
-pose is transient telemetry, separate from the saved map revision. Supplying
+pose is transient telemetry, separate from the saved map state. Supplying
 Home’s manual portal data to the robot’s existing resolver remains future work.
 See [runner.md](runner.md).
 
@@ -295,6 +295,6 @@ Robot name notes are generated in Home live snapshots from each configured runne
 
 Right-click the Home scene viewer or a calibrated camera image to place a label. Home performs a 50 cm-diameter sphere sweep (25 cm radius, up to 40 m) against occupied collaborative voxels, with exact rounded-edge/corner collision and contact on the original voxel surface. It does not pick the floor helper, robot volume or a runner-owned map. Scene rays must be in Home's canonical or live display frame. Camera pixels use SDK lens unprojection, checked against the same SDK/vendor projection as AR, and the capture-matched camera transform of the displayed image. Picking also works with AR unchecked; missing calibration leaves ordinary video available and explains why placement is unavailable.
 
-Camera geometry handles are bounded to 64 entries and expire after 15 seconds; placement handles are bounded to 128 and expire after five minutes. The small context dialog freezes camera display while naming the computed hit. Cancel/no hit writes nothing. Saving consumes the handle and persists a fixed Home-space annotation with `anchor_surface` provenance (source Home frame, revision, voxel center and beam diameter). It survives map restarts. No sidebar form is restored.
+Camera geometry handles are bounded to 64 entries and expire after 15 seconds; placement handles are bounded to 128 and expire after five minutes. The small context dialog freezes camera display while naming the computed hit. Cancel/no hit writes nothing. Saving consumes the handle and persists a fixed Home-space annotation with `anchor_surface` provenance (source Home frame, voxel center and beam diameter). It survives map restarts. No sidebar form is restored.
 
-Select an authored annotation in the Home scene viewer and choose **Delete annotation** to remove it from persisted notes and subsequent scene/AR snapshots. This works for portal-, surface-, and phone-authored notes; generated robot/phone presence names are not deletable. The selection panel stays open through live geometry refreshes. Deletion uses the localhost same-origin `DELETE /api/notes/{id}` endpoint and signals the shared scene revision.
+Select an authored annotation in the Home scene viewer and choose **Delete annotation** to remove it from persisted notes and subsequent scene/AR snapshots. This works for portal-, surface-, and phone-authored notes; generated robot/phone presence names are not deletable. The selection panel stays open through live geometry refreshes. Deletion uses the localhost same-origin `DELETE /api/notes/{id}` endpoint and signals a scene update.

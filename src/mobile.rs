@@ -32,7 +32,7 @@ pub struct MobileState {
     pub version: u64,
     pub state: &'static str,
     pub detail: String,
-    pub revision: Option<usize>,
+
     /// Validated Portal snapshot plus renderable scene geometry, in Home metres.
     pub portals: Option<serde_json::Value>,
 }
@@ -63,7 +63,7 @@ impl Default for MobileClient {
                 annotation: None,
                 state: "connecting",
                 detail: "Signing in to Auki development services".into(),
-                revision: None,
+
                 portals: None,
             }),
             finished: AtomicBool::new(false),
@@ -326,7 +326,6 @@ impl MobileClient {
                     crate::network::subscribe_scene_product(peer, home, "home-live-scene").await?;
                 let clock = subscription.product().producer.clock.clone();
                 let work = async {
-                    let mut previous = None;
                     loop {
                         let event = tokio::select! {
                             _ = self.stop.cancelled() => return Ok(()),
@@ -337,10 +336,7 @@ impl MobileClient {
                                 let scene = &observation.payload;
                                 scene.validate(&home.peer_id)?;
                                 ensure!(clock_ref(&scene.publication_clock) == clock, "Live scene clock mismatch");
-                                let key = (scene.frame.clone(), scene.revision);
-                                ensure!(previous.as_ref().is_none_or(|(frame, revision)| frame != &scene.frame || scene.revision > *revision), "Live revision did not advance");
                                 self.set_geometry(Some(crate::mobile_geometry::render(scene)?));
-                                previous = Some(key);
                             }
                             Some(RemoteObservationEvent::Gap(_)) => {},
                             _ => bail!("Live geometry stream ended"),
@@ -363,26 +359,20 @@ impl MobileClient {
                 return Ok(());
             }
             self.status("connecting", "Connecting to Home over authenticated P2P");
-            let result = receive_portals(
-                peer,
-                home,
-                &self.stop,
-                Duration::from_secs(45),
-                |revision, portals| {
+            let result =
+                receive_portals(peer, home, &self.stop, Duration::from_secs(45), |portals| {
                     let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
                     state.version += 1;
                     state.state = "live";
-                    state.detail = format!("Home connected · revision {revision}");
-                    state.revision = Some(revision);
+                    state.detail = "Home connected".into();
                     state.reference = Some(portals.clone());
                     state.portals = Some(crate::mobile_geometry::merge(
                         &portals,
                         state.geometry.as_ref(),
                     ));
                     failures = 0;
-                },
-            )
-            .await;
+                })
+                .await;
             if self.stop.is_cancelled() {
                 return Ok(());
             }
@@ -414,7 +404,7 @@ pub async fn receive_portals(
     home: &HomeConnection,
     stop: &CancellationToken,
     idle_refresh: Duration,
-    mut accept: impl FnMut(usize, serde_json::Value),
+    mut accept: impl FnMut(serde_json::Value),
 ) -> Result<()> {
     let mut subscription = tokio::select! {
         _ = stop.cancelled() => return Ok(()),
@@ -422,9 +412,9 @@ pub async fn receive_portals(
     };
     let clock = subscription.product().producer.clock.clone();
     let work = async {
-        let mut revision = None;
+        let mut received = false;
         loop {
-            let deadline = if revision.is_none() {
+            let deadline = if !received {
                 Duration::from_secs(30)
             } else {
                 idle_refresh
@@ -436,7 +426,7 @@ pub async fn receive_portals(
             };
             let event = match event {
                 Ok(event) => event?,
-                Err(_) if revision.is_some() => return Ok(()),
+                Err(_) if received => return Ok(()),
                 Err(_) => bail!("Home did not publish an initial scene"),
             };
             match event {
@@ -451,14 +441,10 @@ pub async fn receive_portals(
                         clock_ref(&scene.publication_clock) == clock,
                         "Publication clock mismatch"
                     );
-                    ensure!(
-                        revision.is_none_or(|last| scene.revision > last),
-                        "Scene revision did not advance"
-                    );
                     let mut mobile = serde_json::to_value(&scene.portals)?;
                     mobile["render"] = crate::scene_mirror::render_scene(scene)?;
-                    accept(scene.revision, mobile);
-                    revision = Some(scene.revision);
+                    accept(mobile);
+                    received = true;
                 }
                 Some(RemoteObservationEvent::Gap(_)) => {} // next complete scene replaces the previous one
                 Some(RemoteObservationEvent::Closed(reason)) => {

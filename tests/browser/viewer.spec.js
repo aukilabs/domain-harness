@@ -39,7 +39,7 @@ test('map, project, replay, inspect, and adapt to mobile',async({page,request})=
  expect(errors).toEqual([]);
 });
 
-test('live runner pose is independent of scene revisions and becomes stale or lost',async({page})=>{
+test('live runner pose is independent of scene updates and becomes stale or lost',async({page})=>{
  const errors=[];page.on('pageerror',e=>errors.push(e.message));
  let telemetry={status:'live',pose:{translation:[-4.071,.025,3.943],rotation_xyzw:[-.70710678,0,0,.70710678]},detail:'13 reference portals verified'};
  await page.route('**/api/runner-pose',route=>route.fulfill({json:telemetry}));
@@ -47,13 +47,13 @@ test('live runner pose is independent of scene revisions and becomes stale or lo
  await expect(page.locator('#runner-status')).toHaveText('Galbot · live');
  await expect(page.locator('#runner-card')).toHaveAttribute('data-position','[-4.071,0.025,3.943]');
  await expect(page.locator('#runner-card')).toHaveAttribute('data-rotation','[-0.70710678,0,0,0.70710678]');
- const revision=await page.locator('#revision').textContent();
+ const observations=await page.locator('#observation-count').textContent();
  await page.getByRole('button',{name:'Focus Galbot'}).click();
  await expect(page.locator('#selection')).toContainText('Calibrated robot base');
  await page.screenshot({path:'test-results/runner-pose.png'});
  telemetry={...telemetry,pose:{...telemetry.pose,translation:[-3,.1,4]}};
  await expect(page.locator('#runner-card')).toHaveAttribute('data-position','[-3,0.1,4]');
- await expect(page.locator('#revision')).toHaveText(revision);
+ await expect(page.locator('#observation-count')).toHaveText(observations);
  telemetry={...telemetry,status:'stale'};
  await expect(page.locator('#runner-status')).toHaveText('Galbot · stale');
  await expect(page.locator('#runner-position')).toContainText('last known');
@@ -67,7 +67,7 @@ test('live runner pose is independent of scene revisions and becomes stale or lo
 
 test('live mode shows only real portals and hides the synthetic input controls',async({page,request})=>{
  const domain=await (await request.get('/api/domain-scene')).json();
- const live={...domain,demo:false,revision:900,sdk_revision:'test',mode:'Live runner mapping',synthetic_layout:null,sensor_positions:{}};
+ const live={...domain,demo:false,sdk_revision:'test',mode:'Live runner mapping',synthetic_layout:null,sensor_positions:{}};
  await page.route('**/api/scene',r=>r.fulfill({json:live}));
  await page.route('**/api/mapping',r=>r.fulfill({json:{status:'waiting',detail:'Waiting for measured LiDAR'}}));
  await page.goto('/');
@@ -83,7 +83,7 @@ test('live mode shows only real portals and hides the synthetic input controls',
 
 test('scene selector switches owner, geometry and export without merging maps',async({page,request})=>{
  const domain=await (await request.get('/api/domain-scene')).json();
- const home={...domain,demo:false,revision:901,integrated_observations:20,synthetic_layout:null,sensor_positions:{}};
+ const home={...domain,demo:false,integrated_observations:20,synthetic_layout:null,sensor_positions:{}};
  const robot={...home,integrated_observations:3,voxels:[{center:[-4,.25,4],linear_rgb:[1,0,0]}]};
  await page.route('**/api/scene',r=>r.fulfill({json:home}));
  await page.route('**/api/runner-scene',r=>r.fulfill({json:robot}));
@@ -131,7 +131,7 @@ test('observed local portals are blue and local telemetry never uses Home pose',
  const errors=[];page.on('pageerror',e=>errors.push(e.message));
  const domain=await (await request.get('/api/domain-scene')).json();
  const portal={...domain.portals[0],pose_in_map:{...domain.portals[0].pose_in_map,translation:[0,0,0],rotation_wxyz:[1,0,0,0]}};
- const local={...domain,revision:700,frame:'galbot-local:test:opengl',local_map:true,demo:false,portals:[portal],local_mapping:{origin:{portal_code:portal.anchor_id},robot_pose:{pose:{translation:[1,2,3],rotation_xyzw:[0,0,0,1]}}},remote_status:{status:'connected',age_ms:10}};
+ const local={...domain,frame:'galbot-local:test:opengl',local_map:true,demo:false,portals:[portal],local_mapping:{origin:{portal_code:portal.anchor_id},robot_pose:{pose:{translation:[1,2,3],rotation_xyzw:[0,0,0,1]}}},remote_status:{status:'connected',age_ms:10}};
  await page.route('**/api/runner-scene',r=>r.fulfill({json:local}));
  await page.route('**/api/runner-pose',r=>r.fulfill({json:{status:'live',pose:{translation:[99,99,99],rotation_xyzw:[0,0,0,1]}}}));
  await page.goto('/');await page.selectOption('#map-select','runner');
@@ -140,7 +140,7 @@ test('observed local portals are blue and local telemetry never uses Home pose',
  await expect(page.locator('#frame-info')).toContainText('robot boot pose');
  await expect(page.locator('#runner-card')).toHaveAttribute('data-position','[1,2,3]');
  await expect(page.locator('#scene-note')).toContainText('Waiting for a shared portal');
- local.local_mapping.robot_pose=null;local.revision++;
+ local.local_mapping.robot_pose=null;
  await expect(page.locator('#runner-card')).toHaveAttribute('data-position','');
  await page.selectOption('#map-select','domain');
  await expect(page.locator('.portal-row')).toHaveCount(13);
@@ -151,7 +151,7 @@ test('observed local portals are blue and local telemetry never uses Home pose',
 test('second Galbot has independent geometry, pose and export selection',async({page,request})=>{
  const domain=await (await request.get('/api/domain-scene')).json();
  const errors=[];page.on('pageerror',e=>errors.push(e.message));
- const base={...domain,demo:false,local_map:true,revision:100,local_mapping:{robot_pose:{pose:{translation:[1,2,3],rotation_xyzw:[0,0,0,1]}}},remote_status:{status:'connected',age_ms:5}};
+ const base={...domain,demo:false,local_map:true,local_mapping:{robot_pose:{pose:{translation:[1,2,3],rotation_xyzw:[0,0,0,1]}}},remote_status:{status:'connected',age_ms:5}};
  const first={...base,frame:'robot-one',integrated_observations:3};
  const second={...base,frame:'robot-two',integrated_observations:7,local_mapping:{robot_pose:{pose:{translation:[4,5,6],rotation_xyzw:[0,0,0,1]}}}};
  await page.route('**/api/scene-sources',r=>r.fulfill({json:{status:'connected',runners:[{peer_id:'second-peer',name:'Galbot Echo (.87)',status:'connected',primary:false}]}}));
@@ -175,7 +175,7 @@ test('Home renders both calibrated runner poses and keeps stale peers separate',
  const domain=await (await request.get('/api/domain-scene')).json();
  const sample=(position,rotation,stamp)=>({status:'aligned',robot_pose:{capture_timestamp_ns:stamp,pose:{translation:position,rotation_xyzw:rotation}}});
  const first=sample([1,0,2],[0,0,0,1],1),second=sample([5,0,4],[0,.70710678,0,.70710678],2);
- const shared={...domain,local_map:true,demo:false,frame:'home-live:test:opengl',revision:800,local_mapping:{robot_pose:first.robot_pose,runners:{one:first,two:second}},remote_status:{status:'connected',age_ms:5}};
+ const shared={...domain,local_map:true,demo:false,frame:'home-live:test:opengl',local_mapping:{robot_pose:first.robot_pose,runners:{one:first,two:second}},remote_status:{status:'connected',age_ms:5}};
  await page.route('**/api/scene-sources',r=>r.fulfill({json:{runners:[{peer_id:'one',name:'Galbot One',primary:true},{peer_id:'two',name:'Galbot Echo',primary:false}]}}));
  await page.route('**/api/home-live-scene',r=>r.fulfill({json:shared}));
  await page.goto('/');await page.selectOption('#map-select','home-live');
@@ -187,7 +187,7 @@ test('Home renders both calibrated runner poses and keeps stale peers separate',
  await page.getByRole('button',{name:'Focus Galbot Echo',exact:false}).click();await expect(page.locator('#selection')).toContainText('5.000, 0.000, 4.000');
  await page.locator('#runner-layer').uncheck();await expect(one).toHaveAttribute('data-visible','false');await expect(two).toHaveAttribute('data-visible','false');
  await page.locator('#runner-layer').check();await expect(two).toHaveAttribute('data-visible','true');
- // Per-peer metadata changes must update even if map geometry/revision is unchanged.
+ // Per-peer metadata changes must update even if map geometry is unchanged.
  second.robot_pose.pose.translation=[6,0,4];second.robot_pose.capture_timestamp_ns++;
  await expect(two).toHaveAttribute('data-position','[6,0,4]');await expect(one).toHaveAttribute('data-position','[1,0,2]');
  first.status='disconnected';await expect(one).toHaveAttribute('data-status','stale');await expect(two).toHaveAttribute('data-status','live');
@@ -200,7 +200,7 @@ test('Home renders both calibrated runner poses and keeps stale peers separate',
 test('AR uses calibrated Home voxels, toggles cleanly and rejects stale camera overlays',async({page})=>{
  const errors=[];page.on('pageerror',e=>errors.push(e.message));
  let available=true,arRequests=0;
- const frame={sequence:1,width:100,height:80,encoding:'luma8',data:Buffer.alloc(8000,80).toString('base64'),ar:{status:'ready',frame:'home-live:test:opengl',revision:42,intrinsics:{fx:80,fy:80,cx:35,cy:32},camera_to_map:{translation:[2,0,0],rotation_xyzw:[0,0,0,1]},voxel_size:.2,voxels:[{center:[2,0,2],linear_rgb:[0,1,1]},{center:[2,0,-2]}]}};
+ const frame={sequence:1,width:100,height:80,encoding:'luma8',data:Buffer.alloc(8000,80).toString('base64'),ar:{status:'ready',frame:'home-live:test:opengl',intrinsics:{fx:80,fy:80,cx:35,cy:32},camera_to_map:{translation:[2,0,0],rotation_xyzw:[0,0,0,1]},voxel_size:.2,voxels:[{center:[2,0,2],linear_rgb:[0,1,1]},{center:[2,0,-2]}]}};
  await page.route('**/api/sensors*',r=>{
   const url=new URL(r.request().url());
   if(!url.searchParams.has('sensor'))return r.fulfill({json:{sensors:[{id:'peer/local-camera-history',label:'Calibrated camera',ar_available:true},{id:'peer/raw',label:'Uncalibrated camera',ar_available:false}]}});
@@ -219,7 +219,7 @@ test('AR uses calibrated Home voxels, toggles cleanly and rejects stale camera o
  await page.selectOption('#map-select','domain');await expect(overlay).toHaveAttribute('data-frame','home-live:test:opengl');
  // Native fisheye feeds use SDK-projected pixel/depth triangles instead of a pinhole camera.
  frame.sequence++;
- frame.ar={status:'ready',projection:'sdk-camera',frame:'home-live:test:zup',revision:43,voxel_count:1,vertices:[[30,25,2,0,1,1],[40,25,2,0,1,1],[35,38,2,0,1,1]]};
+ frame.ar={status:'ready',projection:'sdk-camera',frame:'home-live:test:zup',voxel_count:1,vertices:[[30,25,2,0,1,1],[40,25,2,0,1,1],[35,38,2,0,1,1]]};
  await expect(overlay).toHaveAttribute('data-sequence','2');
  const alpha=await overlay.evaluate(c=>{const ctx=document.createElement('canvas').getContext('2d');ctx.canvas.width=c.width;ctx.canvas.height=c.height;ctx.drawImage(c,0,0);return ctx.getImageData(35,30,1,1).data[3];});
  expect(alpha).toBeGreaterThan(0);
@@ -254,7 +254,7 @@ test('text notes persist in the scene and render in camera AR',async({page,reque
  let sequence=0;
  await page.route('**/api/sensors*',r=>{
   if(!new URL(r.request().url()).searchParams.has('sensor'))return r.fulfill({json:{sensors:[{id:'peer/camera',label:'Test camera',ar_available:true}]}});
-  return r.fulfill({json:{sequence:++sequence,width:320,height:240,encoding:'luma8',data:Buffer.alloc(320*240,80).toString('base64'),ar:{status:'ready',projection:'sdk-camera',frame:'home-live:test:zup',revision:1,vertices:[],voxel_count:0,notes:[{id:'abc',text:'abc',pixel:[160,120],depth_m:2}]}}});
+  return r.fulfill({json:{sequence:++sequence,width:320,height:240,encoding:'luma8',data:Buffer.alloc(320*240,80).toString('base64'),ar:{status:'ready',projection:'sdk-camera',frame:'home-live:test:zup',vertices:[],voxel_count:0,notes:[{id:'abc',text:'abc',pixel:[160,120],depth_m:2}]}}});
  });
  await request.post('/api/notes',{data:{text:'abc',portal:'UCOF1J40N7O',height_m:1}});
  await page.goto('/');
@@ -301,19 +301,19 @@ test('right-click labels use Home voxel hits and the displayed camera frame',asy
 test('selected annotations can be deleted during live updates and disappear from AR',async({page,request})=>{
  const errors=[];page.on('pageerror',e=>errors.push(e.message));
  const created=await request.post('/api/notes',{data:{text:'Delete this test annotation',portal:'UCOF1J40N7O',height_m:.5}});
- expect(created.ok()).toBeTruthy();const note=await created.json();let revision=0,sequence=0;
+ expect(created.ok()).toBeTruthy();const note=await created.json();let requests=0,sequence=0;
  const notes=async()=>((await (await request.get('/api/scene')).json()).notes||[]).filter(n=>n.id===note.id);
- await page.route('**/api/home-live-scene',async r=>r.fulfill({json:{frame:'home-live:test:opengl',revision:++revision,notes:await notes(),voxels:[],portals:[],objects:[],sources:{},integrated_observations:0,voxel_size:.1,local_map:true}}));
+ await page.route('**/api/home-live-scene',async r=>r.fulfill({json:{frame:'home-live:test:opengl',request_count:++requests,notes:await notes(),voxels:[],portals:[],objects:[],sources:{},integrated_observations:0,voxel_size:.1,local_map:true}}));
  await page.route('**/api/sensors*',async r=>{
   if(!new URL(r.request().url()).searchParams.has('sensor'))return r.fulfill({json:{sensors:[{id:'peer/camera',label:'Test camera',ar_available:true}]}});
-  return r.fulfill({json:{sequence:++sequence,width:320,height:240,encoding:'luma8',data:Buffer.alloc(320*240,80).toString('base64'),ar:{status:'ready',projection:'sdk-camera',frame:'home-live:test:zup',revision:1,vertices:[],voxel_count:0,notes:(await notes()).map(n=>({...n,pixel:[160,120],depth_m:2}))}}});
+  return r.fulfill({json:{sequence:++sequence,width:320,height:240,encoding:'luma8',data:Buffer.alloc(320*240,80).toString('base64'),ar:{status:'ready',projection:'sdk-camera',frame:'home-live:test:zup',vertices:[],voxel_count:0,notes:(await notes()).map(n=>({...n,pixel:[160,120],depth_m:2}))}}});
  });
  await page.goto('/');await page.selectOption('#map-select','home-live');
  await expect(page.locator('#canvas')).toHaveAttribute('data-note-count','1');
  const remove=page.getByRole('button',{name:'Delete annotation',exact:true});
  // The map change eases the orbit camera toward its target; click once it settles.
  await expect(async()=>{await page.locator('#canvas canvas').click();await expect(remove).toBeVisible({timeout:500});}).toPass({timeout:10000});
- const before=revision;await expect.poll(()=>revision).toBeGreaterThan(before+2);await expect(remove).toBeVisible();
+ const before=requests;await expect.poll(()=>requests).toBeGreaterThan(before+2);await expect(remove).toBeVisible();
  await page.selectOption('#sensor-select','peer/camera');await page.getByLabel('AR',{exact:true}).check();
  await expect(page.locator('#sensor-ar-overlay')).toHaveAttribute('data-note-count','1');
  const denied=await request.delete('/api/notes/'+note.id,{headers:{Origin:'https://foreign.invalid'}});expect(denied.ok()).toBeFalsy();expect(await notes()).toHaveLength(1);

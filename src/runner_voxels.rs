@@ -38,7 +38,7 @@ impl SensorCalibration {
 #[derive(Clone)]
 pub struct MappingTarget {
     pub store: Arc<Mutex<Store>>,
-    pub revisions: watch::Sender<usize>,
+    pub changes: watch::Sender<()>,
     pub status: watch::Sender<Value>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -270,7 +270,8 @@ pub struct Checkpoint {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MappingInput {
-    pub revision: usize,
+    #[serde(alias = "revision")]
+    pub sequence: usize,
     pub scan: PreparedScan,
 }
 impl auki_components::ContractType for MappingInput {
@@ -422,7 +423,7 @@ impl Store {
     fn publish_runner_checkpoint(&mut self, saved: Checkpoint) -> Result<()> {
         self.built.view.voxels = crate::model::occupied(&saved.voxels)?;
         self.built.view.integrated_observations = saved.voxels.integrated_observations;
-        self.built.view.revision = saved.voxels.integrated_observations as usize;
+
         self.built.view.sources = std::collections::BTreeMap::from([(
             "galbot".into(),
             saved.voxels.integrated_observations as usize,
@@ -612,10 +613,10 @@ impl Store {
             sequence: scan.sequence,
             timestamp_ns: scan.timestamp_ns,
         });
-        // Persist before exposing a new canonical revision. Checkpoints are replacements,
+        // Persist before exposing a updated canonical state. Checkpoints are replacements,
         // never additive deltas re-applied after restart.
         saved.inputs.push(MappingInput {
-            revision: saved.voxels.integrated_observations as usize,
+            sequence: saved.voxels.integrated_observations as usize,
             scan: retained_input,
         });
         if saved.inputs.len() > 256 {
@@ -989,7 +990,7 @@ mod tests {
         std::fs::create_dir(path.with_extension("voxels.json")).unwrap();
         assert!(store.integrate_runner(scan(1)).is_err());
         assert!(store.built.view.voxels.is_empty());
-        assert_eq!(store.built.view.revision, 0);
+        assert_eq!(store.built.view.integrated_observations, 0);
     }
     #[test]
     fn scan_placement_requires_capture_time_history_and_rejects_motion_or_wrong_clock() {

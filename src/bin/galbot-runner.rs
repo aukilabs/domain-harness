@@ -189,9 +189,8 @@ async fn main() -> Result<()> {
                         Ordering::Relaxed,
                     );
                     if last_publish.elapsed() >= Duration::from_millis(250) {
-                        local.revision += 1;
                         if let Some(scene) = publisher.publish_local(&local)? {
-                            let status = serde_json::json!({"frame":frame,"revision":local.revision,"origin":local.origin,"detail":local.detail,"status":if local.origin.is_some(){"mapping"}else{"waiting_for_odometry"},"mapper_batch_ms":started.elapsed().as_millis(),"coalesced_samples":mapping.lock().unwrap().replaced,"sensors":sensor_status.lock().unwrap().clone()});
+                            let status = serde_json::json!({"frame":frame,"origin":local.origin,"detail":local.detail,"status":if local.origin.is_some(){"mapping"}else{"waiting_for_odometry"},"mapper_batch_ms":started.elapsed().as_millis(),"coalesced_samples":mapping.lock().unwrap().replaced,"sensors":sensor_status.lock().unwrap().clone()});
                             *disk.lock().unwrap() = Some(DiskState {
                                 scene,
                                 catalog: publisher.runtime.catalog().snapshot(),

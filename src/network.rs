@@ -25,12 +25,11 @@ const MAX_SCENE_BYTES: usize = 24 * 1024 * 1024;
 /// Complete replacement state, never additive voxel evidence. Publication time
 /// belongs to the boot clock; capture clocks inside snapshots remain unchanged.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct CanonicalScene {
     pub schema: String,
     pub sdk_revision: String,
     pub authority_peer_id: String,
-    pub revision: usize,
+
     pub frame: String,
     pub publication_clock: ClockRegistryEntry,
     pub portals: MapSnapshot,
@@ -172,7 +171,7 @@ pub struct ScenePublisher {
     peer_id: String,
     clock: ClockRegistryEntry,
     started: Instant,
-    last_revision: Option<usize>,
+    last_scene: Option<Vec<u8>>,
     inputs: crate::shared_inputs::InputPublisher,
     live: Option<(
         Component,
@@ -232,7 +231,7 @@ impl ScenePublisher {
             peer_id,
             clock,
             started: Instant::now(),
-            last_revision: None,
+            last_scene: None,
         })
     }
     pub fn enable_annotations(
@@ -406,14 +405,11 @@ impl ScenePublisher {
         Ok(())
     }
     pub fn publish(&mut self, built: &Built) -> Result<bool> {
-        if self.last_revision == Some(built.view.revision) {
-            return Ok(false);
-        }
         let scene = CanonicalScene {
             schema: SCENE_SCHEMA.into(),
             sdk_revision: SDK_REV.into(),
             authority_peer_id: self.peer_id.clone(),
-            revision: built.view.revision,
+
             frame: built.portals.scenegraph.map.frame.id.clone(),
             publication_clock: self.clock.clone(),
             portals: built.portals.clone(),
@@ -422,6 +418,10 @@ impl ScenePublisher {
             registries: built.registries.clone(),
         };
         scene.validate(&self.peer_id)?;
+        let content = serde_json::to_vec(&scene)?;
+        if self.last_scene.as_ref() == Some(&content) {
+            return Ok(false);
+        }
         self.output
             .publish(self.started.elapsed().as_nanos() as u64, Arc::new(scene))?;
         ensure!(
@@ -429,7 +429,7 @@ impl ScenePublisher {
             "scene capture failed: {:?}",
             self.capture.errors()
         );
-        self.last_revision = Some(built.view.revision);
+        self.last_scene = Some(content);
         Ok(true)
     }
     pub fn publish_local(
@@ -450,7 +450,7 @@ impl ScenePublisher {
             schema: SCENE_SCHEMA.into(),
             sdk_revision: SDK_REV.into(),
             authority_peer_id: self.peer_id.clone(),
-            revision: local.revision,
+
             frame: local.frame.clone(),
             publication_clock: self.clock.clone(),
             portals,
@@ -488,7 +488,7 @@ pub async fn serve_scene(
     running: crate::peer::RunningPeer,
     store: Arc<std::sync::Mutex<crate::model::Store>>,
     runner_names: std::collections::BTreeMap<String, String>,
-    mut revisions: tokio::sync::watch::Receiver<usize>,
+    mut changes: tokio::sync::watch::Receiver<()>,
     status: tokio::sync::watch::Sender<Value>,
     runner: Option<crate::runner_pose::RunnerConfig>,
     runner_scene: Option<HomeConnection>,
@@ -572,16 +572,20 @@ pub async fn serve_scene(
                         publisher.publish(&store.built)?;
                     }
                     if let Some(scene)=live_updates.borrow().scene.as_ref() {
-                        let key=(scene.frame.clone(),scene.revision);
+                        let key=serde_json::to_vec(scene)?;
                         if last_live.as_ref()!=Some(&key) {publisher.publish_home_live(scene)?;last_live=Some(key);}
                     }
                     let connection = HomeConnection::current(&running.peer)?;
+                    let peers: Vec<_> = running.peer.known_peers().snapshot().peers().iter()
+                        .map(|peer| serde_json::json!({"peer_id":peer.peer_id().to_string()}))
+                        .collect();
                     status.send_replace(serde_json::json!({"enabled":true,
-                        "status":format!("{:?}", running.peer.status()), "connection":connection}));
+                        "status":format!("{:?}", running.peer.status()), "connection":connection,
+                        "peers":peers}));
                     tokio::select! {
                         _ = shutdown.cancelled() => break,
                         exit = running.peer.wait_stopped() => bail!("Home peer stopped: {exit:?}"),
-                        changed = revisions.changed() => { changed?; },
+                        changed = changes.changed() => { changed?; },
                         _ = annotation_changes.notified() => {},
                         _ = presence_tick.tick() => {},
                         changed = live_updates.changed() => { changed?; },

@@ -11,7 +11,7 @@
 <div class="shell">
 <aside>
 <div class="eyebrow">CANONICAL MAP</div><h1>Home Server<span class="title-dot">.</span></h1><p class="intro">A shared understanding<br>of the space around us.</p>
-<label class="map-label" for="map-select">SCENEGRAPH</label><select id="map-select"><option value="demo">Canonical portals</option><option value="home-live">Home live map</option><option value="runner">Galbot scenegraph</option><option value="domain">Stored portals only</option></select>
+<label class="map-label" for="map-select">SCENEGRAPH</label><select id="map-select"><optgroup label="Local"><option value="demo">Home Server</option></optgroup></select>
 <label class="map-label" for="sensor-select">WATCH SENSOR</label><select id="sensor-select"><option value="">None</option></select><small id="sensor-catalog-status" role="status">Looking for camera feeds…</small>
 <div class="network-status"><strong id="p2p-status">P2P status</strong><small id="p2p-detail">Checking peer…</small><a id="pairing-download" href="/api/home-connection" download="home-connection.json" hidden>Download runner connection ↗</a></div>
 <div class="network-status" id="runner-card"><strong id="runner-status">Galbot · connecting</strong><small id="runner-position">Waiting for calibrated pose</small><small id="runner-detail"></small><div id="runner-list" hidden></div><button class="text-button" id="focus-runner" disabled>Focus Galbot ↗</button></div>
@@ -43,7 +43,7 @@
 <div class="page-heading"><div><div class="eyebrow">SPATIAL WORKSPACE / 01</div><h2>The shared scene</h2></div><a class="export" href="/api/snapshots" download="scenegraph.json">↓ Export snapshot</a></div>
 <section class="viewport" aria-label="Interactive 3D scene">
 <div id="canvas"></div>
-<div class="viewport-heading"><span class="live-dot"></span><strong id="scene-title">Domain portals</strong><span class="map-revision" id="revision">r0</span><small>Y up · meters</small></div>
+<div class="viewport-heading"><span class="live-dot"></span><strong id="scene-title">Domain portals</strong><small>Y up · meters</small></div>
 <div class="view-controls"><button id="fit" title="Reset camera view" aria-label="Reset camera view">⌂</button><button id="demo-view" title="Focus synthetic scene" aria-label="Focus synthetic scene">⌖</button><button id="top" title="Top view" aria-label="Top view">⊞</button></div>
 <div class="empty" id="empty"><span class="empty-icon">⌗</span><h3>Waiting for measured geometry</h3><p>Runner scans will build voxel geometry here.</p></div>
 <section id="sensor-pip" aria-label="Sensor picture-in-picture" hidden><div class="sensor-pip-heading"><strong id="sensor-title"></strong><label class="ar-toggle" title="Overlay Home live voxels and text notes on this camera"><input type="checkbox" id="sensor-ar">AR</label><button id="sensor-close" aria-label="Close sensor preview">×</button></div><div id="sensor-stage"><canvas id="sensor-image"></canvas><canvas id="sensor-ar-overlay" aria-label="Home voxel and text AR overlay" hidden></canvas></div><div id="sensor-ar-status" role="status" hidden></div><div id="sensor-feed-status" role="status">Waiting for a frame…</div></section>
@@ -56,8 +56,9 @@
 </main>
 </div>
 <dialog id="label-dialog" aria-labelledby="label-dialog-title">
-<form id="label-dialog-form"><h3 id="label-dialog-title">Add text label</h3><p id="label-dialog-status" role="status"></p>
-<label for="label-dialog-text">Label text</label><input id="label-dialog-text" maxlength="120" autocomplete="off" required placeholder="Type a label">
+<form id="label-dialog-form" class="note-form"><h3 id="label-dialog-title">New note</h3><p id="label-dialog-status" role="status"></p>
+<label for="label-dialog-text">Title</label><input id="label-dialog-text" maxlength="120" autocomplete="off" required placeholder="Note title">
+<div id="label-note-fields"></div>
 <div class="label-actions"><button id="label-dialog-cancel" type="button">Cancel</button><button id="label-dialog-save" type="submit">Save label</button></div></form></dialog>
 <script type="module" src="/app.js"></script>
 </body></html>

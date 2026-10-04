@@ -486,7 +486,7 @@ async fn follow(
                             let mut store=mapping.store.lock().map_err(|_|anyhow!("store unavailable"))?;
                             match store.integrate_prepared(scan) {
                                 Ok(applied)=>{
-                                    if applied {mapping.revisions.send_replace(store.built.view.revision);}
+                                    if applied {mapping.changes.send_replace(());}
                                     mapping.status.send_modify(|s|s["rgbd"]=json!({"status":"mapping","points":points,"colored_voxels":store.built.view.voxels.iter().filter(|v|v.linear_rgb.is_some()).count()}));
                                 },
                                 Err(error)=>{mapping_failed=true;mapping.status.send_modify(|s|s["rgbd"]=json!({"status":"blocked","detail":error.to_string()}));},
@@ -505,7 +505,7 @@ async fn follow(
                             match result {
                                 Ok(applied)=>{
                                     let store=mapping.store.lock().map_err(|_|anyhow!("store unavailable"))?;
-                                    if applied {mapping.revisions.send_replace(store.built.view.revision);}
+                                    if applied {mapping.changes.send_replace(());}
                                     set_lidar_status(&mapping.status,serde_json::json!({"status":"mapping","sensor":"lidar.base","integrated_scans":store.built.view.integrated_observations,"occupied_voxels":store.built.view.voxels.len(),"colored_voxels":store.built.view.voxels.iter().filter(|v|v.linear_rgb.is_some()).count(),"sensor_fields":field_names,"input_color_samples":store.mapping_inputs().last().map(|i|i.scan.hit_colors_srgb.iter().filter(|c|c.is_some()).count()),"detail":"Measured LiDAR · stationary scans · 0.3–5 m · 10 cm voxels"}));
                                 },
                                 Err(error)=>{mapping_failed=true;set_lidar_status(&mapping.status,serde_json::json!({"status":"blocked","detail":error.to_string()}));},

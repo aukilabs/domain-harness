@@ -161,7 +161,6 @@ pub async fn monitor(
                     crate::model::FRAME,
                 )?;
                 if notes != last_notes {
-                    map.revision += 1;
                     last_notes = notes;
                 }
                 if let Some(mut scene) = map.scene()? {
@@ -172,21 +171,21 @@ pub async fn monitor(
                         Instant::now(),
                     )?;
                     if labels != last_labels {
-                        map.revision += 1;
                         last_labels = labels;
                     }
-                    if published == Some(map.revision) {
-                        last_publish = Instant::now();
-                        continue;
-                    }
-                    scene.revision = map.revision;
                     crate::notes::attach_home(&mut scene, &last_notes)?;
                     let mut notes = crate::notes::from_registries(&scene.registries, &scene.frame)?;
                     notes.items.extend(last_labels.clone());
                     notes.validate(&scene.frame)?;
                     scene.registries["text_notes"] = serde_json::json!(notes);
+                    let content = serde_json::to_vec(&scene)?;
+                    if published.as_ref() == Some(&content) {
+                        last_publish = Instant::now();
+                        continue;
+                    }
                     let tmp = checkpoint.with_extension("tmp");
-                    std::fs::write(&tmp, serde_json::to_vec(&scene)?)?;
+                    std::fs::write(&tmp, &content)?;
+                    published = Some(content);
                     std::fs::rename(tmp, &checkpoint)?;
                     task_state.send_replace(RemoteScene {
                         scene: Some(scene),
@@ -200,7 +199,6 @@ pub async fn monitor(
                         s.detail = map.detail();
                     });
                 }
-                published = Some(map.revision);
                 last_publish = Instant::now();
             }
         }

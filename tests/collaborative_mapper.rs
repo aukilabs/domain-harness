@@ -175,9 +175,9 @@ fn different_markers_and_unsynchronized_clocks_fuse_and_clear_the_same_cells() -
     assert_eq!(colors.blue_sum, 1.);
 
     assert_eq!(map.voxels.as_ref().unwrap().definition.sources.len(), 2);
-    let revision = map.revision;
+    let before = serde_json::to_value(map.scene()?)?;
     assert!(!map.integrate(a)?);
-    assert_eq!(map.revision, revision);
+    assert_eq!(serde_json::to_value(map.scene()?)?, before);
     assert!(map.integrate(scan(
         &canonical,
         "a",

@@ -85,7 +85,6 @@ pub struct SemanticObject {
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct View {
-    pub revision: usize,
     pub frame: &'static str,
     pub convention: &'static str,
     pub voxel_size: f64,
@@ -302,7 +301,7 @@ impl Store {
         journal.events.push(event);
         let mut built = build(&journal.events)?;
         built.registries["text_notes"] = self.built.registries["text_notes"].clone();
-        built.view.revision = self.built.view.revision + 1;
+
         // Validate and build before persisting; publish only after an atomic replacement.
         persist(&self.path, &journal)?;
         self.journal = journal;
@@ -685,7 +684,6 @@ fn build_mode(events: &[Event], demo: bool) -> Result<Built> {
         }
     }
     let view = View {
-        revision: events.len(),
         frame: FRAME,
         convention: "OpenGL · Y up · meters",
         voxel_size: VOXEL_SIZE,

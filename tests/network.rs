@@ -25,7 +25,11 @@ async fn canonical_scene_streams_over_authenticated_tcp_and_rebinds_after_public
         };
         first.payload.validate(&connection.peer_id)?;
         assert_eq!(first.payload.portals.scenegraph.anchors.len(), 14);
-        assert_eq!(first.payload.revision, 0);
+        assert!(
+            serde_json::to_value(&first.payload)?
+                .get("revision")
+                .is_none()
+        );
         assert_eq!(
             clock_ref(&first.payload.publication_clock),
             subscription.product().producer.clock
@@ -48,7 +52,11 @@ async fn canonical_scene_streams_over_authenticated_tcp_and_rebinds_after_public
             panic!("no scene update")
         };
         second.payload.validate(&connection.peer_id)?;
-        assert_eq!(second.payload.revision, 1);
+        assert!(
+            serde_json::to_value(&second.payload)?
+                .get("revision")
+                .is_none()
+        );
         assert!(second.payload.voxels.integrated_observations > 0);
         assert_eq!(subscription.product().reference(), product);
         assert_eq!(second.sequence, first.sequence + 1);
@@ -75,7 +83,11 @@ async fn canonical_scene_streams_over_authenticated_tcp_and_rebinds_after_public
         else {
             panic!("no resumed scene")
         };
-        assert_eq!(latest.payload.revision, 1);
+        assert!(
+            serde_json::to_value(&latest.payload)?
+                .get("revision")
+                .is_none()
+        );
         rebound.close().await?;
         restarted.close().await?;
         Ok::<_, anyhow::Error>(())
@@ -224,7 +236,11 @@ async fn same_observations_build_independent_owned_maps_and_survive_replay() -> 
         let mut restored = Store::open_mapper(&robot_path, &home.built.portals, &robot_id)?;
         restored.set_map_owner(&robot_id)?;
         assert!(!restored.integrate_prepared(input.payload.scan.clone())?);
-        assert_eq!(restored.built.view.revision, 1);
+        assert!(
+            serde_json::to_value(&restored.built.view)?
+                .get("revision")
+                .is_none()
+        );
         assert_eq!(restored.mapping_inputs().len(), 1);
         inputs.close().await?;
         remote.close().await?;

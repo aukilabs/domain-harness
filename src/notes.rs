@@ -11,6 +11,8 @@ use serde_json::{Value, json};
 pub struct TextNote {
     pub id: String,
     pub text: String,
+    #[serde(default)]
+    pub details: NoteDetails,
     pub position: [f64; 3],
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub anchor_portal: String,
@@ -20,6 +22,66 @@ pub struct TextNote {
     pub anchor_surface: Option<SurfaceAnchor>,
     pub height_m: f64,
 }
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct NoteDetails {
+    pub name: String,
+    pub title: String,
+    pub description: String,
+    pub photo: Option<String>,
+    pub thumbnail: Option<String>,
+}
+impl NoteDetails {
+    fn prepare_thumbnail(&mut self) -> Result<()> {
+        use base64::Engine;
+        self.validate()?;
+        self.thumbnail = match &self.photo {
+            Some(photo) => {
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(photo.trim_start_matches("data:image/jpeg;base64,"))?;
+                let mut reader = image::ImageReader::with_format(
+                    std::io::Cursor::new(bytes),
+                    image::ImageFormat::Jpeg,
+                );
+                let mut limits = image::Limits::default();
+                limits.max_image_width = Some(8192);
+                limits.max_image_height = Some(8192);
+                reader.limits(limits);
+                let thumbnail = reader.decode()?.thumbnail(320, 240);
+                let mut encoded = Vec::new();
+                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut encoded, 75)
+                    .encode_image(&thumbnail)?;
+                Some(format!(
+                    "data:image/jpeg;base64,{}",
+                    base64::engine::general_purpose::STANDARD.encode(encoded)
+                ))
+            }
+            None => None,
+        };
+        Ok(())
+    }
+    fn validate(&self) -> Result<()> {
+        ensure!(
+            self.name.chars().count() <= 120
+                && self.title.chars().count() <= 120
+                && self.description.chars().count() <= 10000,
+            "Note fields are too long"
+        );
+        if let Some(photo) = &self.photo {
+            use base64::Engine;
+            ensure!(photo.len() <= 1_400_000, "Photo must be under 1 MB");
+            let encoded = photo
+                .strip_prefix("data:image/jpeg;base64,")
+                .ok_or_else(|| anyhow::anyhow!("Photo must be a JPEG image"))?;
+            let bytes = base64::engine::general_purpose::STANDARD.decode(encoded)?;
+            ensure!(
+                bytes.starts_with(&[0xff, 0xd8, 0xff]) && bytes.ends_with(&[0xff, 0xd9]),
+                "Invalid JPEG photo"
+            );
+        }
+        Ok(())
+    }
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RobotAnchor {
@@ -28,12 +90,11 @@ pub struct RobotAnchor {
     pub clock: auki_components::ClockReference,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct SurfaceAnchor {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub floor: bool,
     pub frame: String,
-    pub revision: usize,
+
     pub voxel_center: [f64; 3],
     pub beam_diameter_m: f64,
 }
@@ -68,6 +129,7 @@ impl Notes {
         );
         let mut ids = std::collections::BTreeSet::new();
         for n in &self.items {
+            n.details.validate()?;
             ensure!(
                 !n.id.is_empty() && n.id.len() <= 128 && ids.insert(&n.id),
                 "Invalid or duplicate note ID"
@@ -138,20 +200,31 @@ pub fn from_registries(registries: &Value, frame: &str) -> Result<Notes> {
 }
 pub fn initialize(store: &mut Store) -> Result<()> {
     let path = store.path.with_extension("notes.json");
-    let notes = if path.exists() {
+    let mut notes = if path.exists() {
         ensure!(
-            std::fs::metadata(&path)?.len() <= 128 * 1024,
+            // Authored notes may each contain a bounded, base64-encoded photo.
+            std::fs::metadata(&path)?.len() <= 192 * 1024 * 1024,
             "Notes file too large"
         );
-        serde_json::from_slice::<Notes>(&std::fs::read(path)?)?
+        serde_json::from_slice::<Notes>(&std::fs::read(&path)?)?
     } else {
         Notes::empty(FRAME)
     };
     notes.validate(FRAME)?;
+    let before = notes.clone();
+    for note in &mut notes.items {
+        note.details.prepare_thumbnail()?;
+    }
+    if notes != before {
+        crate::model::persist(&path, &notes)?;
+    }
     store.built.registries["text_notes"] = json!(notes);
     Ok(())
 }
 pub fn add(store: &mut Store, request: NewNote) -> Result<TextNote> {
+    add_detailed(store, request, NoteDetails::default())
+}
+pub fn add_detailed(store: &mut Store, request: NewNote, details: NoteDetails) -> Result<TextNote> {
     let portal = store
         .built
         .portals
@@ -164,6 +237,7 @@ pub fn add(store: &mut Store, request: NewNote) -> Result<TextNote> {
     let note = TextNote {
         id: uuid::Uuid::new_v4().to_string(),
         text: request.text.trim().into(),
+        details,
         position,
         anchor_portal: request.portal,
         anchor_robot: None,
@@ -177,11 +251,20 @@ pub fn add_surface(
     text: String,
     contact: crate::picking::Contact,
 ) -> Result<TextNote> {
+    add_surface_detailed(store, text, contact, NoteDetails::default())
+}
+pub fn add_surface_detailed(
+    store: &mut Store,
+    text: String,
+    contact: crate::picking::Contact,
+    details: NoteDetails,
+) -> Result<TextNote> {
     save(
         store,
         TextNote {
             id: uuid::Uuid::new_v4().to_string(),
             text: text.trim().into(),
+            details,
             position: contact.position,
             anchor_portal: String::new(),
             anchor_robot: None,
@@ -190,7 +273,8 @@ pub fn add_surface(
         },
     )
 }
-pub(crate) fn save(store: &mut Store, note: TextNote) -> Result<TextNote> {
+pub(crate) fn save(store: &mut Store, mut note: TextNote) -> Result<TextNote> {
+    note.details.prepare_thumbnail()?;
     let mut notes = from_registries(&store.built.registries, FRAME)?;
     ensure!(
         notes.items.len() < 128,
@@ -200,10 +284,41 @@ pub(crate) fn save(store: &mut Store, note: TextNote) -> Result<TextNote> {
     notes.validate(FRAME)?;
     crate::model::persist(&store.path.with_extension("notes.json"), &notes)?;
     store.built.registries["text_notes"] = json!(notes);
-    store.built.view.revision += 1;
+
     Ok(note)
 }
 /// Delete an authored annotation; generated robot/presence labels are not stored here.
+pub fn rename(store: &mut Store, id: &str, text: String) -> Result<TextNote> {
+    update(store, id, text, None)
+}
+pub fn update(
+    store: &mut Store,
+    id: &str,
+    text: String,
+    details: Option<NoteDetails>,
+) -> Result<TextNote> {
+    let mut notes = from_registries(&store.built.registries, FRAME)?;
+    let note = notes
+        .items
+        .iter_mut()
+        .find(|n| n.id == id)
+        .ok_or_else(|| anyhow::anyhow!("Annotation not found"))?;
+    ensure!(
+        note.anchor_robot.is_none(),
+        "Live robot labels cannot be edited"
+    );
+    note.text = text.trim().into();
+    if let Some(details) = details {
+        note.details = details;
+    }
+    note.details.prepare_thumbnail()?;
+    let result = note.clone();
+    notes.validate(FRAME)?;
+    crate::model::persist(&store.path.with_extension("notes.json"), &notes)?;
+    store.built.registries["text_notes"] = json!(notes);
+
+    Ok(result)
+}
 pub fn remove(store: &mut Store, id: &str) -> Result<()> {
     let mut notes = from_registries(&store.built.registries, FRAME)?;
     let index = notes
@@ -218,7 +333,7 @@ pub fn remove(store: &mut Store, id: &str) -> Result<()> {
     notes.items.remove(index);
     crate::model::persist(&store.path.with_extension("notes.json"), &notes)?;
     store.built.registries["text_notes"] = json!(notes);
-    store.built.view.revision += 1;
+
     Ok(())
 }
 /// Home live is explicitly calibrated to the canonical origin, with Z-up axes.
@@ -297,6 +412,7 @@ impl RobotLabels {
             result.push(TextNote {
                 id: format!("robot-name:{peer}"),
                 text: name.clone(),
+                details: NoteDetails::default(),
                 position: [
                     pose.translation[0] + up.x,
                     pose.translation[1] + up.y,

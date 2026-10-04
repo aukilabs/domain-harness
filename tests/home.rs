@@ -108,7 +108,12 @@ fn missing_geometry_does_not_create_a_fake_object() {
     let mut s = Store::open(dir.path().join("home.json")).unwrap();
     assert!(s.apply(Event::Detection(input().2)).is_err());
     assert!(s.built.view.objects.is_empty());
-    assert_eq!(s.built.view.revision, 0);
+    assert!(
+        serde_json::to_value(&s.built.view)
+            .unwrap()
+            .get("revision")
+            .is_none()
+    );
 }
 #[test]
 fn portal_only_scenegraph_ingestion_adds_a_new_anchor() {

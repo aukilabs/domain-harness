@@ -115,7 +115,7 @@ fn decoded_camera_portals_define_map_and_colored_depth_uses_same_transform() -> 
         schema: spatial_home::network::SCENE_SCHEMA.into(),
         sdk_revision: spatial_home::model::SDK_REV.into(),
         authority_peer_id: "robot".into(),
-        revision: map.revision,
+
         frame: map.frame.clone(),
         publication_clock: spatial_home::model::clock_entry("robot", "publication"),
         portals,
@@ -661,7 +661,7 @@ fn robot_home_reference_overlay_switches_to_newly_observed_known_portal() -> Res
             spatial_home::model::FRAME,
         )?,
         peer_id: "home".into(),
-        revision: 0,
+
         anchor: "HRIPLL40GL6".into(),
     });
     let origin = map.origin.as_ref().unwrap().odometry_to_local.clone();

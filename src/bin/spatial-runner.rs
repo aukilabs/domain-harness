@@ -40,7 +40,6 @@ async fn main() -> Result<()> {
         println!("Subscribed to Home {} in {}. Robot alignment is not established by this connection.", home.peer_id, home.frame);
         let consume = async {
             let mut first = true;
-            let mut revision = None;
             loop {
                 let event = if first {
                     tokio::time::timeout(Duration::from_secs(30), subscription.next()).await??
@@ -50,13 +49,11 @@ async fn main() -> Result<()> {
                         let scene = &observation.payload;
                         scene.validate(&home.peer_id)?;
                         ensure!(clock_ref(&scene.publication_clock) == source_clock, "source publication clock mismatch");
-                        ensure!(revision.is_none_or(|last| scene.revision > last), "scene revision did not advance");
                         if let Some(path) = &output {
                             write_snapshot(path, scene)?;
                         }
-                        println!("Scene r{}: {} Portals, {} integrated observations, {} semantic objects; frame {}",
-                            scene.revision, scene.portals.scenegraph.anchors.len(), scene.voxels.integrated_observations, scene.objects.len(), scene.frame);
-                        revision = Some(scene.revision);
+                        println!("Scene: {} Portals, {} integrated observations, {} semantic objects; frame {}",
+                            scene.portals.scenegraph.anchors.len(), scene.voxels.integrated_observations, scene.objects.len(), scene.frame);
                         first = false;
                         if once { return Ok::<_, anyhow::Error>(()); }
                     },
