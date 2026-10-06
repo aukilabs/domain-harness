@@ -1,0 +1,31 @@
+[package]
+name = "auki-component-protocol"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/aukilabs/auki-sdk"
+description = "Portable AukiPeer protocols for Components, Products, and Operables"
+readme = "README.md"
+
+[dependencies]
+async-channel = "2.5.0"
+auki-components = { git = "https://github.com/aukilabs/auki-sdk.git", rev = "3342d589605846f5f45c1de5430dd22923555de2" }
+auki-sdk = { git = "https://github.com/aukilabs/auki-sdk.git", rev = "3342d589605846f5f45c1de5430dd22923555de2" }
+futures = "0.3.30"
+futures-timer = { version = "3.0.3", features = ["wasm-bindgen"] }
+serde = { version = "1.0.210", features = ["derive"] }
+serde_json = "1.0.128"
+thiserror = "2.0.12"
+
+[dev-dependencies]
+auki-odometry = { git = "https://github.com/aukilabs/auki-sdk.git", rev = "3342d589605846f5f45c1de5430dd22923555de2" }
+auki-registry = { git = "https://github.com/aukilabs/auki-sdk.git", rev = "3342d589605846f5f45c1de5430dd22923555de2" }
+auki-p2p = { git = "https://github.com/aukilabs/auki-sdk.git", rev = "3342d589605846f5f45c1de5430dd22923555de2" }
+chrono = "0.4"
+futures = { version = "0.3.30", features = ["executor"] }
+jsonwebtoken = "10.4"
+tokio = { version = "1.44.2", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+uuid = { version = "1", features = ["v4"] }
+
+[lints.rust]
+unsafe_code = "forbid"

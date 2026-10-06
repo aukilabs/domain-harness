@@ -5,8 +5,8 @@ const $=id=>document.getElementById(id);
 // Organize existing live controls into the mockup's rail and exclusive panels.
 const sidebar=document.querySelector('aside'),shell=document.querySelector('.shell');
 const rail=document.createElement('nav');rail.className='icon-rail';rail.setAttribute('aria-label','Workspace panels');shell.prepend(rail);
-const panelNames={profile:'Profile',maps:'Maps',notes:'Notes',fleet:'Devices',settings:'Settings'};
-const iconPaths={profile:'M9 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6M3 16c0-7 12-7 12 0',maps:'M2 4l5-2 4 2 5-2v12l-5 2-4-2-5 2ZM7 2v12M11 4v12',notes:'M4 2h10v14H4ZM6 6h6M6 9h6M6 12h4',fleet:'M4 6h10v9H4ZM6 2h6v4M7 9h.1M11 9h.1M7 12h4M1 10h3M14 10h3',settings:'M9 1v3M9 14v3M1 9h3M14 9h3M3 3l2 2M13 13l2 2M3 15l2-2M13 5l2-2M12 9a3 3 0 1 0-6 0 3 3 0 0 0 6 0'};
+const panelNames={profile:'Profile',maps:'Maps',notes:'Notes',tags:'Tags',fleet:'Devices',settings:'Settings'};
+const iconPaths={profile:'M9 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6M3 16c0-7 12-7 12 0',maps:'M2 4l5-2 4 2 5-2v12l-5 2-4-2-5 2ZM7 2v12M11 4v12',notes:'M4 2h10v14H4ZM6 6h6M6 9h6M6 12h4',tags:'M2 6V2h4M12 2h4v4M16 12v4h-4M6 16H2v-4M6 6h6v6H6Z',fleet:'M4 6h10v9H4ZM6 2h6v4M7 9h.1M11 9h.1M7 12h4M1 10h3M14 10h3',settings:'M9 1v3M9 14v3M1 9h3M14 9h3M3 3l2 2M13 13l2 2M3 15l2-2M13 5l2-2M12 9a3 3 0 1 0-6 0 3 3 0 0 0 6 0'};
 const panelBodies={};let activePanel='profile';
 for(const [id,name] of Object.entries(panelNames)){
  const button=document.createElement('button');button.type='button';button.dataset.panel=id;button.title=name;button.setAttribute('aria-label',name);button.setAttribute('aria-controls','panel-'+id);
@@ -26,26 +26,40 @@ function openPanel(id){activePanel=id;shell.classList.toggle('panel-collapsed',!
 openPanel('profile');
 const themeButton=document.createElement('button');themeButton.id='theme-toggle';themeButton.textContent='☼';themeButton.title='Switch to light theme';themeButton.setAttribute('aria-label',themeButton.title);rail.append(themeButton);
 const mapsList=document.createElement('div');mapsList.id='scenegraph-list';panelBodies.maps.prepend(mapsList);$('map-select').hidden=true;
+const spatialBrowser=document.createElement('section');spatialBrowser.id='spatial-browser';spatialBrowser.setAttribute('aria-label','Anchors and landmarks');
+spatialBrowser.innerHTML='<h3>Anchors & landmarks</h3><label class="spatial-search-label" for="spatial-search">Find by name or type</label><input id="spatial-search" type="search" placeholder="ID, type, or corner…"><p id="spatial-status" class="panel-hint" role="status"></p><details open><summary>Anchors <span id="anchor-count">0</span></summary><div id="anchor-list" class="spatial-list" aria-label="Anchors"></div></details><details open><summary>Landmarks <span id="landmark-count">0</span></summary><div id="landmark-list" class="spatial-list" aria-label="Landmarks"></div></details>';
+mapsList.after(spatialBrowser);
+$('spatial-search').oninput=()=>renderSpatialLists();
 const fleetList=document.createElement('div');fleetList.id='fleet-sensors';panelBodies.fleet.append(fleetList);$('sensor-select').hidden=true;
+const disconnectRobots=document.createElement('button');disconnectRobots.id='disconnect-robots';disconnectRobots.className='panel-row';disconnectRobots.textContent='Disconnect simulated robots';disconnectRobots.hidden=true;panelBodies.fleet.append(disconnectRobots);
+disconnectRobots.onclick=async()=>{disconnectRobots.disabled=true;try{await api('/api/simulation/disconnect',{});}catch(e){disconnectRobots.disabled=false;availability.hidden=false;availability.textContent=e.message;}};
 const notesBody=panelBodies.notes;
+const tagsBody=panelBodies.tags;
 let fleetNetwork=null,fleetSignature='';
 const scene=new THREE.Scene();scene.background=new THREE.Color('#0d0d0f');scene.fog=new THREE.Fog('#0d0d0f',10,26);
 const camera=new THREE.PerspectiveCamera(42,1,.01,100);
 const renderer=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true});renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.1;
 $('canvas').append(renderer.domElement);renderer.domElement.setAttribute('aria-label','3D voxel map');
 const controls=new OrbitControls(camera,renderer.domElement);controls.enableDamping=true;controls.minDistance=1.2;controls.maxDistance=60;controls.maxPolarAngle=Math.PI*.49;
-let activeMap='demo',current=null,busy=false,refreshing=false,lastScene=null,selectable=[],selectedNoteId=null,deletingNoteId=null;
+let activeMap='demo',current=null,busy=false,refreshing=false,lastScene=null,selectable=[],selectedNoteId=null,deletingNoteId=null,selectedSpatialNode=null,spatialSignature='';
+let homeOffline=false;
+const availability=document.createElement('div');availability.id='scene-availability';availability.setAttribute('role','status');availability.style.cssText='position:absolute;top:48px;left:12px;right:12px;z-index:90;padding:10px;background:#432b20;color:#fff;font:12px system-ui;pointer-events:none';availability.hidden=true;$('canvas').append(availability);
+function markOffline(){homeOffline=true;availability.hidden=false;availability.textContent='Home offline · showing a cached browser view, not a live or saved map';renderMapRows();}
 function isRunner(map=activeMap){return map==='runner'||map.startsWith('runner:');}
+function isSimulation(map=activeMap){return map==='sim-voxels'||map==='sim-occupancy';}
 function runnerUrl(endpoint,map=activeMap){return endpoint+(map.startsWith('runner:')?'?peer='+encodeURIComponent(map.slice(7)):'');}
 const runnerNames=new Map(),peerNames=new Map();
 let primaryRunnerPeer=null;
-function runnerDisplay(){return runnerNames.get(activeMap)||'Galbot';}
+function runnerDisplay(){return activeMap.startsWith('peer-scene:')?'Robot':isSimulation()?'Simulated robot':runnerNames.get(activeMap)||'Galbot';}
 async function runnerCatalog(){
  try {
   const data=await api('/api/scene-sources');
   const local=document.createElement('optgroup');local.label='Local';
-  for(const map of data.local||[])local.append(new Option(map.name,map.id));
+  homeOffline=false;
+  for(const map of data.local||[]){if(map.available===false)continue;local.append(new Option(map.name+(map.status==='retained'?' · retained':''),map.id));}
   const network=document.createElement('optgroup');network.label='Network';
+  for(const phone of data.phones||[])network.append(new Option(phone.name,phone.id));
+  for(const map of data.scenes||[])network.append(new Option(map.name+' · '+map.peer_id.slice(-8),map.id));
   runnerNames.clear();peerNames.clear();primaryRunnerPeer=null;
   for(const runner of data.runners||[]) {
    if(!runner.available||!['connected','stale'].includes(runner.status))continue;
@@ -61,12 +75,12 @@ async function runnerCatalog(){
   const select=$('map-select');select.replaceChildren(local,network);
   if(Array.from(select.options).some(o=>o.value===activeMap))select.value=activeMap;
   else if(select.options.length){select.value=select.options[0].value;select.dispatchEvent(new Event('change'));}
- }catch{}
+ }catch{markOffline();}
  setTimeout(runnerCatalog,5000);
 }
 
 function domainCenter(){return new THREE.Box3().setFromPoints((current?.portals||[]).map(p=>new THREE.Vector3(...p.pose_in_map.translation))).getCenter(new THREE.Vector3());}
-function fit(){if(current?.portals.length){const c=domainCenter();const box=new THREE.Box3().setFromPoints(current.portals.map(p=>new THREE.Vector3(...p.pose_in_map.translation)));const size=box.getSize(new THREE.Vector3());const distance=Math.max(size.x/Math.max(camera.aspect,.2),size.z)*1.65+3;camera.position.copy(c).add(new THREE.Vector3(0,distance,distance*.25));controls.target.copy(c);}else{camera.position.set(3.6,3.5,4.6);controls.target.set(0,.5,0);}controls.update();}
+function fit(){if(current?.simulation){const d=Math.max(12,11/Math.max(camera.aspect,.2));camera.position.set(0,d,d*.4);controls.target.set(0,0,0);}else if(current?.portals.length){const c=domainCenter();const box=new THREE.Box3().setFromPoints(current.portals.map(p=>new THREE.Vector3(...p.pose_in_map.translation)));const size=box.getSize(new THREE.Vector3());const distance=Math.max(size.x/Math.max(camera.aspect,.2),size.z)*1.65+3;camera.position.copy(c).add(new THREE.Vector3(0,distance,distance*.25));controls.target.copy(c);}else{camera.position.set(3.6,3.5,4.6);controls.target.set(0,.5,0);}controls.update();}
 fit();$('demo-view').onclick=()=>{camera.position.set(-.5,4.5,5.5);controls.target.set(-3.7,.5,2.1);controls.update();};$('fit').onclick=fit;$('top').onclick=()=>{fit();const c=controls.target.clone();const height=camera.position.distanceTo(c);camera.position.copy(c).add(new THREE.Vector3(0,height,.001));controls.update();};
 scene.add(new THREE.HemisphereLight(0xffffff,0x1a2438,1.7));
 const sun=new THREE.DirectionalLight(0xffffff,2.4);sun.position.set(-3,7,4);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);Object.assign(sun.shadow.camera,{left:-5,right:5,top:5,bottom:-5,near:.1,far:20});sun.shadow.bias=-.0005;scene.add(sun);
@@ -86,6 +100,15 @@ function build(data){
  const matrix=new THREE.Matrix4(),color=new THREE.Color();
  data.voxels.forEach((v,i)=>{const scale=data.voxel_size*.95;matrix.compose(new THREE.Vector3(...v.center),new THREE.Quaternion(),new THREE.Vector3(scale,scale,scale));voxels.setMatrixAt(i,matrix);const furnishing=data.synthetic_layout?.boxes.findLast(b=>v.center.every((n,j)=>n>=b.min[j]-.051&&n<=b.max[j]+.051));if(v.linear_rgb){color.setRGB(...v.linear_rgb,THREE.LinearSRGBColorSpace);}else color.set(furnishing?.color||(v.center[1]<0?'#c6cbbb':'#a7b4ac'));voxels.setColorAt(i,color);});
  voxels.userData.kind='voxels';groups.voxels.add(voxels);selectable.push(voxels);
+ if(data.occupancy_tiles){
+  const tiles=new THREE.InstancedMesh(boxGeometry,new THREE.MeshBasicMaterial(),data.occupancy_tiles.length);
+  data.occupancy_tiles.forEach((tile,i)=>{
+   matrix.compose(new THREE.Vector3(...tile.center),new THREE.Quaternion(),new THREE.Vector3(data.voxel_size*.96,.025,data.voxel_size*.96));
+   tiles.setMatrixAt(i,matrix);color.set(tile.value===100?'#ee795e':tile.value===0?'#82b9a0':'#343c49');tiles.setColorAt(i,color);
+  });
+  tiles.userData.kind='occupancy';groups.voxels.add(tiles);selectable.push(tiles);
+ }
+ $('canvas').dataset.occupancyCount=String(data.occupancy_tiles?.length||0);
  for(const p of data.portals){
   const imported=p.anchor_id.startsWith('home:');const blue=data.local_map&&!imported;const code=imported?p.anchor_id.slice(5):p.anchor_id;
   const g=new THREE.Group();g.position.fromArray(p.pose_in_map.translation);const [w,x,y,z]=p.pose_in_map.rotation_wxyz;g.quaternion.set(x,y,z,w);
@@ -109,13 +132,14 @@ function build(data){
    const marker=new THREE.Mesh(new THREE.OctahedronGeometry(.045),new THREE.MeshStandardMaterial({color:'#7f9aba'}));marker.position.fromArray(p);groups.rays.add(marker);
   }
  }
- $('empty').hidden=data.portals.length>0||data.voxels.length>0;if(activeMap==='home-live')$('empty').textContent='Waiting for Home to observe UCOF1J40N7O';else $('empty').textContent='No geometry yet';$('voxel-count').textContent=data.voxels.length.toLocaleString();$('observation-count').textContent=data.integrated_observations;$('object-count').textContent=data.objects.length;
+ $('empty').hidden=data.portals.length>0||data.voxels.length>0;if(activeMap==='home-live')$('empty').textContent='Waiting for Home to observe UCOF1J40N7O';else $('empty').textContent='No geometry yet';$('voxel-count').textContent=data.voxels.length.toLocaleString();$('observation-count').textContent=data.integrated_observations??'—';$('object-count').textContent=data.objects.length;
  for(const [peer,id] of [['iphone','phone-state'],['bracketbot','bot-state']]){const n=data.sources[peer];$(id).textContent=n?'Contributed':'Ready';$(id).classList.toggle('active',Boolean(n));}
  $('load').innerHTML=data.integrated_observations?'Reload test contributions <span>↗</span>':'Load two test peers <span>↗</span>';
  $('project').disabled=busy||!data.voxels.length;$('replay').disabled=busy||!data.sources.iphone;
- $('updated').textContent=`${data.integrated_observations} accepted observations`;
- if(selectedNoteId){const note=(data.notes||[]).find(n=>n.id===selectedNoteId);if(note){if($('selection').dataset.noteId!==note.id)showNoteSelection(note);}else{selectedNoteId=null;$('selection').hidden=true;}}else $('selection').hidden=true;if(!selectedNoteId&&data.objects.length){const o=data.objects[0];showSelection(o.label,`[${o.position.map(v=>v.toFixed(2)).join(', ')}] m`,'Projected onto occupied voxel surface');}
- updateMapUI();if(first)fit();
+ $('updated').textContent=data.layer_type==='occupancy_2d'?'Occupancy · '+data.occupancy_status:`${data.integrated_observations} accepted observations`;
+ if(selectedSpatialNode){const {kind,id}=selectedSpatialNode;const node=data.landmarks?.[kind==='anchor'?'anchors':'landmarks']?.[id];if(node)showSpatialSelection(kind,node);else{selectedSpatialNode=null;$('selection').hidden=true;}}
+ else if(selectedNoteId){const note=(data.notes||[]).find(n=>n.id===selectedNoteId);if(note){if($('selection').dataset.noteId!==note.id)showNoteSelection(note);}else{selectedNoteId=null;$('selection').hidden=true;}}else $('selection').hidden=true;if(!selectedNoteId&&!selectedSpatialNode&&data.objects.length){const o=data.objects[0];showSelection(o.label,`[${o.position.map(v=>v.toFixed(2)).join(', ')}] m`,'Projected onto occupied voxel surface');}
+ updateMapUI();if(data.occupancy_tiles){$('empty').hidden=data.occupancy_tiles.length>0;$('voxel-count').textContent=data.occupancy_tiles.length.toLocaleString();}if(first)fit();
 }
 function focusNote(note){const p=new THREE.Vector3(...note.position);controls.target.copy(p);camera.position.copy(p).add(new THREE.Vector3(.5,.4,2));controls.update();showNoteSelection(note);}
 function showNoteSelection(note){
@@ -137,6 +161,57 @@ function showNoteSelection(note){
  $('selection').append(button,status);
 }
 function focusPortal(p){const center=new THREE.Vector3(...p.pose_in_map.translation);camera.position.copy(center).add(new THREE.Vector3(.35,.65,.65));controls.target.copy(center);controls.update();showSelection(p.anchor_id,`[${p.pose_in_map.translation.map(v=>v.toFixed(4)).join(', ')}] m`,`${Math.round(p.side_length_m*100)} cm · ${p.anchor_id.startsWith('home:')?'Home reference aligned via measured portal':current?.local_map?'measured camera observation':'stored height, not mounting height'}`);}
+function spatialPosition(kind,node){
+ if(kind==='anchor')return node.pose?.translation;
+ if(!node.parent_anchor)return node.position;
+ const pose=current?.landmarks?.anchors?.[node.parent_anchor]?.pose;
+ if(!pose||pose.from_frame_id!==node.frame)return null;
+ const [w,x,y,z]=pose.rotation_wxyz;
+ return new THREE.Vector3(...node.position).applyQuaternion(new THREE.Quaternion(x,y,z,w)).add(new THREE.Vector3(...pose.translation)).toArray();
+}
+function spatialCoordinates(position){return `[${position.map(v=>v.toFixed(4)).join(', ')}] m`;}
+function spatialComponent(component){return component?`${component.peer_id} / ${component.component_id} (${component.manifest_hash})`:'Not recorded';}
+function showSpatialSelection(kind,node,focus=false){
+ const position=spatialPosition(kind,node),registry=current.landmarks;
+ if(focus&&position){const center=new THREE.Vector3(...position);controls.target.copy(center);camera.position.copy(center).add(new THREE.Vector3(.5,.65,1));controls.update();}
+ showSelection(`${kind==='anchor'?'Anchor':'Landmark'} · ${node.id}`,position?spatialCoordinates(position):'Map position unavailable',kind==='anchor'?'Full pose':'Position only');
+ selectedSpatialNode={kind,id:node.id};const selection=$('selection');selection.dataset.spatialKind=kind;selection.dataset.spatialId=node.id;
+ const fields=document.createElement('dl');fields.className='spatial-fields';
+ function field(name,value){const term=document.createElement('dt'),description=document.createElement('dd');term.textContent=name;description.textContent=value;fields.append(term,description);}
+ field('Type',node.recognition.landmark_type);field('Identity',node.recognition.identity);
+ field('Map frame',registry.frame);
+ if(kind==='anchor'){field('Local frame',node.pose.from_frame_id);field('Rotation (w, x, y, z)',node.pose.rotation_wxyz.map(v=>v.toFixed(4)).join(', '));const portal=current.portals?.find(p=>p.anchor_id===node.id);if(portal)field('Portal size',`${(portal.side_length_m*1000).toLocaleString()} mm encoded square`);}
+ else{field('Stored position',spatialCoordinates(node.position));field('Position frame',node.frame);}
+ const provenance=node.provenance||{};
+ field('Detected by',spatialComponent(provenance.detected_by));field('Mapped by',spatialComponent(provenance.mapped_by));
+ if(provenance.source_observation){const source=provenance.source_observation;field('Source observation',`${source.output.output_id} · sequence ${source.sequence} · ${source.timestamp_ns} ns`);}
+ selection.append(fields);updateSpatialSelection();
+ if(focus&&window.matchMedia('(max-width:720px)').matches)openPanel(null);
+}
+function updateSpatialSelection(){
+ for(const button of spatialBrowser.querySelectorAll('[data-spatial-kind]'))button.setAttribute('aria-pressed',String(button.dataset.spatialKind===selectedSpatialNode?.kind&&button.dataset.spatialId===selectedSpatialNode?.id));
+}
+function renderSpatialLists(){
+ const registry=current?.landmarks,query=$('spatial-search').value.trim().toLowerCase();
+ const signature=JSON.stringify([activeMap,current?.frame,registry,query]);
+ if(signature===spatialSignature){updateSpatialSelection();return;}spatialSignature=signature;
+ $('spatial-status').textContent=!current?'Waiting for the selected scenegraph…':!registry?'This scenegraph does not publish anchors and landmarks.':'Full-pose anchors · position-only landmarks';
+ for(const [kind,plural] of [['anchor','anchors'],['landmark','landmarks']]){
+  const nodes=Object.values(registry?.[plural]||{}).sort((a,b)=>a.id.localeCompare(b.id));
+  const matching=nodes.filter(node=>[node.id,node.recognition.landmark_type,node.recognition.identity,node.parent_anchor].filter(Boolean).join(' ').toLowerCase().includes(query));
+  $(kind+'-count').textContent=query?`${matching.length} / ${nodes.length}`:String(nodes.length);
+  const list=$(kind+'-list'),scroll=list.scrollTop;list.replaceChildren();
+  for(const node of matching){
+   const button=uiButton('',()=>showSpatialSelection(kind,node,true),'panel-row spatial-row');button.dataset.spatialKind=kind;button.dataset.spatialId=node.id;
+   button.setAttribute('aria-label',`${kind==='anchor'?'Anchor':'Landmark'} ${node.id}`);
+   const name=document.createElement('strong'),detail=document.createElement('small');name.textContent=node.id;detail.textContent=node.recognition.landmark_type;
+   button.append(name,detail);list.append(button);
+  }
+  if(!matching.length){const empty=document.createElement('p');empty.className='panel-hint';empty.textContent=!registry?'Not available':query?'No matches':`No ${plural} in this scene`;list.append(empty);}
+  list.scrollTop=scroll;
+ }
+ updateSpatialSelection();
+}
 function updateMapUI(){
  const local=Boolean(current?.local_map)||((isRunner()||activeMap==='home-live')&&!current);
  $('frame-info').textContent=activeMap==='home-live'?'Live origin: UCOF1J40N7O · shared Home frame':local?'Local origin: robot boot pose · fixed frame': activeMap==='domain'?'Stored domain frame · OpenGL · Y up · meters':'Home origin: UCOF1J40N7O · OpenGL · Y up · meters';
@@ -152,24 +227,71 @@ function updateMapUI(){
  document.querySelector('#inspect-snapshot').href=document.querySelector('.export').href=activeMap==='home-live'?'/api/home-live-snapshot':isRunner()?runnerUrl('/api/runner-snapshot'):domain?'/api/domain-snapshot':'/api/snapshots';
  ground.visible=Boolean(current?.demo);scene.fog=null;grid.scale.setScalar(3);grid.position.x=local?0:-5;grid.position.z=local?0:3;
  const list=$('portal-list');list.replaceChildren();{for(const p of (current?.portals||[]).filter(p=>p.anchor_id.length===11||p.anchor_id.startsWith('home:'))){const button=document.createElement('button');button.className='portal-row';button.textContent=p.anchor_id;const size=document.createElement('span');size.textContent=`${Math.round(p.side_length_m*100)} cm`;button.append(size);button.onclick=()=>focusPortal(p);list.append(button);}}
+ list.hidden=Boolean(current?.landmarks);renderSpatialLists();
+ if(activeMap.startsWith('peer-scene:') && current) {
+  $('scene-title').textContent=current.product_id||'Peer scenegraph';
+  $('map-authority').textContent=current.authority_peer_id;
+  $('scene-badge').textContent=current.local_map?'ROBOT-LOCAL MAP':'PEER SCENEGRAPH';
+  $('frame-info').textContent=current.frame+' · '+current.convention;
+  $('portal-info').textContent=current.local_map?'Independent robot frame · not merged into Home':'Publisher-owned scenegraph';
+  $('scene-note').textContent=current.local_mapping?.detail||'Discovered SDK scenegraph product · read-only';
+  $('mapping-status').textContent=(current.integrated_observations||0)+' scans integrated';
+  $('mapping-detail').textContent='Latest retained map from the publishing peer';
+  document.querySelector('#inspect-snapshot').href=document.querySelector('.export').href=peerSceneUrl(activeMap);
+  if(current.layer_type==='occupancy_2d'){
+   $('scene-badge').textContent='OCCUPANCY 2D';
+   $('scene-note').textContent='Robot-owned 10 cm occupancy · first meter above the flat floor · 2 m cells · unaligned';
+   $('mapping-status').textContent='Occupancy · '+current.occupancy_status;
+   const counts=current.occupancy_counts;
+   $('mapping-detail').textContent=counts.occupied+' occupied · '+counts.free+' free · '+counts.unknown+' unknown';
+   $('portal-info').textContent='Coral: occupied · green: free · slate: unknown. Not merged into Home.';
+  }
+ }
+ if(activeMap.startsWith('phone:')) {
+  $('scene-title').textContent='Android · local voxel map';
+  $('map-authority').textContent='Android peer · ARCore depth';
+  $('scene-badge').textContent='UNALIGNED PHONE MAP';
+  $('frame-info').textContent='Phone AR session · OpenGL · Y up · meters';
+  $('portal-info').textContent='No Portal calibration. Not merged into Home.';
+  $('scene-note').textContent='Real ARCore depth hits accumulated into 10 cm voxels on the phone. Tracking loss starts a new map. Unknown space is not free space.';
+  $('mapping-status').textContent='Phone-local depth mapping';
+  $('mapping-detail').textContent='Unaligned · read-only · removed after 10 seconds without updates';
+  document.querySelector('#inspect-snapshot').href=document.querySelector('.export').href='/api/phone-local-scene?peer='+encodeURIComponent(activeMap.slice(6));
+ }
+ if(isSimulation()){
+  const occupancy=activeMap==='sim-occupancy';
+  $('frame-info').textContent='Synthetic room · flat floor Y = 0 · meters';
+  $('portal-info').textContent=occupancy?'Coral: occupied (100) · green: free (0) · slate: unknown (-1). Blank areas are also unknown.':'10 cm voxels · synthetic walls, floor and central obstacle';
+  $('scene-title').textContent=occupancy?'Simulated robot · occupancy 2D':'Simulated robot · voxels';
+  $('map-authority').textContent=occupancy?'Home occupancy mapper':'Simulated robot peer';
+  $('scene-badge').textContent='SIMULATION · '+(occupancy?'OCCUPANCY 2D':'VOXELS');
+  const robotCount=Object.keys(current?.local_mapping?.runners||{}).length;
+  $('scene-note').textContent=occupancy?'Accumulated occupancy from robot observations. Outside view retains its last evidence; obstacles clear only when observed free. No time decay; mapper: 1 Hz.':`${robotCount||1} robot(s) producing live voxel observations with a 1.5 m footprint. A low block shuttles every 12 seconds.`;
+  $('mapping-status').textContent='Simulation · '+(current?.simulation_status||'starting')+(occupancy?' · '+(current?.occupancy_status||'waiting'):'');
+  $('mapping-detail').textContent=current?.simulation_detail||'Waiting for the synthetic peer';
+  document.querySelector('#inspect-snapshot').href=document.querySelector('.export').href='/api/simulation/'+(occupancy?'occupancy':'voxels')+'?snapshot=true';
+  grid.position.x=0;grid.position.z=0;
+ }
 }
-$('map-select').onchange=async()=>{activeMap=$('map-select').value;selectedNoteId=null;lastScene=null;current=null;hideRobots();selectable=[];Object.values(groups).forEach(clear);$('selection').hidden=true;updateMapUI();$('scene-title').textContent='Loading selected scene…';$('voxel-count').textContent='—';$('observation-count').textContent='—';$('object-count').textContent='—';try{await refresh();}catch{$('scene-title').textContent=isRunner()?'Waiting for Galbot scenegraph':'Scene unavailable';}};
-function showSelection(title,body,note){selectedNoteId=null;const el=$('selection');delete el.dataset.noteId;el.replaceChildren();const strong=document.createElement('strong');strong.textContent=title;const line=document.createElement('div');line.textContent=body;const small=document.createElement('small');small.textContent=note;el.append(strong,line,small);el.hidden=false;}
+$('map-select').onchange=async()=>{activeMap=$('map-select').value;selectedNoteId=null;selectedSpatialNode=null;lastScene=null;current=null;hideRobots();selectable=[];Object.values(groups).forEach(clear);$('selection').hidden=true;updateMapUI();$('scene-title').textContent='Loading selected scene…';$('voxel-count').textContent='—';$('observation-count').textContent='—';$('object-count').textContent='—';try{await refresh();}catch{$('scene-title').textContent=isRunner()?'Waiting for Galbot scenegraph':'Scene unavailable';}};
+function showSelection(title,body,note){selectedNoteId=null;selectedSpatialNode=null;updateSpatialSelection();const el=$('selection');delete el.dataset.noteId;delete el.dataset.spatialId;delete el.dataset.spatialKind;el.replaceChildren();const strong=document.createElement('strong');strong.textContent=title;const line=document.createElement('div');line.textContent=body;const small=document.createElement('small');small.textContent=note;el.append(strong,line,small);el.hidden=false;}
 let pointerStart;
 renderer.domElement.addEventListener('pointerdown',e=>{pointerStart=[e.clientX,e.clientY];});
 renderer.domElement.addEventListener('pointerup',e=>{
  if(e.button!==0)return;
  if(!current||!pointerStart||Math.hypot(e.clientX-pointerStart[0],e.clientY-pointerStart[1])>4)return;
  const r=renderer.domElement.getBoundingClientRect(), ray=new THREE.Raycaster();ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),camera);
- const hits=ray.intersectObjects(selectable.filter(o=>{for(let p=o;p;p=p.parent){if(!p.visible)return false;}return true;}));if(!hits.length){selectedNoteId=null;$('selection').hidden=true;return;}const h=hits.find(h=>h.object.userData.kind==='note')||hits.find(h=>h.object.userData.kind==='portal')||hits[0],d=h.object.userData;
+ const hits=ray.intersectObjects(selectable.filter(o=>{for(let p=o;p;p=p.parent){if(!p.visible)return false;}return true;}));if(!hits.length){selectedNoteId=null;selectedSpatialNode=null;updateSpatialSelection();$('selection').hidden=true;return;}const h=hits.find(h=>h.object.userData.kind==='note')||hits.find(h=>h.object.userData.kind==='portal')||hits[0],d=h.object.userData;
  if(d.kind==='voxels'){const v=current.voxels[h.instanceId];showSelection('Occupied voxel',`[${v.center.map(n=>n.toFixed(2)).join(', ')}] m`,`Evidence ${v.evidence} · 10 cm cell`);}
+ if(d.kind==='occupancy'){const t=current.occupancy_tiles[h.instanceId];showSelection('Occupancy · '+(t.value===100?'occupied':t.value===0?'free':'unknown'),`[${t.center.map(n=>n.toFixed(2)).join(', ')}] m`,`Value ${t.value} · 10 cm sample · retrieved in 2 m cells`);}
  if(d.kind==='note')focusNote(d.note);
  if(d.kind==='object'){const o=d.object;showSelection(o.label,`[${o.position.map(n=>n.toFixed(2)).join(', ')}] m`,`Source: ${o.source_peer}`);}
  if(d.kind==='portal'&&(d.portal.anchor_id.length===11||d.portal.anchor_id.startsWith('home:'))){focusPortal(d.portal);return;}
  if(d.kind==='portal')showSelection(`Portal ${d.portal.payload.split(':').at(-1)}`,`${d.portal.side_length_m.toFixed(2)} m encoded size`,'Manually supplied · no backend lookup');
 });
-async function api(path,body,method){const r=await fetch(path,body?{method:method||'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:method?{method}:undefined);const text=await r.text();let result;try{result=JSON.parse(text);}catch{throw new Error(text);}if(!r.ok)throw new Error(result.error||text);return result;}
-async function refresh(){if(refreshing)return;refreshing=true;refreshPeer();refreshMapping();try{const selected=activeMap;const data=await api(selected==='home-live'?'/api/home-live-scene':isRunner(selected)?runnerUrl('/api/runner-scene',selected):selected==='domain'?'/api/domain-scene':'/api/scene');if(selected!==activeMap)return;const content=JSON.stringify({...data,remote_status:undefined});if(content!==lastScene){lastScene=content;build(data);}else {data.receivedAt=performance.now();current=data;}$('connection').textContent='Home Server online';}catch(e){$('connection').textContent=isRunner()?'Runner scene unavailable':'Connection lost';throw e;}finally{refreshing=false;}}
+async function api(path,body,method){const r=await fetch(path,body?{method:method||'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:method?{method}:undefined);const text=await r.text();let result;try{result=JSON.parse(text);}catch{throw new Error(text);}if(!r.ok){const error=new Error(result.error||text);error.status=r.status;throw error;}return result;}
+function peerSceneUrl(map){return '/api/sensors?scene=true&sensor='+encodeURIComponent(map.slice(11));}
+async function refresh(){if(refreshing)return;refreshing=true;refreshPeer();if(!isSimulation())refreshMapping();try{const selected=activeMap;const data=await api(selected.startsWith('peer-scene:')?peerSceneUrl(selected):selected.startsWith('phone:')?'/api/phone-local-scene?peer='+encodeURIComponent(selected.slice(6)):isSimulation(selected)?'/api/simulation/'+selected.slice(4):selected==='home-live'?'/api/home-live-scene':isRunner(selected)?runnerUrl('/api/runner-scene',selected):selected==='domain'?'/api/domain-scene':'/api/scene');if(selected!==activeMap)return;const content=JSON.stringify({...data,remote_status:undefined});if(content!==lastScene){lastScene=content;build(data);}else {data.receivedAt=performance.now();current=data;}homeOffline=false;renderMapRows();availability.hidden=!(selected==='sim-occupancy'&&data.simulation_status!=='running');if(!availability.hidden)availability.textContent='Retained on Home · robot publishers offline · no new observations';$('connection').textContent='Home Server online';}catch(e){if(!e.status){markOffline();}else{availability.hidden=false;availability.textContent='Scene unavailable · '+e.message;if(activeMap==='sim-voxels'||activeMap.startsWith('peer-scene:')){Object.values(groups).forEach(clear);hideRobots();current=null;lastScene=null;}}$('connection').textContent=e.status?'Home online · scene unavailable':'Home offline';throw e;}finally{refreshing=false;}}
 async function action(fn){if(busy)return;busy=true;document.querySelectorAll('#load,#project,#replay').forEach(b=>b.disabled=true);$('notice').classList.remove('error');$('notice').textContent='Integrating…';try{await fn();await refresh();}catch(e){$('notice').textContent=e.message;$('notice').classList.add('error');}finally{busy=false;$('load').disabled=false;$('project').disabled=!current?.voxels.length;$('replay').disabled=!current?.sources.iphone;}}
 $('load').onclick=()=>action(async()=>{const f=await api('/api/fixtures');for(const c of f.contributions)await api('/api/contributions',c);$('notice').textContent='Two scans aligned through Portal A. Ready to project a detection.';});
 $('project').onclick=()=>action(async()=>{const f=await api('/api/fixtures');const result=await api('/api/detections',f.detection);$('notice').textContent=result.applied?'Book placed at the first occupied voxel hit.':'This detection is already placed. No duplicate object created.';});
@@ -178,7 +300,7 @@ new ResizeObserver(()=>{const {width,height}=$('canvas').getBoundingClientRect()
 renderer.setAnimationLoop(()=>{controls.update();renderer.render(scene,camera);});
 refresh().catch(e=>{$('notice').textContent=e.message;$('notice').classList.add('error');});setInterval(()=>{if(!busy)refresh().catch(()=>{});},500);
 
-async function refreshPeer(){try{const peer=await api('/api/peer');$('p2p-status').textContent=peer.enabled?'P2P · '+peer.status:'P2P disabled';$('p2p-detail').textContent=peer.connection?peer.connection.peer_id:'Configure a peer to join the network.';$('pairing-download').hidden=peer.status!=='Ready';fleetNetwork=peer;renderFleetRows();}catch{$('p2p-status').textContent='P2P unavailable';$('pairing-download').hidden=true;fleetNetwork=null;renderFleetRows();}}
+async function refreshPeer(){try{const peer=await api('/api/peer');$('p2p-status').textContent=peer.enabled?'P2P · '+peer.status:'P2P disabled';$('p2p-detail').textContent=peer.connection?peer.connection.peer_id:peer.detail||'Configure a peer to join the network.';$('pairing-download').hidden=peer.status!=='Ready';fleetNetwork=peer;renderFleetRows();}catch{$('p2p-status').textContent='P2P unavailable';$('pairing-download').hidden=true;fleetNetwork=null;renderFleetRows();}}
 
 // Dynamic telemetry is independent of scene updates and synthetic peer scans.
 const robots=new Map(),poseUpdates=new Map();
@@ -238,7 +360,7 @@ function showRunner(state){
  $('runner-card').dataset.status=state.status;
  $('runner-position').textContent=state.pose?`[${state.pose.translation.map(n=>n.toFixed(3)).join(', ')}] m${state.status==='stale'?' · last known':''}`:'No calibrated pose available';
  $('runner-detail').textContent=state.status==='disabled'?'Configure a runner peer to show its pose.':state.detail||'';
- $('focus-runner').textContent='Focus Galbot ↗';$('focus-runner').disabled=!state.pose;
+ $('focus-runner').textContent='Focus '+runnerDisplay()+' ↗';$('focus-runner').disabled=!state.pose;
  $('focus-runner').onclick=()=>focusPose(runnerDisplay(),state);
  const glyph=robots.get('selected');
  $('runner-card').dataset.position=state.pose?JSON.stringify(glyph.group.position.toArray()):'';
@@ -268,23 +390,39 @@ function showHomeRunners(local,fresh){
 }
 $('runner-layer').onchange=()=>{for(const glyph of robots.values())glyph.group.visible=Boolean(glyph.state?.pose)&&$('runner-layer').checked;refreshRunner();};
 async function refreshRunner(){
+ if(activeMap.startsWith('peer-scene:')){
+  const pose=current?.local_mapping?.robot_pose?.pose;
+  showRunner({status:pose&&performance.now()-(current?.receivedAt||0)<5000?'live':'stale',pose:pose||null,detail:'Pose in the publishing robot’s map frame'});return;
+ }
+ if(isSimulation()){
+  const local=current?.local_mapping;
+  const fresh=current?.simulation_status==='running'&&performance.now()-(current?.receivedAt||0)<5000;
+  if(local?.runners){
+   renderRunners(Object.entries(local.runners).map(([key,r])=>({key,name:r.name,state:{status:fresh?'live':'stale',pose:r.robot_pose?.pose||null}})));
+   $('runner-status').textContent=Object.keys(local.runners).length+' simulated robot(s) · '+(fresh?'live':'stale');
+   $('runner-card').dataset.status=fresh?'live':'stale';return;
+  }
+  showRunner({status:fresh?'live':'stale',pose:local?.robot_pose?.pose||null,detail:'Synthetic patrol pose · not robot telemetry'});return;
+ }
  if((isRunner()||activeMap==='home-live')) {
   const local=current?.local_mapping, remote=current?.remote_status;
   const fresh=remote?.status==='connected' && remote.age_ms<10000 && performance.now()-(current?.receivedAt||0)<5000;
   if(activeMap==='home-live'&&local?.runners){showHomeRunners(local,fresh);return;}
   showRunner({status:fresh&&local?.robot_pose?'live':'stale',pose:local?.robot_pose?.pose||null,detail:local?(activeMap==='home-live'?'Pose in Home’s observed portal frame':'Pose in the robot boot frame'):'Waiting for independent robot pose'});return;
  }
- if(runnerBusy)return;runnerBusy=true;try{const state=await api('/api/runner-pose');lastRunnerReply=performance.now();if(!(isRunner()||activeMap==='home-live'))showRunner(state);}catch{if(!(isRunner()||activeMap==='home-live'))showRunner({...runner,status:'unavailable',pose:null,detail:'Home telemetry connection lost'});}finally{runnerBusy=false;}}
+ if(runnerBusy)return;runnerBusy=true;try{const state=await api('/api/runner-pose');lastRunnerReply=performance.now();if(!(isRunner()||isSimulation()||activeMap==='home-live'||activeMap.startsWith('peer-scene:')))showRunner(state);}catch{if(!(isRunner()||isSimulation()||activeMap==='home-live'||activeMap.startsWith('peer-scene:')))showRunner({...runner,status:'unavailable',pose:null,detail:'Home telemetry connection lost'});}finally{runnerBusy=false;}}
 runnerCatalog();refreshRunner();setInterval(refreshRunner,250);
-setInterval(()=>{if(!(isRunner()||activeMap==='home-live')&&lastRunnerReply&&performance.now()-lastRunnerReply>3000&&runner?.status==='live')showRunner({...runner,status:'stale',detail:'Home telemetry has stopped updating'});},500);
+setInterval(()=>{if(!(isRunner()||isSimulation()||activeMap==='home-live'||activeMap.startsWith('peer-scene:'))&&lastRunnerReply&&performance.now()-lastRunnerReply>3000&&runner?.status==='live')showRunner({...runner,status:'stale',detail:'Home telemetry has stopped updating'});},500);
 
-async function refreshMapping(){if(activeMap==='home-live'){try{const state=await api('/api/home-live-status');$('mapping-status').textContent='Home map · '+state.status;$('mapping-detail').textContent=state.detail||'';}catch{$('mapping-status').textContent='Home map · unavailable';}return;}if(activeMap==='demo'&&!current?.demo){$('mapping-status').textContent='Canonical reference';$('mapping-detail').textContent='13 supplied portal poses and physical sizes';return;}if(isRunner()){try{const sources=await api('/api/scene-sources');const remote=activeMap.startsWith('runner:')?(sources.runners||[]).find(r=>r.peer_id===activeMap.slice(7))||{status:'unavailable'}:sources;$('mapping-status').textContent='Galbot map · '+remote.status;$('mapping-detail').textContent=remote.detail||'';}catch{$('mapping-status').textContent='Galbot map · unavailable';}return;}try{const mapping=await api('/api/mapping');$('mapping-status').textContent='LiDAR · '+mapping.status+(mapping.rgbd?' / RGB-D · '+mapping.rgbd.status:'');$('mapping-detail').textContent=(mapping.detail||'')+(mapping.rgbd?' · '+(mapping.rgbd.detail||`${mapping.rgbd.colored_voxels} colored voxels`):'');$('mapping-card').dataset.status=mapping.status;}catch{$('mapping-status').textContent='LiDAR · unavailable';}}
+async function refreshMapping(){if(activeMap.startsWith('phone:')||activeMap.startsWith('peer-scene:'))return;if(activeMap==='home-live'){try{const state=await api('/api/home-live-status');$('mapping-status').textContent='Home map · '+state.status;$('mapping-detail').textContent=state.detail||'';}catch{$('mapping-status').textContent='Home map · unavailable';}return;}if(activeMap==='demo'&&!current?.demo){$('mapping-status').textContent='Canonical reference';$('mapping-detail').textContent='13 supplied portal poses and physical sizes';return;}if(isRunner()){try{const sources=await api('/api/scene-sources');const remote=activeMap.startsWith('runner:')?(sources.runners||[]).find(r=>r.peer_id===activeMap.slice(7))||{status:'unavailable'}:sources;$('mapping-status').textContent='Galbot map · '+remote.status;$('mapping-detail').textContent=remote.detail||'';}catch{$('mapping-status').textContent='Galbot map · unavailable';}return;}try{const mapping=await api('/api/mapping');$('mapping-status').textContent='LiDAR · '+mapping.status+(mapping.rgbd?' / RGB-D · '+mapping.rgbd.status:'');$('mapping-detail').textContent=(mapping.detail||'')+(mapping.rgbd?' · '+(mapping.rgbd.detail||`${mapping.rgbd.colored_voxels} colored voxels`):'');$('mapping-card').dataset.status=mapping.status;}catch{$('mapping-status').textContent='LiDAR · unavailable';}}
 
 // Prefer live topography; canonical scenes can also use the reference floor.
 const labelDialog=$('label-dialog'),labelInput=$('label-dialog-text'),labelStatus=$('label-dialog-status'),labelSave=$('label-dialog-save');
 let placement=null,placementGeneration=0,displayedCamera=null,labelFields=null;
 function placementError(message){labelStatus.textContent=message;labelSave.disabled=true;}
 async function beginLabel(request,error){
+ if(activeMap.startsWith('peer-scene:')) {availability.hidden=false;availability.textContent='Peer maps are read-only.';return;}
+ if(activeMap.startsWith('phone:')) {availability.hidden=false;availability.textContent='Phone-local maps are unaligned and read-only.';return;}
  const generation=++placementGeneration;placement=null;labelInput.value='';labelInput.disabled=false;labelSave.disabled=true;
  $('label-note-fields').replaceChildren();labelFields=noteFields($('label-note-fields'),null);
  labelStatus.textContent='Finding a surface · 50 cm beam…';if(!labelDialog.open)labelDialog.showModal();
@@ -342,8 +480,9 @@ async function sensorCatalog(){
   const selected=sensorSelect.value;const options=[new Option('None','')];
   arAvailable.clear();
   for(const s of data.sensors){arAvailable.set(s.id,s.ar_available===true);const option=new Option(s.label+(s.ar_available?' · AR':''),s.id);option.dataset.peer=s.peer_id;options.push(option);}
-  if(selected&&!data.sensors.some(s=>s.id===selected))options.push(new Option(document.querySelector('#sensor-title').textContent+' · offline',selected));
-  sensorSelect.replaceChildren(...options);sensorSelect.value=selected;updateArAvailability();
+  const stillAvailable=data.sensors.some(s=>s.id===selected);
+  sensorSelect.replaceChildren(...options);sensorSelect.value=stillAvailable?selected:'';updateArAvailability();
+  if(selected&&!stillAvailable)sensorSelect.dispatchEvent(new Event('change'));
   document.querySelector('#sensor-catalog-status').textContent=data.sensors.length?`${data.sensors.length} published camera feeds`:'No camera feeds available · retrying';
  }catch(e){document.querySelector('#sensor-catalog-status').textContent='Camera peers unavailable · retrying';}
  setTimeout(sensorCatalog,10000);
@@ -435,7 +574,7 @@ function renderMapRows(){
   const options=Array.from($('map-select').options).filter(o=>(o.parentElement.label||'Local')===name);
   section.append(...options.map(option=>{
   const button=uiButton(option.textContent,()=>{$('map-select').value=option.value;$('map-select').dispatchEvent(new Event('change'));renderMapRows();});
-  button.dataset.map=option.value;button.setAttribute('aria-pressed',String(option.value===$('map-select').value));return button;
+  button.disabled=homeOffline||option.disabled;if(homeOffline)button.textContent+=' · offline';button.dataset.map=option.value;button.setAttribute('aria-pressed',String(option.value===$('map-select').value));return button;
  }));
   if(!options.length){const empty=document.createElement('p');empty.className='panel-hint';empty.textContent='No scenegraphs available';section.append(empty);}
   mapsList.append(section);
@@ -444,14 +583,24 @@ function renderMapRows(){
 new MutationObserver(renderMapRows).observe($('map-select'),{childList:true,subtree:true,characterData:true});
 $('map-select').addEventListener('change',()=>{renderMapRows();noteView='list';renderNotes();});renderMapRows();
 function renderFleetRows(){
+ disconnectRobots.hidden=!fleetNetwork?.simulation;disconnectRobots.disabled=homeOffline||!(fleetNetwork?.peers||[]).some(p=>p.status==='connected');
  const selfId=fleetNetwork?.connection?.peer_id;
- const peers=[{peer_id:selfId||'self',name:'Home Server',self:true},...Array.from(new Map((fleetNetwork?.peers||[]).filter(p=>p.peer_id&&p.peer_id!==selfId).map(p=>[p.peer_id,p])).values())];
+ const peers=[{peer_id:selfId||'self',name:'Home Server',self:true,catalog:fleetNetwork?.catalog},...Array.from(new Map((fleetNetwork?.peers||[]).filter(p=>p.peer_id&&p.peer_id!==selfId).map(p=>[p.peer_id,p])).values())];
  const sensors=Array.from($('sensor-select').options).filter(o=>o.value);
  const signature=JSON.stringify([peers,fleetNetwork?.enabled,fleetNetwork?.status,sensors.map(o=>[o.value,o.textContent,o.dataset.peer]),$('sensor-select').value]);
  if(signature===fleetSignature)return;fleetSignature=signature;
- const opened=new Set(Array.from(fleetList.querySelectorAll('details[open]'),d=>d.dataset.peer));fleetList.replaceChildren();
- for(const peer of peers){const options=sensors.filter(o=>o.dataset.peer===peer.peer_id);const group=document.createElement('details');group.dataset.peer=peer.peer_id;group.open=opened.has(peer.peer_id);const heading=document.createElement('summary');heading.textContent=peer.self?'Home Server':peer.peer_id;group.append(heading);
-  const detail=document.createElement('p');detail.className='panel-hint';detail.textContent=peer.self?(fleetNetwork?.enabled?'This peer · '+fleetNetwork.status:fleetNetwork?'This peer · P2P disabled':'This peer · Network status unavailable'):'Connected peer';group.append(detail);
+ const opened=new Set(Array.from(fleetList.querySelectorAll('details[open]'),d=>d.dataset.peer));
+ const openedCatalog=new Set(Array.from(fleetList.querySelectorAll('details[open][data-product],details[open][data-component]'),d=>d.closest('[data-peer]').dataset.peer+':'+(d.dataset.product||d.dataset.component)));fleetList.replaceChildren();
+ for(const peer of peers){const options=sensors.filter(o=>o.dataset.peer===peer.peer_id);const group=document.createElement('details');group.dataset.peer=peer.peer_id;group.open=opened.has(peer.peer_id);const heading=document.createElement('summary');heading.textContent=peer.self?'Home Server':peer.name||peer.peer_id;group.append(heading);
+  const detail=document.createElement('p');detail.className='panel-hint';detail.textContent=peer.self?(fleetNetwork?.enabled?'This peer · '+fleetNetwork.status:fleetNetwork?'This peer · P2P disabled':'This peer · Network status unavailable'):peer.status||'Connected peer';group.append(detail);
+  if(!peer.self){const identity=document.createElement('p');identity.className='panel-hint';identity.textContent=peer.peer_id;group.append(identity);}
+  if(peer.received_observations!==undefined){const count=document.createElement('p');count.className='panel-hint';count.dataset.observations=String(peer.received_observations);count.textContent=peer.received_observations+' observations received over P2P';group.append(count);}
+  if(!peer.self){const catalogStatus=document.createElement('p');catalogStatus.className='panel-hint';catalogStatus.dataset.catalogStatus=peer.catalog_status||'unknown';catalogStatus.textContent=peer.catalog_status==='ready'?((peer.catalog?.components?.length||0)+' components · '+(peer.catalog?.products?.length||0)+' products'):peer.catalog_status==='unavailable'?(peer.catalog_detail||'Component catalog unavailable'):peer.catalog?'':'Loading component catalog…';if(catalogStatus.textContent)group.append(catalogStatus);}
+  for(const [kind,entries] of [['component',peer.catalog?.components||[]],['product',peer.catalog?.products||[]]])for(const entry of entries){
+   const id=entry.manifest[kind+'_id'],details=document.createElement('details');details.dataset[kind]=id;details.open=openedCatalog.has(peer.peer_id+':'+id);
+   const title=document.createElement('summary');title.textContent=(kind==='component'?'Component':'Product')+' · '+id;
+   const pre=document.createElement('pre');pre.style.cssText='white-space:pre-wrap;overflow-wrap:anywhere;font-size:10px';pre.textContent=JSON.stringify(entry.manifest,null,2);details.append(title,pre);group.append(details);
+  }
   if(peer.self&&selfId){const identity=document.createElement('p');identity.className='panel-hint';identity.textContent=selfId;group.append(identity);}
   for(const option of options){const button=uiButton(option.textContent+($('sensor-select').value===option.value?' · PiP ●':''),()=>{$('sensor-select').value=$('sensor-select').value===option.value?'':option.value;$('sensor-select').dispatchEvent(new Event('change'));});button.setAttribute('aria-pressed',String($('sensor-select').value===option.value));group.append(button);}fleetList.append(group);
  }
@@ -528,3 +677,37 @@ function applyTheme(light){document.documentElement.dataset.theme=light?'light':
 themeButton.onclick=()=>{const light=document.documentElement.dataset.theme!=='light';applyTheme(light);try{localStorage.setItem('spatial-theme',light?'light':'dark');}catch{}};
 try{applyTheme(localStorage.getItem('spatial-theme')==='light');}catch{}
 const opacityLabel=document.createElement('label');opacityLabel.className='layer';opacityLabel.textContent='Grid opacity';const opacityInput=document.createElement('input');opacityInput.type='range';opacityInput.min='0';opacityInput.max='1';opacityInput.step='.01';opacityInput.value=String(grid.material.opacity);opacityInput.oninput=()=>{grid.material.opacity=Number(opacityInput.value);};opacityLabel.append(opacityInput);panelBodies.settings.append(opacityLabel);
+
+let createdFiducialKey=null;
+function fiducialLink(text,href){const link=document.createElement('a');link.textContent=text;link.href=href;return link;}
+async function renderFiducials(){
+ tagsBody.replaceChildren();
+ const intro=document.createElement('p');intro.className='panel-hint';intro.textContent='Generate a standard visual tag and register the size of its outer black square. That measured size is the metric contract a pose estimator needs.';tagsBody.append(intro);
+ let catalog;
+ try{catalog=await api('/api/fiducials');}catch(e){const status=document.createElement('p');status.className='panel-hint';status.setAttribute('role','status');status.textContent=e.message;tagsBody.append(status);return;}
+ const form=document.createElement('form');form.className='note-form fiducial-form';
+ const familyLabel=document.createElement('label');familyLabel.textContent='Tag family';const family=document.createElement('select');family.id='fiducial-family';familyLabel.htmlFor=family.id;for(const item of catalog.families)family.add(new Option(item.label,item.id));familyLabel.append(family);form.append(familyLabel);
+ const idLabel=document.createElement('label');idLabel.textContent='Marker ID (optional)';const id=document.createElement('input');id.id='fiducial-id';id.type='number';id.min='0';id.step='1';id.placeholder='Next available';idLabel.htmlFor=id.id;idLabel.append(id);form.append(idLabel);
+ const sizeLabel=document.createElement('label');sizeLabel.textContent='Printed marker size (mm)';const size=document.createElement('input');size.id='fiducial-size';size.type='number';size.min='10';size.max='2000';size.step='.1';size.value='150';size.required=true;sizeLabel.htmlFor=size.id;sizeLabel.append(size);form.append(sizeLabel);
+ const basis=document.createElement('p');basis.className='panel-hint fiducial-basis';basis.textContent='Measure edge-to-edge across the black square. Do not include the white quiet zone.';form.append(basis);
+ const create=document.createElement('button');create.type='submit';create.className='primary';create.textContent='Generate tag';form.append(create);
+ const message=document.createElement('p');message.className='panel-hint';message.setAttribute('role','status');form.append(message);
+ form.onsubmit=async event=>{event.preventDefault();create.disabled=true;message.textContent='Generating…';try{const marker=await api('/api/fiducials',{family:family.value,id:id.value===''?null:Number(id.value),side_length_m:Number(size.value)/1000});createdFiducialKey=marker.key;await renderFiducials();}catch(e){message.textContent=e.message;create.disabled=false;}};
+ tagsBody.append(form);
+ const heading=document.createElement('div');heading.className='section-label';heading.textContent='REGISTERED TAGS';tagsBody.append(heading);
+ if(!catalog.fiducials.length){const empty=document.createElement('p');empty.className='panel-hint';empty.textContent='No generated tags yet.';tagsBody.append(empty);return;}
+ for(const marker of catalog.fiducials){const card=document.createElement('article');card.className='fiducial-card';if(marker.key===createdFiducialKey)card.dataset.created='true';
+  const image=document.createElement('img');image.className='fiducial-preview';image.src=marker.download_url;image.alt=`${marker.family_label} marker ${marker.id}`;
+  const details=document.createElement('div');const name=document.createElement('strong');name.textContent=`${marker.family_label} · ${marker.id}`;const measurement=document.createElement('small');measurement.textContent=`${marker.side_length_mm.toLocaleString(undefined,{maximumFractionDigits:1})} mm black square`;details.append(name,measurement);
+  const actions=document.createElement('div');actions.className='fiducial-actions';const download=fiducialLink('Download SVG',marker.download_url);download.download=`${marker.key}.svg`;const print=fiducialLink('Print at size',marker.print_url);print.target='_blank';print.rel='noopener';actions.append(download,print);details.append(actions);
+  const edit=uiButton('Set measured size',()=>{
+   edit.hidden=true;const form=document.createElement('form');form.className='note-form fiducial-measurement';
+   const label=document.createElement('label');label.textContent='Measured black square (mm)';const input=document.createElement('input');input.type='number';input.min='10';input.max='2000';input.step='.1';input.required=true;input.value=String(marker.side_length_mm);label.append(input);form.append(label);
+   const buttons=document.createElement('div');buttons.className='note-actions';const save=document.createElement('button');save.type='submit';save.textContent='Save size';buttons.append(uiButton('Cancel',()=>{form.remove();edit.hidden=false;}),save);form.append(buttons);
+   const status=document.createElement('p');status.className='panel-hint';status.setAttribute('role','status');form.append(status);details.append(form);input.focus();
+   form.onsubmit=async event=>{event.preventDefault();save.disabled=true;try{await api(`/api/fiducials/${marker.family}/${marker.id}`,{side_length_m:Number(input.value)/1000},'PATCH');await renderFiducials();}catch(e){status.textContent=e.message;save.disabled=false;}};
+  });details.append(edit);card.append(image,details);tagsBody.append(card);
+ }
+ createdFiducialKey=null;
+}
+renderFiducials();

@@ -47,6 +47,8 @@ pub fn render_scene(s: &CanonicalScene) -> Result<Value> {
     };
     let target = crate::conventions::registry("home", &display)?;
     let portals = crate::conventions::portals(&s.portals, &display)?;
+    let landmarks =
+        crate::landmarks::from_registries(&s.registries, &s.frame)?.in_frame(&display)?;
     let notes = crate::notes::from_registries(&s.registries, &s.frame)?
         .in_frame(&s.voxels.definition.frame, &target)?;
     let mut voxels = crate::model::occupied(&s.voxels)?;
@@ -97,6 +99,7 @@ pub fn render_scene(s: &CanonicalScene) -> Result<Value> {
             "sdk_revision":s.sdk_revision,"mode":"Runner-owned scenegraph","demo":false,"synthetic_layout":null,"sensor_positions":{},
             "authority":"Galbot mapper","authority_peer_id":s.authority_peer_id,"remote_status":null});
     crate::mobile_pose::append_labels(&mut view, &s.registries["mobile_presence"]);
+    view["landmarks"] = serde_json::to_value(landmarks)?;
     Ok(view)
 }
 

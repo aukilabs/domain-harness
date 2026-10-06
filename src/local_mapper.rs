@@ -21,6 +21,7 @@ use std::{collections::BTreeMap, sync::Arc};
 pub const FAMILY: &str = "galbot-local";
 pub fn is_local_frame(id: &str) -> bool {
     id.strip_prefix("galbot-local:")
+        .or_else(|| id.strip_prefix("simulator-local:"))
         .or_else(|| id.strip_prefix("home-live:"))
         .and_then(|s| s.strip_suffix(":zup").or_else(|| s.strip_suffix(":opengl")))
         .is_some_and(|s| uuid::Uuid::parse_str(s).is_ok())
@@ -197,6 +198,9 @@ pub struct LocalMap {
     camera_key: Option<String>,
     pub ar_frame: Option<crate::ar_preview::Frame>,
     detector: auki_qr_detector::QrDetector,
+    processor: Component,
+    landmark_output: ConfiguredObservable<crate::landmarks::LandmarkObservations>,
+    landmark_capture: BufferProductCapture<crate::landmarks::LandmarkObservations>,
     map: MapComponent,
     runtime: ComponentRuntime,
     pub voxels: Option<VoxelSnapshot>,
@@ -391,6 +395,39 @@ impl LocalMap {
                 caller.caller_peer_id == writer && caller.caller_component_id == "local-mapper"
             },
         )?;
+        let processor = runtime.component(ComponentSpec::new("local-mapper").observable(
+            ObservableContract {
+                name: "landmark_observations".into(),
+                datatype: crate::landmarks::OBSERVATIONS_SCHEMA.into(),
+                schema: crate::landmarks::OBSERVATIONS_SCHEMA.into(),
+                access: vec![ObservationAccess::FollowNew],
+                exposure: Exposure::Cluster,
+            },
+        ))?;
+        let landmark_output = processor
+            .configured_observable::<crate::landmarks::LandmarkObservations>(
+                ConfiguredObservableSpec::new(
+                    "landmark_observations",
+                    format!("portal-corners-{session}"),
+                    clock.clone(),
+                    PayloadContract::Structured(StructuredPayloadContract {
+                        modality: "detection".into(),
+                        observes: "Named Portal corners in camera pixels".into(),
+                        unit: Some("pixels".into()),
+                        datatype: crate::landmarks::OBSERVATIONS_SCHEMA.into(),
+                        schema: crate::landmarks::OBSERVATIONS_SCHEMA.into(),
+                    }),
+                ),
+            )?;
+        processor.expose()?;
+        let landmark_capture = runtime.capture_buffer(
+            "landmark-observation-history",
+            &landmark_output,
+            BufferLimits::entries(2),
+            |batch: &crate::landmarks::LandmarkObservations| {
+                serde_json::to_vec(batch).map_or(usize::MAX, |b| b.len())
+            },
+        )?;
         Ok(Self {
             frame,
 
@@ -425,6 +462,9 @@ impl LocalMap {
             camera_key: None,
             ar_frame: None,
             detector: auki_qr_detector::QrDetector::new(Default::default()),
+            processor,
+            landmark_output,
+            landmark_capture,
             map,
             runtime: runtime.clone(),
             voxels: None,
@@ -467,6 +507,7 @@ impl LocalMap {
         endpoint.export_product(&self.lidar_capture.product())?;
         endpoint.export_product(&self.camera_source_capture.product())?;
         endpoint.export_product(&self.map.product())?;
+        endpoint.export_product(&self.landmark_capture.product())?;
         Ok(())
     }
     pub fn export_camera_preview(
@@ -516,7 +557,19 @@ impl LocalMap {
         json!({"local_mapping":{"status":if self.origin.is_some(){"mapping"}else{"waiting_for_odometry"},"detail":self.detail,"origin":self.origin,
             "voxel_policy":{"kind":"latest_observations_per_cell","window":3,"free_space":"SDK measured rays only","unseen_cells":"retained"},"alignment_to_home":null,"portal_poses":"observed","portal_color":"blue","portal_axes":"+X printed right; +Y printed top; +Z out of marker",
             "observed_portals":self.evidence,"robot_pose":self.latest_pose.as_ref().map(|(t,p)|json!({"capture_timestamp_ns":t,"clock":self.clock,"pose":p,"frame":self.frame}))},
+            "landmark_components":[crate::landmarks::ComponentCapabilities { component: self.processor.reference().clone(), landmark_types: Some(vec![crate::landmarks::PORTAL.into()]) }],
+            "landmark_observations":self.landmark_capture.product().reference(),
             "frames":[self.contract.from_frame,self.contract.to_frame],"clocks":[crate::model::clock_entry(&self.sensor_owner,&self.contract.session_id)]})
+    }
+    pub fn landmarks(&self, portals: &MapSnapshot) -> Result<crate::landmarks::Landmarks> {
+        crate::landmarks::portal_map(
+            portals,
+            Some(self.processor.reference().clone()),
+            &crate::landmarks::portal_evidence(&self.metadata())?,
+        )
+    }
+    pub fn landmark_product(&self) -> RetainedProduct<crate::landmarks::LandmarkObservations> {
+        self.landmark_capture.product()
     }
     pub fn accept(&mut self, event: SensorEvent) -> Result<()> {
         match event {
@@ -817,7 +870,7 @@ impl LocalMap {
             self.camera_capture = Some(capture);
             self.camera_key = Some(key);
         }
-        self.camera_output.as_ref().unwrap().publish(
+        let (camera_observation, _) = self.camera_output.as_ref().unwrap().publish(
             s.timestamp_ns,
             Arc::new(VideoFrame {
                 width: s.width,
@@ -832,6 +885,57 @@ impl LocalMap {
             s.height as usize,
             s.width as usize,
         )?;
+        let camera_source = crate::landmarks::SourceObservation {
+            output: camera_observation.output,
+            sequence: camera_observation.sequence,
+            timestamp_ns: camera_observation.timestamp_ns,
+            clock: self.clock.clone(),
+        };
+        let image_landmarks = detections
+            .codes
+            .iter()
+            .filter(|code| !code.mirrored)
+            .filter_map(|code| {
+                portal_code(&code.payload).map(|identity| {
+                    (
+                        identity,
+                        code.refined_corners_px.as_ref().unwrap_or(&code.corners_px),
+                    )
+                })
+            })
+            .flat_map(|(identity, corners)| {
+                crate::landmarks::CORNERS
+                    .into_iter()
+                    .zip(corners)
+                    .map(move |(feature, pixel)| crate::landmarks::ImageLandmark {
+                        recognition: crate::landmarks::Recognition {
+                            landmark_type: crate::landmarks::PORTAL.into(),
+                            identity: format!("{identity}/{feature}"),
+                        },
+                        pixel: [pixel.x, pixel.y],
+                    })
+            })
+            .collect();
+        let (detection_observation, _) = self.landmark_output.publish(
+            s.timestamp_ns,
+            Arc::new(crate::landmarks::LandmarkObservations {
+                schema: crate::landmarks::OBSERVATIONS_SCHEMA.into(),
+                detected_by: self.processor.reference().clone(),
+                source_observation: camera_source.clone(),
+                landmarks: image_landmarks,
+            }),
+        )?;
+        let provenance = crate::landmarks::Provenance {
+            detected_by: Some(self.processor.reference().clone()),
+            mapped_by: Some(self.processor.reference().clone()),
+            source_observation: Some(crate::landmarks::SourceObservation {
+                output: detection_observation.output,
+                sequence: detection_observation.sequence,
+                timestamp_ns: detection_observation.timestamp_ns,
+                clock: self.clock.clone(),
+            }),
+            camera_observation: Some(camera_source),
+        };
         let camera_odom = compose(base, &s.calibration.sensor_to_base)?;
         let mut accepted = 0;
         for code in detections.codes {
@@ -949,7 +1053,7 @@ impl LocalMap {
                 .and_then(|v| v["observations"].as_u64())
                 .unwrap_or(0)
                 + 1;
-            self.evidence.insert(short.into(),json!({"observations":n,"capture_timestamp_ns":s.timestamp_ns,"clock":self.clock,"camera_product":self.camera_reference(),"reprojection_rms_px":estimate.reprojection_rms_px,"latest_measured_pose":measured}));
+            self.evidence.insert(short.into(),json!({"observations":n,"capture_timestamp_ns":s.timestamp_ns,"clock":self.clock,"camera_product":self.camera_reference(),"reprojection_rms_px":estimate.reprojection_rms_px,"latest_measured_pose":measured,"provenance":provenance}));
             accepted += 1;
         }
         if let Some(home) = &self.home_portals

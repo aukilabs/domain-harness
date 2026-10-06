@@ -25,6 +25,15 @@ async fn canonical_scene_streams_over_authenticated_tcp_and_rebinds_after_public
         };
         first.payload.validate(&connection.peer_id)?;
         assert_eq!(first.payload.portals.scenegraph.anchors.len(), 14);
+        let landmarks = spatial_home::landmarks::from_registries(
+            &first.payload.registries,
+            &first.payload.frame,
+        )?;
+        assert_eq!(landmarks.anchors.len(), 13);
+        assert_eq!(
+            landmarks.by_type(spatial_home::landmarks::PORTAL).count(),
+            52
+        );
         assert!(
             serde_json::to_value(&first.payload)?
                 .get("revision")

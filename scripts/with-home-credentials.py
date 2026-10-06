@@ -10,7 +10,7 @@ import subprocess
 import sys
 
 root = Path(__file__).resolve().parent.parent
-credential_file = root / "data/homeserver.rtf"
+credential_file = Path(os.environ.get("SPATIAL_CREDENTIAL_FILE", root / "data/homeserver.rtf"))
 if len(sys.argv) < 2:
     sys.exit("Usage: with-home-credentials.py COMMAND [ARG ...]")
 text = subprocess.check_output(

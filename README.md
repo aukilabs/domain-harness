@@ -7,7 +7,8 @@ pinned to `3342d589605846f5f45c1de5430dd22923555de2`.
 Home builds a canonical scenegraph from calibrated peer observations and lets
 users inspect either that map or a runner's independent map. The browser displays
 measured voxels, manually sized portals, live robot poses, robot body volumes,
-camera previews, calibrated AR overlays, and persistent spatial text annotations.
+camera previews, calibrated AR overlays, persistent spatial text annotations, and
+locally registered printable ArUco/AprilTag fiducials.
 The iPhone app aligns its ARKit session by observing a known portal, displays
 Home geometry, places annotations, publishes phone presence, and contributes
 high-confidence camera-local LiDAR depth with separate alignment evidence.
@@ -56,6 +57,16 @@ npm run demo
 
 The synthetic room is illustrative. It is not inferred from the portal positions.
 Live mode rejects fixture writes.
+
+For a moving fake robot producing voxels and a 1 Hz occupancy map **inside Home's
+real UI**, see [the robot simulator](occupancy-mapper.md#moving-robot-in-the-real-home-ui):
+
+```sh
+env -u SPATIAL_PEER_CONFIG SPATIAL_SIMULATED_ROBOT=1 SPATIAL_PORT=4323 cargo run --locked --bin spatial-home
+```
+
+In Maps, choose **Simulated robot · voxels** or **Simulated robot · occupancy 2D**.
+This uses isolated loopback peers; it does not connect to a real robot.
 
 ## Connect peers
 
@@ -109,6 +120,14 @@ all stored portal heights are zero and do not establish actual mounting heights.
 SDK coordinate conversion and explicit rigid alignment connect Home, runner,
 sensor, and ARKit frames. Raw timestamps retain their producing peer's clock.
 
+Scene metadata distinguishes position-only **landmarks** from full-pose
+**anchors**. The default Portal mapper creates an anchor with four named corner
+landmarks; parenting remains mapper policy. Typed recognition, component
+capabilities and observation provenance travel in `registries.landmarks`.
+`GET /api/landmarks` supports filtering by `landmark_type`. This is a versioned
+extension alongside the pinned SDK's existing QR scenegraph, not an SDK fork.
+See [home.md](home.md#landmarks-and-anchors) for its contracts and frame rules.
+
 Galbot LiDAR mapping samples at most 384 measured points per scan in the 0.3–5 m
 range. A timestamp-derived sampling offset avoids repeatedly selecting the same
 parts of a structured scan. Capture-time odometry and sensor extrinsics place
@@ -127,7 +146,8 @@ Home's legacy journal/checkpoint store uses `SPATIAL_DATA` (default
 collaborative map is archived and rebuilt from live input on Home restart; it does
 not resume its prior in-memory vote history. Runner restarts likewise start a new
 boot frame and archive the previous local scene. Spatial text notes persist
-separately. See [home.md](home.md) for detailed behavior.
+separately. Generated fiducials persist beside the Home journal in
+`*.fiducials.json`. See [home.md](home.md) for detailed behavior.
 
 ## Validation
 
@@ -155,6 +175,7 @@ or production deployment package.
 
 - [Overall plan](plan.md)
 - [Home server](home.md)
+- [2D occupancy mapper](occupancy-mapper.md)
 - [Galbot / Bracketbot runner](runner.md)
 - [iPhone Annotator](annotator.md)
 - [iPhone build guide](ios/PortalViewer/README.md)

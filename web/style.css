@@ -177,6 +177,19 @@ aside{display:block;padding:0;min-width:0;max-height:none;overflow:hidden;backgr
 .panel-row{display:block;width:100%;padding:9px 6px;border:0;border-bottom:1px solid var(--line-soft);background:transparent;color:var(--text-2);font-size:11px;text-align:left;overflow-wrap:anywhere}
 .panel-row:hover,.panel-row[aria-pressed="true"]{background:var(--accent-dim);color:var(--accent)}
 .panel-hint{font-size:10px;line-height:1.6;color:var(--muted);overflow-wrap:anywhere}
+#spatial-browser{margin:14px 0;border-top:1px solid var(--line);padding-top:6px}
+.spatial-search-label{display:block;font-size:10px;color:var(--muted);margin:9px 0 5px}
+#spatial-search{width:100%;height:auto;padding:7px;border:1px solid var(--line);border-radius:4px;background:var(--panel-3);color:var(--text);font:inherit;font-size:10px;cursor:text}
+#spatial-browser summary{cursor:pointer;padding:9px 0;color:var(--text-2);font-size:11px;border-bottom:1px solid var(--line)}
+#spatial-browser summary span{float:right;color:var(--muted);font-variant-numeric:tabular-nums}
+.spatial-list{max-height:220px;overflow-y:auto;overscroll-behavior:contain}
+.spatial-row strong,.spatial-row small{display:block;overflow-wrap:anywhere}
+.spatial-row strong{font-size:10px;font-weight:500}
+.spatial-row small{font-size:9px;line-height:1.5;color:var(--muted);margin-top:3px}
+.spatial-fields{margin:10px 0 0;overflow-wrap:anywhere}
+.spatial-fields dt{color:var(--muted);font-size:9px;margin-top:7px}
+.spatial-fields dd{margin:0;color:var(--text-2);font-size:10px}
+.selection[data-spatial-kind]{min-width:0;max-width:min(320px,calc(100% - 24px));overflow-wrap:anywhere}
 #fleet-sensors summary{cursor:pointer;font-size:11px;color:var(--text-2);padding:9px 0}
 #fleet-sensors details .panel-row{padding-left:14px;font-size:10px}
 .note-form label{display:block;color:var(--muted);font-size:10px;margin-bottom:10px}
@@ -192,6 +205,17 @@ aside{display:block;padding:0;min-width:0;max-height:none;overflow:hidden;backgr
 #photo-dialog::backdrop{background:#000a}
 #photo-dialog>img{display:block;max-width:80vw;max-height:72dvh;object-fit:contain}
 .note-form input[type="file"]{font-size:10px;max-width:100%}
+.fiducial-form{padding-bottom:12px;border-bottom:1px solid var(--line)}
+.fiducial-form .primary{justify-content:center;margin-top:4px}
+.fiducial-basis{margin:-4px 0 10px}
+.fiducial-card{display:grid;grid-template-columns:58px minmax(0,1fr);gap:9px;padding:8px 0;border-bottom:1px solid var(--line-soft)}
+.fiducial-card[data-created="true"]{background:var(--accent-dim);margin:0 -5px;padding:8px 5px;border-radius:4px}
+.fiducial-preview{display:block;width:58px;height:58px;object-fit:contain;background:#fff;border:1px solid #fff}
+.fiducial-card strong,.fiducial-card small{display:block;overflow-wrap:anywhere}
+.fiducial-card strong{font-size:10px;color:var(--text-2)}
+.fiducial-card small{font-size:9px;color:var(--muted);margin-top:3px}
+.fiducial-actions{display:flex;gap:8px;margin-top:9px}
+.fiducial-actions a{color:var(--accent);font-size:9px}
 #label-dialog{max-height:90dvh;overflow-y:auto;width:min(420px,calc(100vw - 40px))}
 #label-dialog-text{height:auto;cursor:text}
 .panel-hint{white-space:pre-wrap}
@@ -203,4 +227,5 @@ main{min-height:0;background:var(--app);grid-template-rows:minmax(0,1fr) auto}
 #sensor-pip{resize:both;overflow:auto;min-width:200px;min-height:180px;max-height:85%}
 button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 @media(max-width:720px){body{overflow:hidden}.shell{min-height:0}.viewport-heading small{display:none}.main-footer{letter-spacing:0;font-size:7px}.viewport-footer>span:first-child{max-width:75%;overflow:hidden;white-space:nowrap}.empty{min-width:0;width:90%;padding:10px}}
+@media(max-width:720px){.shell:not(.panel-collapsed) .selection[data-spatial-kind]{display:none}}
 @media(prefers-reduced-motion:reduce){.shell{transition:none}}

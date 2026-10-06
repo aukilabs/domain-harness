@@ -101,6 +101,86 @@ fn decoded_camera_portals_define_map_and_colored_depth_uses_same_transform() -> 
     }
     let portals = map.portals()?;
     assert_eq!(portals.scenegraph.anchors.len(), 2);
+    let landmarks = map.landmarks(&portals)?;
+    assert_eq!(landmarks.landmarks.len(), 8);
+    for point in landmarks.landmarks.values() {
+        let detector = point.provenance.detected_by.as_ref().unwrap();
+        assert_eq!(detector.peer_id, "robot");
+        assert_eq!(detector.component_id, "local-mapper");
+        assert_eq!(point.provenance.mapped_by.as_ref(), Some(detector));
+        let observation = point.provenance.source_observation.as_ref().unwrap();
+        assert_eq!(
+            observation.output.component_manifest_hash,
+            detector.manifest_hash
+        );
+        assert_eq!(observation.output.slot, "landmark_observations");
+        assert_eq!(
+            point
+                .provenance
+                .camera_observation
+                .as_ref()
+                .unwrap()
+                .timestamp_ns,
+            observation.timestamp_ns
+        );
+    }
+    let catalog = runtime.catalog().snapshot();
+    assert!(serde_json::to_string(&catalog)?.contains("landmark-observation-history"));
+    let detection = map.landmark_product().latest_existing()?.unwrap();
+    assert_eq!(
+        detection.payload.schema,
+        spatial_home::landmarks::OBSERVATIONS_SCHEMA
+    );
+    assert_eq!(detection.payload.landmarks.len(), 4);
+    for (point, name) in detection
+        .payload
+        .landmarks
+        .iter()
+        .zip(spatial_home::landmarks::CORNERS)
+    {
+        assert_eq!(
+            point.recognition.landmark_type,
+            spatial_home::landmarks::PORTAL
+        );
+        assert_eq!(point.recognition.identity, format!("7956Q9STPFK/{name}"));
+        assert!(point.pixel.iter().all(|p| p.is_finite()));
+        let stored = &landmarks.landmarks[&format!("7956Q9STPFK/{name}")];
+        assert_eq!(stored.recognition, point.recognition);
+        assert_eq!(
+            stored
+                .provenance
+                .source_observation
+                .as_ref()
+                .unwrap()
+                .sequence,
+            detection.sequence
+        );
+        assert_eq!(
+            stored.provenance.camera_observation.as_ref(),
+            Some(&detection.payload.source_observation)
+        );
+    }
+    let mut invalid = landmarks.clone();
+    invalid
+        .landmarks
+        .values_mut()
+        .next()
+        .unwrap()
+        .provenance
+        .detected_by
+        .as_mut()
+        .unwrap()
+        .component_id = "different-detector".into();
+    assert!(invalid.validate(&invalid.frame).is_err());
+    let mut invalid = landmarks.clone();
+    invalid
+        .landmarks
+        .values_mut()
+        .next()
+        .unwrap()
+        .provenance
+        .source_observation = None;
+    assert!(invalid.validate(&invalid.frame).is_err());
     let origin = &portals.scenegraph.anchors["HRIPLL40GL6"];
     assert!(origin.pose_in_map.translation[2] > 0.1);
     let second = &portals.scenegraph.anchors["7956Q9STPFK"];
@@ -121,7 +201,11 @@ fn decoded_camera_portals_define_map_and_colored_depth_uses_same_transform() -> 
         portals,
         voxels: voxels.clone(),
         objects: vec![],
-        registries: map.metadata(),
+        registries: {
+            let mut metadata = map.metadata();
+            metadata["landmarks"] = serde_json::to_value(&landmarks)?;
+            metadata
+        },
     };
     scene.validate("robot")?;
     let view = spatial_home::scene_mirror::render_scene(&scene)?;
@@ -133,6 +217,13 @@ fn decoded_camera_portals_define_map_and_colored_depth_uses_same_transform() -> 
             .any(|v| v["linear_rgb"] == serde_json::json!([1., 0., 0.]))
     );
     assert_eq!(view["local_map"], true);
+    let rendered: spatial_home::landmarks::Landmarks =
+        serde_json::from_value(view["landmarks"].clone())?;
+    assert_eq!(rendered.landmarks.len(), 8);
+    assert_eq!(
+        rendered.landmarks["HRIPLL40GL6/top_left"].provenance,
+        landmarks.landmarks["HRIPLL40GL6/top_left"].provenance
+    );
     assert_ne!(view["frame"], spatial_home::model::FRAME);
     assert_eq!(view["local_mapping"]["robot_pose"]["frame"], view["frame"]);
     let converted: Pose =
@@ -163,6 +254,28 @@ fn decoded_camera_portals_define_map_and_colored_depth_uses_same_transform() -> 
     let updated = map.portals()?;
     assert_eq!(updated.scenegraph.anchors.len(), 2);
     let after = &updated.scenegraph.anchors["HRIPLL40GL6"];
+    let new_landmarks = map.landmarks(&updated)?;
+    let before_point = &landmarks.landmarks["HRIPLL40GL6/top_left"];
+    let after_point = &new_landmarks.landmarks["HRIPLL40GL6/top_left"];
+    assert_eq!(before_point.position, after_point.position);
+    assert_ne!(
+        landmarks.position_in_map(&before_point.id)?,
+        new_landmarks.position_in_map(&after_point.id)?
+    );
+    assert!(
+        after_point
+            .provenance
+            .source_observation
+            .as_ref()
+            .unwrap()
+            .sequence
+            > before_point
+                .provenance
+                .source_observation
+                .as_ref()
+                .unwrap()
+                .sequence
+    );
     let [w, x, y, z] = before.pose_in_map.rotation_wxyz;
     let expected = compose(
         &base,

@@ -17,9 +17,78 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio_util::sync::CancellationToken;
+
+// AuthError's Display contract excludes credentials, tokens and response bodies.
+// Do not print source chains: identity/transport sources may contain local data.
+fn startup_error(error: &auki_sdk::AukiPeerBootstrapError) -> String {
+    use auki_sdk::AukiPeerBootstrapError::*;
+    match error {
+        ConfigureAuthentication(e) => format!("Phone auth configuration failed: {e}"),
+        Authenticate(e) => format!("Phone sign-in failed: {e}"),
+        ListDomains(e) => format!("Phone Domain lookup failed: {e}"),
+        AuthorizePeer(e) => format!("Phone Domain authorization failed: {e}"),
+        LoadIdentity(_) => "Phone identity could not be loaded or saved in app-private storage".into(),
+        StartPeer(auki_sdk::AukiPeerStartError::Transport(e)) => {
+            format!("Phone transport startup failed: {}", transport_error(e))
+        }
+        StartPeer(e) => format!("Phone P2P startup failed: {e}"),
+    }
+}
+
+fn transport_error(error: &auki_p2p::Error) -> String {
+    use auki_p2p::Error;
+    match error {
+        // These strings originate in local libp2p transport construction, not
+        // authentication responses. Bound their size and strip control chars.
+        Error::TransportBuild(reason) | Error::Listen { reason, .. } => {
+            let stage = if matches!(error, Error::TransportBuild(_)) {
+                "transport construction"
+            } else {
+                "listener binding"
+            };
+            let reason: String = reason.chars().filter(|c| !c.is_control()).take(512).collect();
+            format!("{stage}: {reason}")
+        }
+        Error::Io(error) => format!("local I/O: {:?} (OS code {:?})", error.kind(), error.raw_os_error()),
+        Error::RuntimeUnavailable => "Tokio runtime unavailable".into(),
+        Error::SwarmStopped => "transport worker stopped".into(),
+        // A discriminant identifies other variants without printing any payload,
+        // in particular token, key, identity or remote response material.
+        other => format!("SDK transport error {:?} (details withheld)", std::mem::discriminant(other)),
+    }
+}
+
+#[cfg(test)]
+mod startup_error_tests {
+    use super::*;
+    use auki_sdk::{AuthError, AukiPeerBootstrapError as Error, AukiPeerStartError};
+
+    #[test]
+    fn distinguishes_denial_network_and_local_startup() {
+        assert_eq!(startup_error(&Error::AuthorizePeer(AuthError::DomainNotAccessible)),
+            "Phone Domain authorization failed: selected Domain is not accessible");
+        assert_eq!(startup_error(&Error::AuthorizePeer(AuthError::HttpStatus {
+            endpoint: "peer authorization", status: 503,
+        })), "Phone Domain authorization failed: peer authorization returned HTTP 503");
+        assert_eq!(startup_error(&Error::StartPeer(AukiPeerStartError::ListenerStartupTimeout)),
+            "Phone P2P startup failed: the authenticated P2P listeners did not bind within the startup deadline");
+    }
+
+    #[test]
+    fn transport_diagnostic_is_specific_and_omits_sensitive_payloads() {
+        let error = Error::StartPeer(AukiPeerStartError::Transport(
+            auki_p2p::Error::TransportBuild("failed to read /etc/resolv.conf\n".into()),
+        ));
+        assert_eq!(startup_error(&error),
+            "Phone transport startup failed: transport construction: failed to read /etc/resolv.conf");
+        assert!(!transport_error(&auki_p2p::Error::InvalidToken("secret-token".into())).contains("secret-token"));
+        assert!(!transport_error(&auki_p2p::Error::Io(std::io::Error::other("private-path"))).contains("private-path"));
+        assert!(transport_error(&auki_p2p::Error::TransportBuild("x".repeat(4096))).len() < 550);
+    }
+}
 
 #[derive(Clone, Serialize)]
 pub struct MobileState {
@@ -38,6 +107,7 @@ pub struct MobileState {
 }
 
 pub struct MobileClient {
+    local_map: tokio::sync::watch::Sender<Option<(crate::mobile_local::Snapshot, Instant)>>,
     depth: tokio::sync::watch::Sender<Option<(crate::mobile_depth::Sample, std::time::Instant)>>,
     pose: tokio::sync::watch::Sender<Option<crate::mobile_pose::Sample>>,
     stop: CancellationToken,
@@ -50,6 +120,7 @@ impl Default for MobileClient {
     fn default() -> Self {
         let (commands, receiver) = tokio::sync::mpsc::channel(1);
         Self {
+            local_map: tokio::sync::watch::channel(None).0,
             pose: tokio::sync::watch::channel(None).0,
             depth: tokio::sync::watch::channel(None).0,
             commands,
@@ -71,6 +142,9 @@ impl Default for MobileClient {
     }
 }
 impl MobileClient {
+    pub fn update_local_map(&self, sample: Option<crate::mobile_local::Snapshot>) {
+        self.local_map.send_replace(sample.map(|s| (s, Instant::now())));
+    }
     pub fn update_depth(&self, sample: Option<crate::mobile_depth::Sample>) {
         self.depth
             .send_replace(sample.map(|s| (s, std::time::Instant::now())));
@@ -166,7 +240,6 @@ impl MobileClient {
             return Ok(());
         }
         let config = AukiPeerConfig::dev()
-            .direct_only()
             .with_listen_addresses(["/ip4/0.0.0.0/tcp/0".parse()?])?;
         let auth = AukiPeerBootstrap::authenticate(
             AuthClient::new(AuthEnvironment::dev())?,
@@ -180,6 +253,9 @@ impl MobileClient {
                     .map_err(|_| anyhow::anyhow!("Auki User sign-in failed. Check your account and network."))?,
         };
         // Await startup and then always shut it down if Stop arrived meanwhile.
+        // Advertise the mounted component endpoint and current relay routes so
+        // Home can inspect this phone's catalog, not just receive pushed maps.
+        let bootstrap = bootstrap.with_dds_tracker(auki_sdk::DdsTrackerMode::DiscoverAndAdvertise);
         // Dropping an in-progress SDK peer startup is not used as cancellation.
         self.status("connecting", "Authorizing phone in Home's transport Domain");
         let peer = bootstrap
@@ -275,13 +351,32 @@ impl MobileClient {
                         });
                     }
                 };
+                let mut local_publisher = None;
+                let local_work = async {
+                    let mut tick = tokio::time::interval(Duration::from_secs(1));
+                    loop {
+                        tick.tick().await;
+                        let latest = self.local_map.borrow().clone();
+                        let Some((sample, received)) = latest else { continue };
+                        if received.elapsed() > Duration::from_secs(3) { continue; }
+                        let result = async {
+                            if local_publisher.is_none() { local_publisher = Some(crate::mobile_local::Publisher::new(&peer)?); }
+                            let envelope = local_publisher.as_ref().unwrap().publish(sample)?;
+                            crate::mobile_local::send(&peer, &home, &envelope).await
+                        }.await;
+                        self.depth_status(match result { Ok(()) => "Local voxel map shared with Home (unaligned)".into(), Err(e) => format!("Local map: {e}") });
+                    }
+                    #[allow(unreachable_code)] Ok::<(), anyhow::Error>(())
+                };
                 let work = tokio::select! {
+                    result = local_work => result,
                     _ = pose_work => Ok(()),
                     _ = depth_work => Ok(()),
                     _ = self.follow_geometry(&peer, &home) => Ok(()),
                     result = self.follow(&peer, &home) => result,
                     _ = commands => Ok(()),
                 };
+                if let Some(publisher) = local_publisher { let _ = publisher.close().await; }
                 if let Some(publisher) = depth_publisher {
                     let _ = publisher.close().await;
                 }
@@ -298,9 +393,7 @@ impl MobileClient {
                 let cleanup = peer.shutdown().await.map_err(anyhow::Error::from);
                 work.and(cleanup)
             }
-            Err(_) => Err(anyhow::anyhow!(
-                "Phone authorization failed. Verify your User can access Home's Domain."
-            )),
+            Err(error) => Err(anyhow::anyhow!(startup_error(&error))),
         };
         bootstrap.session().close().await;
         result

@@ -1,0 +1,10 @@
+cmake_minimum_required(VERSION 3.22.1)
+project(annotator_bridge LANGUAGES CXX)
+add_library(portal_core STATIC IMPORTED)
+set_target_properties(portal_core PROPERTIES IMPORTED_LOCATION
+    "${CMAKE_CURRENT_LIST_DIR}/../../../../native/arm64-v8a/libspatial_portal_bridge.a")
+add_library(annotator_bridge SHARED bridge.cpp)
+target_compile_features(annotator_bridge PRIVATE cxx_std_17)
+target_include_directories(annotator_bridge PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../../../../../ios/PortalBridge/include")
+target_link_options(annotator_bridge PRIVATE "-Wl,-z,max-page-size=16384")
+target_link_libraries(annotator_bridge portal_core android log dl m)

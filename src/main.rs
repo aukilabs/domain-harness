@@ -22,6 +22,10 @@ struct RunnerView {
     state: tokio::sync::watch::Receiver<spatial_home::scene_mirror::RemoteScene>,
 }
 struct AppState {
+    simulation_disconnect: tokio_util::sync::CancellationToken,
+    simulation:
+        Option<tokio::sync::watch::Receiver<spatial_home::simulated_robot::SimulationState>>,
+    fiducials: Mutex<spatial_home::fiducials::FiducialStore>,
     picks: Mutex<spatial_home::picking::Picks>,
     occupancy: spatial_home::robot_occupancy::Cache,
     ar_frames: spatial_home::ar_preview::Frames,
@@ -63,6 +67,8 @@ fn lock(state: &Shared) -> Result<std::sync::MutexGuard<'_, Store>, ApiError> {
 struct PreviewQuery {
     sensor: Option<String>,
     #[serde(default)]
+    scene: bool,
+    #[serde(default)]
     ar: bool,
     #[serde(default)]
     pick: bool,
@@ -75,6 +81,7 @@ async fn sensor_preview(
     s.previews
         .try_send(spatial_home::sensor_preview::Request {
             sensor: q.sensor,
+            scene: q.scene,
             ar: q.ar,
             pick: q.pick,
             reply,
@@ -190,6 +197,7 @@ async fn home_live_scene(State(s): State<Shared>) -> ApiResult {
     if live.scene.is_none() {
         let store = lock(&s)?;
         let mut view = serde_json::to_value(&store.built.view).map_err(anyhow::Error::from)?;
+        view["landmarks"] = store.built.registries["landmarks"].clone();
         view["notes"] = json!(
             spatial_home::notes::from_registries(
                 &store.built.registries,
@@ -235,10 +243,28 @@ async fn home_live_status(State(s): State<Shared>) -> ApiResult {
 async fn scene_sources(State(s): State<Shared>) -> ApiResult {
     let mut status = s.remote_scene.borrow().status_view();
     let mut local = vec![json!({"id":"demo","name":"Home Server"})];
+    if let Some(simulation) = &s.simulation {
+        let simulation = simulation.borrow();
+        if simulation.status == "running" && simulation.voxels.is_some() {
+            local.push(json!({"id":"sim-voxels","name":"Simulated robot · voxels","available":true,"status":"running"}));
+        }
+        if simulation.occupancy.is_some() {
+            local.push(json!({"id":"sim-occupancy","name":"Home · accumulated occupancy 2D","available":true,"status":if simulation.status == "running" {"live"} else {"retained"}}));
+        }
+    }
     if s.home_live.borrow().scene.is_some() {
         local.push(json!({"id":"home-live","name":"Home live map"}));
     }
     status["local"] = json!(local);
+    status["phones"] = spatial_home::mobile_local::sources();
+    // Catalog listing opens no scene subscriptions or sensor streams.
+    status["scenes"] = json!([]);
+    let (reply, receive) = tokio::sync::oneshot::channel();
+    if s.previews.try_send(spatial_home::sensor_preview::Request {sensor:None, scene:true, ar:false, pick:false, reply}).is_ok() {
+        if let Ok(Ok(Ok(value))) = tokio::time::timeout(std::time::Duration::from_secs(2), receive).await {
+            status["scenes"] = value["scenes"].clone();
+        }
+    }
     status["runners"] = json!(
         s.runners
             .iter()
@@ -253,9 +279,63 @@ async fn scene_sources(State(s): State<Shared>) -> ApiResult {
     );
     Ok(Json(status))
 }
+
+async fn phone_local_scene(axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String,String>>) -> ApiResult {
+    Ok(Json(spatial_home::mobile_local::render(q.get("peer").ok_or_else(|| anyhow::anyhow!("Missing phone peer"))?)?))
+}
+#[derive(Deserialize)]
+struct SimulationQuery {
+    snapshot: Option<bool>,
+}
+async fn disconnect_simulated_robots(State(s): State<Shared>, headers: HeaderMap) -> ApiResult {
+    local_write(&headers)?;
+    if s.simulation.is_none() {
+        return Err(anyhow::anyhow!("Simulation is not enabled").into());
+    }
+    s.simulation_disconnect.cancel();
+    Ok(Json(json!({"status":"disconnecting","home":"running"})))
+}
+async fn simulation_scene(
+    State(s): State<Shared>,
+    axum::extract::Path(layer): axum::extract::Path<String>,
+    axum::extract::Query(q): axum::extract::Query<SimulationQuery>,
+) -> ApiResult {
+    let state = s
+        .simulation
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Robot simulator is not enabled"))?
+        .borrow();
+    let snapshot = q.snapshot.unwrap_or(false);
+    if layer == "voxels" && state.status != "running" {
+        return Err(anyhow::anyhow!("Robot voxel publishers unavailable: {}", state.status).into());
+    }
+    let value = match (layer.as_str(), snapshot) {
+        ("voxels", true) => state.source_snapshot.clone(),
+        ("occupancy", true) => state
+            .occupancy_snapshot
+            .as_ref()
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(anyhow::Error::from)?,
+        ("voxels", false) => state.voxels.clone(),
+        ("occupancy", false) => state.occupancy.clone(),
+        _ => return Err(anyhow::anyhow!("Unknown simulation layer").into()),
+    };
+    let mut value =
+        value.ok_or_else(|| anyhow::anyhow!("Simulator {}: {}", state.status, state.detail))?;
+    if !snapshot {
+        value["simulation_status"] = json!(state.status);
+        value["simulation_detail"] = json!(state.detail);
+        if state.status != "running" {
+            value["remote_status"] = json!({"status":"stale","age_ms":null});
+        }
+    }
+    Ok(Json(value))
+}
 async fn scene(State(s): State<Shared>) -> ApiResult {
     let store = lock(&s)?;
     let mut view = serde_json::to_value(&store.built.view).map_err(anyhow::Error::from)?;
+    view["landmarks"] = store.built.registries["landmarks"].clone();
     view["notes"] = json!(
         spatial_home::notes::from_registries(&store.built.registries, spatial_home::model::FRAME)?
             .items
@@ -340,6 +420,133 @@ async fn portal_sizes() -> ApiResult {
         serde_json::to_value(sizes).map_err(anyhow::Error::from)?,
     ))
 }
+async fn fiducial_catalog(State(s): State<Shared>) -> ApiResult {
+    let store = s
+        .fiducials
+        .lock()
+        .map_err(|_| anyhow::anyhow!("fiducial registry unavailable"))?;
+    Ok(Json(spatial_home::fiducials::catalog_view(&store)))
+}
+#[derive(Deserialize)]
+struct LandmarkQuery {
+    landmark_type: Option<String>,
+}
+async fn landmark_catalog(
+    State(s): State<Shared>,
+    axum::extract::Query(query): axum::extract::Query<LandmarkQuery>,
+) -> ApiResult {
+    let store = lock(&s)?;
+    let mut landmarks = spatial_home::landmarks::from_registries(
+        &store.built.registries,
+        &store.built.portals.scenegraph.map.frame.id,
+    )?;
+    if let Some(kind) = query.landmark_type {
+        landmarks
+            .landmarks
+            .retain(|_, landmark| landmark.recognition.landmark_type == kind);
+        // Keep all parents available to resolve the filtered positions.
+    }
+    Ok(Json(
+        serde_json::to_value(landmarks).map_err(anyhow::Error::from)?,
+    ))
+}
+async fn create_fiducial(
+    State(s): State<Shared>,
+    headers: HeaderMap,
+    Json(request): Json<spatial_home::fiducials::CreateFiducial>,
+) -> ApiResult {
+    local_write(&headers)?;
+    let mut fiducials = s
+        .fiducials
+        .lock()
+        .map_err(|_| anyhow::anyhow!("fiducial registry unavailable"))?;
+    let mut store = lock(&s)?;
+    let marker = fiducials.create(request)?;
+    store.built.registries["fiducials"] = spatial_home::fiducials::registry_view(&fiducials);
+    s.changes.send_replace(());
+    Ok(Json(spatial_home::fiducials::marker_view(&marker)))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FiducialMeasurement {
+    side_length_m: f64,
+}
+async fn resize_fiducial(
+    State(s): State<Shared>,
+    headers: HeaderMap,
+    axum::extract::Path((family, id)): axum::extract::Path<(String, u32)>,
+    Json(request): Json<FiducialMeasurement>,
+) -> ApiResult {
+    local_write(&headers)?;
+    let family = spatial_home::fiducials::FiducialFamily::parse_slug(&family)
+        .ok_or_else(|| anyhow::anyhow!("unknown fiducial family"))?;
+    let mut fiducials = s
+        .fiducials
+        .lock()
+        .map_err(|_| anyhow::anyhow!("fiducial registry unavailable"))?;
+    let mut store = lock(&s)?;
+    let marker = fiducials.resize(family, id, request.side_length_m)?;
+    store.built.registries["fiducials"] = spatial_home::fiducials::registry_view(&fiducials);
+    s.changes.send_replace(());
+    Ok(Json(spatial_home::fiducials::marker_view(&marker)))
+}
+fn requested_fiducial(
+    state: &Shared,
+    family: &str,
+    id: u32,
+) -> Result<spatial_home::fiducials::Fiducial, ApiError> {
+    let family = spatial_home::fiducials::FiducialFamily::parse_slug(family)
+        .ok_or_else(|| anyhow::anyhow!("unknown fiducial family"))?;
+    state
+        .fiducials
+        .lock()
+        .map_err(|_| anyhow::anyhow!("fiducial registry unavailable"))?
+        .find(family, id)
+        .cloned()
+        .ok_or_else(|| ApiError(anyhow::anyhow!("fiducial is not registered")))
+}
+async fn fiducial_svg(
+    State(s): State<Shared>,
+    axum::extract::Path((family, id)): axum::extract::Path<(String, u32)>,
+) -> Result<Response, ApiError> {
+    let marker = requested_fiducial(&s, &family, id)?;
+    let svg = spatial_home::fiducials::printable_svg(&marker)?;
+    let filename = format!(
+        "{}-{}-{}mm.svg",
+        marker.family.slug(),
+        marker.id,
+        (marker.side_length_m * 1000.).round()
+    );
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("image/svg+xml; charset=utf-8"),
+    );
+    headers.insert(
+        header::CONTENT_DISPOSITION,
+        axum::http::HeaderValue::from_str(&format!("inline; filename=\"{filename}\""))
+            .map_err(anyhow::Error::from)?,
+    );
+    Ok((headers, svg).into_response())
+}
+async fn fiducial_print(
+    State(s): State<Shared>,
+    axum::extract::Path((family, id)): axum::extract::Path<(String, u32)>,
+) -> Result<Html<String>, ApiError> {
+    let marker = requested_fiducial(&s, &family, id)?;
+    let svg = spatial_home::fiducials::printable_svg(&marker)?;
+    let side_mm = marker.side_length_m * 1000.;
+    Ok(Html(format!(
+        r#"<!doctype html><html><head><meta charset="utf-8"><title>{} ID {}</title><style>
+        body{{margin:12mm;font:14px system-ui;color:#18181e}}.controls{{margin-bottom:10mm}}button{{padding:8px 14px}}svg{{display:block}}
+        @media print{{.controls{{display:none}}body{{margin:0}}}}@page{{margin:12mm}}
+        </style></head><body><div class="controls"><strong>{} ID {}</strong><p>Outer black square: {side_mm:.1} mm. Print at 100% / Actual size; disable “Fit to page”. The white quiet zone is additional.</p><button onclick="window.print()">Print marker</button></div>{svg}</body></html>"#,
+        marker.family.label(),
+        marker.id,
+        marker.family.label(),
+        marker.id,
+    )))
+}
 async fn catalog(State(s): State<Shared>) -> ApiResult {
     Ok(Json(lock(&s)?.built.catalog.clone()))
 }
@@ -350,6 +557,14 @@ async fn runner_pose(State(s): State<Shared>) -> ApiResult {
     Ok(Json(s.runner.borrow().view()))
 }
 async fn peer_status(State(s): State<Shared>) -> ApiResult {
+    if let Some(simulation) = &s.simulation {
+        let state = simulation.borrow();
+        return Ok(Json(if state.network.is_null() {
+            json!({"enabled":true,"simulation":true,"status":format!("Simulation · {}",state.status),"detail":state.detail})
+        } else {
+            state.network.clone()
+        }));
+    }
     Ok(Json(s.peer.borrow().clone()))
 }
 async fn home_connection(State(s): State<Shared>) -> ApiResult {
@@ -515,11 +730,18 @@ async fn vendor(axum::extract::Path(name): axum::extract::Path<String>) -> Respo
 }
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let simulate = std::env::var("SPATIAL_SIMULATED_ROBOT").as_deref() == Ok("1");
+    anyhow::ensure!(
+        !simulate || std::env::var_os("SPATIAL_PEER_CONFIG").is_none(),
+        "Simulation uses isolated loopback peers; unset SPATIAL_PEER_CONFIG first"
+    );
     let demo = std::env::var("SPATIAL_DEMO").as_deref() == Ok("1");
     let data = std::env::var_os("SPATIAL_DATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            PathBuf::from(if demo {
+            PathBuf::from(if simulate {
+                "data/simulated-robot/home.json"
+            } else if demo {
                 "data/home.json"
             } else {
                 "data/home-portals.json"
@@ -531,6 +753,9 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(std::path::Path::new("."));
     std::fs::create_dir_all(parent)?;
     let lock_path = data.with_extension("lock");
+    let fiducials = Mutex::new(spatial_home::fiducials::FiducialStore::load(
+        spatial_home::fiducials::registry_path(&data),
+    )?);
     let lock_file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -540,12 +765,19 @@ async fn main() -> anyhow::Result<()> {
     lock_file
         .try_lock()
         .map_err(|e| anyhow::anyhow!("another server owns this journal: {e}"))?;
-    let store = Arc::new(Mutex::new(if demo {
+    let mut store = if demo {
         Store::open(data)?
     } else {
         Store::open_canonical(data)?
-    }));
-    spatial_home::notes::initialize(&mut store.lock().unwrap())?;
+    };
+    spatial_home::notes::initialize(&mut store)?;
+    store.built.registries["fiducials"] = {
+        let fiducials = fiducials
+            .lock()
+            .map_err(|_| anyhow::anyhow!("fiducial registry unavailable"))?;
+        spatial_home::fiducials::registry_view(&fiducials)
+    };
+    let store = Arc::new(Mutex::new(store));
     let (changes, change_rx) = tokio::sync::watch::channel(());
     let (peer_tx, peer_rx) =
         tokio::sync::watch::channel(json!({"enabled":false,"status":"Disabled"}));
@@ -562,12 +794,30 @@ async fn main() -> anyhow::Result<()> {
     let occupancy = spatial_home::robot_occupancy::Cache::default();
     let ar_frames = spatial_home::ar_preview::Frames::default();
     let shutdown = tokio_util::sync::CancellationToken::new();
+    let simulation_disconnect = tokio_util::sync::CancellationToken::new();
     // Bind the local UI before starting a remote peer, so a busy UI port cannot
     // leave a discovery registration or relay reservation alive.
     let port: u16 = std::env::var("SPATIAL_PORT")
         .unwrap_or_else(|_| "4319".into())
         .parse()?;
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await?;
+    let (simulation_task, simulation) = if simulate {
+        let (tx, rx) =
+            tokio::sync::watch::channel(spatial_home::simulated_robot::SimulationState::default());
+        (
+            Some(tokio::spawn(spatial_home::simulated_robot::run_counted(
+                tx,
+                shutdown.clone(),
+                simulation_disconnect.clone(),
+                std::env::var("SPATIAL_SIMULATED_ROBOT_COUNT")
+                    .unwrap_or_else(|_| "1".into())
+                    .parse()?,
+            ))),
+            Some(rx),
+        )
+    } else {
+        (None, None)
+    };
     let mut runners = std::collections::BTreeMap::new();
     let network = if let Some(path) = std::env::var_os("SPATIAL_PEER_CONFIG") {
         let settings = spatial_home::peer::PeerSettings::load(std::path::Path::new(&path))?;
@@ -631,6 +881,9 @@ async fn main() -> anyhow::Result<()> {
         None
     };
     let state = Arc::new(AppState {
+        simulation_disconnect,
+        simulation,
+        fiducials,
         picks: Mutex::new(Default::default()),
         occupancy,
         ar_frames,
@@ -645,6 +898,11 @@ async fn main() -> anyhow::Result<()> {
         runners,
     });
     let app = Router::new()
+        .route(
+            "/api/simulation/disconnect",
+            post(disconnect_simulated_robots),
+        )
+        .route("/api/simulation/{layer}", get(simulation_scene))
         .route(
             "/",
             get(|| async { Html(include_str!("../web/index.html")) }),
@@ -690,10 +948,22 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/runner-scene", get(remote_scene))
         .route("/api/runner-snapshot", get(remote_snapshot))
         .route("/api/scene-sources", get(scene_sources))
+        .route("/api/phone-local-scene", get(phone_local_scene))
         .route("/api/domain-scene", get(domain_scene))
         .route("/api/domain-snapshot", get(domain_snapshot))
         .route("/api/fixtures", get(fixture))
         .route("/api/portal-sizes", get(portal_sizes))
+        .route("/api/landmarks", get(landmark_catalog))
+        .route(
+            "/api/fiducials",
+            get(fiducial_catalog).post(create_fiducial),
+        )
+        .route("/api/fiducials/{family}/{id}/marker.svg", get(fiducial_svg))
+        .route(
+            "/api/fiducials/{family}/{id}",
+            axum::routing::patch(resize_fiducial),
+        )
+        .route("/api/fiducials/{family}/{id}/print", get(fiducial_print))
         .route("/api/catalog", get(catalog))
         .route("/api/peer", get(peer_status))
         .route("/api/runner-pose", get(runner_pose))
@@ -707,7 +977,9 @@ async fn main() -> anyhow::Result<()> {
         .with_state(state);
     println!(
         "Spatial Home: http://127.0.0.1:{port} — SDK PR #425; P2P {}",
-        if network.is_some() {
+        if simulate {
+            "isolated robot simulation (loopback only)"
+        } else if network.is_some() {
             "enabled"
         } else {
             "disabled (set SPATIAL_PEER_CONFIG)"
@@ -723,6 +995,9 @@ async fn main() -> anyhow::Result<()> {
     shutdown.cancel();
     if let Some(network) = network {
         network.await??;
+    }
+    if let Some(simulation) = simulation_task {
+        simulation.await??;
     }
     server?;
     Ok(())
