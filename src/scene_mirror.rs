@@ -47,6 +47,8 @@ pub fn render_scene(s: &CanonicalScene) -> Result<Value> {
     };
     let target = crate::conventions::registry("home", &display)?;
     let portals = crate::conventions::portals(&s.portals, &display)?;
+    let landmarks =
+        crate::landmarks::from_registries(&s.registries, &s.frame)?.in_frame(&display)?;
     let notes = crate::notes::from_registries(&s.registries, &s.frame)?
         .in_frame(&s.voxels.definition.frame, &target)?;
     let mut voxels = crate::model::occupied(&s.voxels)?;
@@ -90,13 +92,14 @@ pub fn render_scene(s: &CanonicalScene) -> Result<Value> {
             }
         }
     }
-    let mut view = json!({"revision":s.revision,"frame":display,"local_map":local,"local_mapping":metadata,"source_frame":s.frame,"source_convention":s.portals.scenegraph.map.frame.convention,"convention":"OpenGL · Y up · meters",
+    let mut view = json!({"frame":display,"local_map":local,"local_mapping":metadata,"source_frame":s.frame,"source_convention":s.portals.scenegraph.map.frame.convention,"convention":"OpenGL · Y up · meters",
             "voxel_size":s.voxels.definition.grid().voxel_size_m.0,"voxels":voxels,
             "portals":portals.scenegraph.anchors.values().collect::<Vec<_>>(),"objects":objects,"notes":notes.items,
             "sources":{"galbot":s.voxels.integrated_observations},"integrated_observations":s.voxels.integrated_observations,
             "sdk_revision":s.sdk_revision,"mode":"Runner-owned scenegraph","demo":false,"synthetic_layout":null,"sensor_positions":{},
             "authority":"Galbot mapper","authority_peer_id":s.authority_peer_id,"remote_status":null});
     crate::mobile_pose::append_labels(&mut view, &s.registries["mobile_presence"]);
+    view["landmarks"] = serde_json::to_value(landmarks)?;
     Ok(view)
 }
 
@@ -120,8 +123,6 @@ pub async fn monitor(
         let work = async {
             let mut subscription = subscribe_scene(peer, config).await?;
             let result=async {
-                let mut previous=None;
-                let mut previous_frame=None;
                 loop {
                     let event=tokio::select! {_=stop.cancelled()=>return Ok(()),event=subscription.next()=>event?};
                     match event {
@@ -130,8 +131,6 @@ pub async fn monitor(
                             ensure!(s.frame==config.frame || (config.frame==crate::local_mapper::FAMILY && crate::local_mapper::is_local_frame(&s.frame)),"runner frame differs from connection profile");
                             ensure!(crate::model::clock_ref(&s.publication_clock)==subscription.product().producer.clock,"scene clock mismatch");
                             if !crate::local_mapper::is_local_frame(&s.frame) {ensure!(crate::conventions::matching_portals(&s.portals,portals)?,"Runner scene portal reference differs from Home");}
-                            ensure!(previous_frame.as_ref()!=Some(&s.frame) || previous.is_none_or(|r|s.revision>r),"runner scene revision did not advance");
-                            previous=Some(s.revision);previous_frame=Some(s.frame.clone());
                             state.send_replace(RemoteScene{scene:Some((**s).clone()),status:"connected".into(),detail:if crate::local_mapper::is_local_frame(&s.frame){if let Some(anchor)=s.registries["local_mapping"]["alignment_to_home"]["anchor"].as_str(){format!("Robot boot origin · blue observations · red Home references aligned via {anchor}")}else{"Robot boot origin · waiting for shared portal alignment".into()}}else{format!("Galbot {} → Home OpenGL · SDK conversion",s.portals.scenegraph.map.frame.convention.map(|c|c.as_str()).unwrap_or("unknown"))},received:Some(Instant::now())});
                         },
                         Some(RemoteObservationEvent::Gap(_))=>{}, // Complete snapshots replace prior state.

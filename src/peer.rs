@@ -72,6 +72,16 @@ impl PeerSettings {
         Ok(config)
     }
     pub async fn start(&self) -> Result<RunningPeer> {
+        self.start_with_discovery(
+            self.advertise_discovery
+                .then_some(auki_sdk::DdsTrackerMode::DiscoverAndAdvertise),
+        )
+        .await
+    }
+    pub async fn start_with_discovery(
+        &self,
+        mode: Option<auki_sdk::DdsTrackerMode>,
+    ) -> Result<RunningPeer> {
         if let Some(runner) = &self.runner {
             runner.validate()?;
         }
@@ -109,8 +119,8 @@ impl PeerSettings {
         let mut bootstrap =
             AukiPeerBootstrap::authenticate(AuthClient::new(environment)?, credentials, config)
                 .await?;
-        if self.advertise_discovery {
-            bootstrap = bootstrap.with_dds_tracker(auki_sdk::DdsTrackerMode::DiscoverAndAdvertise);
+        if let Some(mode) = mode {
+            bootstrap = bootstrap.with_dds_tracker(mode);
         }
         match bootstrap
             .start_persistent_peer(DomainSelection::new(domain), &self.identity_file)

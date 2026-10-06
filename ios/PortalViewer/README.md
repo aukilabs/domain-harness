@@ -47,12 +47,12 @@ Expired routes require downloading and importing a fresh Home connection profile
 `ios/PortalBridge` builds a C ABI static XCFramework around `src/mobile.rs`.
 That module reuses `network::subscribe_scene`, the same Rust Component consumer
 used by `spatial-runner`. It discovers the Product in the authenticated peer's
-catalog, subscribes to the latest complete scene and follows revisions. Validation
-checks the pinned peer, Domain, schema/SDK, frame, publication clock, monotonic
-revision, SDK Portal snapshot and voxel consistency before passing Portal poses and renderable scene content to Swift.
+catalog, subscribes to the latest complete scene and follows updates. Validation
+checks the pinned peer, Domain, schema/SDK, frame, publication clock,
+SDK Portal snapshot and voxel consistency before passing Portal poses and renderable scene content to Swift.
 Occupied voxels (including available color), semantic objects, text notes and
 runner poses share the same Home-to-AR transform. Voxels use batched meshes;
-scene-only revisions preserve alignment. It makes no Portal metadata or size-lookup backend calls.
+scene-only updates preserve alignment. It makes no Portal metadata or size-lookup backend calls.
 
 User credentials are used for SDK authentication and in-memory authority renewal.
 The password is cleared from the Swift form immediately after submission and is

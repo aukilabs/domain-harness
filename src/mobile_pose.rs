@@ -80,7 +80,6 @@ pub fn sync(store: &mut crate::model::Store, presence: &Presence, now: Instant) 
     let value = presence.snapshot(now);
     if store.built.registries["mobile_presence"] != value {
         store.built.registries["mobile_presence"] = value;
-        store.built.view.revision += 1;
     }
 }
 pub fn append_labels(view: &mut Value, registry: &Value) {

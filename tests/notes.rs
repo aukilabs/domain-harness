@@ -4,6 +4,115 @@ use spatial_home::{
     notes::{self, NewNote},
 };
 #[test]
+fn photo_thumbnails_are_generated_persisted_and_removed() -> Result<()> {
+    use base64::Engine;
+    let dir = tempfile::tempdir()?;
+    let mut store = Store::open_canonical(dir.path().join("home.json"))?;
+    notes::initialize(&mut store)?;
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
+        .encode_image(&image::DynamicImage::new_rgb8(640, 480))?;
+    let photo = format!(
+        "data:image/jpeg;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(jpeg)
+    );
+    let note = notes::add_detailed(
+        &mut store,
+        NewNote {
+            text: "Photo".into(),
+            portal: "UCOF1J40N7O".into(),
+            height_m: 0.,
+        },
+        notes::NoteDetails {
+            photo: Some(photo),
+            ..Default::default()
+        },
+    )?;
+    let encoded = note
+        .details
+        .thumbnail
+        .as_ref()
+        .unwrap()
+        .strip_prefix("data:image/jpeg;base64,")
+        .unwrap();
+    let thumbnail =
+        image::load_from_memory(&base64::engine::general_purpose::STANDARD.decode(encoded)?)?;
+    assert_eq!((thumbnail.width(), thumbnail.height()), (320, 240));
+    notes::initialize(&mut store)?;
+    assert_eq!(
+        notes::from_registries(&store.built.registries, FRAME)?.items[0]
+            .details
+            .thumbnail,
+        note.details.thumbnail
+    );
+    let mut details = note.details;
+    details.photo = None;
+    assert!(
+        notes::update(&mut store, &note.id, note.text, Some(details))?
+            .details
+            .thumbnail
+            .is_none()
+    );
+    Ok(())
+}
+#[test]
+fn rich_notes_and_reference_floor_placement_persist() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("home.json");
+    let mut store = Store::open_canonical(&path)?;
+    notes::initialize(&mut store)?;
+    let mut picks = spatial_home::picking::Picks::default();
+    let result = picks.pick_canonical([2., 3., 4.], [0., -1., 0.], &[], 0.1)?;
+    let contact = picks.contact(result["hit"]["token"].as_str().unwrap())?;
+    assert!(contact.anchor.floor);
+    assert_eq!(contact.position, [2., 0., 4.]);
+    let details = notes::NoteDetails {
+        thumbnail: None,
+        name: "Inspection".into(),
+        title: "Check entrance".into(),
+        description: "A longer description\nwith another line.".into(),
+        photo: None,
+    };
+    let note =
+        notes::add_surface_detailed(&mut store, details.name.clone(), contact, details.clone())?;
+    let mut invalid = details.clone();
+    invalid.photo = Some("data:image/svg+xml;base64,AAAA".into());
+    assert!(notes::update(&mut store, &note.id, note.text.clone(), Some(invalid)).is_err());
+    let mut reopened = Store::open_canonical(&path)?;
+    notes::initialize(&mut reopened)?;
+    assert_eq!(
+        notes::from_registries(&reopened.built.registries, FRAME)?.items[0].details,
+        details
+    );
+    Ok(())
+}
+#[test]
+fn editing_note_preserves_anchor_and_validates_before_persisting() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("home.json");
+    let mut store = Store::open_canonical(&path)?;
+    notes::initialize(&mut store)?;
+    let original = notes::add(
+        &mut store,
+        NewNote {
+            text: "Original".into(),
+            portal: "UCOF1J40N7O".into(),
+            height_m: 1.5,
+        },
+    )?;
+    let edited = notes::rename(&mut store, &original.id, "Edited".into())?;
+    assert_eq!(edited.position, original.position);
+    assert_eq!(edited.anchor_portal, original.anchor_portal);
+    assert!(notes::rename(&mut store, &original.id, "  ".into()).is_err());
+    let mut reopened = Store::open_canonical(&path)?;
+    notes::initialize(&mut reopened)?;
+    assert_eq!(
+        notes::from_registries(&reopened.built.registries, FRAME)?.items,
+        vec![edited]
+    );
+    Ok(())
+}
+#[test]
 fn notes_persist_and_use_home_up_not_portal_rotation() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("home.json");
@@ -191,12 +300,9 @@ fn deleting_one_annotation_persists_and_preserves_other_notes() -> Result<()> {
             .id,
         );
     }
-    let revision = store.built.view.revision;
     notes::remove(&mut store, &ids[0])?;
-    assert_eq!(store.built.view.revision, revision + 1);
     assert!(notes::remove(&mut store, &ids[0]).is_err());
     assert!(notes::remove(&mut store, "robot-name:peer").is_err());
-    assert_eq!(store.built.view.revision, revision + 1);
     let mut reopened = Store::open_canonical(&path)?;
     notes::initialize(&mut reopened)?;
     let remaining = notes::from_registries(&reopened.built.registries, FRAME)?;

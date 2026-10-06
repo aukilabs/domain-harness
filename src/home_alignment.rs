@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 pub struct HomePortals {
     pub portals: MapSnapshot,
     pub peer_id: String,
-    pub revision: usize,
+
     pub anchor: String,
 }
 impl HomePortals {
@@ -69,7 +69,7 @@ impl HomePortals {
             );
         }
         let metadata = json!({"status":"aligned","anchor":self.anchor,"home_peer_id":self.peer_id,
-            "home_revision":self.revision,"home_frame":self.portals.scenegraph.map.frame,
+            "home_frame":self.portals.scenegraph.map.frame,
             "converted_home_frame":converted.scenegraph.map.frame,
             "runner_frame":target.id,"converted_home_to_runner":transform,
             "method":"SDK convention conversion, then latest shared-portal rigid alignment",

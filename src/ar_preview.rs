@@ -139,7 +139,7 @@ pub fn render(frame: &Frame, scene: &crate::network::CanonicalScene) -> Result<V
     Ok(
         json!({"sequence":frame.sequence,"capture_timestamp_ns":frame.timestamp_ns,"clock":frame.clock,
         "width":frame.width,"height":frame.height,"encoding":"luma8","data":frame.gray_base64,
-        "ar":{"status":"ready","notes":projected["notes"],"frame":target_id,"revision":scene.revision,"camera_to_map":camera,
+        "ar":{"status":"ready","notes":projected["notes"],"frame":target_id,"camera_to_map":camera,
         "intrinsics":{"fx":frame.intrinsics[0],"fy":frame.intrinsics[1],"cx":frame.intrinsics[2],"cy":frame.intrinsics[3]},
         "voxel_size":scene.voxels.definition.grid().voxel_size_m.0,"voxels":voxels}}),
     )
@@ -386,7 +386,7 @@ fn project_scene(
         }
     }
     Ok(
-        json!({"status":"ready","frame":scene.frame,"revision":scene.revision,"projection":"sdk-camera","lens_model":lens,"vertices":vertices,"voxel_count":count,"notes":notes}),
+        json!({"status":"ready","frame":scene.frame,"projection":"sdk-camera","lens_model":lens,"vertices":vertices,"voxel_count":count,"notes":notes}),
     )
 }
 

@@ -19,21 +19,13 @@ async fn mobile_receives_initial_and_live_portals_and_awaits_cancellation() -> R
         let home = HomeConnection::direct(&pair.a);
         let stop = CancellationToken::new();
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-        let consume = receive_portals(
-            &pair.b,
-            &home,
-            &stop,
-            Duration::from_secs(30),
-            |revision, portals| {
-                sender.send((revision, portals)).unwrap();
-            },
-        );
+        let consume = receive_portals(&pair.b, &home, &stop, Duration::from_secs(30), |portals| {
+            sender.send(portals).unwrap();
+        });
         let check = async {
-            let (revision, portals) =
-                tokio::time::timeout(Duration::from_secs(10), receiver.recv())
-                    .await?
-                    .unwrap();
-            assert_eq!(revision, 0);
+            let portals = tokio::time::timeout(Duration::from_secs(10), receiver.recv())
+                .await?
+                .unwrap();
             assert_eq!(
                 portals["scenegraph"]["anchors"].as_object().unwrap().len(),
                 14
@@ -48,11 +40,9 @@ async fn mobile_receives_initial_and_live_portals_and_awaits_cancellation() -> R
                 fixtures()?["contributions"][0].clone(),
             )?))?;
             publisher.publish(&store.built)?;
-            let (revision, updated) =
-                tokio::time::timeout(Duration::from_secs(10), receiver.recv())
-                    .await?
-                    .unwrap();
-            assert_eq!(revision, 1);
+            let updated = tokio::time::timeout(Duration::from_secs(10), receiver.recv())
+                .await?
+                .unwrap();
             assert!(!updated["render"]["voxels"].as_array().unwrap().is_empty());
             stop.cancel();
             Ok::<_, anyhow::Error>(())
@@ -88,7 +78,7 @@ async fn mobile_idle_refresh_rediscovers_restarted_home_product() -> Result<()> 
                     &home,
                     &CancellationToken::new(),
                     Duration::from_millis(100),
-                    |_, _| count += 1,
+                    |_| count += 1,
                 ),
             )
             .await??;
@@ -112,7 +102,7 @@ async fn mobile_rejects_wrong_transport_domain_without_delivering_a_scene() -> R
         &home,
         &CancellationToken::new(),
         Duration::from_millis(100),
-        |_, _| panic!("wrong-Domain data reached Swift"),
+        |_| panic!("wrong-Domain data reached Swift"),
     )
     .await;
     assert!(result.is_err());

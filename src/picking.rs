@@ -38,6 +38,36 @@ pub struct Picks {
     hits: VecDeque<(String, Instant, Contact)>,
 }
 impl Picks {
+    pub fn pick_canonical(
+        &mut self,
+        origin: [f64; 3],
+        direction: [f64; 3],
+        voxels: &[crate::raycast::Voxel],
+        size: f64,
+    ) -> Result<Value> {
+        let Some((hit, floor)) =
+            crate::mobile_notes::intersection(voxels, size, origin, direction)?
+        else {
+            return Ok(json!({"hit":null}));
+        };
+        let contact = Contact {
+            position: hit.position,
+            anchor: SurfaceAnchor {
+                floor,
+                frame: crate::model::FRAME.into(),
+
+                voxel_center: hit.center,
+                beam_diameter_m: 0.,
+            },
+        };
+        let token = uuid::Uuid::new_v4().to_string();
+        if self.hits.len() >= 128 {
+            self.hits.pop_front();
+        }
+        self.hits
+            .push_back((token.clone(), Instant::now(), contact));
+        Ok(json!({"hit":{"token":token,"position":hit.position,"floor":floor},"beam_diameter_m":0}))
+    }
     pub fn remember_camera(&mut self, value: Value) -> Result<String> {
         let geometry: CameraGeometry = serde_json::from_value(value)?;
         geometry.camera_to_map.validate()?;
@@ -139,7 +169,7 @@ impl Picks {
             anchor: SurfaceAnchor {
                 floor: false,
                 frame: scene.frame.clone(),
-                revision: scene.revision,
+
                 voxel_center: hit.center,
                 beam_diameter_m: 0.5,
             },

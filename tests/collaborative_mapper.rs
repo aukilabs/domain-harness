@@ -175,9 +175,9 @@ fn different_markers_and_unsynchronized_clocks_fuse_and_clear_the_same_cells() -
     assert_eq!(colors.blue_sum, 1.);
 
     assert_eq!(map.voxels.as_ref().unwrap().definition.sources.len(), 2);
-    let revision = map.revision;
+    let before = serde_json::to_value(map.scene()?)?;
     assert!(!map.integrate(a)?);
-    assert_eq!(map.revision, revision);
+    assert_eq!(serde_json::to_value(map.scene()?)?, before);
     assert!(map.integrate(scan(
         &canonical,
         "a",
@@ -385,6 +385,33 @@ fn home_camera_localization_accepts_a_different_known_portal_without_seeing_ucof
     assert!(fusion.integrate(scans[0].clone())?);
     let scene = fusion.scene()?.unwrap();
     assert_eq!(scene.voxels.integrated_observations, 1);
+    let landmarks = spatial_home::landmarks::from_registries(&scene.registries, &scene.frame)?;
+    let local_landmarks = map.landmarks(&map.portals()?)?;
+    let corner_id = format!("{code}/top_left");
+    assert_eq!(
+        landmarks.landmarks[&corner_id].provenance,
+        local_landmarks.landmarks[&corner_id].provenance
+    );
+    assert!(
+        landmarks
+            .components
+            .contains(&local_landmarks.components[0])
+    );
+    let rendered = spatial_home::scene_mirror::render_scene(&scene)?;
+    let display_landmarks: spatial_home::landmarks::Landmarks =
+        serde_json::from_value(rendered["landmarks"].clone())?;
+    let expected_point = spatial_home::conventions::point(
+        landmarks.position_in_map(&corner_id)?,
+        &scene.voxels.definition.frame,
+        &spatial_home::conventions::registry("home", &display_landmarks.frame)?,
+    )?;
+    for (a, b) in display_landmarks
+        .position_in_map(&corner_id)?
+        .into_iter()
+        .zip(expected_point)
+    {
+        assert!((a - b).abs() < 1e-9);
+    }
     assert_eq!(
         scene.registries["collaborative_mapping"]["runners"][owner]["origin"]["calibration"]["portal_id"],
         code

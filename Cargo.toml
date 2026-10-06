@@ -8,6 +8,11 @@ default-run = "spatial-home"
 members = ["ios/PortalBridge"]
 default-members = ["."]
 resolver = "3"
+exclude = ["vendor/auki-p2p", "vendor/auki-component-protocol"]
+
+[patch."https://github.com/aukilabs/auki-sdk.git"]
+auki-p2p = { path = "vendor/auki-p2p" }
+auki-component-protocol = { path = "vendor/auki-component-protocol" }
 
 [dependencies]
 futures = "0.3"
@@ -32,20 +37,23 @@ auki-odometry = { git = "https://github.com/aukilabs/auki-sdk.git", rev = "3342d
 
 base64 = "0.22"
 prost = "0.13"
+calib-targets-aruco = "0.15.4"
 
 auki-mappers = { git = "https://github.com/aukilabs/auki-sdk.git", rev = "3342d589605846f5f45c1de5430dd22923555de2", default-features = false }
 
 auki-qr-detector = { git = "https://github.com/aukilabs/auki-sdk.git", rev = "3342d589605846f5f45c1de5430dd22923555de2" }
 auki-qr-localizer = { git = "https://github.com/aukilabs/auki-sdk.git", rev = "3342d589605846f5f45c1de5430dd22923555de2" }
 
-[dev-dependencies]
-qrcode = { version = "0.14", default-features = false }
-tempfile = "3"
+# The explicitly enabled robot simulator uses an isolated loopback authority.
 chrono = "0.4"
 jsonwebtoken = "9"
 p256 = { version = "0.13", features = ["pem"] }
 rand = "0.8"
 auki-p2p = { git = "https://github.com/aukilabs/auki-sdk.git", rev = "3342d589605846f5f45c1de5430dd22923555de2" }
+
+[dev-dependencies]
+qrcode = { version = "0.14", default-features = false }
+tempfile = "3"
 
 # Live multi-sensor mapping runs on the robot too. Optimize the CPU-heavy map
 # and serialization paths while retaining debug symbols and fast dependency builds.

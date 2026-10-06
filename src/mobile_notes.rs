@@ -100,13 +100,14 @@ pub fn place_with_live(
         TextNote {
             id: request.id,
             text: request.text.trim().into(),
+            details: crate::notes::NoteDetails::default(),
             position: hit.position,
             anchor_portal: String::new(),
             anchor_robot: None,
             height_m: 0.,
             anchor_surface: Some(SurfaceAnchor {
                 frame: FRAME.into(),
-                revision: store.built.view.revision,
+
                 voxel_center: hit.center,
                 beam_diameter_m: 0.,
                 floor,

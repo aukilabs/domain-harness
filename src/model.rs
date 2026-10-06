@@ -85,7 +85,6 @@ pub struct SemanticObject {
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct View {
-    pub revision: usize,
     pub frame: &'static str,
     pub convention: &'static str,
     pub voxel_size: f64,
@@ -275,6 +274,11 @@ impl Store {
             .cloned()
             .collect();
         self.built.registries = serde_json::json!({"frames":[self.built.voxels.definition.frame],"source_bindings":self.built.voxels.definition.sources,"clocks":[clock_entry(owner,&publication)]});
+        self.built.registries["landmarks"] = serde_json::to_value(crate::landmarks::portal_map(
+            &self.built.portals,
+            Some(map.component().reference().clone()),
+            &Default::default(),
+        )?)?;
         self.built._map = map;
         self.built._runtime = runtime;
         Ok(())
@@ -302,7 +306,10 @@ impl Store {
         journal.events.push(event);
         let mut built = build(&journal.events)?;
         built.registries["text_notes"] = self.built.registries["text_notes"].clone();
-        built.view.revision = self.built.view.revision + 1;
+        if self.built.registries.get("fiducials").is_some() {
+            built.registries["fiducials"] = self.built.registries["fiducials"].clone();
+        }
+
         // Validate and build before persisting; publish only after an atomic replacement.
         persist(&self.path, &journal)?;
         self.journal = journal;
@@ -685,7 +692,6 @@ fn build_mode(events: &[Event], demo: bool) -> Result<Built> {
         }
     }
     let view = View {
-        revision: events.len(),
         frame: FRAME,
         convention: "OpenGL · Y up · meters",
         voxel_size: VOXEL_SIZE,
@@ -726,11 +732,16 @@ fn build_mode(events: &[Event], demo: bool) -> Result<Built> {
     }
     let domain_portals = snapshot(&domain_map)?;
     let catalog = serde_json::to_value(runtime.catalog().snapshot())?;
-    let registries = serde_json::json!({
+    let mut registries = serde_json::json!({
         "clocks": [host_clock_definition, clock_entry("iphone", "synthetic-v1"), clock_entry("bracketbot", "synthetic-v1")],
         "frames": [FrameRegistryEntry::opengl("home", FRAME), FrameRegistryEntry::opengl("home", crate::domain_portals::FRAME), FrameRegistryEntry::ros_optical("iphone", "iphone-optical"), FrameRegistryEntry::ros_optical("bracketbot", "bracketbot-optical")],
         "source_catalogs": sources.iter().map(|s| s._runtime.catalog().snapshot()).collect::<Vec<_>>()
     });
+    registries["landmarks"] = serde_json::to_value(crate::landmarks::portal_map(
+        &portals,
+        Some(map.component().reference().clone()),
+        &Default::default(),
+    )?)?;
     Ok(Built {
         registries,
         domain_portals,

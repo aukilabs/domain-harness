@@ -1,6 +1,26 @@
 //! Single-client C ABI. Swift owns returned strings and releases them with
 //! spatial_mobile_string_free. All peer work and cleanup stay on Tokio.
 use spatial_home::mobile::MobileClient;
+
+/// Submit a bounded phone-local map, or null to stop sharing it.
+/// # Safety
+/// Non-null input must be a live NUL-terminated UTF-8 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spatial_mobile_local_map(value: *const std::ffi::c_char) -> i32 {
+    std::panic::catch_unwind(|| {
+        let sample = if value.is_null() { None } else {
+            let bytes = unsafe { std::ffi::CStr::from_ptr(value) }.to_bytes();
+            if bytes.len() > 512 * 1024 { return 0; }
+            let Ok(s) = serde_json::from_slice::<spatial_home::mobile_local::Snapshot>(bytes) else {return 0};
+            if s.validate().is_err() { return 0; } Some(s)
+        };
+        if let Some(client) = CLIENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            if client.finished() { return 0; }
+            client.update_local_map(sample); return 1;
+        }
+        0
+    }).unwrap_or(0)
+}
 use std::{
     ffi::{CStr, CString, c_char},
     sync::{Arc, Mutex, OnceLock},

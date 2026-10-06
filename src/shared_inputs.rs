@@ -63,11 +63,11 @@ impl InputPublisher {
     }
     pub fn publish(&mut self, inputs: &[MappingInput], timestamp: u64) -> Result<()> {
         for input in inputs {
-            if self.last.is_some_and(|r| input.revision <= r) {
+            if self.last.is_some_and(|r| input.sequence <= r) {
                 continue;
             }
             ensure!(
-                self.last.is_none_or(|r| input.revision == r + 1),
+                self.last.is_none_or(|r| input.sequence == r + 1),
                 "accepted input publication gap"
             );
             ensure!(input_size(input) < 128 * 1024, "mapping input too large");
@@ -78,7 +78,7 @@ impl InputPublisher {
                 self.capture.errors().is_empty(),
                 "mapping input retention failed"
             );
-            self.last = Some(input.revision);
+            self.last = Some(input.sequence);
         }
         Ok(())
     }

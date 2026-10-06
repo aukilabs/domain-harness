@@ -174,7 +174,7 @@ Proposed responsibilities; SDK reuse and component boundaries remain to be verif
 
 Implemented a read-only `spatial-runner` client: pair with a public Home connection
 profile, authenticate as a distinct peer, discover the canonical scene Product,
-and receive full snapshots and subsequent revisions. `--once` saves one snapshot;
+and receive full snapshots and subsequent snapshots. `--once` saves one snapshot;
 continuous mode follows until interrupted or transport failure. No motion adapter
 or implicit robot-to-map alignment is included.
 
@@ -240,7 +240,7 @@ and its existing sensor/pose components continue running unchanged.
 Components: authenticated input subscriber; SDK portal voxel mapper/accumulator;
 manual portal reference; checkpoint and input cursor; scene Product publisher.
 Source peer, sequence, calibration and capture-time transform remain attached to
-inputs. Duplicate input revisions are skipped; missing continuation is reported
+inputs. Duplicate input sequence numbers are skipped; missing continuation is reported
 instead of silently omitting observations. Reconnection replays the bounded
 retained window. A gap larger than 256 accepted scans needs an explicit rebuild
 or a future durable observation archive.

@@ -20,17 +20,16 @@ use std::{sync::Arc, time::Instant};
 
 pub const SCENE_SCHEMA: &str = "spatial-harness.canonical-scene/v1";
 pub const SCENE_PRODUCT: &str = "canonical-scene";
-const MAX_SCENE_BYTES: usize = 24 * 1024 * 1024;
+pub(crate) const MAX_SCENE_BYTES: usize = 24 * 1024 * 1024;
 
 /// Complete replacement state, never additive voxel evidence. Publication time
 /// belongs to the boot clock; capture clocks inside snapshots remain unchanged.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct CanonicalScene {
     pub schema: String,
     pub sdk_revision: String,
     pub authority_peer_id: String,
-    pub revision: usize,
+
     pub frame: String,
     pub publication_clock: ClockRegistryEntry,
     pub portals: MapSnapshot,
@@ -62,6 +61,7 @@ impl CanonicalScene {
         );
         self.portals.validate()?;
         crate::notes::from_registries(&self.registries, &self.frame)?;
+        crate::landmarks::from_registries(&self.registries, &self.frame)?;
         crate::conventions::validate_frame(&self.portals.scenegraph.map.frame)?;
         ensure!(
             self.voxels.definition.portal_map == self.portals.scenegraph.map,
@@ -172,7 +172,7 @@ pub struct ScenePublisher {
     peer_id: String,
     clock: ClockRegistryEntry,
     started: Instant,
-    last_revision: Option<usize>,
+    last_scene: Option<Vec<u8>>,
     inputs: crate::shared_inputs::InputPublisher,
     live: Option<(
         Component,
@@ -232,7 +232,7 @@ impl ScenePublisher {
             peer_id,
             clock,
             started: Instant::now(),
-            last_revision: None,
+            last_scene: None,
         })
     }
     pub fn enable_annotations(
@@ -406,14 +406,11 @@ impl ScenePublisher {
         Ok(())
     }
     pub fn publish(&mut self, built: &Built) -> Result<bool> {
-        if self.last_revision == Some(built.view.revision) {
-            return Ok(false);
-        }
         let scene = CanonicalScene {
             schema: SCENE_SCHEMA.into(),
             sdk_revision: SDK_REV.into(),
             authority_peer_id: self.peer_id.clone(),
-            revision: built.view.revision,
+
             frame: built.portals.scenegraph.map.frame.id.clone(),
             publication_clock: self.clock.clone(),
             portals: built.portals.clone(),
@@ -422,6 +419,10 @@ impl ScenePublisher {
             registries: built.registries.clone(),
         };
         scene.validate(&self.peer_id)?;
+        let content = serde_json::to_vec(&scene)?;
+        if self.last_scene.as_ref() == Some(&content) {
+            return Ok(false);
+        }
         self.output
             .publish(self.started.elapsed().as_nanos() as u64, Arc::new(scene))?;
         ensure!(
@@ -429,7 +430,7 @@ impl ScenePublisher {
             "scene capture failed: {:?}",
             self.capture.errors()
         );
-        self.last_revision = Some(built.view.revision);
+        self.last_scene = Some(content);
         Ok(true)
     }
     pub fn publish_local(
@@ -446,11 +447,12 @@ impl ScenePublisher {
             portals = aligned;
             registries["local_mapping"]["alignment_to_home"] = metadata;
         }
+        registries["landmarks"] = serde_json::to_value(local.landmarks(&portals)?)?;
         let scene = CanonicalScene {
             schema: SCENE_SCHEMA.into(),
             sdk_revision: SDK_REV.into(),
             authority_peer_id: self.peer_id.clone(),
-            revision: local.revision,
+
             frame: local.frame.clone(),
             publication_clock: self.clock.clone(),
             portals,
@@ -488,7 +490,7 @@ pub async fn serve_scene(
     running: crate::peer::RunningPeer,
     store: Arc<std::sync::Mutex<crate::model::Store>>,
     runner_names: std::collections::BTreeMap<String, String>,
-    mut revisions: tokio::sync::watch::Receiver<usize>,
+    mut changes: tokio::sync::watch::Receiver<()>,
     status: tokio::sync::watch::Sender<Value>,
     runner: Option<crate::runner_pose::RunnerConfig>,
     runner_scene: Option<HomeConnection>,
@@ -548,6 +550,11 @@ pub async fn serve_scene(
     );
     let robot_occupancy =
         crate::robot_occupancy::monitor(&running.peer, &home_sources, &occupancy, &monitor_stop);
+    let (catalog_tx, mut catalog_rx) = tokio::sync::watch::channel(crate::device_catalogs::Catalogs::new());
+    let catalog_targets: Vec<_> = home_sources.iter().map(|p| (p.peer_id.clone(), p.routes.clone()))
+        .chain(runner.iter().map(|r| (r.peer_id.clone(), r.routes.clone()))).collect();
+    let catalogs = crate::device_catalogs::monitor(&running.peer, &catalog_targets, catalog_tx, &monitor_stop);
+    let preview_catalogs = catalog_rx.clone();
     let publish = async {
         let publisher = ScenePublisher::mount(&running.peer);
         let result = match publisher {
@@ -555,6 +562,19 @@ pub async fn serve_scene(
             Ok(mut publisher) => {
                 let work = async {
                 publisher.enable_home_live()?;
+                crate::mobile_local::mount_receiver(&publisher.runtime, &publisher.endpoint)?;
+                // Opt in with a measured floor height in the live map's up axis.
+                // Bind the same retained Product that peers subscribe to.
+                let mut occupancy_mapper = match std::env::var("SPATIAL_OCCUPANCY_FLOOR_M") {
+                    Ok(floor) => Some(crate::occupancy_mapper::OccupancyMapper::mount(
+                        &publisher.runtime, &publisher.endpoint,
+                        &publisher.live.as_ref().unwrap().2.product(),
+                        &publisher.peer_id, clock_ref(&publisher.clock),
+                        crate::occupancy_mapper::Config::new(floor.parse()?),
+                    )?),
+                    Err(std::env::VarError::NotPresent) => None,
+                    Err(e) => return Err(e.into()),
+                };
                 publisher.enable_phone_depth(phone_depth.clone(),remote_portals.clone())?;
                 let annotation_changes = Arc::new(tokio::sync::Notify::new());
                 publisher.enable_annotations_with_live(store.clone(), annotation_changes.clone(), Some(home_live.subscribe()))?;
@@ -572,21 +592,29 @@ pub async fn serve_scene(
                         publisher.publish(&store.built)?;
                     }
                     if let Some(scene)=live_updates.borrow().scene.as_ref() {
-                        let key=(scene.frame.clone(),scene.revision);
+                        let key=serde_json::to_vec(scene)?;
                         if last_live.as_ref()!=Some(&key) {publisher.publish_home_live(scene)?;last_live=Some(key);}
                     }
+                    if let Some(mapper) = &mut occupancy_mapper { mapper.tick()?; }
                     let connection = HomeConnection::current(&running.peer)?;
+                    let peers = crate::device_catalogs::device_rows(&running.peer, &catalog_rx.borrow());
                     status.send_replace(serde_json::json!({"enabled":true,
-                        "status":format!("{:?}", running.peer.status()), "connection":connection}));
+                        "status":format!("{:?}", running.peer.status()), "connection":connection,
+                        "peers":peers,"catalog":publisher.runtime.catalog().snapshot(),
+                        "occupancy_mapper":occupancy_mapper.as_ref().map(|m| serde_json::json!({
+                            "product":crate::occupancy_mapper::PRODUCT,
+                            "status":m.state().status,"detail":m.state().detail
+                        }))}));
                     tokio::select! {
                         _ = shutdown.cancelled() => break,
                         exit = running.peer.wait_stopped() => bail!("Home peer stopped: {exit:?}"),
-                        changed = revisions.changed() => { changed?; },
+                        changed = changes.changed() => { changed?; },
                         _ = annotation_changes.notified() => {},
                         _ = presence_tick.tick() => {},
                         changed = live_updates.changed() => { changed?; },
                         changed = peer_status.changed() => { changed?; },
                         changed = routes.changed() => { changed?; },
+                        changed = catalog_rx.changed() => { changed?; },
                     }
                 }
                 Ok::<_, anyhow::Error>(())
@@ -599,31 +627,22 @@ pub async fn serve_scene(
         monitor_stop.cancel();
         result
     };
-    let mut targets = Vec::new();
-    if let Some(r) = &runner {
-        targets.push((r.peer_id.clone(), r.routes.clone()));
-    }
-    if let Some(r) = &runner_scene {
-        targets.push((r.peer_id.clone(), r.routes.clone()));
-    }
-    for (profile, _) in &extra_runners {
-        targets.push((profile.peer_id.clone(), profile.routes.clone()));
-    }
     let previews = crate::sensor_preview::serve(
         &running.peer,
-        targets,
+        preview_catalogs,
         previews,
         home_live.subscribe(),
         &ar_frames,
         &monitor_stop,
     );
-    let (result, _, _, _, _, _) = tokio::join!(
+    let (result, _, _, _, _, _, _) = tokio::join!(
         publish,
         remote,
         previews,
         home_mapper,
         extra_monitors,
-        robot_occupancy
+        robot_occupancy,
+        catalogs
     );
     shutdown.cancel();
     status.send_replace(serde_json::json!({"enabled":true,"status":"Stopped"}));

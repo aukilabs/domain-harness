@@ -1,104 +1,322 @@
-//! Read-only previews from camera Products owned by configured peers.
+//! Demand-driven previews from typed Products in discovered SDK catalogs.
 use anyhow::{Result, anyhow, ensure};
 use auki_component_protocol::{
-    CatalogResponse, ComponentProtocolClient, ObservationRequest, ObservationSelection,
+    ComponentProtocolClient, ObservationRequest, ObservationSelection, ObservationStart,
+    RemoteObservationEvent,
 };
-use auki_components::{ContractType, PayloadContract, ProductReference, VideoFrame};
+use auki_components::{
+    BufferLimits, CatalogSnapshot, ContractType, Observation, OutputManifest, PayloadContract,
+    ProductReference, VideoFrame,
+};
 use auki_sdk::{AukiPeer, Multiaddr, PeerId};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
-use std::time::Duration;
-use tokio::sync::{mpsc, oneshot};
+use std::{
+    collections::BTreeMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+use tokio::sync::{mpsc, oneshot, watch};
 pub struct Request {
     pub sensor: Option<String>,
+    pub scene: bool,
     pub ar: bool,
     pub pick: bool,
     pub reply: oneshot::Sender<Result<Value>>,
 }
-struct Sensor {
+
+/// Discover scene products by SDK type and producer identity, not peer names.
+pub fn scene_products(catalogs: &crate::device_catalogs::Catalogs) -> Vec<Sensor> {
+    let mut found = Vec::new();
+    for (owner, row) in catalogs {
+        if row["catalog_status"] != "ready" {
+            continue;
+        }
+        let Ok(peer) = owner.parse::<PeerId>() else {
+            continue;
+        };
+        let Ok(snapshot) = serde_json::from_value::<CatalogSnapshot>(row["catalog"].clone()) else {
+            continue;
+        };
+        for p in &snapshot.products {
+            if p.manifest.peer_id != *owner {
+                continue;
+            }
+            let datatype = snapshot
+                .components
+                .iter()
+                .flat_map(|c| c.current_outputs.values())
+                .find_map(|o| {
+                    if o.manifest.peer_id != *owner || o.manifest.reference() != p.manifest.producer
+                    {
+                        return None;
+                    }
+                    match &o.manifest.payload {
+                        PayloadContract::Structured(c)
+                            if c.datatype == c.schema
+                                && [
+                                    crate::network::SCENE_SCHEMA,
+                                    crate::occupancy_mapper::SCHEMA,
+                                ]
+                                .contains(&c.datatype.as_str()) =>
+                        {
+                            Some(c.datatype.clone())
+                        }
+                        _ => None,
+                    }
+                });
+            let Some(datatype) = datatype else {
+                continue;
+            };
+            found.push(Sensor {
+                datatype,
+                id: format!("{owner}/{}", p.manifest.product_id),
+                peer,
+                reference: ProductReference {
+                    peer_id: owner.clone(),
+                    product_id: p.manifest.product_id.clone(),
+                    manifest_hash: p.manifest_hash.clone(),
+                },
+                route: row["catalog_route"].as_str().and_then(|r| r.parse().ok()),
+                metadata: p.metadata.clone(),
+                pose: None,
+            });
+        }
+    }
+    found
+}
+
+pub async fn read_scene(client: &ComponentProtocolClient, scene: &Sensor) -> Result<Value> {
+    let query = ObservationRequest {
+        product: scene.reference.clone(),
+        selection: ObservationSelection::LatestExisting,
+    };
+    if scene.datatype == crate::occupancy_mapper::SCHEMA {
+        let response = if let Some(route) = &scene.route {
+            client
+                .observations_exact::<crate::occupancy_mapper::OccupancyScene>(
+                    scene.peer,
+                    route.clone(),
+                    query,
+                )
+                .await?
+        } else {
+            client
+                .observations::<crate::occupancy_mapper::OccupancyScene>(scene.peer, query)
+                .await?
+        };
+        ensure!(
+            response.product.reference() == scene.reference
+                && response.gap.is_none()
+                && response.end.is_none(),
+            "Occupancy product changed or ended"
+        );
+        let observation = response
+            .observations
+            .last()
+            .ok_or_else(|| anyhow!("Waiting for occupancy map"))?;
+        let mut view =
+            crate::occupancy_mapper::render_scene(&observation.payload, &scene.reference.peer_id)?;
+        view["product_id"] = json!(scene.reference.product_id);
+        return Ok(view);
+    }
+    let response = if let Some(route) = &scene.route {
+        client
+            .observations_exact::<crate::network::CanonicalScene>(scene.peer, route.clone(), query)
+            .await?
+    } else {
+        client
+            .observations::<crate::network::CanonicalScene>(scene.peer, query)
+            .await?
+    };
+    ensure!(
+        response.product.reference() == scene.reference
+            && response.gap.is_none()
+            && response.end.is_none(),
+        "Scene product changed or ended"
+    );
+    let observation = response
+        .observations
+        .last()
+        .ok_or_else(|| anyhow!("Waiting for the first mapped scan"))?;
+    let snapshot = &observation.payload;
+    snapshot.validate(&scene.reference.peer_id)?;
+    let mut view = crate::scene_mirror::render_scene(snapshot)?;
+    view["authority"] = json!(scene.reference.peer_id);
+    view["sources"] =
+        json!({scene.reference.product_id.clone(): snapshot.voxels.integrated_observations});
+    view["product_id"] = json!(scene.reference.product_id);
+    Ok(view)
+}
+#[derive(Clone)]
+pub struct Sensor {
+    datatype: String,
     id: String,
     reference: ProductReference,
-    route: Multiaddr,
+    route: Option<Multiaddr>,
     peer: PeerId,
     metadata: Option<auki_components::CatalogProductMetadata>,
     pose: Option<ProductReference>,
 }
+
+pub fn camera_sensors(catalogs: &crate::device_catalogs::Catalogs) -> Vec<Sensor> {
+    let mut found = Vec::new();
+    for (owner, row) in catalogs {
+        if row["catalog_status"] != "ready" {
+            continue;
+        }
+        let Ok(expected) = owner.parse::<PeerId>() else {
+            continue;
+        };
+        let Ok(snapshot) = serde_json::from_value::<CatalogSnapshot>(row["catalog"].clone()) else {
+            continue;
+        };
+        let route = row["catalog_route"].as_str().and_then(|r| r.parse().ok());
+        for p in &snapshot.products {
+            if p.manifest.peer_id != *owner {
+                continue;
+            }
+            if !snapshot.components.iter().flat_map(|c|c.current_outputs.values()).any(|o|
+                o.manifest.peer_id == *owner && o.manifest.reference()==p.manifest.producer &&
+                matches!(&o.manifest.payload, PayloadContract::Camera(c) if c.datatype==VideoFrame::DATATYPE)) { continue; }
+            let pose_id = p
+                .metadata
+                .as_ref()
+                .and_then(|m| m.value["pose_product_id"].as_str());
+            let pose = snapshot.products.iter().find(|g|
+                g.manifest.peer_id == *owner && Some(g.manifest.product_id.as_str()) == pose_id &&
+                snapshot.components.iter().flat_map(|c|c.current_outputs.values()).any(|o|
+                    o.manifest.reference()==g.manifest.producer && matches!(&o.manifest.payload,
+                        PayloadContract::Structured(c) if c.datatype==auki_odometry::PoseUpdate::DATATYPE))
+            ).map(|g| ProductReference { peer_id:owner.clone(), product_id:g.manifest.product_id.clone(), manifest_hash:g.manifest_hash.clone() });
+            found.push(Sensor {
+                datatype: VideoFrame::DATATYPE.into(),
+                id: format!("{owner}/{}", p.manifest.product_id),
+                peer: expected,
+                reference: ProductReference {
+                    peer_id: owner.clone(),
+                    product_id: p.manifest.product_id.clone(),
+                    manifest_hash: p.manifest_hash.clone(),
+                },
+                route: route.clone(),
+                metadata: p.metadata.clone(),
+                pose,
+            });
+        }
+    }
+    found
+}
+
+struct Frame {
+    observation: Observation<VideoFrame>,
+    producer: OutputManifest,
+    received: Instant,
+}
+struct Preview {
+    reference: ProductReference,
+    used: Instant,
+    frames: watch::Receiver<Option<Arc<Frame>>>,
+    task: tokio::task::JoinHandle<()>,
+}
+impl Drop for Preview {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+fn start_preview(client: ComponentProtocolClient, sensor: Sensor) -> Preview {
+    let (send, frames) = watch::channel(None);
+    let reference = sensor.reference.clone();
+    let task = tokio::spawn(async move {
+        let limits = BufferLimits {
+            max_entries: Some(1),
+            max_bytes: Some(8 * 1024 * 1024),
+            target_duration: None,
+        };
+        let connect = async {
+            if let Some(route) = sensor.route {
+                client
+                    .subscribe_product_exact(
+                        sensor.peer,
+                        route,
+                        sensor.reference,
+                        ObservationStart::LatestExisting,
+                        limits,
+                        |f: &VideoFrame| f.bytes.len(),
+                    )
+                    .await
+            } else {
+                client
+                    .subscribe_product(
+                        sensor.peer,
+                        sensor.reference,
+                        ObservationStart::LatestExisting,
+                        limits,
+                        |f: &VideoFrame| f.bytes.len(),
+                    )
+                    .await
+            }
+        };
+        let Ok(Ok(mut subscription)) = tokio::time::timeout(Duration::from_secs(5), connect).await
+        else {
+            return;
+        };
+        let producer = subscription.product().producer.clone();
+        loop {
+            match subscription.next().await {
+                Ok(Some(RemoteObservationEvent::Observation(observation))) => {
+                    send.send_replace(Some(Arc::new(Frame {
+                        observation,
+                        producer: producer.clone(),
+                        received: Instant::now(),
+                    })));
+                }
+                Ok(Some(RemoteObservationEvent::Gap(_))) => continue,
+                _ => break,
+            }
+        }
+    });
+    Preview {
+        reference,
+        used: Instant::now(),
+        frames,
+        task,
+    }
+}
 pub async fn serve(
     peer: &AukiPeer,
-    targets: Vec<(String, Vec<String>)>,
+    catalogs: watch::Receiver<crate::device_catalogs::Catalogs>,
     mut requests: mpsc::Receiver<Request>,
     home_live: tokio::sync::watch::Receiver<crate::scene_mirror::RemoteScene>,
     ar_frames: &crate::ar_preview::Frames,
     stop: &tokio_util::sync::CancellationToken,
 ) {
     let client = ComponentProtocolClient::new(peer.protocols());
-    let mut sensors = Vec::<Sensor>::new();
-    let mut last_catalog = None::<std::time::Instant>;
+    let mut previews = BTreeMap::<String, Preview>::new();
+    let mut tick = tokio::time::interval(Duration::from_millis(100));
     loop {
-        let request = tokio::select! {_ = stop.cancelled()=>break, r=requests.recv()=>match r {Some(r)=>r,None=>break}};
+        let sensors = camera_sensors(&catalogs.borrow());
+        previews.retain(|id, p| {
+            p.used.elapsed() < Duration::from_secs(2)
+                && !p.task.is_finished()
+                && sensors
+                    .iter()
+                    .any(|s| s.id == *id && s.reference == p.reference)
+        });
+        let request = tokio::select! {_ = stop.cancelled()=>break, _ = tick.tick()=>continue, r=requests.recv()=>match r {Some(r)=>r,None=>break}};
+        let sensors = camera_sensors(&catalogs.borrow());
         let work = async {
-            if request.sensor.is_none()
-                && last_catalog.is_none_or(|t| t.elapsed() > Duration::from_secs(10))
-            {
-                let mut found = Vec::new();
-                for (owner, configured) in &targets {
-                    let expected: PeerId = owner.parse()?;
-                    let mut routes: Vec<Multiaddr> =
-                        configured.iter().filter_map(|s| s.parse().ok()).collect();
-                    if routes.is_empty()
-                        && let Ok(Ok(peers)) =
-                            tokio::time::timeout(Duration::from_secs(2), peer.discover()).await
-                    {
-                        for p in peers {
-                            if p.peer_id() == expected {
-                                routes.extend_from_slice(p.routes());
-                            }
-                        }
-                    }
-                    for route in routes {
-                        if let Ok(Ok(CatalogResponse::Snapshot { snapshot })) =
-                            tokio::time::timeout(
-                                Duration::from_secs(2),
-                                client.catalog_exact(expected, route.clone(), None),
-                            )
-                            .await
-                        {
-                            for p in &snapshot.products {
-                                if p.manifest.peer_id != *owner {
-                                    continue;
-                                }
-                                // Only typed image Products are eligible, never arbitrary routes from the browser.
-                                let Some(_camera) = snapshot.components.iter().flat_map(|c|c.current_outputs.values()).find(|o| o.manifest.reference()==p.manifest.producer && matches!(&o.manifest.payload, PayloadContract::Camera(c) if c.datatype==VideoFrame::DATATYPE)) else {continue;};
-                                let pose_id = p
-                                    .metadata
-                                    .as_ref()
-                                    .and_then(|m| m.value["pose_product_id"].as_str());
-                                let pose = snapshot.products.iter().find(|g| {
-                                    g.manifest.peer_id == *owner && Some(g.manifest.product_id.as_str()) == pose_id
-                                    && snapshot.components.iter().flat_map(|c|c.current_outputs.values()).any(|o|
-                                        o.manifest.reference()==g.manifest.producer && matches!(&o.manifest.payload,
-                                            PayloadContract::Structured(c) if c.datatype==auki_odometry::PoseUpdate::DATATYPE))
-                                }).map(|g| ProductReference { peer_id: owner.clone(), product_id:g.manifest.product_id.clone(), manifest_hash:g.manifest_hash.clone() });
-                                let id = format!("{owner}/{}", p.manifest.product_id);
-                                found.push(Sensor {
-                                    id,
-                                    reference: ProductReference {
-                                        peer_id: owner.clone(),
-                                        product_id: p.manifest.product_id.clone(),
-                                        manifest_hash: p.manifest_hash.clone(),
-                                    },
-                                    route: route.clone(),
-                                    peer: expected,
-                                    metadata: p.metadata.clone(),
-                                    pose,
-                                });
-                            }
-                            break;
-                        }
-                    }
-                }
-                sensors = found;
-                last_catalog = Some(std::time::Instant::now());
+            if request.scene {
+                let scenes = scene_products(&catalogs.borrow());
+                let Some(id) = &request.sensor else {
+                    return Ok(
+                        json!({"scenes":scenes.iter().map(|s|json!({"id":format!("peer-scene:{}",s.id),"name":s.reference.product_id,"peer_id":s.reference.peer_id})).collect::<Vec<_>>()}),
+                    );
+                };
+                let scene = scenes
+                    .iter()
+                    .find(|s| &s.id == id)
+                    .ok_or_else(|| anyhow!("Scene publisher unavailable"))?;
+                return read_scene(&client, scene).await;
             }
             let Some(id) = &request.sensor else {
                 return Ok(
@@ -115,29 +333,20 @@ pub async fn serve(
                     "Camera capture-time pose unavailable"
                 );
             }
-            let observations = client
-                .observations_exact::<VideoFrame>(
-                    sensor.peer,
-                    sensor.route.clone(),
-                    ObservationRequest {
-                        product: sensor.reference.clone(),
-                        selection: ObservationSelection::LatestExisting,
-                    },
-                )
-                .await?;
-            ensure!(
-                observations.product.reference() == sensor.reference
-                    && observations.producer.peer_id == sensor.reference.peer_id,
-                "Camera owner changed"
-            );
-            ensure!(
-                observations.gap.is_none() && observations.end.is_none(),
-                "Camera stream ended"
-            );
-            let o = observations
-                .observations
-                .last()
+            let preview = previews
+                .entry(id.clone())
+                .or_insert_with(|| start_preview(client.clone(), sensor.clone()));
+            preview.used = Instant::now();
+            let observations = preview
+                .frames
+                .borrow()
+                .clone()
                 .ok_or_else(|| anyhow!("Waiting for camera frames"))?;
+            let o = &observations.observation;
+            ensure!(
+                observations.received.elapsed() < Duration::from_secs(2),
+                "Camera frames are stale"
+            );
             let f = &o.payload;
             ensure!(
                 f.width > 0
@@ -156,22 +365,29 @@ pub async fn serve(
             if request.ar || (request.pick && sensor.pose.is_some()) {
                 let calibrated = async {
                     let reference = sensor.pose.as_ref().unwrap();
-                    let pose = client
-                        .observations_exact::<auki_odometry::PoseUpdate>(
-                            sensor.peer,
-                            sensor.route.clone(),
-                            ObservationRequest {
-                                product: reference.clone(),
-                                selection: ObservationSelection::TimeRange {
-                                    request: auki_components::TimeRangeRequest {
-                                        clock: observations.producer.clock.clone(),
-                                        start_ns: o.timestamp_ns,
-                                        end_ns: o.timestamp_ns,
-                                    },
-                                },
+                    let query = ObservationRequest {
+                        product: reference.clone(),
+                        selection: ObservationSelection::TimeRange {
+                            request: auki_components::TimeRangeRequest {
+                                clock: observations.producer.clock.clone(),
+                                start_ns: o.timestamp_ns,
+                                end_ns: o.timestamp_ns,
                             },
-                        )
-                        .await?;
+                        },
+                    };
+                    let pose = if let Some(route) = &sensor.route {
+                        client
+                            .observations_exact::<auki_odometry::PoseUpdate>(
+                                sensor.peer,
+                                route.clone(),
+                                query,
+                            )
+                            .await?
+                    } else {
+                        client
+                            .observations::<auki_odometry::PoseUpdate>(sensor.peer, query)
+                            .await?
+                    };
                     ensure!(
                         pose.product.reference() == *reference
                             && pose.gap.is_none()

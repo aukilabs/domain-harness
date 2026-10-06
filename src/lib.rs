@@ -43,3 +43,14 @@ pub mod mobile_pose;
 pub mod mobile_geometry;
 
 pub mod mobile_depth;
+
+pub mod fiducials;
+pub mod landmarks;
+pub mod occupancy_mapper;
+pub mod occupancy_fixture;
+pub mod simulated_robot;
+pub mod mobile_local;
+pub mod device_catalogs;
+pub mod simulated_camera;
+pub mod simulated_lidar;
+pub mod simulator_mapper;

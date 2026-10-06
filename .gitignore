@@ -18,3 +18,9 @@ __pycache__/
 DerivedData/
 xcuserdata/
 *.xcuserstate
+android/.gradle/
+android/.kotlin/
+android/local.properties
+android/**/build/
+android/native/
+android/**/.cxx/

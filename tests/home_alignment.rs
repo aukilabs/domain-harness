@@ -22,7 +22,7 @@ fn references_align_full_pose_and_follow_new_observations() -> Result<()> {
     let source = HomePortals {
         portals: home.clone(),
         peer_id: "home".into(),
-        revision: 7,
+
         anchor: "UCOF1J40N7O".into(),
     };
     let (aligned, meta) = source.align(&observed)?;

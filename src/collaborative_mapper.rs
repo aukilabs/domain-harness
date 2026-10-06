@@ -27,7 +27,7 @@ pub struct LocalizedScan {
 }
 pub struct CollaborativeMap {
     pub frame: String,
-    pub revision: usize,
+
     pub voxels: Option<VoxelSnapshot>,
     owner: String,
     clock: auki_components::clock::ClockRegistryEntry,
@@ -39,6 +39,7 @@ pub struct CollaborativeMap {
     contributions: BTreeMap<String, u64>,
     peers: BTreeMap<String, Value>,
     input_registries: BTreeMap<String, Value>,
+    landmark_provenance: BTreeMap<String, crate::landmarks::Provenance>,
 }
 impl CollaborativeMap {
     pub fn new(owner: &str, session: &str, canonical: &MapSnapshot) -> Result<Self> {
@@ -66,7 +67,7 @@ impl CollaborativeMap {
         let reference = reference_in_frame(canonical, &frame)?;
         Ok(Self {
             frame,
-            revision: 0,
+
             voxels: None,
             owner: owner.into(),
             clock,
@@ -78,6 +79,7 @@ impl CollaborativeMap {
             contributions: BTreeMap::new(),
             peers: BTreeMap::new(),
             input_registries: BTreeMap::new(),
+            landmark_provenance: BTreeMap::new(),
         })
     }
     fn upsert(&mut self, anchor: QrAnchor) -> Result<()> {
@@ -229,7 +231,7 @@ impl CollaborativeMap {
         *self.contributions.entry(peer.clone()).or_default() += 1;
         self.recent = recent;
         self.voxels = Some(saved);
-        self.revision += 1;
+
         Ok(true)
     }
     pub fn integrate_phone(&mut self, envelope: crate::mobile_depth::Envelope) -> Result<bool> {
@@ -259,7 +261,6 @@ impl CollaborativeMap {
         let value = self.peers.entry(peer.into()).or_insert_with(|| json!({}));
         value["status"] = json!(status);
         value["detail"] = json!(detail);
-        self.revision += 1;
     }
     pub fn peer_progress(
         &mut self,
@@ -267,9 +268,10 @@ impl CollaborativeMap {
         mut metadata: Value,
         portals: &MapSnapshot,
     ) -> Result<()> {
+        let evidence = crate::landmarks::portal_evidence(&metadata)?;
         self.input_registries.insert(
             peer.into(),
-            json!({"frames":metadata["frames"],"clocks":metadata["clocks"]}),
+            json!({"frames":metadata["frames"],"clocks":metadata["clocks"],"landmark_components":metadata["landmark_components"]}),
         );
         let local = &mut metadata["local_mapping"];
         if local["origin"]["kind"] == "canonical_portals" {
@@ -279,7 +281,15 @@ impl CollaborativeMap {
             for a in portals.scenegraph.anchors.values() {
                 let mut a = a.clone();
                 a.pose_in_map.to_frame_id = self.frame.clone();
+                let id = a.anchor_id.clone();
                 self.upsert(a)?;
+                // Keep the evidence that belongs to the pose actually accepted
+                // above; capture clocks from different peers aren't comparable.
+                if let Some(provenance) = evidence.get(&id) {
+                    self.landmark_provenance.insert(id, provenance.clone());
+                } else {
+                    self.landmark_provenance.remove(&id);
+                }
             }
             local["status"] = json!("aligned");
         } else {
@@ -287,7 +297,7 @@ impl CollaborativeMap {
         }
         self.peers
             .insert(peer.into(), metadata["local_mapping"].clone());
-        self.revision += 1;
+
         Ok(())
     }
     pub fn scene(&self) -> Result<Option<crate::network::CanonicalScene>> {
@@ -300,11 +310,11 @@ impl CollaborativeMap {
             .filter(|v| v["status"] == "aligned")
             .find_map(|v| v.get("robot_pose").filter(|v| !v.is_null()))
             .cloned();
-        let scene = crate::network::CanonicalScene {
+        let mut scene = crate::network::CanonicalScene {
             schema: crate::network::SCENE_SCHEMA.into(),
             sdk_revision: crate::model::SDK_REV.into(),
             authority_peer_id: self.owner.clone(),
-            revision: self.revision,
+
             frame: self.frame.clone(),
             publication_clock: self.clock.clone(),
             portals: self.portals()?,
@@ -312,6 +322,23 @@ impl CollaborativeMap {
             objects: vec![],
             registries: json!({"local_mapping":{"status":"mapping","detail":"Collaborative raw-observation mapping","origin":{"kind":"canonical_portals","portal":ORIGIN_PORTAL},"robot_pose":robot,"runners":self.peers,"alignment_to_home":null,"voxel_policy":{"kind":"latest_observations_per_cell","window":3,"ordering":"Home arrival order; capture clocks remain per peer"}},"collaborative_mapping":{"origin_portal":ORIGIN_PORTAL,"contributors":self.contributions,"runners":self.peers},"mapping_input":{"kind":"raw_runner_sensors","scenegraph_ingestion":false},"frames":[voxels.definition.frame],"clocks":[self.clock],"input_registries":self.input_registries,"source_bindings":voxels.definition.sources}),
         };
+        let mut landmarks = crate::landmarks::portal_map(
+            &scene.portals,
+            Some(self.map.component().reference().clone()),
+            &self.landmark_provenance,
+        )?;
+        for input in self.input_registries.values() {
+            if let Some(values) = input.get("landmark_components").filter(|v| !v.is_null()) {
+                let capabilities: Vec<crate::landmarks::ComponentCapabilities> =
+                    serde_json::from_value(values.clone())?;
+                for capability in capabilities {
+                    if !landmarks.components.contains(&capability) {
+                        landmarks.components.push(capability);
+                    }
+                }
+            }
+        }
+        scene.registries["landmarks"] = serde_json::to_value(landmarks)?;
         scene.validate(&self.owner)?;
         Ok(Some(scene))
     }
