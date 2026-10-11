@@ -164,6 +164,14 @@ struct RenderScene: Decodable, Equatable {
         let id: String
         let text: String
         let position: [Float]
+        /// Present on Home's phone-presence labels: that phone's camera pose.
+        let phone_pose: PhonePose?
+    }
+    struct PhonePose: Decodable, Equatable {
+        let peer_id: String
+        let name: String?
+        let state: String?
+        let pose: Portal.Pose
     }
     struct Mapping: Decodable, Equatable {
         let robot_pose: RobotPose?

@@ -18,6 +18,7 @@ struct ViewerScreen: View {
     @State private var importing = false
     @State private var connecting = false
     @State private var pairingError: String?
+    @State private var povSelection: String?
     @AppStorage("panelTab") private var panelTab = "map"
     @AppStorage("panelOpen") private var panelOpen = true
     @State private var promptedForLogin = false
@@ -58,8 +59,9 @@ struct ViewerScreen: View {
                     Spacer()
                     Picker("Panel", selection: $panelTab) {
                         Text("Map").tag("map")
+                        Text("POV").tag("pov")
                         Text("Status").tag("status")
-                    }.pickerStyle(.segmented).frame(width: 150)
+                    }.pickerStyle(.segmented).frame(width: 190)
                     Button { withAnimation { panelOpen.toggle() } } label: {
                         Image(systemName: panelOpen ? "chevron.down" : "chevron.up").frame(width: 30, height: 30)
                     }.accessibilityLabel(panelOpen ? "Fold panel" : "Unfold panel")
@@ -71,6 +73,9 @@ struct ViewerScreen: View {
                         .frame(height: 260)
                     Text(sendSummary).font(.caption.bold()).foregroundStyle(sendColor).lineLimit(2)
                     Text(controller.status).font(.caption).lineLimit(2)
+                } else if panelTab == "pov" {
+                    PovPanel(controller: controller, selection: $povSelection).frame(height: 260)
+                    Text(sendSummary).font(.caption.bold()).foregroundStyle(sendColor).lineLimit(1)
                 } else {
                     Text(peer.detail).font(.subheadline.bold())
                     Text(controller.status).font(.subheadline)
@@ -163,6 +168,89 @@ struct ViewerScreen: View {
         .onChange(of: phase) { _, value in
             if value == .active { controller.start() } else { controller.pause() }
             if value == .background { peer.disconnect(background: true) }
+        }
+    }
+}
+
+/// A device whose point of view can be shown: this phone, another phone, or a robot.
+struct PovDevice: Identifiable, Equatable {
+    let id: String
+    let name: String
+    let symbol: String
+    let asleep: Bool
+    /// Camera pose in Home's frame, looking along its own -Z.
+    let transform: simd_float4x4
+}
+
+/// The scene rendered from a chosen device's pose.
+struct PovSceneView: UIViewRepresentable {
+    let scene: SCNScene
+    let transform: simd_float4x4
+    func makeCoordinator() -> SCNNode {
+        let node = SCNNode()
+        node.camera = SCNCamera()
+        node.camera?.fieldOfView = 68
+        node.camera?.zNear = 0.05
+        node.camera?.zFar = 60
+        return node
+    }
+    func makeUIView(context: Context) -> SCNView {
+        let view = SCNView()
+        view.scene = scene
+        view.backgroundColor = UIColor(white: 0.06, alpha: 1)
+        view.antialiasingMode = .multisampling2X
+        view.rendersContinuously = false
+        scene.rootNode.addChildNode(context.coordinator)
+        context.coordinator.simdTransform = transform
+        view.pointOfView = context.coordinator
+        return view
+    }
+    func updateUIView(_ view: SCNView, context: Context) {
+        SCNTransaction.begin(); SCNTransaction.animationDuration = 0.2
+        context.coordinator.simdTransform = transform
+        SCNTransaction.commit()
+    }
+    static func dismantleUIView(_ view: SCNView, coordinator: SCNNode) { coordinator.removeFromParentNode() }
+}
+
+/// Device list on the left; the selected device's view of the map on the right.
+struct PovPanel: View {
+    @ObservedObject var controller: ViewerController
+    @Binding var selection: String?
+    var body: some View {
+        let devices = controller.devices
+        let chosen = devices.first { $0.id == selection } ?? devices.first
+        HStack(spacing: 8) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(devices) { device in
+                        Button { selection = device.id } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: device.asleep ? "moon.zzz.fill" : device.symbol).frame(width: 18)
+                                Text(device.name + (device.asleep ? " · asleep" : "")).font(.caption).lineLimit(2)
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.vertical, 7).padding(.horizontal, 8)
+                            .background(device.id == chosen?.id ? Color.accentColor.opacity(0.3) : Color.clear,
+                                        in: RoundedRectangle(cornerRadius: 8))
+                        }.buttonStyle(.plain)
+                    }
+                    if devices.isEmpty {
+                        Text("No devices yet. Align this phone or wait for others.").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }.frame(width: 118)
+            ZStack(alignment: .bottomLeading) {
+                if let chosen {
+                    PovSceneView(scene: controller.povScene, transform: chosen.transform)
+                    Text(chosen.name + (chosen.asleep ? " · asleep, last view" : "")).font(.caption2.bold())
+                        .padding(5).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 6)).padding(6)
+                } else {
+                    Color.black.opacity(0.55)
+                    Text("Pick a device").font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }.clipShape(RoundedRectangle(cornerRadius: 12))
         }
     }
 }
@@ -399,6 +487,18 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     var onPortalSeen: ((String) -> Void)?
     @Published private(set) var miniMap = MiniMapData()
     @Published private(set) var miniPhone: MiniMapPhone?
+    /// Devices for the POV tab. This phone's entry follows its live pose.
+    @Published private(set) var devices = [PovDevice]()
+    private var remoteDevices = [PovDevice]()
+    private var selfInHome: simd_float4x4?
+    /// A copy of the map for the POV tab; geometry is shared with the AR scene.
+    let povScene = SCNScene()
+    private let povRoot = SCNNode()
+    // Waking or relaunching resumes at the last known transform.
+    private var resumeRoot: simd_float4x4?
+    private var resumeDepth: DepthAlignment?
+    private var triedColdResume = false
+    private var lastPoseSave: TimeInterval = 0
     // A phone left lying flat and still pauses its camera and reports itself asleep.
     static let sleepAfter: TimeInterval = 30
     @Published private(set) var snoozed = false
@@ -423,6 +523,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         super.init()
         view.scene = SCNScene()
         view.scene.rootNode.addChildNode(root)
+        povScene.rootNode.addChildNode(povRoot)
         view.session.delegate = self
         view.session.delegateQueue = .main
         root.isHidden = true
@@ -487,8 +588,59 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             root.addChildNode(node)
         }
         renderScene(map.render)
-        if referenceChanged { realign() }
+        povRoot.childNodes.forEach { $0.removeFromParentNode() }
+        root.childNodes.forEach { povRoot.addChildNode($0.clone()) }
+        remoteDevices = Self.remoteDevices(map)
+        refreshDevices()
+        if referenceChanged { resetAlignment() }
         else if aligned { status = "Aligned · \(map.scenegraph.anchors.count) Portals · \(map.render?.voxels.count ?? 0) voxels" }
+    }
+
+    private static func remoteDevices(_ map: PortalMap) -> [PovDevice] {
+        var found = [PovDevice]()
+        for note in map.render?.notes ?? [] {
+            guard let phone = note.phone_pose, phone.pose.translation.count == 3, phone.pose.rotation_wxyz.count == 4 else { continue }
+            found.append(PovDevice(id: "phone:" + phone.peer_id, name: phone.name ?? note.text, symbol: "iphone",
+                                   asleep: phone.state == "asleep", transform: phone.pose.matrix))
+        }
+        func robot(_ sample: RenderScene.RobotPose?, id: String, name: String) {
+            guard let pose = sample?.pose, pose.translation.count == 3, pose.rotation_xyzw.count == 4,
+                  sample?.frame == map.scenegraph.map.frame.id else { return }
+            // Raise the eye above the chassis so the view is not inside the robot.
+            var eye = pose.matrix
+            eye.columns.3.y += 0.35
+            found.append(PovDevice(id: "robot:" + id, name: name, symbol: "car.side", asleep: false, transform: eye))
+        }
+        if let runners = map.render?.local_mapping?.runners, !runners.isEmpty {
+            for (id, runner) in runners.sorted(by: { $0.key < $1.key }) { robot(runner.robot_pose, id: id, name: "Robot " + String(id.suffix(4))) }
+        } else { robot(map.render?.local_mapping?.robot_pose, id: "runner", name: "Robot") }
+        return found.sorted { $0.name < $1.name }
+    }
+
+    private func refreshDevices() {
+        var list = [PovDevice]()
+        if let selfInHome {
+            list.append(PovDevice(id: "self", name: "This phone", symbol: "iphone.gen3", asleep: false, transform: selfInHome))
+        }
+        // Home lists this phone too; hide the duplicate sitting at our own position.
+        list += remoteDevices.filter { other in
+            guard let selfInHome, !other.asleep else { return true }
+            return simd_distance(other.transform.columns.3, selfInHome.columns.3) > 0.2
+        }
+        if list != devices { devices = list }
+    }
+
+    private static let lastPoseKey = "lastCameraInHome"
+    private func saveLastPose(_ cameraInHome: simd_float4x4, frame: String) {
+        let c = cameraInHome.columns
+        let values = [c.0, c.1, c.2, c.3].flatMap { [$0.x, $0.y, $0.z, $0.w] }
+        UserDefaults.standard.set(["frame": frame, "matrix": values], forKey: Self.lastPoseKey)
+    }
+    private func loadLastPose(frame: String) -> simd_float4x4? {
+        guard let saved = UserDefaults.standard.dictionary(forKey: Self.lastPoseKey), saved["frame"] as? String == frame,
+              let v = (saved["matrix"] as? [NSNumber])?.map(\.floatValue), v.count == 16, v.allSatisfy(\.isFinite) else { return nil }
+        return simd_float4x4(SIMD4(v[0], v[1], v[2], v[3]), SIMD4(v[4], v[5], v[6], v[7]),
+                             SIMD4(v[8], v[9], v[10], v[11]), SIMD4(v[12], v[13], v[14], v[15]))
     }
 
     private func renderScene(_ scene: RenderScene?) {
@@ -596,6 +748,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         clearPlacement()
         map = nil
         miniMap = MiniMapData()
+        povRoot.childNodes.forEach { $0.removeFromParentNode() }
+        remoteDevices = []; refreshDevices()
         root.childNodes.forEach { $0.removeFromParentNode() }
         invalidate()
         status = "Connect to Home to receive its scene"
@@ -608,9 +762,17 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         depthStatus = shareDepth ? "Scan a Portal to share depth" : "Depth sharing off"
         generation += 1; aligned = false; cooldown.reset(); root.isHidden = true
         miniPhone = nil
+        if selfInHome != nil { selfInHome = nil; refreshDevices() }
     }
 
     func realign() {
+        // An explicit realign discards any resumed position.
+        resumeRoot = nil; resumeDepth = nil; triedColdResume = true
+        resetAlignment()
+    }
+
+    /// Drop the current alignment without giving up a pending resume.
+    private func resetAlignment() {
         invalidate()
         status = "\(map?.scenegraph.anchors.count ?? 0) Portals loaded. Scan a known Portal."
     }
@@ -723,6 +885,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private func snooze() {
         guard !snoozed else { return }
         snoozed = true
+        if aligned { resumeRoot = root.simdTransform; resumeDepth = depthAlignment }
         // Report sleep before withdrawing the pose so Home keeps the last one.
         onSleep?(true)
         view.session.pause()
@@ -789,6 +952,25 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             }
             return
         }
+        if !aligned, let map {
+            if let saved = resumeRoot {
+                // Waking: ARKit keeps its session frame across a pause, so the
+                // alignment from before sleep still applies.
+                root.simdTransform = saved; root.isHidden = false; aligned = true
+                depthAlignment = resumeDepth
+                resumeRoot = nil; resumeDepth = nil
+                status = "Awake · resumed last alignment. Long-press a Portal to refine."
+            } else if !triedColdResume {
+                // Relaunch: assume the phone has not moved and start from its last
+                // known pose. No depth is shared until a Portal confirms it.
+                triedColdResume = true
+                if let last = loadLastPose(frame: map.scenegraph.map.frame.id) {
+                    root.simdTransform = frame.camera.transform * last.inverse
+                    root.isHidden = false; aligned = true
+                    status = "Resumed at last known position. Scan a Portal to confirm."
+                }
+            }
+        }
         if aligned {
             root.isHidden = false
             captureDepth(frame)
@@ -802,6 +984,12 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 let heading = simd_length(forward) > 0.3 ? simd_normalize(forward) : simd_normalize(up)
                 miniPhone = MiniMapPhone(position: SIMD3(cameraInHome.columns.3.x, cameraInHome.columns.3.y, cameraInHome.columns.3.z),
                                          heading: heading.x.isFinite ? heading : SIMD2(0, -1))
+                selfInHome = cameraInHome
+                refreshDevices()
+                if frame.timestamp - lastPoseSave >= 2 {
+                    lastPoseSave = frame.timestamp
+                    saveLastPose(cameraInHome, frame: map.scenegraph.map.frame.id)
+                }
                 onPose?(PhonePoseSample(session: poseSession, timestamp: frame.timestamp,
                     cameraInAR: frame.camera.transform, homeInAR: root.simdTransform,
                     homeFrame: map.scenegraph.map.frame.id))
