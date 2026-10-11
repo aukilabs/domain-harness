@@ -189,3 +189,31 @@ async fn calibrated_pose_reaches_home_over_p2p() -> anyhow::Result<()> {
     let cleanup = pair.shutdown().await;
     result.and(cleanup)
 }
+
+#[test]
+fn a_phone_names_itself_without_a_restart() -> anyhow::Result<()> {
+    use spatial_home::mobile_pose::{display_name, set_name};
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("names.json");
+    // SAFETY: only the names functions read this variable.
+    unsafe { std::env::set_var("SPATIAL_PHONE_NAMES", &path) };
+    let peer = format!("peer-{}", uuid::Uuid::new_v4());
+    assert!(display_name(&peer).starts_with("phone "));
+    set_name(&peer, "  spaceship ")?;
+    assert_eq!(display_name(&peer), "spaceship", "applies at once, trimmed");
+    let saved: std::collections::BTreeMap<String, String> =
+        serde_json::from_slice(&std::fs::read(&path)?)?;
+    assert_eq!(saved[&peer], "spaceship", "saved for the next start");
+    set_name(&peer, "tablet")?;
+    assert_eq!(display_name(&peer), "tablet");
+    for bad in ["", "   ", "a\nb", &"x".repeat(25)] {
+        assert!(set_name(&peer, bad).is_err(), "rejected: {bad:?}");
+    }
+    assert!(set_name("", "x").is_err());
+    assert!(
+        set_name("*", "everyone").is_err(),
+        "the wildcard is not a phone"
+    );
+    assert_eq!(display_name(&peer), "tablet");
+    Ok(())
+}

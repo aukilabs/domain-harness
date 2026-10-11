@@ -19,6 +19,7 @@ struct ViewerScreen: View {
     @State private var connecting = false
     @State private var pairingError: String?
     @State private var povSelection: String?
+    @AppStorage("phoneName") private var phoneName = ""
     @State private var driveSelection: String?
     @AppStorage("panelTab") private var panelTab = "map"
     @AppStorage("panelOpen") private var panelOpen = true
@@ -83,6 +84,13 @@ struct ViewerScreen: View {
                 } else {
                     Text(peer.detail).font(.subheadline.bold())
                     Text(controller.status).font(.subheadline)
+                    HStack {
+                        Text("Name").font(.subheadline)
+                        TextField("How Home labels this phone", text: $phoneName)
+                            .textFieldStyle(.roundedBorder).autocorrectionDisabled()
+                            .textInputAutocapitalization(.never).submitLabel(.done)
+                            .onSubmit { peer.setName(phoneName) }
+                    }
                     Toggle("Share LiDAR depth", isOn: $controller.shareDepth)
                     Text(controller.depthStatus).font(.caption)
                     if controller.shareDepth && peer.state == "live" { Text(peer.depthDetail).font(.caption) }
@@ -613,11 +621,6 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     /// A copy of the map for the POV tab; geometry is shared with the AR scene.
     let povScene = SCNScene()
     private let povRoot = SCNNode()
-    // Waking or relaunching resumes at the last known transform.
-    private var resumeRoot: simd_float4x4?
-    private var resumeDepth: DepthAlignment?
-    private var triedColdResume = false
-    private var lastPoseSave: TimeInterval = 0
     // A phone left lying flat and still pauses its camera and reports itself asleep.
     static let sleepAfter: TimeInterval = 30
     @Published private(set) var snoozed = false
@@ -775,19 +778,6 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         if list != devices { devices = list }
     }
 
-    private static let lastPoseKey = "lastCameraInHome"
-    private func saveLastPose(_ cameraInHome: simd_float4x4, frame: String) {
-        let c = cameraInHome.columns
-        let values = [c.0, c.1, c.2, c.3].flatMap { [$0.x, $0.y, $0.z, $0.w] }
-        UserDefaults.standard.set(["frame": frame, "matrix": values], forKey: Self.lastPoseKey)
-    }
-    private func loadLastPose(frame: String) -> simd_float4x4? {
-        guard let saved = UserDefaults.standard.dictionary(forKey: Self.lastPoseKey), saved["frame"] as? String == frame,
-              let v = (saved["matrix"] as? [NSNumber])?.map(\.floatValue), v.count == 16, v.allSatisfy(\.isFinite) else { return nil }
-        return simd_float4x4(SIMD4(v[0], v[1], v[2], v[3]), SIMD4(v[4], v[5], v[6], v[7]),
-                             SIMD4(v[8], v[9], v[10], v[11]), SIMD4(v[12], v[13], v[14], v[15]))
-    }
-
     private func renderScene(_ scene: RenderScene?) {
         guard let scene, scene.frame == map?.scenegraph.map.frame.id else { return }
         // One indexed mesh per chunk avoids a SceneKit node for every voxel.
@@ -911,12 +901,10 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     func realign() {
-        // An explicit realign discards any resumed position.
-        resumeRoot = nil; resumeDepth = nil; triedColdResume = true
         resetAlignment()
     }
 
-    /// Drop the current alignment without giving up a pending resume.
+    /// Drop the current alignment. Nothing is mapped again until a Portal is found.
     private func resetAlignment() {
         invalidate()
         status = "\(map?.scenegraph.anchors.count ?? 0) Portals loaded. Scan a known Portal."
@@ -1030,7 +1018,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     /// Report an unknown Portal once two measurements a moment apart agree, so
-    /// one noisy read cannot place it. Needs a real Portal alignment, not a resumed one.
+    /// one noisy read cannot place it. Needs an alignment from a known Portal.
     func showPortalResult(_ text: String) {
         let good = text.contains("added to Home")
         UINotificationFeedbackGenerator().notificationOccurred(good ? .success : .error)
@@ -1084,7 +1072,6 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private func snooze() {
         guard !snoozed else { return }
         snoozed = true
-        if aligned { resumeRoot = root.simdTransform; resumeDepth = depthAlignment }
         // Report sleep before withdrawing the pose so Home keeps the last one.
         onSleep?(true)
         view.session.pause()
@@ -1106,7 +1093,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         motion.stopDeviceMotionUpdates()
         snoozed = false
         onSleep?(false)
-        status = map == nil ? "Connect to Home to receive its scene" : "Awake. Scan a known Portal."
+        status = map == nil ? "Connect to Home to receive its scene" : "Awake. Scan a Portal to start mapping again."
         start()
     }
 
@@ -1151,25 +1138,6 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             }
             return
         }
-        if !aligned, let map {
-            if let saved = resumeRoot {
-                // Waking: ARKit keeps its session frame across a pause, so the
-                // alignment from before sleep still applies.
-                root.simdTransform = saved; root.isHidden = false; aligned = true
-                depthAlignment = resumeDepth
-                resumeRoot = nil; resumeDepth = nil
-                status = "Awake · resumed last alignment. Long-press a Portal to refine."
-            } else if !triedColdResume {
-                // Relaunch: assume the phone has not moved and start from its last
-                // known pose. No depth is shared until a Portal confirms it.
-                triedColdResume = true
-                if let last = loadLastPose(frame: map.scenegraph.map.frame.id) {
-                    root.simdTransform = frame.camera.transform * last.inverse
-                    root.isHidden = false; aligned = true
-                    status = "Resumed at last known position. Scan a Portal to confirm."
-                }
-            }
-        }
         if aligned {
             root.isHidden = false
             captureDepth(frame)
@@ -1185,10 +1153,6 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                                          heading: heading.x.isFinite ? heading : SIMD2(0, -1))
                 selfInHome = cameraInHome
                 refreshDevices()
-                if frame.timestamp - lastPoseSave >= 2 {
-                    lastPoseSave = frame.timestamp
-                    saveLastPose(cameraInHome, frame: map.scenegraph.map.frame.id)
-                }
                 onPose?(PhonePoseSample(session: poseSession, timestamp: frame.timestamp,
                     cameraInAR: frame.camera.transform, homeInAR: root.simdTransform,
                     homeFrame: map.scenegraph.map.frame.id))
