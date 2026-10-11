@@ -327,6 +327,11 @@ impl Publisher {
                 instruction: crate::mobile_pose::ReadPresence::DATATYPE.into(),
                 result: crate::mobile_pose::PresenceSnapshot::DATATYPE.into(),
                 exposure: Exposure::Cluster,
+            }).operable(OperableContract {
+                name: "name".into(),
+                instruction: crate::mobile_pose::SetName::DATATYPE.into(),
+                result: "bool".into(),
+                exposure: Exposure::Cluster,
             }),
         )?;
         // Joystick relay: a phone posts stick values for one robot, and that
@@ -422,6 +427,15 @@ impl Publisher {
         portals.expose()?;
         endpoint.export_operable(&add)?;
         components.push(portals);
+        // A phone names itself; it applies at once and is saved, with no restart.
+        let name_op = presence.operable(
+            "name",
+            |ctx| !ctx.caller_peer_id.is_empty(),
+            |ctx, request: crate::mobile_pose::SetName| {
+                crate::mobile_pose::set_name(&ctx.caller_peer_id, &request.name).map_err(rejected)?;
+                Ok(true)
+            },
+        )?;
         let snapshot_state = live_presence.clone();
         let snapshot_frame = frame.clone();
         let snapshot_owner = owner.clone();
@@ -450,6 +464,7 @@ impl Publisher {
         presence.expose()?;
         endpoint.export_operable(&op)?;
         endpoint.export_operable(&snapshot_op)?;
+        endpoint.export_operable(&name_op)?;
         components.push(presence);
         let mut publisher = Self {
             id: id.into(),

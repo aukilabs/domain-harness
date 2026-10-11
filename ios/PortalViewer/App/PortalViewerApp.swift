@@ -19,6 +19,7 @@ struct ViewerScreen: View {
     @State private var connecting = false
     @State private var pairingError: String?
     @State private var povSelection: String?
+    @AppStorage("phoneName") private var phoneName = ""
     @State private var driveSelection: String?
     @AppStorage("panelTab") private var panelTab = "map"
     @AppStorage("panelOpen") private var panelOpen = true
@@ -83,6 +84,13 @@ struct ViewerScreen: View {
                 } else {
                     Text(peer.detail).font(.subheadline.bold())
                     Text(controller.status).font(.subheadline)
+                    HStack {
+                        Text("Name").font(.subheadline)
+                        TextField("How Home labels this phone", text: $phoneName)
+                            .textFieldStyle(.roundedBorder).autocorrectionDisabled()
+                            .textInputAutocapitalization(.never).submitLabel(.done)
+                            .onSubmit { peer.setName(phoneName) }
+                    }
                     Toggle("Share LiDAR depth", isOn: $controller.shareDepth)
                     Text(controller.depthStatus).font(.caption)
                     if controller.shareDepth && peer.state == "live" { Text(peer.depthDetail).font(.caption) }

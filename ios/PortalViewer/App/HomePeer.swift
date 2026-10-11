@@ -26,6 +26,12 @@ final class HomePeer: ObservableObject {
               let json = String(data: data, encoding: .utf8) else { return }
         json.withCString { spatial_mobile_pose($0) }
     }
+    /// The name Home shows for this phone. Sent on connect and when edited.
+    func setName(_ name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        trimmed.withCString { spatial_mobile_name($0) }
+    }
     /// Hold the joystick for one robot, or release it with a nil target. The
     /// bridge repeats the held value and sends explicit stops on release.
     func drive(target: String?, forward: Float = 0, turn: Float = 0) {
@@ -116,6 +122,7 @@ final class HomePeer: ObservableObject {
             password = ""
             guard accepted == 1 else { throw ViewerError("Previous connection is still closing. Try again shortly.") }
             running = true; state = "connecting"; lastVersion = 0
+            setName(UserDefaults.standard.string(forKey: "phoneName") ?? "")
             detail = "Signing in to Auki development services"
             onDisconnect?()
             timer?.invalidate()
