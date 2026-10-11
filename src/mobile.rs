@@ -427,8 +427,12 @@ impl MobileClient {
                 };
                 let mut depth_publisher: Option<crate::mobile_depth::Publisher> = None;
                 let mut depths = self.depth.subscribe();
-                // An older Home rejects the optional color field; stop sending it then.
+                // An older Home rejects the optional color field. Only repeated
+                // failures pause color, and it is offered again every minute, so a
+                // brief network error cannot switch color off for the session.
                 let mut send_colors = true;
+                let mut color_failures = 0u32;
+                let mut retry_color_at = Instant::now();
                 let depth_work = async {
                     let mut tick = tokio::time::interval(Duration::from_millis(500));
                     loop {
@@ -443,6 +447,9 @@ impl MobileClient {
                         };
                         if received.elapsed() > Duration::from_secs(2) {
                             continue;
+                        }
+                        if !send_colors && Instant::now() >= retry_color_at {
+                            send_colors = true;
                         }
                         if !send_colors {
                             sample.colors = None;
@@ -471,13 +478,23 @@ impl MobileClient {
                             Ok::<_, anyhow::Error>(())
                         }
                         .await;
-                        if result.is_err() && colored {
-                            send_colors = false;
+                        if colored {
+                            if result.is_ok() {
+                                color_failures = 0;
+                            } else {
+                                color_failures += 1;
+                                if color_failures >= 3 {
+                                    send_colors = false;
+                                    retry_color_at = Instant::now() + Duration::from_secs(60);
+                                    // One more failure after the retry pauses it again.
+                                    color_failures = 2;
+                                }
+                            }
                         }
                         self.depth_status(match result {
                             Ok(()) if colored => format!("Depth sent to Home · {count} colored points"),
                             Ok(()) => format!("Depth sent to Home · {count} points"),
-                            Err(_) if colored => "Home did not accept color; continuing without it".into(),
+                            Err(error) if colored && !send_colors => format!("Color paused for a minute after repeated failures: {error}"),
                             Err(error) => format!("Depth not sent: {error}"),
                         });
                     }
