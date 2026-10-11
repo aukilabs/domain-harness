@@ -42,6 +42,9 @@ final class HomePeer: ObservableObject {
         json.withCString { spatial_mobile_depth($0) }
     }
     var onMap: ((PortalMap) -> Void)?
+    /// Home's answer to a new-Portal report, for the user to see.
+    var onPortalResult: ((String) -> Void)?
+    private var portalDetail = ""
     var onDisconnect: (() -> Void)?
     private var profileJSON = ""
     private var timer: Timer?
@@ -139,6 +142,7 @@ final class HomePeer: ObservableObject {
         let portals: PortalMap?
         let annotation: AnnotationResult?
         let depth_detail: String
+        let local_detail: String?
     }
     private func poll() {
         guard let pointer = spatial_mobile_poll() else { return }
@@ -150,6 +154,10 @@ final class HomePeer: ObservableObject {
                 // User-requested Stop must not briefly redisplay an in-flight scene.
                 if state != "stopping" {
                     depthDetail = response.update.depth_detail
+                    if let note = response.update.local_detail, note != portalDetail, note.hasPrefix("Portal ") || note.hasPrefix("Home did not add") {
+                        portalDetail = note
+                        onPortalResult?(note)
+                    }
                     annotationResult = response.update.annotation
                     state = response.update.state
                     detail = response.update.detail
