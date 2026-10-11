@@ -22,6 +22,19 @@ struct ViewerScreen: View {
     @AppStorage("panelOpen") private var panelOpen = true
     @State private var promptedForLogin = false
     @Environment(\.scenePhase) private var phase
+    /// Whether voxels are reaching Home right now: green sending, red failing, grey idle.
+    private var sending: Bool { peer.state == "live" && peer.depthDetail.hasPrefix("Depth sent") }
+    private var sendFailed: Bool {
+        peer.state == "live" && (peer.depthDetail.hasPrefix("Depth not sent") || peer.depthDetail.hasPrefix("Color paused"))
+    }
+    private var sendColor: Color { sending ? .green : sendFailed ? .red : .gray }
+    private var sendSummary: String {
+        if controller.snoozed { return "Not sending · phone asleep" }
+        if peer.state != "live" { return "Not sending · not connected to Home" }
+        if !controller.shareDepth { return "Not sending · sharing is off" }
+        if sending || sendFailed { return peer.depthDetail }
+        return "Not sending · scan a Portal to align"
+    }
     var body: some View {
         ZStack(alignment: .bottom) {
             CameraView(controller: controller).ignoresSafeArea()
@@ -39,6 +52,8 @@ struct ViewerScreen: View {
             }
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 10) {
+                    Circle().fill(sendColor).frame(width: 12, height: 12)
+                        .accessibilityLabel(sendSummary)
                     Text(peer.profile?.sceneLabel ?? "Home Scene").font(.headline).lineLimit(1)
                     Spacer()
                     Picker("Panel", selection: $panelTab) {
@@ -50,10 +65,11 @@ struct ViewerScreen: View {
                     }.accessibilityLabel(panelOpen ? "Fold panel" : "Unfold panel")
                 }
                 if !panelOpen {
-                    Text(controller.status).font(.caption).lineLimit(1)
+                    Text(sendSummary).font(.caption).lineLimit(1)
                 } else if panelTab == "map" {
                     MiniMapView(map: controller.miniMap, phone: controller.miniPhone)
                         .frame(height: 260)
+                    Text(sendSummary).font(.caption.bold()).foregroundStyle(sendColor).lineLimit(2)
                     Text(controller.status).font(.caption).lineLimit(2)
                 } else {
                     Text(peer.detail).font(.subheadline.bold())
@@ -183,42 +199,43 @@ struct MiniMapData: Equatable {
 }
 struct MiniMapPhone: Equatable { let position: SIMD3<Float>; let heading: SIMD2<Float> }
 
-/// One finger pans, two fingers tilt and turn, pinch zooms, double-tap resets.
+/// Standard viewport controls: one finger orbits, two fingers truck, pinch
+/// dollies, double-tap resets.
 struct MiniMapGestures: UIViewRepresentable {
-    var onPan: (CGSize) -> Void
     var onOrbit: (CGSize) -> Void
+    var onTruck: (CGSize) -> Void
     var onZoom: (CGFloat) -> Void
     var onReset: () -> Void
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> UIView {
         let view = UIView()
         view.backgroundColor = .clear
-        let pan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.pan(_:)))
-        pan.maximumNumberOfTouches = 1
         let orbit = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.orbit(_:)))
-        orbit.minimumNumberOfTouches = 2; orbit.maximumNumberOfTouches = 2
+        orbit.maximumNumberOfTouches = 1
+        let truck = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.truck(_:)))
+        truck.minimumNumberOfTouches = 2; truck.maximumNumberOfTouches = 2
         let pinch = UIPinchGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.pinch(_:)))
         let reset = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.reset))
         reset.numberOfTapsRequired = 2
-        orbit.delegate = context.coordinator; pinch.delegate = context.coordinator
-        [pan, orbit, pinch, reset].forEach(view.addGestureRecognizer)
+        truck.delegate = context.coordinator; pinch.delegate = context.coordinator
+        [orbit, truck, pinch, reset].forEach(view.addGestureRecognizer)
         return view
     }
     func updateUIView(_ view: UIView, context: Context) { context.coordinator.parent = self }
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var parent: MiniMapGestures
         init(_ parent: MiniMapGestures) { self.parent = parent }
-        @objc func pan(_ g: UIPanGestureRecognizer) {
-            let t = g.translation(in: g.view); g.setTranslation(.zero, in: g.view)
-            parent.onPan(CGSize(width: t.x, height: t.y))
-        }
         @objc func orbit(_ g: UIPanGestureRecognizer) {
             let t = g.translation(in: g.view); g.setTranslation(.zero, in: g.view)
             parent.onOrbit(CGSize(width: t.x, height: t.y))
         }
+        @objc func truck(_ g: UIPanGestureRecognizer) {
+            let t = g.translation(in: g.view); g.setTranslation(.zero, in: g.view)
+            parent.onTruck(CGSize(width: t.x, height: t.y))
+        }
         @objc func pinch(_ g: UIPinchGestureRecognizer) { parent.onZoom(g.scale); g.scale = 1 }
         @objc func reset() { parent.onReset() }
-        // Two fingers may tilt and zoom in the same motion.
+        // Two fingers may truck and dolly in the same motion.
         func gestureRecognizer(_ a: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith b: UIGestureRecognizer) -> Bool { true }
     }
 }
@@ -226,8 +243,8 @@ struct MiniMapGestures: UIViewRepresentable {
 struct MiniMapView: View {
     let map: MiniMapData
     let phone: MiniMapPhone?
-    /// Pan is kept in metres on the ground plane so it survives zoom and turns.
-    @State private var pan = SIMD2<Float>(0, 0)
+    /// Offset of the orbit pivot from the scene's center, in Home metres.
+    @State private var pan = SIMD3<Float>(0, 0, 0)
     @State private var yaw: Float = 0
     /// 90 degrees looks straight down; lower values tilt toward the horizon.
     @State private var pitch: Float = .pi / 2
@@ -240,18 +257,20 @@ struct MiniMapView: View {
             ZStack(alignment: .topTrailing) {
                 Canvas { context, _ in draw(&context, size: size, view: view) }
                 MiniMapGestures(
-                    onPan: { d in
-                        // Screen motion back to ground metres under the current turn and tilt.
-                        let sx = Float(d.width) / view.scale, sy = Float(d.height) / (view.scale * max(0.2, sin(pitch)))
-                        pan -= SIMD2(sx * cos(yaw) + sy * sin(yaw), -sx * sin(yaw) + sy * cos(yaw))
-                    },
                     onOrbit: { d in
+                        // Orbit about the pivot, which stays at the center of the view.
                         yaw += Float(d.width) * 0.008
-                        pitch = max(0.35, min(.pi / 2, pitch - Float(d.height) * 0.008))
+                        pitch = max(0.12, min(.pi / 2, pitch - Float(d.height) * 0.008))
+                    },
+                    onTruck: { d in
+                        // Slide the pivot along the camera's own right and up axes.
+                        let sx = Float(d.width) / view.scale, sy = Float(d.height) / view.scale
+                        let turnedX = sx, turnedZ = sy * sin(pitch), up = -sy * cos(pitch)
+                        pan -= SIMD3(turnedX * cos(yaw) + turnedZ * sin(yaw), up, -turnedX * sin(yaw) + turnedZ * cos(yaw))
                     },
                     onZoom: { zoom = max(0.4, min(12, zoom * Float($0))) },
                     onReset: { withAnimation { pan = .zero; yaw = 0; pitch = .pi / 2; zoom = 1 } })
-                if pan != .zero || yaw != 0 || pitch != .pi / 2 || zoom != 1 {
+                if pan != SIMD3<Float>(0, 0, 0) || yaw != 0 || pitch != .pi / 2 || zoom != 1 {
                     Button { pan = .zero; yaw = 0; pitch = .pi / 2; zoom = 1 } label: {
                         Image(systemName: "scope").padding(7).background(.thinMaterial, in: Circle())
                     }.padding(6).accessibilityLabel("Reset map view")
@@ -290,7 +309,7 @@ struct MiniMapView: View {
         let span = SIMD2(max(high.x - low.x + 0.6, 2), max(high.z - low.z + 0.6, 2))
         let fit = min(Float(size.width) / span.x, Float(size.height) / span.y)
         let middle = (low + high) / 2
-        return Projection(center: SIMD3(middle.x + pan.x, map.groundY, middle.z + pan.y),
+        return Projection(center: SIMD3(middle.x, map.groundY, middle.z) + pan,
                           scale: max(1, fit * zoom), yaw: yaw, pitch: pitch, size: size)
     }
 

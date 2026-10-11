@@ -492,8 +492,8 @@ impl MobileClient {
                             }
                         }
                         self.depth_status(match result {
-                            Ok(()) if colored => format!("Depth sent to Home · {count} colored points"),
-                            Ok(()) => format!("Depth sent to Home · {count} points"),
+                            Ok(()) if colored => format!("Depth sent to Home · {count} colored voxels"),
+                            Ok(()) => format!("Depth sent to Home · {count} voxels"),
                             Err(error) if colored && !send_colors => format!("Color paused for a minute after repeated failures: {error}"),
                             Err(error) => format!("Depth not sent: {error}"),
                         });
