@@ -704,6 +704,31 @@ enum PhoneDepthCapture {
         let step = max(1, Int(ceil(sqrt(Double(width * height) / 1500))))
         let imageWidth = CVPixelBufferGetWidth(frame.capturedImage), imageHeight = CVPixelBufferGetHeight(frame.capturedImage)
         var points = [[Float]]()
+        // Color comes from the same frame's camera image (bi-planar YCbCr).
+        let image = frame.capturedImage
+        let format = CVPixelBufferGetPixelFormatType(image)
+        let fullRange = format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+        let colorable = (fullRange || format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
+            && CVPixelBufferGetPlaneCount(image) == 2
+        if colorable { CVPixelBufferLockBaseAddress(image, .readOnly) }
+        defer { if colorable { CVPixelBufferUnlockBaseAddress(image, .readOnly) } }
+        let luma = colorable ? CVPixelBufferGetBaseAddressOfPlane(image, 0) : nil
+        let chroma = colorable ? CVPixelBufferGetBaseAddressOfPlane(image, 1) : nil
+        let lumaRow = colorable ? CVPixelBufferGetBytesPerRowOfPlane(image, 0) : 0
+        let chromaRow = colorable ? CVPixelBufferGetBytesPerRowOfPlane(image, 1) : 0
+        var colors = [[UInt8]]()
+        func color(x: Int, y: Int) -> [UInt8]? {
+            guard let luma, let chroma else { return nil }
+            let px = min(imageWidth - 1, x * imageWidth / width), py = min(imageHeight - 1, y * imageHeight / height)
+            var yValue = Float(luma.load(fromByteOffset: py * lumaRow + px, as: UInt8.self))
+            let offset = (py / 2) * chromaRow + (px / 2) * 2
+            var cb = Float(chroma.load(fromByteOffset: offset, as: UInt8.self)) - 128
+            var cr = Float(chroma.load(fromByteOffset: offset + 1, as: UInt8.self)) - 128
+            if !fullRange { yValue = (yValue - 16) * 255 / 219; cb *= 255 / 224; cr *= 255 / 224 }
+            // BT.601 YCbCr to sRGB, as ARKit's camera image is specified.
+            let r = yValue + 1.402 * cr, g = yValue - 0.344136 * cb - 0.714136 * cr, b = yValue + 1.772 * cb
+            return [r, g, b].map { UInt8(max(0, min(255, $0.rounded()))) }
+        }
         for y in stride(from: 0, to: height, by: step) {
             let depths = base.advanced(by: y * rowBytes).assumingMemoryBound(to: Float32.self)
             let confidences = confidenceBase.advanced(by: y * confidenceRow).assumingMemoryBound(to: UInt8.self)
@@ -712,6 +737,7 @@ enum PhoneDepthCapture {
                       let point = DepthProjection.point(x: x, y: y, depth: depths[x], width: width, height: height,
                           imageWidth: imageWidth, imageHeight: imageHeight, intrinsics: frame.camera.intrinsics) else { continue }
                 points.append(point)
+                if let rgb = color(x: x, y: y) { colors.append(rgb) }
                 if points.count == 2048 { break }
             }
             if points.count == 2048 { break }
@@ -719,6 +745,7 @@ enum PhoneDepthCapture {
         guard !points.isEmpty else { return nil }
         return PhoneDepthSample(session: session, timestamp_ns: UInt64(frame.timestamp * 1_000_000_000),
             camera_to_session: .transform(frame.camera.transform, from: "phone-camera:\(session)", to: "phone-ar:\(session)"),
-            alignment: alignment, points: points)
+            alignment: alignment, points: points,
+            colors: colors.count == points.count ? colors : nil)
     }
 }

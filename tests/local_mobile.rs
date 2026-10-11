@@ -124,6 +124,7 @@ async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated(
                 session_to_home: rigid(&home_from_session, &session_frame, &home.frame),
             },
             points: vec![[0., 0., -1.]],
+        colors: None,
         };
         assert_ne!(sample.alignment.portal_to_session.translation, [0.; 3]);
         let products = spatial_home::mobile_products::MobileProducts::mount(&pair.b)?;
