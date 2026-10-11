@@ -839,7 +839,12 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                     robot(runner.robot_pose, id: id, name: "Robot " + String(id.suffix(4)))
                 } else if !located.contains("phone:" + id) {
                     // Known to Home but not placed in this scene, so there is no view to show.
-                    found.append(PovDevice(id: "peer:" + id, name: "Device " + String(id.suffix(4)), symbol: "questionmark.circle",
+                    // Home describes phone contributors as "Phone LiDAR …"; anything else
+                    // contributing to a scene is a robot. Only robots are drivable.
+                    let isPhone = runner.detail?.hasPrefix("Phone") == true
+                    found.append(PovDevice(id: (isPhone ? "peerphone:" : "peer:") + id,
+                                           name: (isPhone ? "Phone " : "Robot ") + String(id.suffix(4)),
+                                           symbol: isPhone ? "iphone" : "car.side",
                                            asleep: false, transform: matrix_identity_float4x4, located: false,
                                            detail: "no position" + (runner.status.map { " · " + $0 } ?? "")))
                 }
