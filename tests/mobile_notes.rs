@@ -59,6 +59,13 @@ async fn phone_note_persists_over_authenticated_p2p() -> Result<()> {
         tokio::time::timeout(std::time::Duration::from_secs(1), changed.notified()).await?;
         let again = spatial_home::mobile_notes::send(&pair.b, &home, &request).await?;
         assert_eq!(again.id, request.id);
+        use spatial_home::mobile_notes::{ChangeNote, NoteAction, send_change};
+        let action = |action| ChangeNote { request_id: uuid::Uuid::new_v4().to_string(), frame: FRAME.into(), action };
+        let changed = send_change(&pair.b,&home,&action(NoteAction::Edit { id: request.id.clone(), text: "Edited".into() })).await?;
+        assert_eq!(changed.note.unwrap().text,"Edited");
+        let deleted = send_change(&pair.b,&home,&action(NoteAction::Delete { id: request.id.clone() })).await?;
+        assert!(deleted.deleted);
+        send_change(&pair.b,&home,&action(NoteAction::Restore { note: deleted.note.unwrap() })).await?;
         let mut invalid = request.clone();
         invalid.id = uuid::Uuid::new_v4().to_string();
         invalid.frame = "wrong".into();

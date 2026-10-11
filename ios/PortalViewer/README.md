@@ -25,6 +25,13 @@ The generated XCFramework is ignored by Git and must be rebuilt after Rust chang
 1. Run Home with P2P enabled. In Home's viewer, download **runner connection**
    (`/api/home-connection`). This is public pairing information, not a scene export
    or credential. Home must be ready before this endpoint is available.
+   For an independent saved scene, select it in Maps and use **Download phone
+   connection for selected scene**. Its endpoint is
+   `/api/local-scenes/{id}/connection`; the legacy `/api/home-connection` remains
+   Xmart-only. The phone displays the selected scene name before sign-in.
+   Public `home-connection-*.json` files transferred into this app's Documents
+   directory over USB are offered as explicit **Use … (USB)** buttons; they do
+   not silently replace an existing pairing.
 2. AirDrop the connection JSON to the iPhone and save it in Files.
 3. In the app, choose **Connect to Home → Import Home connection profile**.
 4. Enter an Auki User email and password authorized for the profile's transport
@@ -148,6 +155,27 @@ An unavailable live stream clears the overlay and retries without disconnecting
 the reference scene. Annotation saves raycast against Home's fresh live voxels.
 
 ## LiDAR depth into Home
+
+Independent local scenes use a scene-scoped SDK Product (`local-scene:{id}:mobile`)
+containing the native Portal snapshot, optional native voxel snapshot, and typed
+notes. The voxel layer is absent until real depth arrives. This presentation
+Product uses the existing SDK Catalog/subscription protocols; the native Map
+Product is still exported separately. Depth, notes and presence operations are
+scoped to that same scene. Product/frame mismatches and cross-scene writes are
+rejected. The phone never overlays Xmart geometry onto an independent scene.
+
+Home recomputes alignment from the observed Portal-to-AR-session pose and the
+selected scene's stored Portal pose, validates the phone's claimed transform,
+and integrates camera-local points with the existing mapper at 1 Hz (newest
+capture per phone). Captures are evenly sampled to the SDK's point-count and ray-work limits before
+integration, without changing measured coordinates or treating omitted rays as free.
+Sensor geometry stays in Home memory while Home runs; disconnecting a phone
+does not erase it. Notes persist under the local scenes
+directory's `mobile-notes/` subdirectory. Restarting Home retains reference
+Portals and notes but begins a fresh sensor map. Nothing changes Xmart's data.
+
+For Humanoid Hub Conference, scan `HNY3JGNLRAE`: its encoded square is 15 cm,
+centered at the scene origin, lying on the floor with its printed face upward.
 
 Requires an iPhone that supports ARKit `sceneDepth`. The app samples non-smoothed
 scene depth at 2 Hz, keeps high-confidence measurements from 0.2–5 m, and sends

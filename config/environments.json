@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "active_reference": "xmart",
+  "preferred_scene": "humanoid-hub-conference",
+  "environments": [
+    {
+      "id": "xmart",
+      "name": "Xmart",
+      "status": "configured",
+      "portal_poses": "config/domain-portals.json",
+      "portal_sizes": "config/portals.json"
+    },
+    {
+      "id": "nacs",
+      "name": "NACS",
+      "status": "portal_reference",
+      "origin": {
+        "portal_code": "RG3E3LUITXC",
+        "translation_m": [0.0, 0.0, 0.0],
+        "rotation_wxyz": [0.7071067811865476, -0.7071067811865476, 0.0, 0.0],
+        "frame_description": "Origin Portal center on floor at Y=0; printed face points +Y; Portal right is +X and top is -Z"
+      },
+      "portal_poses": null,
+      "portal_sizes": "config/nacs/portals.json"
+    },
+    {
+      "id": "humanoid-hub-conference",
+      "name": "Humanoid Hub Conference",
+      "status": "portal_reference",
+      "origin": {
+        "portal_code": "HNY3JGNLRAE",
+        "translation_m": [0.0, 0.0, 0.0],
+        "rotation_wxyz": [0.7071067811865476, -0.7071067811865476, 0.0, 0.0],
+        "frame_description": "HNY3JGNLRAE center on floor at Y=0; printed face points +Y; Portal right is +X and top is -Z"
+      },
+      "portal_poses": null,
+      "portal_sizes": "config/humanoid-hub-conference/portals.json"
+    }
+  ]
+}

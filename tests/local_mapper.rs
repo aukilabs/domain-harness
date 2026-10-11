@@ -4,6 +4,156 @@ use auki_odometry::Pose;
 use spatial_home::local_mapper::*;
 
 #[test]
+fn scan_diagnostics_distinguish_live_poses_from_actual_integration() -> Result<()> {
+    let runtime = ComponentRuntime::new("robot");
+    let mut map = LocalMap::new(&runtime, "robot", &uuid::Uuid::new_v4().to_string())?;
+    map.accept(SensorEvent::Odometry { timestamp_ns:100_000_000, pose:identity() })?;
+    map.accept(SensorEvent::Camera { sample:sample("HRIPLL40GL6",200_000_000) })?;
+    map.accept(SensorEvent::Odometry { timestamp_ns:500_000_000, pose:identity() })?;
+    assert_eq!(map.scan_progress()["status"],"waiting_for_first_scan");
+    assert_eq!(map.scan_progress()["pending"],1);
+    map.accept(SensorEvent::Odometry { timestamp_ns:3_000_000_000, pose:identity() })?;
+    assert_eq!(map.scan_progress()["diagnostics"]["expired_without_pose"],1);
+    map.accept(SensorEvent::Camera { sample:sample("HRIPLL40GL6",3_000_000_000) })?;
+    let progress=map.scan_progress();
+    assert_eq!(progress["integrated_observations"],1);
+    assert_eq!(progress["last_integrated_timestamp_ns"],3_000_000_000u64);
+    assert_eq!(progress["diagnostics"]["received"],2);
+    assert_eq!(progress["diagnostics"]["pose_matched"],1);
+    assert_eq!(progress["status"],"integrating");
+    map.accept(SensorEvent::TrackingLost { timestamp_ns:3_100_000_000 })?;
+    assert_eq!(map.scan_progress()["status"],"tracking_unavailable");
+    Ok(())
+}
+
+#[test]
+fn correction_invalidates_geometry_without_recreating_components_or_changing_session() -> Result<()> {
+    let runtime = ComponentRuntime::new("robot");
+    let mut map = LocalMap::new(&runtime, "robot", &uuid::Uuid::new_v4().to_string())?;
+    let t = 100_000_000;
+    map.accept(SensorEvent::Odometry { timestamp_ns:t, pose:identity() })?;
+    map.accept(SensorEvent::Camera { sample:sample("HRIPLL40GL6",t) })?;
+    assert!(!map.portals()?.scenegraph.anchors.is_empty());
+    assert!(map.voxels.as_ref().unwrap().integrated_observations > 0);
+    map.accept_home_portals(map.portals()?, "home".into())?;
+    let frame = map.frame.clone();
+    let origin = map.origin.as_ref().unwrap().odometry_to_local.clone();
+    let catalog = serde_json::to_value(runtime.catalog().snapshot())?;
+    let corrected = Pose { translation:[2.,0.,0.], ..identity() };
+    map.accept(SensorEvent::MapCorrection { timestamp_ns:t*2, pgo_count:2, pose:corrected.clone() })?;
+    assert_eq!(map.frame,frame);
+    assert_eq!(map.origin.as_ref().unwrap().odometry_to_local,origin);
+    assert_eq!(map.latest_pose.as_ref().unwrap().1,corrected);
+    assert!(map.portals()?.scenegraph.anchors.is_empty());
+    assert!(map.home_portals.is_none());
+    map.portals()?.validate()?;
+    assert_eq!(map.voxels.as_ref().unwrap().integrated_observations,0);
+    assert!(map.voxels.as_ref().unwrap().accumulator()?.viewer_snapshot(0.)?.chunks.is_empty());
+    assert_eq!(map.metadata()["local_mapping"]["map_correction"]["pgo_count"],2);
+    // A late frame from before the correction must never restore old geometry.
+    map.accept(SensorEvent::Camera { sample:sample("HRIPLL40GL6",t+1) })?;
+    assert!(map.portals()?.scenegraph.anchors.is_empty());
+    assert_eq!(map.voxels.as_ref().unwrap().integrated_observations,0);
+    map.accept(SensorEvent::Camera { sample:sample("HRIPLL40GL6",t*2) })?;
+    assert_eq!(map.portals()?.scenegraph.anchors.len(),1);
+    assert_eq!(map.voxels.as_ref().unwrap().integrated_observations,1);
+    // Current outputs and products stay the same across repeated corrections.
+    for n in 3..6 {
+        map.accept(SensorEvent::MapCorrection { timestamp_ns:t*n, pgo_count:n as i64, pose:corrected.clone() })?;
+        assert!(map.portals()?.scenegraph.anchors.is_empty());
+        map.portals()?.validate()?;
+    }
+    let after = serde_json::to_value(runtime.catalog().snapshot())?;
+    assert_eq!(catalog["components"],after["components"]);
+    map.accept(SensorEvent::TrackingLost { timestamp_ns:t*6 })?;
+    assert!(map.latest_pose.is_none());
+    assert_eq!(map.metadata()["local_mapping"]["status"],"waiting_for_odometry");
+    map.accept(SensorEvent::Odometry { timestamp_ns:t*7, pose:corrected })?;
+    assert!(map.latest_pose.is_some());
+    Ok(())
+}
+
+#[test]
+fn decoded_portal_with_unknown_size_is_not_reported_as_no_detection() -> Result<()> {
+    let runtime = ComponentRuntime::new("robot");
+    let mut map = LocalMap::new(&runtime, "robot", &uuid::Uuid::new_v4().to_string())?;
+    map.accept(SensorEvent::Odometry { timestamp_ns:100_000_000, pose:identity() })?;
+    map.accept(SensorEvent::Camera { sample:sample("ZZZZZZZZZZZ",100_000_000) })?;
+    let diagnostic=map.metadata()["local_mapping"]["camera_scans"][spatial_home::rgbd::FRAME].clone();
+    assert_eq!(diagnostic["decoded_qrs"],1);
+    assert_eq!(diagnostic["mapped_portals"],0);
+    assert_eq!(diagnostic["rejections"][0]["reason"],"printed size unknown");
+    assert_eq!(map.landmark_product().latest_existing()?.unwrap().payload.landmarks.len(),4);
+    assert!(map.portals()?.scenegraph.anchors.is_empty());
+    Ok(())
+}
+
+#[test]
+fn stereo_eyes_keep_separate_calibration_and_provenance() -> Result<()> {
+    use spatial_home::rgbd::{BRACKETBOT_CALIBRATION, BRACKETBOT_FRAME, BRACKETBOT_RIGHT_FRAME};
+    let runtime = ComponentRuntime::new("robot");
+    let mut map = LocalMap::new_for_robot(
+        &runtime,
+        "robot",
+        &uuid::Uuid::new_v4().to_string(),
+        BRACKETBOT_FAMILY,
+        BRACKETBOT_FRAME,
+        serde_json::from_str(include_str!(
+            "../config/humanoid-hub-conference/portals.json"
+        ))?,
+    )?;
+    let mut positions = vec![];
+    for (i, frame) in [BRACKETBOT_FRAME, BRACKETBOT_RIGHT_FRAME, BRACKETBOT_FRAME]
+        .iter()
+        .enumerate()
+    {
+        let t = 100_000_000 + i as u64 * 100_000_000;
+        map.accept(SensorEvent::Odometry {
+            timestamp_ns: t,
+            pose: identity(),
+        })?;
+        let mut camera = sample("HNY3JGNLRAE", t);
+        camera.calibration.sensor_frame = (*frame).into();
+        camera.calibration.calibration_source = format!("{BRACKETBOT_CALIBRATION}{frame}");
+        camera.calibration.sensor_to_base.translation[0] = if i == 1 { 0.0645 } else { 0. };
+        map.accept(SensorEvent::Camera { sample: camera })?;
+        let diagnostic = map.metadata()["local_mapping"]["camera_scans"][*frame].clone();
+        assert_eq!(diagnostic["decoded_qrs"], 1);
+        assert_eq!(diagnostic["mapped_portals"], 1);
+        assert_eq!(diagnostic["rejections"], serde_json::json!([]));
+        let batch = map.landmark_product().latest_existing()?.unwrap();
+        assert_eq!(batch.payload.landmarks.len(), 4);
+        assert_eq!(
+            batch.payload.source_observation.output.component_id,
+            if i == 1 {
+                "local-camera-right"
+            } else {
+                "local-camera"
+            }
+        );
+        positions.push(
+            map.portals()?.scenegraph.anchors["HNY3JGNLRAE"]
+                .pose_in_map
+                .translation[0],
+        );
+    }
+    assert!((positions[1] - positions[0] - 0.0645).abs() < 1e-6);
+    assert!((positions[2] - positions[0]).abs() < 1e-6);
+    let sources = &map.voxels.as_ref().unwrap().definition.sources;
+    assert!(
+        sources
+            .iter()
+            .any(|s| s.sensor_frame.frame_id == BRACKETBOT_RIGHT_FRAME)
+    );
+    assert!(
+        sources
+            .iter()
+            .all(|s| s.sensor_product.product_id != "local-lidar-history")
+    );
+    Ok(())
+}
+
+#[test]
 fn robot_boot_origin_is_fixed_and_maps_before_any_portal() -> Result<()> {
     let runtime = ComponentRuntime::new("robot");
     let mut map = LocalMap::new(&runtime, "robot", &uuid::Uuid::new_v4().to_string())?;
@@ -377,7 +527,14 @@ fn inspect_live_camera_decode() -> Result<()> {
         Some("luma8") => {}
         _ => anyhow::bail!("unsupported camera encoding"),
     }
-    let mut detector = auki_qr_detector::QrDetector::default();
+    let mut config = auki_qr_detector::QrDetectorConfig::default();
+    if std::env::var("SPATIAL_QR_DIAGNOSTIC_RECOVERY").as_deref() == Ok("1") {
+        config.scanner.scan.enable_shadow_normalization = true;
+        config.scanner.scan.enable_sharpening = true;
+        config.scanner.scan.enable_deblur = true;
+        config.scanner.scan.max_variants_per_frame = 64;
+    }
+    let mut detector = auki_qr_detector::QrDetector::new(config);
     let result = detector.detect_luma(&bytes, width, height, width)?;
     println!("Decoded {} QR codes", result.codes.len());
     for code in result.codes {
@@ -803,6 +960,98 @@ fn robot_home_reference_overlay_switches_to_newly_observed_known_portal() -> Res
                     .translation
             )
             .all(|(a, b)| (a - b).abs() < 1e-8)
+    );
+    Ok(())
+}
+
+#[test]
+fn bracketbot_stereo_maps_room_depth_and_detects_manual_conference_portal() -> Result<()> {
+    let runtime = ComponentRuntime::new("bracketbot");
+    let session = uuid::Uuid::new_v4().to_string();
+    let sizes = serde_json::from_str(include_str!(
+        "../config/humanoid-hub-conference/portals.json"
+    ))?;
+    let mut map = LocalMap::new_for_robot(
+        &runtime,
+        "bracketbot",
+        &session,
+        BRACKETBOT_FAMILY,
+        spatial_home::rgbd::BRACKETBOT_FRAME,
+        sizes,
+    )?;
+    let t = 1_000_000_000;
+    map.accept(SensorEvent::Odometry {
+        timestamp_ns: t,
+        pose: identity(),
+    })?;
+    let mut camera = sample("HNY3JGNLRAE", t);
+    camera.calibration.sensor_frame = spatial_home::rgbd::BRACKETBOT_FRAME.into();
+    camera.calibration.calibration_source = format!(
+        "{}{}",
+        spatial_home::rgbd::BRACKETBOT_CALIBRATION,
+        "a".repeat(64)
+    );
+    camera.hit_points_m = vec![[0., 0., 2.], [0.1, 0., 3.]];
+    camera.hit_colors_srgb = vec![[255, 0, 0], [0, 255, 0]];
+    map.accept(SensorEvent::Camera {
+        sample: camera.clone(),
+    })?;
+    assert!(map.frame.starts_with("bracketbot-local:"));
+    let portals = map.portals()?;
+    let portal = &portals.scenegraph.anchors["HNY3JGNLRAE"];
+    assert_eq!(portal.side_length_m, 0.15);
+    assert_eq!(map.voxels.as_ref().unwrap().integrated_observations, 1);
+    assert_eq!(
+        map.ar_pose_history().contract.from_frame,
+        auki_registry::FrameRegistryEntry::in_convention(
+            "bracketbot",
+            "robot.base",
+            auki_registry::CoordinateConvention::ZUpRightForward
+        )
+    );
+    map.accept(SensorEvent::TrackingLost {
+        timestamp_ns: t + 1,
+    })?;
+    assert!(map.latest_pose.is_none());
+    camera.timestamp_ns += 2;
+    camera.rgb_timestamp_ns += 2;
+    camera.transform_timestamp_ns += 2;
+    map.accept(SensorEvent::Camera { sample: camera })?;
+    assert_eq!(map.voxels.as_ref().unwrap().integrated_observations, 1);
+    assert!(is_local_frame(&map.frame));
+    assert!(!is_local_frame("bracketbot-local:not-a-session:zup"));
+    Ok(())
+}
+
+#[test]
+fn bracketbot_depth_contract_does_not_relax_galbot_validation() -> Result<()> {
+    let source = sample("HNY3JGNLRAE", 1_000_000_000);
+    let mut capture = spatial_home::rgbd::Capture {
+        timestamp_ns: source.timestamp_ns,
+        rgb_timestamp_ns: source.rgb_timestamp_ns,
+        transform_timestamp_ns: source.transform_timestamp_ns,
+        calibration: source.calibration,
+        hit_points_m: vec![[0., 0., 2.]],
+        hit_colors_srgb: vec![[255, 0, 0]],
+    };
+    assert!(capture.validate().is_err());
+    capture.calibration.sensor_frame = spatial_home::rgbd::BRACKETBOT_FRAME.into();
+    assert!(
+        capture
+            .validate_in_frame(spatial_home::rgbd::BRACKETBOT_FRAME)
+            .is_err()
+    );
+    capture.calibration.calibration_source = format!(
+        "{}{}",
+        spatial_home::rgbd::BRACKETBOT_CALIBRATION,
+        "b".repeat(64)
+    );
+    capture.validate_in_frame(spatial_home::rgbd::BRACKETBOT_FRAME)?;
+    capture.hit_points_m[0] = [4., 0., 4.];
+    assert!(
+        capture
+            .validate_in_frame(spatial_home::rgbd::BRACKETBOT_FRAME)
+            .is_err()
     );
     Ok(())
 }

@@ -114,7 +114,7 @@ struct HomeProfile: Decodable {
         do { value = try JSONDecoder().decode(HomeProfile.self, from: data) }
         catch { throw ViewerError("Select Home's runner connection JSON, not a scene snapshot") }
         guard value.schema == "spatial-harness.home-connection/v1",
-              value.product_id == "canonical-scene" else {
+              value.validSceneContract else {
             throw ViewerError("Unsupported Home connection profile version or Product")
         }
         guard UUID(uuidString: value.domain_id) != nil, !value.peer_id.isEmpty,
@@ -127,6 +127,21 @@ struct HomeProfile: Decodable {
         // agreement on receipt. PortalMap separately checks OpenGL metre units.
         return value
     }
+
+    var sceneID: String? {
+        guard frame.hasPrefix("local-scene:") else { return nil }
+        let parts = String(frame.dropFirst("local-scene:".count)).components(separatedBy: ":portal-")
+        guard parts.count == 2, (1...64).contains(parts[0].utf8.count),
+              parts[0].utf8.allSatisfy({ (97...122).contains($0) || (48...57).contains($0) || $0 == 45 }),
+              parts[1].utf8.count == 11,
+              parts[1].utf8.allSatisfy({ (65...90).contains($0) || (48...57).contains($0) }) else { return nil }
+        return parts[0]
+    }
+    var validSceneContract: Bool {
+        if let id = sceneID { return product_id == "local-scene:\(id):mobile" }
+        return !frame.hasPrefix("local-scene:") && product_id == "canonical-scene"
+    }
+    var sceneLabel: String { sceneID?.replacingOccurrences(of: "-", with: " ").capitalized ?? "Xmart" }
 }
 
 struct RenderScene: Decodable, Equatable {

@@ -75,6 +75,17 @@ check((try? HomeProfile.load(JSONSerialization.data(withJSONObject: direct))) ==
 var invalidPairing = pairing; invalidPairing["frame"] = ""
 check((try? HomeProfile.load(JSONSerialization.data(withJSONObject: invalidPairing))) == nil, "empty frame rejected")
 print("Home pairing checks passed")
+var conferencePairing = pairing
+conferencePairing["frame"] = "local-scene:humanoid-hub-conference:portal-HNY3JGNLRAE"
+conferencePairing["product_id"] = "local-scene:humanoid-hub-conference:mobile"
+let conferenceProfile = try HomeProfile.load(JSONSerialization.data(withJSONObject: conferencePairing))
+check(conferenceProfile.sceneID == "humanoid-hub-conference", "selected scene retained")
+check(conferenceProfile.sceneLabel == "Humanoid Hub Conference", "selected scene visible on phone")
+var mixedPairing = conferencePairing; mixedPairing["product_id"] = "local-scene:nacs:mobile"
+check((try? HomeProfile.load(JSONSerialization.data(withJSONObject: mixedPairing))) == nil, "different scene Product rejected")
+mixedPairing = conferencePairing; mixedPairing["product_id"] = "canonical-scene"
+check((try? HomeProfile.load(JSONSerialization.data(withJSONObject: mixedPairing))) == nil, "legacy Product cannot masquerade as conference")
+print("Independent scene pairing checks passed")
 
 var cooldown = CalibrationCooldown()
 check(cooldown.canScan(at: 0), "first scan is immediate")

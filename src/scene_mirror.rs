@@ -2,6 +2,7 @@
 use crate::network::{CanonicalScene, HomeConnection, subscribe_scene};
 use anyhow::{Result, anyhow, bail, ensure};
 use auki_component_protocol::RemoteObservationEvent;
+use auki_registry::FrameRegistryEntry;
 use auki_scenegraph::MapSnapshot;
 use auki_sdk::AukiPeer;
 use serde_json::{Value, json};
@@ -40,7 +41,9 @@ impl RemoteScene {
 }
 pub fn render_scene(s: &CanonicalScene) -> Result<Value> {
     let local = crate::local_mapper::is_local_frame(&s.frame);
-    let display = if local {
+    let display = if crate::local_scenes::frame_scene_id(&s.frame).is_some() {
+        s.frame.clone()
+    } else if local {
         crate::local_mapper::display_frame(&s.frame)?
     } else {
         crate::model::FRAME.into()
@@ -71,24 +74,12 @@ pub fn render_scene(s: &CanonicalScene) -> Result<Value> {
         .cloned()
         .unwrap_or(Value::Null);
     if let Some(robot) = metadata.get_mut("robot_pose").filter(|v| !v.is_null()) {
-        let pose = serde_json::from_value(robot["pose"].clone())?;
-        robot["pose"] = serde_json::to_value(crate::conventions::pose(
-            &pose,
-            &s.voxels.definition.frame,
-            &target,
-        )?)?;
-        robot["frame"] = json!(display);
+        render_robot_pose(robot, s, &target)?;
     }
     if let Some(runners) = metadata.get_mut("runners").and_then(Value::as_object_mut) {
         for runner in runners.values_mut() {
             if let Some(robot) = runner.get_mut("robot_pose").filter(|v| !v.is_null()) {
-                let pose = serde_json::from_value(robot["pose"].clone())?;
-                robot["pose"] = serde_json::to_value(crate::conventions::pose(
-                    &pose,
-                    &s.voxels.definition.frame,
-                    &target,
-                )?)?;
-                robot["frame"] = json!(display);
+                render_robot_pose(robot, s, &target)?;
             }
         }
     }
@@ -101,6 +92,60 @@ pub fn render_scene(s: &CanonicalScene) -> Result<Value> {
     crate::mobile_pose::append_labels(&mut view, &s.registries["mobile_presence"]);
     view["landmarks"] = serde_json::to_value(landmarks)?;
     Ok(view)
+}
+
+fn render_robot_pose(
+    robot: &mut Value,
+    scene: &CanonicalScene,
+    target: &FrameRegistryEntry,
+) -> Result<()> {
+    let pose = crate::conventions::pose(
+        &serde_json::from_value(robot["pose"].clone())?,
+        &scene.voxels.definition.frame,
+        target,
+    )?;
+    robot["pose"] = serde_json::to_value(&pose)?;
+    robot["frame"] = json!(target.frame_id);
+
+    // Older runners publish the body declaration in the registry instead of
+    // alongside each pose. Resolve it by producer, including shared-map inputs;
+    // the map's axes do not tell us which body axis means forward.
+    let source = if let Some(frame) = robot.get("from_frame") {
+        Some(serde_json::from_value::<FrameRegistryEntry>(frame.clone())?)
+    } else if let Some(peer) = robot["clock"]["peer_id"].as_str() {
+        let registries = &scene.registries;
+        let mut frames = registries["frames"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .chain(
+                registries["input_registries"][peer]["frames"]
+                    .as_array()
+                    .into_iter()
+                    .flatten(),
+            )
+            .filter(|f| f["peer_id"] == peer && f["frame_id"] == "robot.base");
+        let source = frames.next().cloned();
+        ensure!(
+            frames.all(|f| Some(f) == source.as_ref()),
+            "conflicting robot body declarations"
+        );
+        source
+            .map(serde_json::from_value::<FrameRegistryEntry>)
+            .transpose()?
+    } else {
+        None
+    };
+    if let Some(source) = source {
+        // The browser's illustrative mesh uses ROS body axes. Keep the actual
+        // body pose for geometry consumers and add a separate presentation pose.
+        let glyph = FrameRegistryEntry::ros_body("home", "viewer.robot-glyph");
+        robot["glyph_pose"] =
+            serde_json::to_value(crate::conventions::pose_source(&pose, &source, &glyph)?)?;
+        robot["glyph_frame"] = serde_json::to_value(glyph)?;
+        robot["from_frame"] = serde_json::to_value(source)?;
+    }
+    Ok(())
 }
 
 pub async fn monitor(
@@ -128,7 +173,7 @@ pub async fn monitor(
                     match event {
                         Some(RemoteObservationEvent::Observation(o))=>{
                             let s=&o.payload;s.validate(&config.peer_id)?;
-                            ensure!(s.frame==config.frame || (config.frame==crate::local_mapper::FAMILY && crate::local_mapper::is_local_frame(&s.frame)),"runner frame differs from connection profile");
+                            ensure!(s.frame==config.frame || (crate::local_mapper::is_local_family(&config.frame) && s.frame.starts_with(&format!("{}:",config.frame)) && crate::local_mapper::is_local_frame(&s.frame)),"runner frame differs from connection profile");
                             ensure!(crate::model::clock_ref(&s.publication_clock)==subscription.product().producer.clock,"scene clock mismatch");
                             if !crate::local_mapper::is_local_frame(&s.frame) {ensure!(crate::conventions::matching_portals(&s.portals,portals)?,"Runner scene portal reference differs from Home");}
                             state.send_replace(RemoteScene{scene:Some((**s).clone()),status:"connected".into(),detail:if crate::local_mapper::is_local_frame(&s.frame){if let Some(anchor)=s.registries["local_mapping"]["alignment_to_home"]["anchor"].as_str(){format!("Robot boot origin · blue observations · red Home references aligned via {anchor}")}else{"Robot boot origin · waiting for shared portal alignment".into()}}else{format!("Galbot {} → Home OpenGL · SDK conversion",s.portals.scenegraph.map.frame.convention.map(|c|c.as_str()).unwrap_or("unknown"))},received:Some(Instant::now())});

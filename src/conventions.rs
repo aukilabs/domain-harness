@@ -31,6 +31,7 @@ pub fn convention(id: &str) -> Result<C> {
     match id {
         crate::model::FRAME | crate::domain_portals::FRAME => Ok(C::OpenGl),
         RUNNER_FRAME => Ok(C::ZUpRightForward),
+        id if crate::local_scenes::frame_scene_id(id).is_some() => Ok(C::OpenGl),
         id if crate::local_mapper::is_local_frame(id) => Ok(if id.ends_with(":zup") {
             C::ZUpRightForward
         } else {
@@ -107,6 +108,14 @@ pub fn portals(source: &MapSnapshot, target: &str) -> Result<MapSnapshot> {
     Ok(MapSnapshot::new(result.scenegraph)?)
 }
 fn same_origin(a: &str, b: &str) -> Result<()> {
+    if crate::local_scenes::frame_scene_id(a).is_some()
+        || crate::local_scenes::frame_scene_id(b).is_some()
+    {
+        ensure!(
+            a == b,
+            "coordinate conversion cannot align independent scenegraphs"
+        );
+    }
     if crate::local_mapper::is_local_frame(a) || crate::local_mapper::is_local_frame(b) {
         ensure!(
             crate::local_mapper::is_local_frame(a)
@@ -176,6 +185,34 @@ pub fn matching_portals(a: &MapSnapshot, b: &MapSnapshot) -> Result<bool> {
                     .is_some_and(|b| crate::model::same_anchor(a, b))
             }),
     )
+}
+/// Re-express only a pose's input axes (for example, a display glyph's body
+/// convention). The destination frame and physical position are unchanged.
+pub fn pose_source(
+    p: &auki_odometry::Pose,
+    from: &FrameRegistryEntry,
+    to: &FrameRegistryEntry,
+) -> Result<auki_odometry::Pose> {
+    p.validate()?;
+    let [x, y, z, w] = p.rotation_xyzw;
+    let t = auki_geometry::convert_transform_source_convention(
+        &SpatialTransform {
+            translation: Some(Vec3 {
+                x: p.translation[0],
+                y: p.translation[1],
+                z: p.translation[2],
+            }),
+            orientation: Some(Quat { x, y, z, w }),
+        },
+        from,
+        to,
+    )?;
+    let p = t.translation.unwrap();
+    let q = t.orientation.unwrap();
+    Ok(auki_odometry::Pose {
+        translation: [p.x, p.y, p.z],
+        rotation_xyzw: [q.x, q.y, q.z, q.w],
+    })
 }
 /// Exact lattice-preserving migration between supported metre, signed-permutation conventions.
 /// Reindex all occupied AND free cells, retaining f64 occupancy/color evidence unchanged.

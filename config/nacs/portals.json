@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "measurement_basis": "encoded_square",
+  "portals": [
+    { "code": "RG3E3LUITXC", "side_length_m": 0.15 }
+  ]
+}

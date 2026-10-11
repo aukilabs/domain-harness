@@ -27,7 +27,57 @@ use std::{
 };
 
 static CLIENT: Mutex<Option<Arc<MobileClient>>> = Mutex::new(None);
+
+/// # Safety
+/// `request` must be a NUL-terminated UTF-8 JSON string valid for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spatial_mobile_change_note(request: *const c_char) -> i32 {
+    std::panic::catch_unwind(|| {
+        if request.is_null() { return 0; }
+        let bytes = unsafe { CStr::from_ptr(request) }.to_bytes();
+        if bytes.len() > 2*1024*1024 { return 0; }
+        let Ok(request) = serde_json::from_slice(bytes) else { return 0; };
+        CLIENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+            .map_or(0, |client| i32::from(client.change_note(request)))
+    }).unwrap_or(0)
+}
+
+/// Advertise camera availability while scanning and query SDK subscription demand.
+#[unsafe(no_mangle)]
+pub extern "C" fn spatial_mobile_camera_demand(active: i32) -> i32 {
+    CLIENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+        .map_or(0, |client| i32::from(client.camera_demanded(active != 0)))
+}
+
+/// # Safety
+/// `jpeg` must point to `length` readable bytes for the duration of this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spatial_mobile_camera(timestamp: u64, jpeg: *const u8, length: usize) {
+    if jpeg.is_null() || length == 0 || length > spatial_home::mobile_camera::MAX_JPEG || timestamp == 0 { return; }
+    if let Some(client) = CLIENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        client.update_camera(timestamp, unsafe { std::slice::from_raw_parts(jpeg, length) }.to_vec());
+    }
+}
 static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+
+/// Pure local detection. Caller frees the result with spatial_mobile_string_free.
+/// # Safety
+/// luma must span length readable bytes; capture must be NUL-terminated UTF-8.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spatial_mobile_calibrate(luma: *const u8, length: usize, capture: *const c_char) -> *mut c_char {
+    std::panic::catch_unwind(|| {
+        if luma.is_null() || capture.is_null() || length == 0 || length > 1920*1920 { return std::ptr::null_mut(); }
+        let metadata = unsafe { CStr::from_ptr(capture) }.to_bytes();
+        if metadata.len() > 1024*1024 { return std::ptr::null_mut(); }
+        let parsed = serde_json::from_slice::<spatial_home::mobile_calibration::Capture>(metadata);
+        let report = match parsed {
+            Ok(c) => spatial_home::mobile_calibration::detect(unsafe { std::slice::from_raw_parts(luma, length) }, &c)
+                .map(|r| serde_json::to_value(r).unwrap()).unwrap_or_else(|e| serde_json::json!({"detail":format!("Calibration unavailable: {e}"),"alignment":null})),
+            Err(_) => serde_json::json!({"detail":"Invalid calibration capture","alignment":null}),
+        };
+        CString::new(report.to_string()).map_or(std::ptr::null_mut(), CString::into_raw)
+    }).unwrap_or(std::ptr::null_mut())
+}
 
 fn runtime() -> &'static tokio::runtime::Runtime {
     RUNTIME.get_or_init(|| {

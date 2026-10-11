@@ -2,6 +2,7 @@ pub mod conventions;
 pub mod domain_portals;
 pub mod local_mapper;
 pub mod mobile;
+pub mod mobile_camera;
 pub mod model;
 pub mod network;
 pub mod peer;
@@ -18,6 +19,7 @@ pub mod voxel_color;
 pub mod sensor_preview;
 
 pub mod galbot_sensors;
+pub mod portal_camera_detector;
 
 pub mod home_alignment;
 
@@ -43,6 +45,7 @@ pub mod mobile_pose;
 pub mod mobile_geometry;
 
 pub mod mobile_depth;
+pub mod mobile_calibration;
 
 pub mod fiducials;
 pub mod landmarks;
@@ -50,7 +53,13 @@ pub mod occupancy_mapper;
 pub mod occupancy_fixture;
 pub mod simulated_robot;
 pub mod mobile_local;
+pub mod mobile_products;
 pub mod device_catalogs;
 pub mod simulated_camera;
 pub mod simulated_lidar;
 pub mod simulator_mapper;
+pub mod environments;
+pub mod local_scenes;
+pub mod local_mobile;
+
+pub mod robot_runner;

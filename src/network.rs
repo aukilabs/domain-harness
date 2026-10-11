@@ -68,7 +68,9 @@ impl CanonicalScene {
             "voxel and Portal frames differ"
         );
         ensure!(
-            if crate::local_mapper::is_local_frame(&self.frame) {
+            if crate::local_mapper::is_local_frame(&self.frame)
+                || crate::local_scenes::frame_scene_id(&self.frame).is_some()
+            {
                 self.portals.scenegraph.map.domain_reference.is_none()
             } else {
                 self.portals.scenegraph.map.domain_reference.as_deref()
@@ -103,6 +105,29 @@ pub struct HomeConnection {
     pub product_id: String,
 }
 impl HomeConnection {
+    pub fn local_scene_id(&self) -> Option<&str> {
+        crate::local_scenes::frame_scene_id(&self.frame)
+    }
+    pub fn validate_scene_contract(&self) -> Result<()> {
+        if let Some(id) = self.local_scene_id() {
+            ensure!(
+                self.product_id == crate::local_scenes::mobile_product(id),
+                "Scene Product/frame mismatch"
+            );
+        } else {
+            ensure!(
+                (crate::conventions::convention(&self.frame).is_ok()
+                    || crate::local_mapper::is_local_family(&self.frame))
+                    && self.product_id == SCENE_PRODUCT,
+                "unexpected Home scene contract"
+            );
+        }
+        Ok(())
+    }
+    pub fn scoped_component(&self, base: &str) -> String {
+        self.local_scene_id()
+            .map_or_else(|| base.to_owned(), |id| format!("{base}:{id}"))
+    }
     pub fn current(peer: &AukiPeer) -> Result<Self> {
         let routes = peer.protocol_context().routes().snapshot()?;
         let mut connection = Self::direct(peer);
@@ -149,12 +174,7 @@ impl HomeConnection {
             self.domain_id == peer.domain_id().to_string(),
             "Home and runner transport Domains differ"
         );
-        ensure!(
-            (crate::conventions::convention(&self.frame).is_ok()
-                || self.frame == crate::local_mapper::FAMILY)
-                && self.product_id == SCENE_PRODUCT,
-            "unexpected Home scene contract"
-        );
+        self.validate_scene_contract()?;
         ensure!(
             !self.routes.is_empty() && self.routes.len() <= 16,
             "Home profile needs 1–16 routes"
@@ -258,7 +278,25 @@ impl ScenePublisher {
                         result: crate::notes::TextNote::DATATYPE.into(),
                         exposure: Exposure::Cluster,
                     },
-                ))?;
+                ).operable(crate::mobile_notes::change_contract()))?;
+        let change_store = store.clone();
+        let change_notify = changed.clone();
+        let memo = std::sync::Mutex::new(crate::mobile_notes::ChangeMemo::default());
+        let change = component.operable("change", |ctx| !ctx.caller_peer_id.is_empty(),
+            move |ctx, request: crate::mobile_notes::ChangeNote| {
+                memo.lock().map_err(|_| InvocationError::TargetUnavailable)?.run(&ctx.caller_peer_id, &request, || {
+                let mut store = change_store.lock().map_err(|_| InvocationError::TargetUnavailable)?;
+                let result = (|| -> Result<_> {
+                    let notes = crate::notes::from_registries(&store.built.registries, crate::model::FRAME)?;
+                    let (notes, result) = crate::mobile_notes::apply_change(&notes, &request, crate::model::FRAME)?;
+                    crate::model::persist(&store.path.with_extension("notes.json"), &notes)?;
+                    store.built.registries["text_notes"] = serde_json::to_value(notes)?;
+                    Ok(result)
+                })().map_err(|e| InvocationError::Rejected(e.to_string()))?;
+                change_notify.notify_one();
+                Ok(result)
+                }).map_err(|e| InvocationError::Rejected(e.to_string()))
+            })?;
         let operation = component.operable(
             crate::mobile_notes::OPERATION,
             // Home's collaboration policy permits authenticated Domain peers to
@@ -283,6 +321,7 @@ impl ScenePublisher {
         )?;
         component.expose()?;
         self.endpoint.export_operable(&operation)?;
+        self.endpoint.export_operable(&change)?;
         Ok(())
     }
     pub fn enable_phone_depth(
@@ -489,6 +528,7 @@ impl ScenePublisher {
 pub async fn serve_scene(
     running: crate::peer::RunningPeer,
     store: Arc<std::sync::Mutex<crate::model::Store>>,
+    local_scenes: Arc<crate::local_scenes::LocalScenes>,
     runner_names: std::collections::BTreeMap<String, String>,
     mut changes: tokio::sync::watch::Receiver<()>,
     status: tokio::sync::watch::Sender<Value>,
@@ -550,10 +590,15 @@ pub async fn serve_scene(
     );
     let robot_occupancy =
         crate::robot_occupancy::monitor(&running.peer, &home_sources, &occupancy, &monitor_stop);
-    let (catalog_tx, mut catalog_rx) = tokio::sync::watch::channel(crate::device_catalogs::Catalogs::new());
-    let catalog_targets: Vec<_> = home_sources.iter().map(|p| (p.peer_id.clone(), p.routes.clone()))
-        .chain(runner.iter().map(|r| (r.peer_id.clone(), r.routes.clone()))).collect();
-    let catalogs = crate::device_catalogs::monitor(&running.peer, &catalog_targets, catalog_tx, &monitor_stop);
+    let (catalog_tx, mut catalog_rx) =
+        tokio::sync::watch::channel(crate::device_catalogs::Catalogs::new());
+    let catalog_targets: Vec<_> = home_sources
+        .iter()
+        .map(|p| (p.peer_id.clone(), p.routes.clone()))
+        .chain(runner.iter().map(|r| (r.peer_id.clone(), r.routes.clone())))
+        .collect();
+    let catalogs =
+        crate::device_catalogs::monitor(&running.peer, &catalog_targets, catalog_tx, &monitor_stop);
     let preview_catalogs = catalog_rx.clone();
     let publish = async {
         let publisher = ScenePublisher::mount(&running.peer);
@@ -562,6 +607,14 @@ pub async fn serve_scene(
             Ok(mut publisher) => {
                 let work = async {
                 publisher.enable_home_live()?;
+                let _local_scene_components = local_scenes.mount(
+                    &publisher.runtime, &publisher.endpoint,
+                    clock_ref(&publisher.clock), publisher.started,
+                )?;
+                let mut local_mobile = crate::local_mobile::Publisher::mount_all(
+                    &publisher.runtime, &publisher.endpoint, local_scenes.clone(),
+                    publisher.clock.clone(), publisher.started,
+                )?;
                 crate::mobile_local::mount_receiver(&publisher.runtime, &publisher.endpoint)?;
                 // Opt in with a measured floor height in the live map's up axis.
                 // Bind the same retained Product that peers subscribe to.
@@ -596,6 +649,7 @@ pub async fn serve_scene(
                         if last_live.as_ref()!=Some(&key) {publisher.publish_home_live(scene)?;last_live=Some(key);}
                     }
                     if let Some(mapper) = &mut occupancy_mapper { mapper.tick()?; }
+                    for scene in &mut local_mobile { scene.tick()?; }
                     let connection = HomeConnection::current(&running.peer)?;
                     let peers = crate::device_catalogs::device_rows(&running.peer, &catalog_rx.borrow());
                     status.send_replace(serde_json::json!({"enabled":true,
@@ -726,6 +780,21 @@ pub async fn subscribe_scene_product(
 }
 
 /// Bounded, authenticated one-shot fetch. No portal backend APIs.
+/// Uses the selected scene Product, including standalone Home reference scenes.
+pub async fn fetch_home_portals(peer: &AukiPeer, home: &HomeConnection) -> Result<MapSnapshot> {
+    let stop = tokio_util::sync::CancellationToken::new();
+    let mut received = None;
+    tokio::time::timeout(std::time::Duration::from_secs(45),
+        crate::mobile::receive_portals(peer, home, &stop, std::time::Duration::from_millis(50), |value| {
+            received = Some(value);
+            stop.cancel();
+        })).await??;
+    let value = received.ok_or_else(|| anyhow!("Home did not publish a Portal reference"))?;
+    let graph = value.get("scenegraph").ok_or_else(|| anyhow!("Home reference missing scenegraph"))?;
+    MapSnapshot::new(serde_json::from_value(graph.clone())?).map_err(Into::into)
+}
+
+/// Bounded, authenticated one-shot fetch of a complete canonical scene.
 pub async fn fetch_home_scene(peer: &AukiPeer, home: &HomeConnection) -> Result<CanonicalScene> {
     let mut subscription = subscribe_scene(peer, home).await?;
     let result = tokio::time::timeout(std::time::Duration::from_secs(20), async {

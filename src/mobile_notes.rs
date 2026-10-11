@@ -9,6 +9,271 @@ use serde::{Deserialize, Serialize};
 
 pub const COMPONENT: &str = "home-annotations";
 pub const OPERATION: &str = "place";
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChangeNote {
+    pub request_id: String,
+    pub frame: String,
+    pub action: NoteAction,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NoteAction {
+    Place {
+        id: String,
+        origin: [f64; 3],
+        position: [f64; 3],
+        text: String,
+    },
+    Edit {
+        id: String,
+        text: String,
+    },
+    Delete {
+        id: String,
+    },
+    Restore {
+        note: TextNote,
+    },
+}
+#[derive(Clone, Serialize, Deserialize)]
+pub struct NoteChange {
+    pub request_id: String,
+    pub note: Option<TextNote>,
+    pub deleted: bool,
+}
+/// SDK invocation IDs identify requests but do not themselves deduplicate writes.
+/// Remember successful results for five minutes, bounded by both count and bytes.
+#[derive(Default)]
+pub struct ChangeMemo {
+    entries: std::collections::VecDeque<(
+        String,
+        String,
+        Vec<u8>,
+        NoteChange,
+        std::time::Instant,
+        usize,
+    )>,
+}
+impl ChangeMemo {
+    pub fn run(
+        &mut self,
+        caller: &str,
+        request: &ChangeNote,
+        apply: impl FnOnce() -> Result<NoteChange>,
+    ) -> Result<NoteChange> {
+        let encoded = serde_json::to_vec(request)?;
+        ensure!(
+            encoded.len() <= 2 * 1024 * 1024,
+            "Annotation request too large"
+        );
+        self.entries
+            .retain(|e| e.4.elapsed() < std::time::Duration::from_secs(300));
+        if let Some(entry) = self
+            .entries
+            .iter()
+            .find(|e| e.0 == caller && e.1 == request.request_id)
+        {
+            ensure!(entry.2 == encoded, "Annotation request ID already used");
+            return Ok(entry.3.clone());
+        }
+        let result = apply()?;
+        let bytes = encoded.len() + serde_json::to_vec(&result)?.len();
+        while !self.entries.is_empty()
+            && (self.entries.len() >= 128
+                || self.entries.iter().map(|e| e.5).sum::<usize>() + bytes > 4 * 1024 * 1024)
+        {
+            self.entries.pop_front();
+        }
+        self.entries.push_back((
+            caller.into(),
+            request.request_id.clone(),
+            encoded,
+            result.clone(),
+            std::time::Instant::now(),
+            bytes,
+        ));
+        Ok(result)
+    }
+}
+impl auki_components::ContractType for ChangeNote {
+    const DATATYPE: &'static str = "spatial.home-change-note/v1";
+}
+impl auki_components::ContractType for NoteChange {
+    const DATATYPE: &'static str = "spatial.note-change/v1";
+}
+pub fn change_contract() -> auki_components::OperableContract {
+    use auki_components::ContractType;
+    auki_components::OperableContract {
+        name: "change".into(),
+        instruction: ChangeNote::DATATYPE.into(),
+        result: NoteChange::DATATYPE.into(),
+        exposure: auki_components::Exposure::Cluster,
+    }
+}
+
+/// Work on a copy: validation/persistence failure cannot partially change live notes.
+pub fn apply_change(
+    notes: &crate::notes::Notes,
+    request: &ChangeNote,
+    frame: &str,
+) -> Result<(crate::notes::Notes, NoteChange)> {
+    ensure!(
+        request.frame == frame,
+        "Annotation belongs to another scene"
+    );
+    uuid::Uuid::parse_str(&request.request_id)?;
+    let mut next = notes.clone();
+    let editable = |note: &TextNote| -> Result<()> {
+        ensure!(
+            note.anchor_robot.is_none(),
+            "Device poses cannot be edited or deleted"
+        );
+        Ok(())
+    };
+    let (note, deleted) = match &request.action {
+        NoteAction::Place {
+            id,
+            origin,
+            position,
+            text,
+        } => {
+            uuid::Uuid::parse_str(id)?;
+            ensure!(
+                origin
+                    .iter()
+                    .chain(position)
+                    .all(|v| v.is_finite() && v.abs() < 1_000_000.),
+                "Invalid surface hit"
+            );
+            let distance = origin
+                .iter()
+                .zip(position)
+                .map(|(a, b)| (a - b).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            ensure!(
+                (0.05..=40.).contains(&distance),
+                "Surface must be within 40 metres"
+            );
+            let note = TextNote {
+                id: id.clone(),
+                text: text.trim().into(),
+                details: Default::default(),
+                position: *position,
+                anchor_portal: String::new(),
+                anchor_robot: None,
+                height_m: 0.,
+                anchor_surface: Some(SurfaceAnchor {
+                    frame: frame.into(),
+                    voxel_center: *position,
+                    beam_diameter_m: 0.,
+                    floor: false,
+                }),
+            };
+            if let Some(existing) = next.items.iter().find(|n| n.id == *id) {
+                ensure!(existing == &note, "Annotation ID already used");
+            } else {
+                next.items.push(note.clone());
+            }
+            (Some(note), false)
+        }
+        NoteAction::Edit { id, text } => {
+            let note = next
+                .items
+                .iter_mut()
+                .find(|n| n.id == *id)
+                .ok_or_else(|| anyhow!("Annotation no longer exists"))?;
+            editable(note)?;
+            note.text = text.trim().into();
+            // Home's UI prefers title when present; keep both presentations coherent.
+            if !note.details.title.is_empty() {
+                note.details.title = note.text.clone();
+            }
+            (Some(note.clone()), false)
+        }
+        NoteAction::Delete { id } => {
+            let old = if let Some(index) = next.items.iter().position(|n| n.id == *id) {
+                editable(&next.items[index])?;
+                Some(next.items.remove(index))
+            } else {
+                None
+            };
+            (old, true)
+        }
+        NoteAction::Restore { note } => {
+            editable(note)?;
+            ensure!(
+                note.anchor_surface
+                    .as_ref()
+                    .is_none_or(|s| s.frame == frame),
+                "Annotation belongs to another scene"
+            );
+            if let Some(existing) = next.items.iter().find(|n| n.id == note.id) {
+                ensure!(existing == note, "Annotation ID already used");
+            } else {
+                next.items.push(note.clone());
+            }
+            (Some(note.clone()), false)
+        }
+    };
+    next.validate(frame)?;
+    Ok((
+        next,
+        NoteChange {
+            request_id: request.request_id.clone(),
+            note,
+            deleted,
+        },
+    ))
+}
+
+pub async fn send_change(
+    peer: &auki_sdk::AukiPeer,
+    home: &crate::network::HomeConnection,
+    request: &ChangeNote,
+) -> Result<NoteChange> {
+    use auki_component_protocol::{CatalogResponse, ComponentProtocolClient};
+    let expected = home.validate(peer)?;
+    ensure!(
+        request.frame == home.frame,
+        "Annotation belongs to another scene"
+    );
+    let client = ComponentProtocolClient::new(peer.protocols());
+    for route in &home.routes {
+        let route: auki_sdk::Multiaddr = route.parse()?;
+        if let Ok(Ok(CatalogResponse::Snapshot { snapshot })) = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            client.catalog_exact(expected, route.clone(), None),
+        )
+        .await
+        {
+            let component = snapshot
+                .components
+                .iter()
+                .find(|c| c.manifest.component_id == home.scoped_component(COMPONENT))
+                .ok_or_else(|| anyhow!("Home annotation component unavailable"))?;
+            // Send once; the operation memo deduplicates explicit retries by caller/ID.
+            return Ok(tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                client.invoke_exact::<_, NoteChange>(
+                    expected,
+                    route,
+                    component.manifest.reference(),
+                    "change",
+                    "phone-annotations",
+                    &request.request_id,
+                    Some(std::time::Duration::from_secs(10)),
+                    request,
+                ),
+            )
+            .await??
+            .result);
+        }
+    }
+    anyhow::bail!("Home is unavailable")
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlaceNote {
@@ -136,7 +401,7 @@ pub async fn send(
             let entry = snapshot
                 .components
                 .iter()
-                .find(|c| c.manifest.component_id == COMPONENT)
+                .find(|c| c.manifest.component_id == home.scoped_component(COMPONENT))
                 .ok_or_else(|| {
                     anyhow!("Home needs the annotation update; reconnect after Home restarts")
                 })?;

@@ -24,5 +24,24 @@ class LocalVoxels {
         if (cells.size < 10000 || c in cells) cells.add(c)
     }
     fun clear() = cells.clear()
-    fun centers(): FloatArray = cells.flatMap { listOf((it.x + .5f) * .1f, (it.y + .5f) * .1f, (it.z + .5f) * .1f) }.toFloatArray()
+    fun centers(): FloatArray {
+        val result = FloatArray(cells.size * 3)
+        var i = 0
+        for (c in cells) {
+            result[i++] = (c.x + .5f) * .1f
+            result[i++] = (c.y + .5f) * .1f
+            result[i++] = (c.z + .5f) * .1f
+        }
+        return result
+    }
+    fun cellsJson(): String = buildString(cells.size * 20 + 2) {
+        append('[')
+        var first = true
+        for (c in cells) {
+            if (!first) append(',')
+            first = false
+            append('['); append(c.x); append(','); append(c.y); append(','); append(c.z); append(']')
+        }
+        append(']')
+    }
 }

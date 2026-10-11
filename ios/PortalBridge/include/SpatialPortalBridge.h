@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include <stddef.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -9,7 +10,11 @@ void spatial_mobile_stop(void);
 int32_t spatial_mobile_local_map(const char *sample);
 void spatial_mobile_pose(const char *sample);
 void spatial_mobile_depth(const char *sample);
+int32_t spatial_mobile_camera_demand(int32_t active);
+void spatial_mobile_camera(uint64_t timestamp, const uint8_t *jpeg, size_t length);
+char *spatial_mobile_calibrate(const uint8_t *luma, size_t length, const char *capture);
 int32_t spatial_mobile_annotate(const char *request);
+int32_t spatial_mobile_change_note(const char *request);
 void spatial_mobile_string_free(char *value);
 #ifdef __cplusplus
 }

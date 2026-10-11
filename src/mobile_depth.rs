@@ -80,7 +80,7 @@ pub fn validate(peer: &str, e: &Envelope, canonical: &MapSnapshot) -> Result<()>
             && s.camera_to_session.to_frame_id == session
             && s.alignment.portal_to_session.to_frame_id == session
             && s.alignment.session_to_home.from_frame_id == session
-            && s.alignment.session_to_home.to_frame_id == crate::model::FRAME,
+            && s.alignment.session_to_home.to_frame_id == canonical.scenegraph.map.frame.id,
         "Depth transform endpoints mismatch"
     );
     let portal = canonical
@@ -178,13 +178,31 @@ pub fn localize(
         portal,
     )?;
     let camera_in_shared = compose(&origin.odometry_to_local, &from_rigid(&s.camera_to_session))?;
+    // The transport accepts more points than the SDK raycaster's work budget.
+    // Select real measurements evenly across the full capture; preserve their
+    // coordinates, timestamp and source. Unselected rays do not imply free space.
+    let max_ray_steps = s
+        .points
+        .iter()
+        .map(|p| 3 * (p[0].hypot(p[1]).hypot(p[2]) / 0.1).ceil() as usize + 3)
+        .max()
+        .unwrap_or(1);
+    let count = s
+        .points
+        .len()
+        .min(auki_voxel_map::MAX_POINTS)
+        .min(auki_voxel_map::MAX_RAY_SAMPLES / max_ray_steps);
+    ensure!(count > 0, "Depth capture exceeds ray work budget");
+    let points: Vec<_> = (0..count)
+        .map(|i| s.points[i * s.points.len() / count])
+        .collect();
     let observation = auki_voxel_map::DepthObservation {
         source: e.source.clone(),
         sequence: e.sequence,
         timestamp_ns: s.timestamp_ns,
         clock: clock.clone(),
         sensor_frame_id: e.sensor_frame.frame_id.clone(),
-        hit_points_m: s.points.clone(),
+        hit_points_m: points,
         pose: auki_voxel_map::TimedSensorPose {
             timestamp_ns: s.timestamp_ns,
             clock: clock.clone(),
@@ -199,7 +217,7 @@ pub fn localize(
             sensor_frame: e.sensor_frame,
             observation_clock: clock,
         },
-        colors: vec![None; s.points.len()],
+        colors: vec![None; count],
         origin,
     })
 }
@@ -209,18 +227,18 @@ pub fn localize(
 pub struct Publisher {
     pub session: String,
     output: ConfiguredObservable<Sample>,
-    capture: BufferProductCapture<Sample>,
-    endpoint: auki_component_protocol::ComponentProtocolEndpoint,
+    capture: Option<BufferProductCapture<Sample>>,
+    endpoint: Arc<auki_component_protocol::ComponentProtocolEndpoint>,
     clock: ClockRegistryEntry,
     sensor_frame: auki_registry::FrameRegistryEntry,
     _component: Component,
     _runtime: ComponentRuntime,
 }
 impl Publisher {
-    pub fn new(peer: &auki_sdk::AukiPeer, session: &str) -> Result<Self> {
+    pub fn new(products: &crate::mobile_products::MobileProducts, session: &str) -> Result<Self> {
         uuid::Uuid::parse_str(session)?;
-        let owner = peer.peer_id().to_string();
-        let runtime = ComponentRuntime::new(owner.clone());
+        let runtime = products.runtime.clone();
+        let owner = runtime.peer_id().to_string();
         let mut clock = crate::model::clock_entry(&owner, session);
         clock.clock_id = "arkit-capture".into();
         let sensor_frame =
@@ -260,15 +278,12 @@ impl Publisher {
             },
             |s: &Sample| serde_json::to_vec(s).map_or(usize::MAX, |v| v.len()),
         )?;
-        let endpoint = auki_component_protocol::ComponentProtocolEndpoint::mount(
-            peer.protocols(),
-            runtime.clone(),
-        )?;
+        let endpoint = products.endpoint.clone();
         endpoint.export_product(&capture.product())?;
         Ok(Self {
             session: session.into(),
             output,
-            capture,
+            capture: Some(capture),
             endpoint,
             clock,
             sensor_frame,
@@ -278,24 +293,79 @@ impl Publisher {
     }
     pub fn publish(&self, sample: Sample) -> Result<Envelope> {
         ensure!(sample.session == self.session, "Depth session changed");
+        let capture = self
+            .capture
+            .as_ref()
+            .ok_or_else(|| anyhow!("Depth capture unavailable"))?;
         let (observation, _) = self
             .output
             .publish(sample.timestamp_ns, Arc::new(sample.clone()))?;
-        ensure!(
-            self.capture.errors().is_empty(),
-            "Depth Product capture failed"
-        );
+        ensure!(capture.errors().is_empty(), "Depth Product capture failed");
         Ok(Envelope {
             sequence: observation.sequence,
             sample,
-            source: self.capture.product().reference(),
+            source: capture.product().reference(),
             clock: self.clock.clone(),
             sensor_frame: self.sensor_frame.clone(),
         })
     }
-    pub async fn close(self) -> Result<()> {
-        self.capture.cancel();
-        self.endpoint.close().await?;
+    /// Reconfigure the stable Component on an AR reset, without remounting protocols.
+    pub fn reconfigure(&mut self, session: &str, timestamp_ns: u64) -> Result<()> {
+        uuid::Uuid::parse_str(session)?;
+        let owner = self._runtime.peer_id().to_string();
+        let mut clock = crate::model::clock_entry(&owner, session);
+        clock.clock_id = "arkit-capture".into();
+        let frame =
+            auki_registry::FrameRegistryEntry::opengl(&owner, format!("phone-camera:{session}"));
+        let replacement = self
+            ._component
+            .replace_configured_observable(
+                &self.output,
+                ConfiguredObservableSpec::new(
+                    "depth",
+                    format!("depth:{session}:{}", uuid::Uuid::new_v4()),
+                    crate::model::clock_ref(&clock),
+                    PayloadContract::Structured(StructuredPayloadContract {
+                        modality: "depth".into(),
+                        datatype: SCHEMA.into(),
+                        schema: SCHEMA.into(),
+                        observes: "phone_local_lidar".into(),
+                        unit: Some("meters".into()),
+                    }),
+                )
+                .in_registered_frame(frame.clone()),
+                timestamp_ns,
+            )?
+            .replacement;
+        if let Some(old) = self.capture.take() {
+            self.endpoint
+                .unexport_product(&old.product().manifest.product_id);
+            old.delete()?;
+        }
+        self.output = replacement;
+        self.session = session.into();
+        self.clock = clock;
+        self.sensor_frame = frame;
+        let capture = self._runtime.capture_buffer(
+            format!("phone-depth:{session}"),
+            &self.output,
+            BufferLimits {
+                max_entries: Some(2),
+                max_bytes: Some(1024 * 1024),
+                target_duration: None,
+            },
+            |s: &Sample| serde_json::to_vec(s).map_or(usize::MAX, |v| v.len()),
+        )?;
+        self.endpoint.export_product(&capture.product())?;
+        self.capture = Some(capture);
+        Ok(())
+    }
+    pub async fn close(mut self) -> Result<()> {
+        if let Some(capture) = self.capture.take() {
+            self.endpoint
+                .unexport_product(&capture.product().manifest.product_id);
+            capture.delete()?;
+        }
         Ok(())
     }
 }
@@ -320,7 +390,7 @@ pub async fn send(
         let component = snapshot
             .components
             .iter()
-            .find(|c| c.manifest.component_id == COMPONENT)
+            .find(|c| c.manifest.component_id == home.scoped_component(COMPONENT))
             .ok_or_else(|| anyhow!("Home depth receiver unavailable"))?;
         let response = client
             .invoke_exact::<_, bool>(

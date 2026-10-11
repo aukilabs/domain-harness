@@ -151,6 +151,7 @@
 					"\"../PortalBridge/build\"",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Annotator;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Scan a Portal to display Home's scenegraph in augmented reality.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connect directly to Home to receive its live Portal scenegraph.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -242,6 +243,7 @@
 					"\"../PortalBridge/build\"",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Annotator;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Scan a Portal to display Home's scenegraph in augmented reality.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connect directly to Home to receive its live Portal scenegraph.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

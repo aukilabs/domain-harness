@@ -1,5 +1,12 @@
 # Robot Runner (Bracketbot / Galbot)
 
+## Bracketbot 0184
+
+The BBOS adapter, native runner, deployment scripts, and hardware verification
+are documented in [bracketbot-runner.md](bracketbot-runner.md). It publishes the
+rectified head camera, stereo depth, SLAM odometry, and an independent local map
+through the same single-peer runtime used by Galbot.
+
 ## Single Galbot runner (current)
 
 `galbot-runner` owns one authenticated peer and one SDK component catalog. It

@@ -11,8 +11,14 @@ use auki_registry::FrameRegistryEntry;
 use serde::{Deserialize, Serialize};
 use std::{sync::Arc, time::Duration};
 pub const FRAME: &str = "right_arm_camera_color_optical_frame";
+pub const BRACKETBOT_FRAME: &str = "bracketbot_head_rectified_optical";
+pub const BRACKETBOT_RIGHT_FRAME: &str = "bracketbot_head_right_rectified_optical";
+pub const BRACKETBOT_CALIBRATION: &str = "BBOS calibrated stereo RGB-D; sha256:";
 pub fn supported_camera_frame(frame: &str) -> bool {
-    matches!(frame, FRAME | "left_arm_camera_color_optical_frame")
+    matches!(
+        frame,
+        FRAME | "left_arm_camera_color_optical_frame" | BRACKETBOT_FRAME | BRACKETBOT_RIGHT_FRAME
+    )
 }
 pub const PRODUCT: &str = "rgbd.right_arm-history";
 pub const SCHEMA: &str = "spatial-harness.rgbd/v1";
@@ -45,7 +51,11 @@ impl Capture {
             supported_camera_frame(expected_frame)
                 && self.calibration.sensor_frame == expected_frame
                 && self.calibration.calibration_source.starts_with(
-                    "Galbot SDK D405 co-registered RGB-D; RealSense deprojection; sha256:"
+                    if matches!(expected_frame, BRACKETBOT_FRAME | BRACKETBOT_RIGHT_FRAME) {
+                        BRACKETBOT_CALIBRATION
+                    } else {
+                        "Galbot SDK D405 co-registered RGB-D; RealSense deprojection; sha256:"
+                    }
                 ),
             "unverified RGB-D calibration"
         );
@@ -59,8 +69,11 @@ impl Capture {
             self.hit_points_m
                 .iter()
                 .all(|p| p.iter().all(|v| v.is_finite())
-                    && (0.099..=0.501).contains(&p[2])
-                    && p.iter().map(|v| v * v).sum::<f64>() < 1.),
+                    && if matches!(expected_frame, BRACKETBOT_FRAME | BRACKETBOT_RIGHT_FRAME) {
+                        (0.2..=5.).contains(&p[2]) && p.iter().map(|v| v * v).sum::<f64>() <= 25.
+                    } else {
+                        (0.099..=0.501).contains(&p[2]) && p.iter().map(|v| v * v).sum::<f64>() < 1.
+                    }),
             "RGB-D depth out of range"
         );
         Ok(())

@@ -30,7 +30,9 @@ fn startup_error(error: &auki_sdk::AukiPeerBootstrapError) -> String {
         Authenticate(e) => format!("Phone sign-in failed: {e}"),
         ListDomains(e) => format!("Phone Domain lookup failed: {e}"),
         AuthorizePeer(e) => format!("Phone Domain authorization failed: {e}"),
-        LoadIdentity(_) => "Phone identity could not be loaded or saved in app-private storage".into(),
+        LoadIdentity(_) => {
+            "Phone identity could not be loaded or saved in app-private storage".into()
+        }
         StartPeer(auki_sdk::AukiPeerStartError::Transport(e)) => {
             format!("Phone transport startup failed: {}", transport_error(e))
         }
@@ -49,32 +51,53 @@ fn transport_error(error: &auki_p2p::Error) -> String {
             } else {
                 "listener binding"
             };
-            let reason: String = reason.chars().filter(|c| !c.is_control()).take(512).collect();
+            let reason: String = reason
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(512)
+                .collect();
             format!("{stage}: {reason}")
         }
-        Error::Io(error) => format!("local I/O: {:?} (OS code {:?})", error.kind(), error.raw_os_error()),
+        Error::Io(error) => format!(
+            "local I/O: {:?} (OS code {:?})",
+            error.kind(),
+            error.raw_os_error()
+        ),
         Error::RuntimeUnavailable => "Tokio runtime unavailable".into(),
         Error::SwarmStopped => "transport worker stopped".into(),
         // A discriminant identifies other variants without printing any payload,
         // in particular token, key, identity or remote response material.
-        other => format!("SDK transport error {:?} (details withheld)", std::mem::discriminant(other)),
+        other => format!(
+            "SDK transport error {:?} (details withheld)",
+            std::mem::discriminant(other)
+        ),
     }
 }
 
 #[cfg(test)]
 mod startup_error_tests {
     use super::*;
-    use auki_sdk::{AuthError, AukiPeerBootstrapError as Error, AukiPeerStartError};
+    use auki_sdk::{AukiPeerBootstrapError as Error, AukiPeerStartError, AuthError};
 
     #[test]
     fn distinguishes_denial_network_and_local_startup() {
-        assert_eq!(startup_error(&Error::AuthorizePeer(AuthError::DomainNotAccessible)),
-            "Phone Domain authorization failed: selected Domain is not accessible");
-        assert_eq!(startup_error(&Error::AuthorizePeer(AuthError::HttpStatus {
-            endpoint: "peer authorization", status: 503,
-        })), "Phone Domain authorization failed: peer authorization returned HTTP 503");
-        assert_eq!(startup_error(&Error::StartPeer(AukiPeerStartError::ListenerStartupTimeout)),
-            "Phone P2P startup failed: the authenticated P2P listeners did not bind within the startup deadline");
+        assert_eq!(
+            startup_error(&Error::AuthorizePeer(AuthError::DomainNotAccessible)),
+            "Phone Domain authorization failed: selected Domain is not accessible"
+        );
+        assert_eq!(
+            startup_error(&Error::AuthorizePeer(AuthError::HttpStatus {
+                endpoint: "peer authorization",
+                status: 503,
+            })),
+            "Phone Domain authorization failed: peer authorization returned HTTP 503"
+        );
+        assert_eq!(
+            startup_error(&Error::StartPeer(
+                AukiPeerStartError::ListenerStartupTimeout
+            )),
+            "Phone P2P startup failed: the authenticated P2P listeners did not bind within the startup deadline"
+        );
     }
 
     #[test]
@@ -82,16 +105,25 @@ mod startup_error_tests {
         let error = Error::StartPeer(AukiPeerStartError::Transport(
             auki_p2p::Error::TransportBuild("failed to read /etc/resolv.conf\n".into()),
         ));
-        assert_eq!(startup_error(&error),
-            "Phone transport startup failed: transport construction: failed to read /etc/resolv.conf");
-        assert!(!transport_error(&auki_p2p::Error::InvalidToken("secret-token".into())).contains("secret-token"));
-        assert!(!transport_error(&auki_p2p::Error::Io(std::io::Error::other("private-path"))).contains("private-path"));
+        assert_eq!(
+            startup_error(&error),
+            "Phone transport startup failed: transport construction: failed to read /etc/resolv.conf"
+        );
+        assert!(
+            !transport_error(&auki_p2p::Error::InvalidToken("secret-token".into()))
+                .contains("secret-token")
+        );
+        assert!(
+            !transport_error(&auki_p2p::Error::Io(std::io::Error::other("private-path")))
+                .contains("private-path")
+        );
         assert!(transport_error(&auki_p2p::Error::TransportBuild("x".repeat(4096))).len() < 550);
     }
 }
 
 #[derive(Clone, Serialize)]
 pub struct MobileState {
+    pub local_detail: String,
     pub depth_detail: String,
     #[serde(skip)]
     reference: Option<serde_json::Value>,
@@ -107,6 +139,9 @@ pub struct MobileState {
 }
 
 pub struct MobileClient {
+    camera: tokio::sync::watch::Sender<Option<(u64, Vec<u8>, Instant)>>,
+    camera_active: AtomicBool,
+    camera_demand: AtomicBool,
     local_map: tokio::sync::watch::Sender<Option<(crate::mobile_local::Snapshot, Instant)>>,
     depth: tokio::sync::watch::Sender<Option<(crate::mobile_depth::Sample, std::time::Instant)>>,
     pose: tokio::sync::watch::Sender<Option<crate::mobile_pose::Sample>>,
@@ -114,12 +149,20 @@ pub struct MobileClient {
     state: Mutex<MobileState>,
     finished: AtomicBool,
     commands: tokio::sync::mpsc::Sender<crate::mobile_notes::PlaceNote>,
+    changes: tokio::sync::mpsc::Sender<crate::mobile_notes::ChangeNote>,
+    change_receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::mobile_notes::ChangeNote>>>,
     receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::mobile_notes::PlaceNote>>>,
 }
 impl Default for MobileClient {
     fn default() -> Self {
         let (commands, receiver) = tokio::sync::mpsc::channel(1);
+        let (changes, change_receiver) = tokio::sync::mpsc::channel(1);
         Self {
+            changes,
+            change_receiver: Mutex::new(Some(change_receiver)),
+            camera: tokio::sync::watch::channel(None).0,
+            camera_active: AtomicBool::new(false),
+            camera_demand: AtomicBool::new(false),
             local_map: tokio::sync::watch::channel(None).0,
             pose: tokio::sync::watch::channel(None).0,
             depth: tokio::sync::watch::channel(None).0,
@@ -129,6 +172,7 @@ impl Default for MobileClient {
             state: Mutex::new(MobileState {
                 version: 1,
                 depth_detail: "Depth not shared yet".into(),
+                local_detail: "Local map not shared yet".into(),
                 reference: None,
                 geometry: None,
                 annotation: None,
@@ -142,8 +186,19 @@ impl Default for MobileClient {
     }
 }
 impl MobileClient {
+    pub fn camera_demanded(&self, active: bool) -> bool {
+        self.camera_active.store(active, Ordering::Release);
+        if !active { self.camera.send_replace(None); }
+        active && self.camera_demand.load(Ordering::Acquire) && !self.stop.is_cancelled()
+    }
+    pub fn update_camera(&self, timestamp: u64, jpeg: Vec<u8>) {
+        if self.camera_active.load(Ordering::Acquire) && self.camera_demand.load(Ordering::Acquire) {
+            self.camera.send_replace(Some((timestamp, jpeg, Instant::now())));
+        }
+    }
     pub fn update_local_map(&self, sample: Option<crate::mobile_local::Snapshot>) {
-        self.local_map.send_replace(sample.map(|s| (s, Instant::now())));
+        self.local_map
+            .send_replace(sample.map(|s| (s, Instant::now())));
     }
     pub fn update_depth(&self, sample: Option<crate::mobile_depth::Sample>) {
         self.depth
@@ -156,6 +211,13 @@ impl MobileClient {
             state.version += 1;
         }
     }
+    fn local_status(&self, detail: String) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.local_detail != detail {
+            state.local_detail = detail;
+            state.version += 1;
+        }
+    }
     pub fn update_pose(&self, sample: Option<crate::mobile_pose::Sample>) {
         self.pose.send_replace(sample);
     }
@@ -164,6 +226,9 @@ impl MobileClient {
             return false;
         }
         self.commands.try_send(request).is_ok()
+    }
+    pub fn change_note(&self, request: crate::mobile_notes::ChangeNote) -> bool {
+        self.snapshot().state == "live" && self.changes.try_send(request).is_ok()
     }
     pub fn stop(&self) {
         self.stop.cancel();
@@ -219,9 +284,10 @@ impl MobileClient {
             home.schema == "spatial-harness.home-connection/v1",
             "Unknown Home profile"
         );
+        home.validate_scene_contract()?;
         ensure!(
-            home.frame == crate::model::FRAME && home.product_id == crate::network::SCENE_PRODUCT,
-            "Expected Home's OpenGL canonical scene"
+            home.frame == crate::model::FRAME || home.local_scene_id().is_some(),
+            "Expected an OpenGL Home reference scene"
         );
         ensure!(
             !home.routes.is_empty() && home.routes.len() <= 16,
@@ -239,8 +305,8 @@ impl MobileClient {
         if self.stop.is_cancelled() {
             return Ok(());
         }
-        let config = AukiPeerConfig::dev()
-            .with_listen_addresses(["/ip4/0.0.0.0/tcp/0".parse()?])?;
+        let config =
+            AukiPeerConfig::dev().with_listen_addresses(["/ip4/0.0.0.0/tcp/0".parse()?])?;
         let auth = AukiPeerBootstrap::authenticate(
             AuthClient::new(AuthEnvironment::dev())?,
             Credentials::user_password(email, password),
@@ -263,6 +329,33 @@ impl MobileClient {
             .await;
         let result = match peer {
             Ok(peer) => {
+                let work = async {
+                let products = crate::mobile_products::MobileProducts::mount(&peer)?;
+                let mut camera = None;
+                let mut frames = self.camera.subscribe();
+                let camera_work = async {
+                    let mut tick = tokio::time::interval(Duration::from_millis(100));
+                    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    loop {
+                        tick.tick().await;
+                        let active = self.camera_active.load(Ordering::Acquire);
+                        if active && camera.is_none() {
+                            camera = Some(crate::mobile_camera::Camera::new(&products)?);
+                        }
+                        let demand = active && camera.as_ref().is_some_and(|c| c.demanded());
+                        self.camera_demand.store(demand, Ordering::Release);
+                        if frames.has_changed().unwrap_or(false) {
+                            let latest = frames.borrow_and_update().clone();
+                            if demand && let Some((timestamp, jpeg, received)) = latest
+                                && received.elapsed() < Duration::from_millis(500) {
+                                // Bad/late frames must not tear down mapping or the peer.
+                                let _ = camera.as_mut().unwrap().publish(timestamp, jpeg);
+                            }
+                        }
+                    }
+                    #[allow(unreachable_code)]
+                    Ok::<(), anyhow::Error>(())
+                };
                 let mut receiver = self
                     .receiver
                     .lock()
@@ -285,13 +378,22 @@ impl MobileClient {
                     }
                 };
                 let mut poses = self.pose.subscribe();
+                let mut changes = self.change_receiver.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap();
+                let change_work = async {
+                    while let Some(request) = changes.recv().await {
+                        let result = tokio::time::timeout(Duration::from_secs(20), crate::mobile_notes::send_change(&peer, &home, &request)).await
+                            .unwrap_or_else(|_| Err(anyhow::anyhow!("Home did not confirm the note change; retry to check its result")));
+                        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                        state.version += 1;
+                        state.annotation = Some(match result {
+                            Ok(change) => serde_json::json!({"id":request.request_id,"saved":true,"deleted":change.deleted,"note":change.note}),
+                            Err(e) => serde_json::json!({"id":request.request_id,"saved":false,"detail":e.to_string()}),
+                        });
+                    }
+                };
                 let pose_work = async {
-                    let mut tick = tokio::time::interval(Duration::from_millis(500));
-                    loop {
-                        tick.tick().await;
-                        if !poses.has_changed().unwrap_or(false) {
-                            continue;
-                        }
+                    // Latest-only watch channel: send immediately, never queue old poses.
+                    while poses.changed().await.is_ok() {
                         let sample = poses.borrow_and_update().clone();
                         let _ = tokio::time::timeout(
                             Duration::from_secs(2),
@@ -323,25 +425,23 @@ impl MobileClient {
                         }
                         let count = sample.points.len();
                         let result = async {
-                            if depth_publisher
-                                .as_ref()
-                                .is_some_and(|p| p.session != sample.session)
-                                && let Some(old) = depth_publisher.take()
-                            {
-                                old.close().await?;
+                            if let Some(publisher) = depth_publisher.as_mut()
+                                && publisher.session != sample.session {
+                                publisher.reconfigure(&sample.session, sample.timestamp_ns)?;
                             }
                             if depth_publisher.is_none() {
                                 depth_publisher = Some(crate::mobile_depth::Publisher::new(
-                                    &peer,
+                                    &products,
                                     &sample.session,
                                 )?);
                             }
                             let envelope = depth_publisher.as_ref().unwrap().publish(sample)?;
-                            tokio::time::timeout(
+                            let accepted = tokio::time::timeout(
                                 Duration::from_secs(2),
                                 crate::mobile_depth::send(&peer, &home, &envelope),
                             )
                             .await??;
+                            ensure!(accepted, "Home rejected stale depth sample");
                             Ok::<_, anyhow::Error>(())
                         }
                         .await;
@@ -357,18 +457,31 @@ impl MobileClient {
                     loop {
                         tick.tick().await;
                         let latest = self.local_map.borrow().clone();
-                        let Some((sample, received)) = latest else { continue };
-                        if received.elapsed() > Duration::from_secs(3) { continue; }
+                        let Some((sample, received)) = latest else {
+                            continue;
+                        };
+                        if received.elapsed() > Duration::from_secs(3) {
+                            continue;
+                        }
                         let result = async {
-                            if local_publisher.is_none() { local_publisher = Some(crate::mobile_local::Publisher::new(&peer)?); }
+                            if local_publisher.is_none() {
+                                local_publisher = Some(crate::mobile_local::Publisher::new(&products)?);
+                            }
                             let envelope = local_publisher.as_ref().unwrap().publish(sample)?;
                             crate::mobile_local::send(&peer, &home, &envelope).await
-                        }.await;
-                        self.depth_status(match result { Ok(()) => "Local voxel map shared with Home (unaligned)".into(), Err(e) => format!("Local map: {e}") });
+                        }
+                        .await;
+                        self.local_status(match result {
+                            Ok(()) => "Local voxel map received by Home (unaligned)".into(),
+                            Err(e) => format!("Local map: {e}"),
+                        });
                     }
-                    #[allow(unreachable_code)] Ok::<(), anyhow::Error>(())
+                    #[allow(unreachable_code)]
+                    Ok::<(), anyhow::Error>(())
                 };
                 let work = tokio::select! {
+                    result = camera_work => result,
+                    _ = change_work => Ok(()),
                     result = local_work => result,
                     _ = pose_work => Ok(()),
                     _ = depth_work => Ok(()),
@@ -376,7 +489,11 @@ impl MobileClient {
                     result = self.follow(&peer, &home) => result,
                     _ = commands => Ok(()),
                 };
-                if let Some(publisher) = local_publisher { let _ = publisher.close().await; }
+                self.camera_demand.store(false, Ordering::Release);
+                if let Some(camera) = camera { let _ = camera.close(); }
+                if let Some(publisher) = local_publisher {
+                    let _ = publisher.close().await;
+                }
                 if let Some(publisher) = depth_publisher {
                     let _ = publisher.close().await;
                 }
@@ -389,6 +506,9 @@ impl MobileClient {
                     ),
                 )
                 .await;
+                let cleanup = products.close().await;
+                work.and(cleanup)
+                }.await;
                 self.status("stopping", "Closing P2P connection");
                 let cleanup = peer.shutdown().await.map_err(anyhow::Error::from);
                 work.and(cleanup)
@@ -413,6 +533,12 @@ impl MobileClient {
         }
     }
     async fn follow_geometry(&self, peer: &AukiPeer, home: &HomeConnection) {
+        // Local scene Products already contain only their own geometry and notes.
+        // Never subscribe to or overlay Xmart's separate legacy live map.
+        if home.local_scene_id().is_some() {
+            self.stop.cancelled().await;
+            return;
+        }
         loop {
             let attempt = async {
                 let mut subscription =
@@ -499,6 +625,9 @@ pub async fn receive_portals(
     idle_refresh: Duration,
     mut accept: impl FnMut(serde_json::Value),
 ) -> Result<()> {
+    if home.local_scene_id().is_some() {
+        return crate::local_mobile::receive(peer, home, stop, idle_refresh, accept).await;
+    }
     let mut subscription = tokio::select! {
         _ = stop.cancelled() => return Ok(()),
         result = tokio::time::timeout(Duration::from_secs(60), subscribe_scene(peer, home)) => result??,
