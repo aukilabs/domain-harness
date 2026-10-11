@@ -427,6 +427,8 @@ impl MobileClient {
                 };
                 let mut depth_publisher: Option<crate::mobile_depth::Publisher> = None;
                 let mut depths = self.depth.subscribe();
+                // An older Home rejects the optional color field; stop sending it then.
+                let mut send_colors = true;
                 let depth_work = async {
                     let mut tick = tokio::time::interval(Duration::from_millis(500));
                     loop {
@@ -435,13 +437,17 @@ impl MobileClient {
                             continue;
                         }
                         let latest = depths.borrow_and_update().clone();
-                        let Some((sample, received)) = latest else {
+                        let Some((mut sample, received)) = latest else {
                             self.depth_status("Depth sharing paused".into());
                             continue;
                         };
                         if received.elapsed() > Duration::from_secs(2) {
                             continue;
                         }
+                        if !send_colors {
+                            sample.colors = None;
+                        }
+                        let colored = sample.colors.is_some();
                         let count = sample.points.len();
                         let result = async {
                             if let Some(publisher) = depth_publisher.as_mut()
@@ -465,8 +471,13 @@ impl MobileClient {
                             Ok::<_, anyhow::Error>(())
                         }
                         .await;
+                        if result.is_err() && colored {
+                            send_colors = false;
+                        }
                         self.depth_status(match result {
+                            Ok(()) if colored => format!("Depth sent to Home · {count} colored points"),
                             Ok(()) => format!("Depth sent to Home · {count} points"),
+                            Err(_) if colored => "Home did not accept color; continuing without it".into(),
                             Err(error) => format!("Depth not sent: {error}"),
                         });
                     }

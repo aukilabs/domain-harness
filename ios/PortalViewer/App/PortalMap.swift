@@ -271,6 +271,8 @@ struct PhoneDepthSample: Encodable {
     let camera_to_session: Portal.Pose
     let alignment: DepthAlignment
     let points: [[Float]]
+    /// sRGB camera color per point; omitted from the JSON when nil.
+    var colors: [[UInt8]]? = nil
 }
 enum DepthProjection {
     // ARKit's depth image uses camera-image coordinates. Rescale intrinsics to

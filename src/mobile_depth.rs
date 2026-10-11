@@ -30,6 +30,10 @@ pub struct Sample {
     pub camera_to_session: RigidTransform,
     pub alignment: Alignment,
     pub points: Vec<[f64; 3]>,
+    /// Optional sRGB camera color per point, sampled from the same frame.
+    /// Omitted when absent, so colorless captures are unchanged on the wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colors: Option<Vec<[u8; 3]>>,
 }
 impl ContractType for Sample {
     const DATATYPE: &'static str = SCHEMA;
@@ -74,6 +78,10 @@ pub fn validate(peer: &str, e: &Envelope, canonical: &MapSnapshot) -> Result<()>
     ensure!(
         s.timestamp_ns >= s.alignment.timestamp_ns && s.alignment.timestamp_ns > 0,
         "Depth predates calibration"
+    );
+    ensure!(
+        s.colors.as_ref().is_none_or(|c| c.len() == s.points.len()),
+        "Depth color/point count differs"
     );
     ensure!(
         s.camera_to_session.from_frame_id == camera
@@ -217,7 +225,10 @@ pub fn localize(
             sensor_frame: e.sensor_frame,
             observation_clock: clock,
         },
-        colors: vec![None; count],
+        // Colors follow the exact same even selection as their points.
+        colors: (0..count)
+            .map(|i| s.colors.as_ref().map(|c| c[i * s.points.len() / count]))
+            .collect(),
         origin,
     })
 }
