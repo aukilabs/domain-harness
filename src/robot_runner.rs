@@ -420,7 +420,9 @@ pub async fn run(hardware: Hardware) -> Result<()> {
         loop {
             // Finding the relay tries each profile route in turn and can take
             // seconds; a pinned read must be quick or the command is stale.
-            let budget = Duration::from_millis(if reader.is_pinned() { 350 } else { 5000 });
+            // A pinned read measured 130-390 ms against a live Home, so 350 ms
+            // dropped about one read in five.
+            let budget = Duration::from_millis(if reader.is_pinned() { 800 } else { 5000 });
             let work = async {
                 let profile: HomeConnection = serde_json::from_slice(&std::fs::read(&home_path)?)?;
                 reader.read(&running.peer, &profile).await
@@ -454,7 +456,8 @@ pub async fn run(hardware: Hardware) -> Result<()> {
             if let Err(error) = save(&path.with_file_name("drive-command.json"), &packet) {
                 eprintln!("Drive command cache: {error}");
             }
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            // The read itself is the slow part; poll again almost at once.
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     };
     let live_work = async {

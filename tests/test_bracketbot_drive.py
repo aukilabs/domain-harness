@@ -64,8 +64,8 @@ class DrivePolicy(unittest.TestCase):
         self.assertEqual(drive(mismatched)[0], STOP, 'runner and controller must agree on the allowed phone')
 
     def test_age_sums_every_hop(self):
-        self.assertIsNone(drive(packet(forward=1, age_ms=150, request_ms=100))[1])  # 150+100+50 = 300
-        self.assertTrue(drive(packet(forward=1, age_ms=250, request_ms=120))[1])    # 250+120+50 = 420
+        self.assertIsNone(drive(packet(forward=1, age_ms=300, request_ms=390))[1])  # 300+390+50 = 740
+        self.assertTrue(drive(packet(forward=1, age_ms=600, request_ms=390))[1])    # 600+390+50 = 1040
 
 
 if __name__ == '__main__':

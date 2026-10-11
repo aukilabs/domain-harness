@@ -218,7 +218,7 @@ impl Reader {
                 "snapshot",
                 "robot-drive",
                 uuid::Uuid::new_v4().to_string(),
-                Some(Duration::from_millis(300)),
+                Some(Duration::from_millis(750)),
                 &ReadDrive {
                     frame: home.frame.clone(),
                 },
