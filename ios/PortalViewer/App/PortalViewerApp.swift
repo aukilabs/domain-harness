@@ -183,6 +183,8 @@ struct PovDevice: Identifiable, Equatable {
     /// False for a device Home knows about that has no pose in this scene yet.
     var located = true
     var detail: String? = nil
+    /// Home's own, slightly delayed, record of this phone.
+    var isSelf = false
 
     /// Phone camera poses use the sensor's landscape axes. Turn the view a
     /// quarter about the optical axis so a phone held upright looks upright.
@@ -609,18 +611,21 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         renderScene(map.render)
         povRoot.childNodes.forEach { $0.removeFromParentNode() }
         root.childNodes.forEach { povRoot.addChildNode($0.clone()) }
-        remoteDevices = Self.remoteDevices(map)
+        remoteDevices = Self.remoteDevices(map, ownSession: poseSession)
         refreshDevices()
         if referenceChanged { resetAlignment() }
         else if aligned { status = "Aligned · \(map.scenegraph.anchors.count) Portals · \(map.render?.voxels.count ?? 0) voxels" }
     }
 
-    private static func remoteDevices(_ map: PortalMap) -> [PovDevice] {
+    private static func remoteDevices(_ map: PortalMap, ownSession: String) -> [PovDevice] {
         var found = [PovDevice]()
         for note in map.render?.notes ?? [] {
             guard let phone = note.phone_pose, phone.pose.translation.count == 3, phone.pose.rotation_wxyz.count == 4 else { continue }
+            // Home names each pose's source frame after the sending AR session,
+            // which identifies this phone's own entry exactly.
             found.append(PovDevice(id: "phone:" + phone.peer_id, name: phone.name ?? note.text, symbol: "iphone",
-                                   asleep: phone.state == "asleep", transform: PovDevice.upright(phone.pose.matrix)))
+                                   asleep: phone.state == "asleep", transform: PovDevice.upright(phone.pose.matrix),
+                                   isSelf: phone.pose.from_frame_id == "phone-camera:" + ownSession))
         }
         let located = Set(found.map(\.id))
         func robot(_ sample: RenderScene.RobotPose?, id: String, name: String) {
@@ -652,11 +657,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             list.append(PovDevice(id: "self", name: "This phone", symbol: "iphone.gen3", asleep: false,
                                   transform: PovDevice.upright(selfInHome)))
         }
-        // Home lists this phone too; hide the duplicate sitting at our own position.
-        list += remoteDevices.filter { other in
-            guard let selfInHome, !other.asleep, other.located else { return true }
-            return simd_distance(other.transform.columns.3, selfInHome.columns.3) > 0.2
-        }
+        // Home lists this phone too. Its copy lags the live pose, so never show both.
+        list += remoteDevices.filter { !$0.isSelf }
         if list != devices { devices = list }
     }
 
