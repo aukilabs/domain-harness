@@ -112,6 +112,19 @@ struct ViewerScreen: View {
                 }
             }
             .padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+            .overlay(alignment: .topTrailing) {
+                // Always in view, so it is obvious whether volumes are on in AR.
+                Button { controller.showVolumesInAR.toggle() } label: {
+                    Label(controller.showVolumesInAR ? "Volumes on" : "Volumes off",
+                          systemImage: controller.showVolumesInAR ? "cube.fill" : "cube")
+                        .font(.caption.bold())
+                        .foregroundStyle(controller.showVolumesInAR ? Color(red: 0.13, green: 0.8, blue: 0.87) : Color.secondary)
+                        .padding(.horizontal, 10).padding(.vertical, 7)
+                        .background(.thinMaterial, in: Capsule())
+                }
+                .offset(y: -44)
+                .accessibilityLabel(controller.showVolumesInAR ? "Hide semantic volumes in AR" : "Show semantic volumes in AR")
+            }
             .padding()
         }
         .onAppear {
@@ -649,8 +662,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     let volumes = VolumeAuthoring()
     /// Saved semantic volumes in the AR view and the POV tab. A draft being
     /// authored always stays visible.
-    @Published var showVolumesInAR = UserDefaults.standard.object(forKey: "showVolumesInAR") as? Bool ?? true {
-        didSet { UserDefaults.standard.set(showVolumesInAR, forKey: "showVolumesInAR"); applyVolumeVisibility() }
+    @Published var showVolumesInAR = UserDefaults.standard.object(forKey: "arVolumesVisible") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(showVolumesInAR, forKey: "arVolumesVisible"); applyVolumeVisibility() }
     }
     private func applyVolumeVisibility() {
         // The authoring controller owns the AR nodes and re-shows them on every

@@ -24,13 +24,36 @@ extension SemanticVolume {
         body.position.y = dimensions[1] / 2
         body.name = node.name
         node.addChildNode(body)
-        let edges = SCNNode(geometry: box.copy() as? SCNGeometry)
-        let wire = material.copy() as! SCNMaterial
-        wire.fillMode = .lines; wire.transparency = 0.9
-        edges.geometry?.materials = [wire]; edges.position = body.position
-        node.addChildNode(edges)
+        // Solid tube edges. Hairline wireframe over a 25% tint was almost
+        // invisible in AR, and from inside a room-sized volume there was
+        // nothing to see at all.
+        let edgeMaterial = SCNMaterial()
+        edgeMaterial.diffuse.contents = preview ? UIColor.systemYellow : UIColor.systemCyan
+        edgeMaterial.lightingModel = .constant
+        let (w, h, d) = (dimensions[0], dimensions[1], dimensions[2])
+        let radius = CGFloat(max(0.008, min(0.02, min(w, h, d) * 0.04)))
+        func tube(length: Float, at position: SIMD3<Float>, axis: SIMD3<Float>) {
+            let cylinder = SCNCylinder(radius: radius, height: CGFloat(length))
+            cylinder.radialSegmentCount = 8
+            cylinder.materials = [edgeMaterial]
+            let edge = SCNNode(geometry: cylinder)
+            edge.name = node.name
+            edge.simdPosition = position
+            // SCNCylinder runs along +Y; turn it onto the edge's axis.
+            edge.simdOrientation = simd_quatf(from: SIMD3(0, 1, 0), to: axis)
+            node.addChildNode(edge)
+        }
+        for sx: Float in [-1, 1] {
+            for sz: Float in [-1, 1] {
+                tube(length: h, at: SIMD3(sx * w / 2, h / 2, sz * d / 2), axis: SIMD3(0, 1, 0))
+            }
+            for y: Float in [0, h] {
+                tube(length: d, at: SIMD3(sx * w / 2, y, 0), axis: SIMD3(0, 0, 1))
+                tube(length: w, at: SIMD3(0, y, sx * d / 2), axis: SIMD3(1, 0, 0))
+            }
+        }
         let text = SCNText(string: name + " · " + semantic_type, extrusionDepth: 0)
-        text.font = UIFont.systemFont(ofSize: 0.12)
+        text.font = UIFont.systemFont(ofSize: 0.18, weight: .semibold)
         text.flatness = 0.01
         text.firstMaterial?.diffuse.contents = UIColor.white
         text.firstMaterial?.lightingModel = .constant
