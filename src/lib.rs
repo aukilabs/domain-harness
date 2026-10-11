@@ -49,6 +49,7 @@ pub mod mobile_pose;
 pub mod mobile_geometry;
 
 pub mod mobile_depth;
+pub mod mobile_drive;
 pub mod mobile_calibration;
 
 pub mod fiducials;

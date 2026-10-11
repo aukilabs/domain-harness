@@ -341,6 +341,32 @@ of attempting blind recovery. `state/phone-reach.json` records planning, motion,
 return and rejection reasons. Ordinary-priority writers yield to manual control.
 Both execution flags must be explicitly supplied on launcher restarts.
 
+### Phone joystick driving
+
+Off by default and off again on every launcher restart. Enable it by naming the
+one phone allowed to drive:
+
+```sh
+python3 scripts/run-bracketbot-runner.py --restart --home-connection <profile> \
+  --execute-phone-drive --drive-peer <phone peer ID>
+```
+
+The phone's Drive tab posts normalized stick values to Home's scene-scoped
+`home-phone-drive` relay. Home applies no speeds and moves nothing; it hands each
+robot only its own latest command with an age measured on Home's clock. With
+`SPATIAL_DRIVE_PEER` set by the launcher, the runner caches that one phone's
+command in `state/drive-command.json` every 50 ms. `drive-bracketbot.py` turns it
+into a `drive.ctrl` twist and reports to `state/phone-drive.json`.
+
+Speeds are teleop's: 0.20 m/s forward and a 0.15 m/s wheel difference for turns,
+never above 0.28 m/s on a wheel, all halved unless `--drive-fast`. The robot stops
+when the stick is released (the phone sends explicit stops), when Home withholds a
+command older than one second, when the summed input age exceeds 400 ms, when Home
+is unreachable, on low battery, and finally by the base daemon's own 100 ms
+`drive.ctrl` timeout. The controller holds `drive.ctrl` only while a command is
+fresh and does not start if another program is driving, so manual teleop is not
+locked out. A drive controller that exits is not restarted.
+
 ### Change the reaching target without rebuilding
 
 With the reach controller running, select a fixed note by its exact display name:

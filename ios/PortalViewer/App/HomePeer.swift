@@ -26,6 +26,12 @@ final class HomePeer: ObservableObject {
               let json = String(data: data, encoding: .utf8) else { return }
         json.withCString { spatial_mobile_pose($0) }
     }
+    /// Hold the joystick for one robot, or release it with a nil target. The
+    /// bridge repeats the held value and sends explicit stops on release.
+    func drive(target: String?, forward: Float = 0, turn: Float = 0) {
+        guard let target, state == "live" else { spatial_mobile_drive(nil, 0, 0); return }
+        target.withCString { spatial_mobile_drive($0, forward, turn) }
+    }
     /// Ask Home to add a newly seen Portal to the scene.
     @discardableResult
     func reportPortal(_ report: PortalReport) -> Bool {
