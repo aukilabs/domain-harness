@@ -95,6 +95,7 @@ struct ViewerScreen: View {
                             .textInputAutocapitalization(.never).submitLabel(.done)
                             .onSubmit { peer.setName(phoneName) }
                     }
+                    Toggle("Semantic volumes in AR", isOn: $controller.showVolumesInAR)
                     Toggle("Share LiDAR depth", isOn: $controller.shareDepth)
                     Text(controller.depthStatus).font(.caption)
                     if controller.shareDepth && peer.state == "live" { Text(peer.depthDetail).font(.caption) }
@@ -390,6 +391,8 @@ struct MiniMapData: Equatable {
     var cellSize: Float = 0.1
     var portals = [SIMD3<Float>]()
     var notes = [SIMD3<Float>]()
+    /// Semantic volumes: upright boxes with a bottom-centred position and a yaw about +Y.
+    var volumes = [SemanticVolume]()
     /// Height of the ground grid: the underside of the lowest voxel.
     var groundY: Float = 0
 
@@ -409,6 +412,7 @@ struct MiniMapData: Equatable {
         notes = (map.render?.notes ?? []).compactMap {
             $0.position.count == 3 ? SIMD3($0.position[0], $0.position[1], $0.position[2]) : nil
         }
+        volumes = (map.render?.volumes ?? []).filter(\.valid)
         groundY = cells.map(\.p.y).min().map { $0 - cellSize / 2 } ?? portals.map(\.y).min() ?? 0
     }
 }
@@ -464,6 +468,19 @@ struct MiniMapView: View {
     /// 90 degrees looks straight down; lower values tilt toward the horizon.
     @State private var pitch: Float = .pi / 2
     @State private var zoom: Float = 1
+    @AppStorage("showVolumesOnMap") private var showVolumes = true
+
+    /// The eight corners of a volume in Home metres: base ring, then top ring.
+    static func corners(_ volume: SemanticVolume) -> [SIMD3<Float>] {
+        let base = SIMD3(volume.position[0], volume.position[1], volume.position[2])
+        let (w, h, d) = (volume.dimensions[0] / 2, volume.dimensions[1], volume.dimensions[2] / 2)
+        let (cosine, sine) = (cos(volume.yaw), sin(volume.yaw))
+        let ring = [(-w, -d), (w, -d), (w, d), (-w, d)].map { x, z in
+            // Yaw about +Y, the same turn SceneKit applies to the AR box.
+            base + SIMD3(x * cosine + z * sine, 0, -x * sine + z * cosine)
+        }
+        return ring + ring.map { $0 + SIMD3(0, h, 0) }
+    }
 
     var body: some View {
         GeometryReader { geometry in
@@ -485,10 +502,17 @@ struct MiniMapView: View {
                     },
                     onZoom: { zoom = max(0.4, min(12, zoom * Float($0))) },
                     onReset: { withAnimation { pan = .zero; yaw = 0; pitch = .pi / 2; zoom = 1 } })
-                if pan != SIMD3<Float>(0, 0, 0) || yaw != 0 || pitch != .pi / 2 || zoom != 1 {
-                    Button { pan = .zero; yaw = 0; pitch = .pi / 2; zoom = 1 } label: {
-                        Image(systemName: "scope").padding(7).background(.thinMaterial, in: Circle())
-                    }.padding(6).accessibilityLabel("Reset map view")
+                VStack(spacing: 0) {
+                    Button { showVolumes.toggle() } label: {
+                        Image(systemName: showVolumes ? "cube.fill" : "cube")
+                            .foregroundStyle(showVolumes ? Color(red: 0.13, green: 0.8, blue: 0.87) : Color.secondary)
+                            .padding(7).background(.thinMaterial, in: Circle())
+                    }.padding(6).accessibilityLabel(showVolumes ? "Hide semantic volumes on the map" : "Show semantic volumes on the map")
+                    if pan != SIMD3<Float>(0, 0, 0) || yaw != 0 || pitch != .pi / 2 || zoom != 1 {
+                        Button { pan = .zero; yaw = 0; pitch = .pi / 2; zoom = 1 } label: {
+                            Image(systemName: "scope").padding(7).background(.thinMaterial, in: Circle())
+                        }.padding(.horizontal, 6).accessibilityLabel("Reset map view")
+                    }
                 }
             }
         }
@@ -511,6 +535,7 @@ struct MiniMapView: View {
 
     private func bounds() -> (low: SIMD3<Float>, high: SIMD3<Float>)? {
         var points = map.cells.map(\.p) + map.portals + map.notes
+        if showVolumes { points += map.volumes.flatMap { Self.corners($0) } }
         if let phone { points.append(phone.position) }
         guard var low = points.first else { return nil }
         var high = low
@@ -562,6 +587,27 @@ struct MiniMapView: View {
             }
             context.fill(Path(CGRect(x: at.point.x - side / 2, y: at.point.y - side / 2, width: side, height: side)), with: .color(color))
         }
+        if showVolumes {
+            // Semantic volumes: a tinted footprint, the box edges, and its name.
+            let tint = Color(red: 0.13, green: 0.8, blue: 0.87)
+            for volume in map.volumes {
+                let c = Self.corners(volume).map { view.place($0).point }
+                func ring(_ i: [Int]) -> Path {
+                    var path = Path(); path.move(to: c[i[0]])
+                    i.dropFirst().forEach { path.addLine(to: c[$0]) }; path.closeSubpath()
+                    return path
+                }
+                context.fill(ring([0, 1, 2, 3]), with: .color(tint.opacity(0.2)))
+                context.stroke(ring([0, 1, 2, 3]), with: .color(tint), lineWidth: 1.5)
+                context.stroke(ring([4, 5, 6, 7]), with: .color(tint), lineWidth: 1.5)
+                for i in 0..<4 {
+                    var edge = Path(); edge.move(to: c[i]); edge.addLine(to: c[i + 4])
+                    context.stroke(edge, with: .color(tint.opacity(0.8)), lineWidth: 1)
+                }
+                let top = CGPoint(x: (c[4].x + c[6].x) / 2, y: (c[4].y + c[6].y) / 2)
+                context.draw(Text(volume.name + " · " + volume.semantic_type).font(.caption2.bold()).foregroundColor(.white), at: top)
+            }
+        }
         for note in map.notes {
             let at = view.place(note).point
             let dot = Path(ellipseIn: CGRect(x: at.x - 4, y: at.y - 4, width: 8, height: 8))
@@ -601,6 +647,20 @@ struct CameraView: UIViewRepresentable {
 
 final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     let volumes = VolumeAuthoring()
+    /// Saved semantic volumes in the AR view and the POV tab. A draft being
+    /// authored always stays visible.
+    @Published var showVolumesInAR = UserDefaults.standard.object(forKey: "showVolumesInAR") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(showVolumesInAR, forKey: "showVolumesInAR"); applyVolumeVisibility() }
+    }
+    private func applyVolumeVisibility() {
+        // The authoring controller owns the AR nodes and re-shows them on every
+        // redraw, so it carries the flag; the POV copy is plain nodes.
+        volumes.hideSaved = !showVolumesInAR
+        volumes.redraw()
+        for node in povRoot.childNodes where node.name?.hasPrefix("semantic-volume:") == true {
+            node.isHidden = !showVolumesInAR
+        }
+    }
     func beginVolume() {
         guard let map else { volumes.message = "Connect to Home first."; return }
         volumes.begin(frame: map.scenegraph.map.frame.id)
@@ -746,6 +806,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         volumes.redraw()
         povRoot.childNodes.forEach { $0.removeFromParentNode() }
         root.childNodes.forEach { povRoot.addChildNode($0.clone()) }
+        applyVolumeVisibility()
         remoteDevices = Self.remoteDevices(map, ownSession: poseSession)
         refreshDevices()
         if referenceChanged { resetAlignment() }

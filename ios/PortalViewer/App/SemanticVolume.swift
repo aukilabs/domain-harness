@@ -92,10 +92,12 @@ final class VolumeAuthoring: NSObject, ObservableObject, UIGestureRecognizerDele
         self.frame = frame; requestID = UUID().uuidString; pendingJSON = nil
         message = "Drag to move · pinch footprint · two-finger rotate"
     }
+    /// Saved volumes can be hidden from the AR view; a draft preview is always shown.
+    var hideSaved = false
     func redraw() {
         preview?.removeFromParentNode()
         root?.childNodes.filter { $0.name?.hasPrefix("semantic-volume:") == true }
-            .forEach { $0.isHidden = false }
+            .forEach { $0.isHidden = hideSaved }
         guard let draft, let root else { preview = nil; return }
         root.childNode(withName: "semantic-volume:" + draft.id, recursively: false)?.isHidden = true
         preview = draft.node(preview: true); root.addChildNode(preview!)
