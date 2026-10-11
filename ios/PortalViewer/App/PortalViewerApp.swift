@@ -1017,8 +1017,10 @@ enum PhoneDepthCapture {
             let center = (SIMD3(Float(key.x), Float(key.y), Float(key.z)) + 0.5) * voxelSize
             let camera = cameraFromHome * SIMD4(center, 1)
             let point = SIMD3(camera.x, camera.y, camera.z)
-            let range = simd_length(point)
-            guard range >= 0.2, range <= 5 else { return nil }
+            // Home rejects the whole capture if any point is outside 0.2-5 m of
+            // camera depth. Snapping to a voxel center can move a point across
+            // that limit, so apply Home's exact rule to the center itself.
+            guard point.z <= -0.2, point.z >= -5, simd_length_squared(point) <= 64 else { return nil }
             let color: [UInt8]? = cell.colored > 0 ? {
                 let mean = cell.color / cell.colored
                 return [srgbByte(mean.x), srgbByte(mean.y), srgbByte(mean.z)]
