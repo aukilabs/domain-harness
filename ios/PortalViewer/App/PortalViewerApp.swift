@@ -1165,7 +1165,9 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 case .limited(.relocalizing): message = "Recovering camera tracking. Look around slowly."
                 default: message = "Camera tracking unavailable. Tap Realign to try again."
                 }
-                if status != message { status = message }
+                // While aligned, a dip in tracking only pauses mapping.
+                let shown = aligned ? "Tracking limited · mapping paused until it recovers" : message
+                if status != shown { status = shown }
             }
             return
         }
@@ -1290,9 +1292,19 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
 
     func session(_ session: ARSession, cameraDidChangeTrackingState camera: ARCamera) {
         if snoozed { return }
-        if case .normal = camera.trackingState { return }
-        invalidate()
-        status = "Tracking limited. Move slowly, then scan a known Portal again."
+        switch camera.trackingState {
+        case .normal:
+            if aligned { status = "Tracking recovered · mapping resumed" }
+        case .limited(.excessiveMotion), .limited(.insufficientFeatures), .limited(.initializing):
+            // ARKit keeps its world origin through these, so the alignment still
+            // holds. Frames are simply not used until tracking is normal again;
+            // dropping the alignment here meant mapping only ran with a Portal in view.
+            if aligned { status = "Tracking limited · mapping paused until it recovers" }
+        default:
+            // Relocalizing or unavailable: the world may have moved under us.
+            invalidate()
+            status = "Tracking lost. Scan a known Portal again."
+        }
     }
     func sessionWasInterrupted(_ session: ARSession) {
         if snoozed { return }
