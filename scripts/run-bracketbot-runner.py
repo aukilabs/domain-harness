@@ -50,11 +50,16 @@ config=request['peer']; config['identity_file']=str(state/'peer.identity')
 (state/'connection.json').unlink(missing_ok=True)
 env=os.environ.copy(); env.update(request['credentials'])
 env['SPATIAL_HOME_CONNECTION']=str(state/'home-connection.json')
+env.pop('SPATIAL_DRIVE_PEER',None)
+drive=request.get('drive_peer')
+if drive: env['SPATIAL_DRIVE_PEER']=drive  # the runner caches only this phone's stick
 with (state/'supervisor.log').open('ab',buffering=0) as log:
     child=subprocess.Popen(['/usr/bin/python3',str(source/'scripts/supervise-bracketbot.py'),
         '--state',str(state),'--binary',str(binary)] +
         (['--execute-portal-search'] if request.get('execute_portal_search') else []) +
-        (['--execute-phone-reach'] if request.get('execute_phone_reach') else []),cwd=source,env=env,
+        (['--execute-phone-reach'] if request.get('execute_phone_reach') else []) +
+        (['--execute-phone-drive','--drive-peer',drive] if drive else []) +
+        (['--drive-fast'] if drive and request.get('drive_fast') else []),cwd=source,env=env,
         stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True)
 print(json.dumps({'supervisor_pid':child.pid,'state':str(state)}),flush=True)
 until=time.monotonic()+45
@@ -80,14 +85,20 @@ def main():
     ap.add_argument('--execute-portal-search', action='store_true',
                     help='Enable wrist search after confirming empty hands and a clear workspace; phone pointing stays gated')
     ap.add_argument('--execute-phone-reach', action='store_true', help='Enable persistent full-arm reaching to the selected note or nearest phone, 20 cm short')
+    ap.add_argument('--execute-phone-drive', action='store_true', help='Let one phone drive the base with its joystick. Off on every restart unless given again.')
+    ap.add_argument('--drive-peer', help='Peer ID of the only phone allowed to drive')
+    ap.add_argument('--drive-fast', action='store_true', help='Full teleop speeds instead of half')
     args = ap.parse_args()
     if not Path(args.root).is_absolute(): ap.error('--root must be absolute')
+    if args.execute_phone_drive and not args.drive_peer: ap.error('--execute-phone-drive needs --drive-peer')
     peer = json.loads(args.peer_config.read_text())
     names = ('AUKI_ACCESS_KEY', 'AUKI_APP_SECRET') if peer['login'] == 'app' else ('AUKI_EMAIL', 'AUKI_PASSWORD')
     if not all(os.environ.get(name) for name in names): ap.error('Supply authentication through the environment or with-home-credentials.py')
     payload = dict(root=args.root, peer=peer, restart=args.restart,
                    execute_portal_search=args.execute_portal_search,
                    execute_phone_reach=args.execute_phone_reach,
+                   drive_peer=args.drive_peer if args.execute_phone_drive else None,
+                   drive_fast=args.drive_fast,
                    credentials={name:os.environ[name] for name in names},
                    home=json.loads(args.home_connection.read_text()) if args.home_connection else None)
     command = shlex.join(['/usr/bin/python3', '-c', REMOTE])
