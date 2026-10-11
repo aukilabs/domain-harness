@@ -151,90 +151,211 @@ struct ViewerScreen: View {
     }
 }
 
-/// Top-down plan of Home's scene: the highest voxel in each column, Portals,
-/// notes and this phone. Home +X is right and -Z is up, matching a floor Portal.
+/// Home's scene for the mini map: every voxel with its color, Portals, notes.
+/// Home is Y up; +X is right and -Z is up on screen in the default top-down view.
 struct MiniMapData: Equatable {
-    struct Cell: Equatable { let x: Float; let z: Float; let rgb: [Float]? }
+    struct Cell: Equatable { let p: SIMD3<Float>; let rgb: [Float]? }
     var cells = [Cell]()
     var cellSize: Float = 0.1
-    var portals = [SIMD2<Float>]()
-    var notes = [SIMD2<Float>]()
+    var portals = [SIMD3<Float>]()
+    var notes = [SIMD3<Float>]()
+    /// Height of the ground grid: the underside of the lowest voxel.
+    var groundY: Float = 0
 
     init() {}
     init(_ map: PortalMap) {
         let size = map.render?.voxel_size ?? 0.1
         cellSize = size.isFinite && size > 0 ? size : 0.1
-        var top = [SIMD2<Int32>: (Float, [Float]?)]()
-        for voxel in map.render?.voxels ?? [] {
-            guard voxel.center.count == 3, voxel.center.allSatisfy(\.isFinite), voxel.center[1] <= 2.2 else { continue }
-            let key = SIMD2(Int32((voxel.center[0] / cellSize).rounded(.down)), Int32((voxel.center[2] / cellSize).rounded(.down)))
-            if let old = top[key], old.0 >= voxel.center[1] { continue }
-            top[key] = (voxel.center[1], voxel.linear_rgb?.count == 3 ? voxel.linear_rgb : nil)
+        cells = (map.render?.voxels ?? []).compactMap { voxel in
+            guard voxel.center.count == 3, voxel.center.allSatisfy(\.isFinite) else { return nil }
+            return Cell(p: SIMD3(voxel.center[0], voxel.center[1], voxel.center[2]),
+                        rgb: voxel.linear_rgb?.count == 3 ? voxel.linear_rgb : nil)
         }
-        cells = top.map { Cell(x: (Float($0.key.x) + 0.5) * cellSize, z: (Float($0.key.y) + 0.5) * cellSize, rgb: $0.value.1) }
         portals = map.scenegraph.anchors.values.map {
             let t = $0.pose_in_map.matrix.columns.3
-            return SIMD2(t.x, t.z)
+            return SIMD3(t.x, t.y, t.z)
         }
-        notes = (map.render?.notes ?? []).compactMap { $0.position.count == 3 ? SIMD2($0.position[0], $0.position[2]) : nil }
+        notes = (map.render?.notes ?? []).compactMap {
+            $0.position.count == 3 ? SIMD3($0.position[0], $0.position[1], $0.position[2]) : nil
+        }
+        groundY = cells.map(\.p.y).min().map { $0 - cellSize / 2 } ?? portals.map(\.y).min() ?? 0
     }
 }
-struct MiniMapPhone: Equatable { let position: SIMD2<Float>; let heading: SIMD2<Float> }
+struct MiniMapPhone: Equatable { let position: SIMD3<Float>; let heading: SIMD2<Float> }
+
+/// One finger pans, two fingers tilt and turn, pinch zooms, double-tap resets.
+struct MiniMapGestures: UIViewRepresentable {
+    var onPan: (CGSize) -> Void
+    var onOrbit: (CGSize) -> Void
+    var onZoom: (CGFloat) -> Void
+    var onReset: () -> Void
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.backgroundColor = .clear
+        let pan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.pan(_:)))
+        pan.maximumNumberOfTouches = 1
+        let orbit = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.orbit(_:)))
+        orbit.minimumNumberOfTouches = 2; orbit.maximumNumberOfTouches = 2
+        let pinch = UIPinchGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.pinch(_:)))
+        let reset = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.reset))
+        reset.numberOfTapsRequired = 2
+        orbit.delegate = context.coordinator; pinch.delegate = context.coordinator
+        [pan, orbit, pinch, reset].forEach(view.addGestureRecognizer)
+        return view
+    }
+    func updateUIView(_ view: UIView, context: Context) { context.coordinator.parent = self }
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var parent: MiniMapGestures
+        init(_ parent: MiniMapGestures) { self.parent = parent }
+        @objc func pan(_ g: UIPanGestureRecognizer) {
+            let t = g.translation(in: g.view); g.setTranslation(.zero, in: g.view)
+            parent.onPan(CGSize(width: t.x, height: t.y))
+        }
+        @objc func orbit(_ g: UIPanGestureRecognizer) {
+            let t = g.translation(in: g.view); g.setTranslation(.zero, in: g.view)
+            parent.onOrbit(CGSize(width: t.x, height: t.y))
+        }
+        @objc func pinch(_ g: UIPinchGestureRecognizer) { parent.onZoom(g.scale); g.scale = 1 }
+        @objc func reset() { parent.onReset() }
+        // Two fingers may tilt and zoom in the same motion.
+        func gestureRecognizer(_ a: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith b: UIGestureRecognizer) -> Bool { true }
+    }
+}
 
 struct MiniMapView: View {
     let map: MiniMapData
     let phone: MiniMapPhone?
+    /// Pan is kept in metres on the ground plane so it survives zoom and turns.
+    @State private var pan = SIMD2<Float>(0, 0)
+    @State private var yaw: Float = 0
+    /// 90 degrees looks straight down; lower values tilt toward the horizon.
+    @State private var pitch: Float = .pi / 2
+    @State private var zoom: Float = 1
+
     var body: some View {
-        Canvas { context, size in
-            var points = map.cells.map { SIMD2($0.x, $0.z) } + map.portals + map.notes
-            if let phone { points.append(phone.position) }
-            guard let first = points.first else {
-                context.draw(Text("No map yet. Connect and scan a Portal.").font(.caption).foregroundColor(.secondary),
-                             at: CGPoint(x: size.width / 2, y: size.height / 2))
-                return
-            }
-            var low = first, high = first
-            for p in points { low = simd_min(low, p); high = simd_max(high, p) }
-            // Keep at least a 2 m window so a single Portal is not blown up.
-            let center = (low + high) / 2
-            let span = simd_max(high - low + SIMD2(repeating: 0.6), SIMD2(repeating: 2))
-            let scale = min(Float(size.width) / span.x, Float(size.height) / span.y)
-            func place(_ p: SIMD2<Float>) -> CGPoint {
-                CGPoint(x: CGFloat((p.x - center.x) * scale) + size.width / 2,
-                        y: CGFloat((p.y - center.y) * scale) + size.height / 2)
-            }
-            let side = CGFloat(map.cellSize * scale) + 0.5
-            for cell in map.cells {
-                let at = place(SIMD2(cell.x, cell.z))
-                let color = cell.rgb.map { Color(.sRGBLinear, red: Double($0[0]), green: Double($0[1]), blue: Double($0[2])) }
-                    ?? Color(red: 0.3, green: 0.62, blue: 0.82)
-                context.fill(Path(CGRect(x: at.x - side / 2, y: at.y - side / 2, width: side, height: side)), with: .color(color))
-            }
-            for note in map.notes {
-                let at = place(note)
-                context.fill(Path(ellipseIn: CGRect(x: at.x - 4, y: at.y - 4, width: 8, height: 8)), with: .color(.white))
-                context.stroke(Path(ellipseIn: CGRect(x: at.x - 4, y: at.y - 4, width: 8, height: 8)), with: .color(.black), lineWidth: 1)
-            }
-            for portal in map.portals {
-                let at = place(portal)
-                context.fill(Path(CGRect(x: at.x - 5, y: at.y - 5, width: 10, height: 10)), with: .color(.red))
-                context.stroke(Path(CGRect(x: at.x - 5, y: at.y - 5, width: 10, height: 10)), with: .color(.white), lineWidth: 1.5)
-            }
-            if let phone {
-                let at = place(phone.position)
-                let forward = CGVector(dx: CGFloat(phone.heading.x), dy: CGFloat(phone.heading.y))
-                let right = CGVector(dx: -forward.dy, dy: forward.dx)
-                var arrow = Path()
-                arrow.move(to: CGPoint(x: at.x + forward.dx * 14, y: at.y + forward.dy * 14))
-                arrow.addLine(to: CGPoint(x: at.x - forward.dx * 8 + right.dx * 8, y: at.y - forward.dy * 8 + right.dy * 8))
-                arrow.addLine(to: CGPoint(x: at.x - forward.dx * 8 - right.dx * 8, y: at.y - forward.dy * 8 - right.dy * 8))
-                arrow.closeSubpath()
-                context.fill(arrow, with: .color(.cyan))
-                context.stroke(arrow, with: .color(.white), lineWidth: 1.5)
+        GeometryReader { geometry in
+            let size = geometry.size
+            let view = projection(size)
+            ZStack(alignment: .topTrailing) {
+                Canvas { context, _ in draw(&context, size: size, view: view) }
+                MiniMapGestures(
+                    onPan: { d in
+                        // Screen motion back to ground metres under the current turn and tilt.
+                        let sx = Float(d.width) / view.scale, sy = Float(d.height) / (view.scale * max(0.2, sin(pitch)))
+                        pan -= SIMD2(sx * cos(yaw) + sy * sin(yaw), -sx * sin(yaw) + sy * cos(yaw))
+                    },
+                    onOrbit: { d in
+                        yaw += Float(d.width) * 0.008
+                        pitch = max(0.35, min(.pi / 2, pitch - Float(d.height) * 0.008))
+                    },
+                    onZoom: { zoom = max(0.4, min(12, zoom * Float($0))) },
+                    onReset: { withAnimation { pan = .zero; yaw = 0; pitch = .pi / 2; zoom = 1 } })
+                if pan != .zero || yaw != 0 || pitch != .pi / 2 || zoom != 1 {
+                    Button { pan = .zero; yaw = 0; pitch = .pi / 2; zoom = 1 } label: {
+                        Image(systemName: "scope").padding(7).background(.thinMaterial, in: Circle())
+                    }.padding(6).accessibilityLabel("Reset map view")
+                }
             }
         }
         .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 12))
-        .accessibilityLabel("Top-down map")
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .accessibilityLabel("Mini map")
+    }
+
+    private struct Projection {
+        let center: SIMD3<Float>, scale: Float, yaw: Float, pitch: Float, size: CGSize
+        /// Orthographic: turn about Y, then tilt. Depth grows toward the viewer.
+        func place(_ p: SIMD3<Float>) -> (point: CGPoint, depth: Float) {
+            let d = p - center
+            let x = d.x * cos(yaw) - d.z * sin(yaw), z = d.x * sin(yaw) + d.z * cos(yaw)
+            let y = z * sin(pitch) - d.y * cos(pitch)
+            return (CGPoint(x: CGFloat(x * scale) + size.width / 2, y: CGFloat(y * scale) + size.height / 2),
+                    d.y * sin(pitch) + z * cos(pitch))
+        }
+    }
+
+    private func bounds() -> (low: SIMD3<Float>, high: SIMD3<Float>)? {
+        var points = map.cells.map(\.p) + map.portals + map.notes
+        if let phone { points.append(phone.position) }
+        guard var low = points.first else { return nil }
+        var high = low
+        for p in points { low = simd_min(low, p); high = simd_max(high, p) }
+        return (low, high)
+    }
+
+    private func projection(_ size: CGSize) -> Projection {
+        let (low, high) = bounds() ?? (SIMD3(repeating: -1), SIMD3(repeating: 1))
+        // Fit the footprint, with at least a 2 m window so one Portal is not blown up.
+        let span = SIMD2(max(high.x - low.x + 0.6, 2), max(high.z - low.z + 0.6, 2))
+        let fit = min(Float(size.width) / span.x, Float(size.height) / span.y)
+        let middle = (low + high) / 2
+        return Projection(center: SIMD3(middle.x + pan.x, map.groundY, middle.z + pan.y),
+                          scale: max(1, fit * zoom), yaw: yaw, pitch: pitch, size: size)
+    }
+
+    private func draw(_ context: inout GraphicsContext, size: CGSize, view: Projection) {
+        guard let (low, high) = bounds() else {
+            context.draw(Text("No map yet. Connect and scan a Portal.").font(.caption).foregroundColor(.secondary),
+                         at: CGPoint(x: size.width / 2, y: size.height / 2))
+            return
+        }
+        // Ground grid at the lowest level: 1 m lines, bolder every 5 m.
+        let x0 = (low.x - 1).rounded(.down), x1 = (high.x + 1).rounded(.up)
+        let z0 = (low.z - 1).rounded(.down), z1 = (high.z + 1).rounded(.up)
+        if x1 - x0 <= 200, z1 - z0 <= 200 {
+            func line(_ a: SIMD3<Float>, _ b: SIMD3<Float>, bold: Bool) {
+                var path = Path(); path.move(to: view.place(a).point); path.addLine(to: view.place(b).point)
+                context.stroke(path, with: .color(.white.opacity(bold ? 0.38 : 0.16)), lineWidth: bold ? 1.2 : 0.6)
+            }
+            var x = x0
+            while x <= x1 { line(SIMD3(x, map.groundY, z0), SIMD3(x, map.groundY, z1), bold: Int(x) % 5 == 0); x += 1 }
+            var z = z0
+            while z <= z1 { line(SIMD3(x0, map.groundY, z), SIMD3(x1, map.groundY, z), bold: Int(z) % 5 == 0); z += 1 }
+        }
+        // Painter's order: farthest first, so nearer and higher voxels cover them.
+        let placed = map.cells.map { (view.place($0.p), $0) }.sorted { $0.0.depth < $1.0.depth }
+        let side = CGFloat(map.cellSize * view.scale) + 0.5
+        let heightRange = max(0.5, high.y - map.groundY)
+        for (at, cell) in placed {
+            let color: Color
+            if let rgb = cell.rgb {
+                color = Color(.sRGBLinear, red: Double(rgb[0]), green: Double(rgb[1]), blue: Double(rgb[2]))
+            } else {
+                // Uncolored voxels are shaded by height so structure still reads.
+                let t = Double(max(0, min(1, (cell.p.y - map.groundY) / heightRange)))
+                color = Color(red: 0.16 + 0.3 * t, green: 0.45 + 0.35 * t, blue: 0.7 + 0.25 * t)
+            }
+            context.fill(Path(CGRect(x: at.point.x - side / 2, y: at.point.y - side / 2, width: side, height: side)), with: .color(color))
+        }
+        for note in map.notes {
+            let at = view.place(note).point
+            let dot = Path(ellipseIn: CGRect(x: at.x - 4, y: at.y - 4, width: 8, height: 8))
+            context.fill(dot, with: .color(.white)); context.stroke(dot, with: .color(.black), lineWidth: 1)
+        }
+        for portal in map.portals {
+            let at = view.place(portal).point
+            let square = Path(CGRect(x: at.x - 5, y: at.y - 5, width: 10, height: 10))
+            context.fill(square, with: .color(.red)); context.stroke(square, with: .color(.white), lineWidth: 1.5)
+        }
+        if let phone {
+            let at = view.place(phone.position).point
+            // A drop line shows the phone's height once the view is tilted.
+            let foot = view.place(SIMD3(phone.position.x, map.groundY, phone.position.z)).point
+            var drop = Path(); drop.move(to: at); drop.addLine(to: foot)
+            context.stroke(drop, with: .color(.cyan.opacity(0.7)), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            let ahead = view.place(phone.position + SIMD3(phone.heading.x, 0, phone.heading.y)).point
+            var forward = CGVector(dx: ahead.x - at.x, dy: ahead.y - at.y)
+            let length = max(0.001, hypot(forward.dx, forward.dy))
+            forward = CGVector(dx: forward.dx / length, dy: forward.dy / length)
+            let right = CGVector(dx: -forward.dy, dy: forward.dx)
+            var arrow = Path()
+            arrow.move(to: CGPoint(x: at.x + forward.dx * 14, y: at.y + forward.dy * 14))
+            arrow.addLine(to: CGPoint(x: at.x - forward.dx * 8 + right.dx * 8, y: at.y - forward.dy * 8 + right.dy * 8))
+            arrow.addLine(to: CGPoint(x: at.x - forward.dx * 8 - right.dx * 8, y: at.y - forward.dy * 8 - right.dy * 8))
+            arrow.closeSubpath()
+            context.fill(arrow, with: .color(.cyan)); context.stroke(arrow, with: .color(.white), lineWidth: 1.5)
+        }
     }
 }
 
@@ -660,7 +781,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 // In portrait the top edge is the camera's -X axis.
                 let up = SIMD2(-cameraInHome.columns.0.x, -cameraInHome.columns.0.z)
                 let heading = simd_length(forward) > 0.3 ? simd_normalize(forward) : simd_normalize(up)
-                miniPhone = MiniMapPhone(position: SIMD2(cameraInHome.columns.3.x, cameraInHome.columns.3.z),
+                miniPhone = MiniMapPhone(position: SIMD3(cameraInHome.columns.3.x, cameraInHome.columns.3.y, cameraInHome.columns.3.z),
                                          heading: heading.x.isFinite ? heading : SIMD2(0, -1))
                 onPose?(PhonePoseSample(session: poseSession, timestamp: frame.timestamp,
                     cameraInAR: frame.camera.transform, homeInAR: root.simdTransform,
