@@ -18,6 +18,8 @@ struct ViewerScreen: View {
     @State private var importing = false
     @State private var connecting = false
     @State private var pairingError: String?
+    @AppStorage("panelTab") private var panelTab = "map"
+    @AppStorage("panelOpen") private var panelOpen = true
     @State private var promptedForLogin = false
     @Environment(\.scenePhase) private var phase
     var body: some View {
@@ -36,22 +38,40 @@ struct ViewerScreen: View {
                 .onTapGesture { controller.wake() }
             }
             VStack(alignment: .leading, spacing: 12) {
-                Text(peer.profile?.sceneLabel ?? "Home Scene").font(.title2.bold())
-                Text(peer.detail).font(.subheadline.bold())
-                Text(controller.status).font(.subheadline)
-                Toggle("Share LiDAR depth", isOn: $controller.shareDepth)
-                Text(controller.depthStatus).font(.caption)
-                if controller.shareDepth && peer.state == "live" { Text(peer.depthDetail).font(.caption) }
-                HStack {
-                    Button(peer.running ? "Disconnect" : "Connect to Home") {
-                        if peer.running { peer.disconnect() } else { connecting = true }
-                    }
+                HStack(spacing: 10) {
+                    Text(peer.profile?.sceneLabel ?? "Home Scene").font(.headline).lineLimit(1)
                     Spacer()
-                    Button("Realign") { controller.realign() }
-                        .disabled(controller.map == nil)
-                }.buttonStyle(.bordered)
-                Text(peer.state == "live" ? "Live P2P · double-tap a surface to add a note" : "Waiting for Home · any visible map is cached")
-                    .font(.caption).foregroundStyle(.secondary)
+                    Picker("Panel", selection: $panelTab) {
+                        Text("Map").tag("map")
+                        Text("Status").tag("status")
+                    }.pickerStyle(.segmented).frame(width: 150)
+                    Button { withAnimation { panelOpen.toggle() } } label: {
+                        Image(systemName: panelOpen ? "chevron.down" : "chevron.up").frame(width: 30, height: 30)
+                    }.accessibilityLabel(panelOpen ? "Fold panel" : "Unfold panel")
+                }
+                if !panelOpen {
+                    Text(controller.status).font(.caption).lineLimit(1)
+                } else if panelTab == "map" {
+                    MiniMapView(map: controller.miniMap, phone: controller.miniPhone)
+                        .frame(height: 260)
+                    Text(controller.status).font(.caption).lineLimit(2)
+                } else {
+                    Text(peer.detail).font(.subheadline.bold())
+                    Text(controller.status).font(.subheadline)
+                    Toggle("Share LiDAR depth", isOn: $controller.shareDepth)
+                    Text(controller.depthStatus).font(.caption)
+                    if controller.shareDepth && peer.state == "live" { Text(peer.depthDetail).font(.caption) }
+                    HStack {
+                        Button(peer.running ? "Disconnect" : "Connect to Home") {
+                            if peer.running { peer.disconnect() } else { connecting = true }
+                        }
+                        Spacer()
+                        Button("Realign") { controller.realign() }
+                            .disabled(controller.map == nil)
+                    }.buttonStyle(.bordered)
+                    Text(peer.state == "live" ? "Live P2P · double-tap a surface to add a note" : "Waiting for Home · any visible map is cached")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
             .padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
             .padding()
@@ -131,6 +151,93 @@ struct ViewerScreen: View {
     }
 }
 
+/// Top-down plan of Home's scene: the highest voxel in each column, Portals,
+/// notes and this phone. Home +X is right and -Z is up, matching a floor Portal.
+struct MiniMapData: Equatable {
+    struct Cell: Equatable { let x: Float; let z: Float; let rgb: [Float]? }
+    var cells = [Cell]()
+    var cellSize: Float = 0.1
+    var portals = [SIMD2<Float>]()
+    var notes = [SIMD2<Float>]()
+
+    init() {}
+    init(_ map: PortalMap) {
+        let size = map.render?.voxel_size ?? 0.1
+        cellSize = size.isFinite && size > 0 ? size : 0.1
+        var top = [SIMD2<Int32>: (Float, [Float]?)]()
+        for voxel in map.render?.voxels ?? [] {
+            guard voxel.center.count == 3, voxel.center.allSatisfy(\.isFinite), voxel.center[1] <= 2.2 else { continue }
+            let key = SIMD2(Int32((voxel.center[0] / cellSize).rounded(.down)), Int32((voxel.center[2] / cellSize).rounded(.down)))
+            if let old = top[key], old.0 >= voxel.center[1] { continue }
+            top[key] = (voxel.center[1], voxel.linear_rgb?.count == 3 ? voxel.linear_rgb : nil)
+        }
+        cells = top.map { Cell(x: (Float($0.key.x) + 0.5) * cellSize, z: (Float($0.key.y) + 0.5) * cellSize, rgb: $0.value.1) }
+        portals = map.scenegraph.anchors.values.map {
+            let t = $0.pose_in_map.matrix.columns.3
+            return SIMD2(t.x, t.z)
+        }
+        notes = (map.render?.notes ?? []).compactMap { $0.position.count == 3 ? SIMD2($0.position[0], $0.position[2]) : nil }
+    }
+}
+struct MiniMapPhone: Equatable { let position: SIMD2<Float>; let heading: SIMD2<Float> }
+
+struct MiniMapView: View {
+    let map: MiniMapData
+    let phone: MiniMapPhone?
+    var body: some View {
+        Canvas { context, size in
+            var points = map.cells.map { SIMD2($0.x, $0.z) } + map.portals + map.notes
+            if let phone { points.append(phone.position) }
+            guard let first = points.first else {
+                context.draw(Text("No map yet. Connect and scan a Portal.").font(.caption).foregroundColor(.secondary),
+                             at: CGPoint(x: size.width / 2, y: size.height / 2))
+                return
+            }
+            var low = first, high = first
+            for p in points { low = simd_min(low, p); high = simd_max(high, p) }
+            // Keep at least a 2 m window so a single Portal is not blown up.
+            let center = (low + high) / 2
+            let span = simd_max(high - low + SIMD2(repeating: 0.6), SIMD2(repeating: 2))
+            let scale = min(Float(size.width) / span.x, Float(size.height) / span.y)
+            func place(_ p: SIMD2<Float>) -> CGPoint {
+                CGPoint(x: CGFloat((p.x - center.x) * scale) + size.width / 2,
+                        y: CGFloat((p.y - center.y) * scale) + size.height / 2)
+            }
+            let side = CGFloat(map.cellSize * scale) + 0.5
+            for cell in map.cells {
+                let at = place(SIMD2(cell.x, cell.z))
+                let color = cell.rgb.map { Color(.sRGBLinear, red: Double($0[0]), green: Double($0[1]), blue: Double($0[2])) }
+                    ?? Color(red: 0.3, green: 0.62, blue: 0.82)
+                context.fill(Path(CGRect(x: at.x - side / 2, y: at.y - side / 2, width: side, height: side)), with: .color(color))
+            }
+            for note in map.notes {
+                let at = place(note)
+                context.fill(Path(ellipseIn: CGRect(x: at.x - 4, y: at.y - 4, width: 8, height: 8)), with: .color(.white))
+                context.stroke(Path(ellipseIn: CGRect(x: at.x - 4, y: at.y - 4, width: 8, height: 8)), with: .color(.black), lineWidth: 1)
+            }
+            for portal in map.portals {
+                let at = place(portal)
+                context.fill(Path(CGRect(x: at.x - 5, y: at.y - 5, width: 10, height: 10)), with: .color(.red))
+                context.stroke(Path(CGRect(x: at.x - 5, y: at.y - 5, width: 10, height: 10)), with: .color(.white), lineWidth: 1.5)
+            }
+            if let phone {
+                let at = place(phone.position)
+                let forward = CGVector(dx: CGFloat(phone.heading.x), dy: CGFloat(phone.heading.y))
+                let right = CGVector(dx: -forward.dy, dy: forward.dx)
+                var arrow = Path()
+                arrow.move(to: CGPoint(x: at.x + forward.dx * 14, y: at.y + forward.dy * 14))
+                arrow.addLine(to: CGPoint(x: at.x - forward.dx * 8 + right.dx * 8, y: at.y - forward.dy * 8 + right.dy * 8))
+                arrow.addLine(to: CGPoint(x: at.x - forward.dx * 8 - right.dx * 8, y: at.y - forward.dy * 8 - right.dy * 8))
+                arrow.closeSubpath()
+                context.fill(arrow, with: .color(.cyan))
+                context.stroke(arrow, with: .color(.white), lineWidth: 1.5)
+            }
+        }
+        .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 12))
+        .accessibilityLabel("Top-down map")
+    }
+}
+
 struct CameraView: UIViewRepresentable {
     let controller: ViewerController
     func makeUIView(context: Context) -> ARSCNView { controller.start(); return controller.view }
@@ -150,6 +257,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private var depthAlignment: DepthAlignment?
     var onPose: ((PhonePoseSample?) -> Void)?
     var onPortalSeen: ((String) -> Void)?
+    @Published private(set) var miniMap = MiniMapData()
+    @Published private(set) var miniPhone: MiniMapPhone?
     // A phone left lying flat and still pauses its camera and reports itself asleep.
     static let sleepAfter: TimeInterval = 30
     @Published private(set) var snoozed = false
@@ -209,6 +318,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         guard self.map != map else { return }
         let referenceChanged = self.map?.scenegraph != map.scenegraph
         self.map = map
+        miniMap = MiniMapData(map)
         root.childNodes.forEach { $0.removeFromParentNode() }
         for portal in map.scenegraph.anchors.values.sorted(by: { $0.anchor_id < $1.anchor_id }) {
             let node = SCNNode()
@@ -345,6 +455,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     func clear() {
         clearPlacement()
         map = nil
+        miniMap = MiniMapData()
         root.childNodes.forEach { $0.removeFromParentNode() }
         invalidate()
         status = "Connect to Home to receive its scene"
@@ -356,6 +467,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         depthAlignment = nil
         depthStatus = shareDepth ? "Scan a Portal to share depth" : "Depth sharing off"
         generation += 1; aligned = false; cooldown.reset(); root.isHidden = true
+        miniPhone = nil
     }
 
     func realign() {
@@ -542,6 +654,14 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             captureDepth(frame)
             if let map, frame.timestamp - lastPosePublication >= 0.2 {
                 lastPosePublication = frame.timestamp
+                let cameraInHome = root.simdTransform.inverse * frame.camera.transform
+                let forward = SIMD2(-cameraInHome.columns.2.x, -cameraInHome.columns.2.z)
+                // Looking straight down has no horizontal heading; use the screen's top edge.
+                // In portrait the top edge is the camera's -X axis.
+                let up = SIMD2(-cameraInHome.columns.0.x, -cameraInHome.columns.0.z)
+                let heading = simd_length(forward) > 0.3 ? simd_normalize(forward) : simd_normalize(up)
+                miniPhone = MiniMapPhone(position: SIMD2(cameraInHome.columns.3.x, cameraInHome.columns.3.z),
+                                         heading: heading.x.isFinite ? heading : SIMD2(0, -1))
                 onPose?(PhonePoseSample(session: poseSession, timestamp: frame.timestamp,
                     cameraInAR: frame.camera.transform, homeInAR: root.simdTransform,
                     homeFrame: map.scenegraph.map.frame.id))
