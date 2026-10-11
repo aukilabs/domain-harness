@@ -10,15 +10,22 @@ use std::{
 
 pub const COMPONENT: &str = "home-phone-presence";
 /// Display names per phone peer, read once from
-/// `SPATIAL_PHONE_NAMES` (default `data/phone-names.json`, `{"<peer id>": "<name>"}`).
+/// `config/phone-names.json`, overridden by `SPATIAL_PHONE_NAMES` (default
+/// `data/phone-names.json`). Both are `{"<peer id>": "<name>"}`.
 /// The entry `"*"` names every unlisted phone; otherwise a short peer suffix is used.
 static NAMES: std::sync::LazyLock<BTreeMap<String, String>> = std::sync::LazyLock::new(|| {
-    let path =
+    // Checked-in names first; a local file or SPATIAL_PHONE_NAMES overrides per peer.
+    let read = |path: &str| -> BTreeMap<String, String> {
+        std::fs::read(path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
+    };
+    let mut names = read("config/phone-names.json");
+    let local =
         std::env::var("SPATIAL_PHONE_NAMES").unwrap_or_else(|_| "data/phone-names.json".into());
-    std::fs::read(path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+    names.extend(read(&local));
+    names
 });
 pub fn display_name(peer: &str) -> String {
     NAMES
