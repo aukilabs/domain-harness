@@ -20,6 +20,11 @@ final class HomePeer: ObservableObject {
         annotationResult = nil
         return json.withCString { spatial_mobile_annotate($0) == 1 }
     }
+    func changeAnnotation(_ json: String) -> Bool {
+        guard state == "live" else { return false }
+        annotationResult = nil
+        return json.withCString { spatial_mobile_change_note($0) == 1 }
+    }
     func publishPose(_ sample: PhonePoseSample?) {
         guard let sample else { spatial_mobile_pose(nil); return }
         guard running, state == "live", let data = try? JSONEncoder().encode(sample),

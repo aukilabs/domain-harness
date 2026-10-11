@@ -41,6 +41,10 @@ struct ViewerScreen: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             CameraView(controller: controller).ignoresSafeArea()
+            VStack {
+                VolumeControls(editor: controller.volumes, peer: peer, begin: { controller.beginVolume() })
+                Spacer()
+            }
             if controller.snoozed {
                 ZStack {
                     Color.black.opacity(0.88)
@@ -596,6 +600,11 @@ struct CameraView: UIViewRepresentable {
 }
 
 final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
+    let volumes = VolumeAuthoring()
+    func beginVolume() {
+        guard let map else { volumes.message = "Connect to Home first."; return }
+        volumes.begin(frame: map.scenegraph.map.frame.id)
+    }
     @Published var status = "Connect to Home to receive its scene"
     @Published var shareDepth = true {
         didSet { if !shareDepth { onDepth?(nil); depthStatus = "Depth sharing off" } }
@@ -649,6 +658,12 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         view.session.delegate = self
         view.session.delegateQueue = .main
         root.isHidden = true
+        volumes.attach(view, root: root) { [weak self] in
+            guard let self, self.aligned, !self.snoozed,
+                  let frame = self.view.session.currentFrame,
+                  case .normal = frame.camera.trackingState else { return false }
+            return true
+        }
         let tap = UITapGestureRecognizer(target: self, action: #selector(doubleTap(_:)))
         tap.numberOfTapsRequired = 2
         view.addGestureRecognizer(tap)
@@ -725,6 +740,10 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             root.addChildNode(node)
         }
         renderScene(map.render)
+        for volume in map.render?.volumes ?? [] where volume.valid {
+            root.addChildNode(volume.node())
+        }
+        volumes.redraw()
         povRoot.childNodes.forEach { $0.removeFromParentNode() }
         root.childNodes.forEach { povRoot.addChildNode($0.clone()) }
         remoteDevices = Self.remoteDevices(map, ownSession: poseSession)
@@ -854,6 +873,15 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     @objc private func doubleTap(_ gesture: UITapGestureRecognizer) {
+        guard volumes.draft == nil else { return }
+        if aligned, let map {
+            let hits = view.hitTest(gesture.location(in: view), options: [:])
+            if let name = hits.first(where: { $0.node.name?.hasPrefix("semantic-volume:") == true })?.node.name,
+               let volume = map.render?.volumes?.first(where: { "semantic-volume:" + $0.id == name }) {
+                volumes.begin(frame: map.scenegraph.map.frame.id, existing: volume)
+                return
+            }
+        }
         guard aligned, let map, let frame = view.session.currentFrame,
               case .normal = frame.camera.trackingState, placement == nil else {
             status = "Scan a Portal before placing a note."; return
@@ -891,6 +919,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     private func invalidate() {
+        volumes.invalidate()
         onPose?(nil)
         onDepth?(nil)
         depthAlignment = nil
@@ -944,6 +973,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     /// Explicit user scan: always gives visible feedback, and forces the next
     /// alignment attempt instead of waiting for the cooldown.
     @objc private func longPress(_ gesture: UILongPressGestureRecognizer) {
+        guard volumes.draft == nil else { return }
         guard gesture.state == .began else { return }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         guard let frame = view.session.currentFrame else {
@@ -1125,6 +1155,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         if snoozed { return }
         if map == nil { scanBeforeMap(frame); return }
         guard case .normal = frame.camera.trackingState else {
+            volumes.invalidate()
             if map != nil {
                 let message: String
                 switch frame.camera.trackingState {

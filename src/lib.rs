@@ -68,3 +68,4 @@ pub mod local_scenes;
 pub mod local_mobile;
 
 pub mod robot_runner;
+pub mod semantic_volumes;

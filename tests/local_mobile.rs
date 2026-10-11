@@ -67,6 +67,27 @@ async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated(
         let home = scenes.connection("humanoid-hub-conference", HomeConnection::direct(&pair.a))?;
         let nacs = scenes.connection("nacs", HomeConnection::direct(&pair.a))?;
         home.validate(&pair.b)?;
+        // Volume creation uses the same authenticated scene-scoped operation as notes.
+        let volume = spatial_home::semantic_volumes::SemanticVolume {
+            id: uuid::Uuid::new_v4().to_string(), name: "Kitchen".into(),
+            semantic_type: "room".into(), position: [1., 0., 2.],
+            dimensions: [2., 2.5, 3.], yaw: 0.5,
+        };
+        let request = spatial_home::mobile_notes::ChangeNote {
+            request_id: uuid::Uuid::new_v4().to_string(), frame: home.frame.clone(),
+            action: spatial_home::mobile_notes::NoteAction::PutVolume { volume: volume.clone() },
+        };
+        spatial_home::mobile_notes::send_change(&pair.b, &home, &request).await?;
+        spatial_home::mobile_notes::send_change(&pair.b, &home, &request).await?;
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        for publisher in &mut publishers { publisher.tick()?; }
+        let volume_view = read(&pair.b, &home).await?;
+        assert_eq!(volume_view["render"]["volumes"].as_array().unwrap().len(), 1);
+        assert_eq!(volume_view["render"]["volumes"][0]["id"], volume.id);
+        assert!(read(&pair.b, &nacs).await?["render"]["volumes"].as_array().unwrap().is_empty());
+        let saved: spatial_home::notes::Notes = serde_json::from_slice(&std::fs::read(
+            dir.path().join("mobile-notes/humanoid-hub-conference.json"))?)?;
+        assert_eq!(saved.volumes, vec![volume]);
         let runner_reference = spatial_home::network::fetch_home_portals(&pair.b, &home).await?;
         assert_eq!(runner_reference.scenegraph.map.frame.id, home.frame);
         assert_eq!(runner_reference.scenegraph.anchors.len(), 1);

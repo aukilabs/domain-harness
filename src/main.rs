@@ -350,6 +350,7 @@ async fn scene(State(s): State<Shared>) -> ApiResult {
     let store = lock(&s)?;
     let mut view = serde_json::to_value(&store.built.view).map_err(anyhow::Error::from)?;
     view["environment_name"] = json!(spatial_home::environments::reference_name());
+    view["volumes"] = json!(spatial_home::notes::from_registries(&store.built.registries, spatial_home::model::FRAME)?.volumes);
     view["landmarks"] = store.built.registries["landmarks"].clone();
     view["notes"] = json!(
         spatial_home::notes::from_registries(&store.built.registries, spatial_home::model::FRAME)?
@@ -618,16 +619,54 @@ async fn snapshots(State(s): State<Shared>) -> ApiResult {
         json!({"domain_portals":s.built.domain_portals,"portals":s.built.portals,"voxels":s.built.voxels,"objects":s.built.view.objects,"registries":s.built.registries}),
     ))
 }
-// Local test control boundary: JSON only, no CORS, and reject foreign browser
-// origins. This is intentionally not remote peer authentication or an SDK P2P API.
+// LAN UI control boundary: explicit hosts and same-origin writes; no CORS.
+#[cfg(test)]
+mod lan_ui_tests {
+    use super::*;
+
+    #[test]
+    fn default_listener_accepts_lan() {
+        assert_eq!(ui_bind_address(None).unwrap().to_string(), "0.0.0.0");
+        assert_eq!(ui_bind_address(Some("127.0.0.1")).unwrap().to_string(), "127.0.0.1");
+        assert!(ui_bind_address(Some("invalid")).is_err());
+    }
+
+    #[test]
+    fn lan_writes_require_allowed_host_and_matching_origin() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, "192.168.1.26:4329".parse().unwrap());
+        headers.insert(header::ORIGIN, "http://192.168.1.26:4329".parse().unwrap());
+        assert!(ui_write(&headers, "192.168.1.26:4329").is_ok());
+        assert!(ui_write(&headers, "").is_err());
+        headers.insert(header::ORIGIN, "http://foreign.example".parse().unwrap());
+        assert!(ui_write(&headers, "192.168.1.26:4329").is_err());
+        headers.remove(header::ORIGIN);
+        headers.insert(header::HOST, "localhost:4329".parse().unwrap());
+        assert!(ui_write(&headers, "").is_ok());
+    }
+}
+
+fn ui_bind_address(configured: Option<&str>) -> Result<std::net::IpAddr, std::net::AddrParseError> {
+    configured.unwrap_or("0.0.0.0").parse()
+}
+
 fn local_write(headers: &HeaderMap) -> Result<(), ApiError> {
+    ui_write(headers, &std::env::var("SPATIAL_UI_HOSTS").unwrap_or_default())
+}
+
+fn ui_write(headers: &HeaderMap, lan_hosts: &str) -> Result<(), ApiError> {
     let host = headers
         .get(header::HOST)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    let allowed = host.starts_with("127.0.0.1:") || host.starts_with("localhost:");
+    let authority = host.parse::<axum::http::uri::Authority>().ok();
+    let allowed = authority.as_ref().is_some_and(|a| {
+        a.port_u16().is_some()
+            && (matches!(a.host(), "127.0.0.1" | "localhost" | "[::1]")
+                || lan_hosts.split(',').any(|allowed| allowed.trim() == host))
+    });
     if !allowed {
-        return Err(ApiError(anyhow::anyhow!("localhost Host required")));
+        return Err(ApiError(anyhow::anyhow!("UI Host is not allowed")));
     }
     if let Some(origin) = headers.get(header::ORIGIN)
         && origin.to_str().ok() != Some(format!("http://{host}").as_str())
@@ -840,7 +879,8 @@ async fn main() -> anyhow::Result<()> {
     let port: u16 = std::env::var("SPATIAL_PORT")
         .unwrap_or_else(|_| "4319".into())
         .parse()?;
-    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await?;
+    let bind = ui_bind_address(std::env::var("SPATIAL_BIND").ok().as_deref())?;
+    let listener = tokio::net::TcpListener::bind((bind, port)).await?;
     let (simulation_task, simulation) = if simulate {
         let (tx, rx) =
             tokio::sync::watch::channel(spatial_home::simulated_robot::SimulationState::default());

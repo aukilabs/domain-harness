@@ -31,6 +31,8 @@ pub struct Scene {
     pub portals: MapSnapshot,
     pub geometry: Option<CanonicalScene>,
     pub notes: Notes,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volumes: Vec<crate::semantic_volumes::SemanticVolume>,
     pub presence: Value,
 }
 impl ContractType for Scene {
@@ -65,6 +67,9 @@ impl Scene {
             "Mobile scene/profile mismatch"
         );
         self.notes.validate(frame)?;
+        let mut volume_layer = Notes::empty(frame);
+        volume_layer.volumes = self.volumes.clone();
+        volume_layer.validate(frame)?;
         ensure!(
             self.presence["frame"] == frame,
             "Presence belongs to another scene"
@@ -94,6 +99,7 @@ impl Scene {
                 "landmarks":crate::landmarks::portal_map(&self.portals,None,&Default::default())?})
         };
         view["notes"] = json!(self.notes.items);
+        view["volumes"] = json!(self.volumes);
         crate::mobile_pose::append_labels_in_frame(&mut view, &self.presence, &map.frame.id);
         view["environment_name"] = json!(map.name);
         view["frame_description"] = json!(map.frame.origin_description);
@@ -523,7 +529,14 @@ impl Publisher {
             publication_clock: self.clock.clone(),
             portals: reference.clone(),
             geometry: state.map.scene()?,
-            notes: state.notes.clone(),
+            notes: {
+                // Older clients deny unknown fields inside text-notes/v1.
+                // Publish the new volume layer beside notes, not inside it.
+                let mut notes = state.notes.clone();
+                notes.volumes.clear();
+                notes
+            },
+            volumes: state.notes.volumes.clone(),
             presence: state
                 .presence
                 .lock().map_err(|_| anyhow!("Phone presence unavailable"))?

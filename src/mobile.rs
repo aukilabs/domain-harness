@@ -443,7 +443,7 @@ impl MobileClient {
                         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
                         state.version += 1;
                         state.annotation = Some(match result {
-                            Ok(change) => serde_json::json!({"id":request.request_id,"saved":true,"deleted":change.deleted,"note":change.note}),
+                            Ok(change) => serde_json::json!({"id":request.request_id,"saved":true,"deleted":change.deleted,"note":change.note,"detail":"Saved to Home"}),
                             Err(e) => serde_json::json!({"id":request.request_id,"saved":false,"detail":e.to_string()}),
                         });
                     }

@@ -102,7 +102,7 @@ pub fn render_scene(s: &CanonicalScene) -> Result<Value> {
     }
     let mut view = json!({"frame":display,"local_map":local,"local_mapping":metadata,"source_frame":s.frame,"source_convention":s.portals.scenegraph.map.frame.convention,"convention":"OpenGL · Y up · meters",
             "voxel_size":s.voxels.definition.grid().voxel_size_m.0,"voxels":voxels,
-            "portals":portals.scenegraph.anchors.values().collect::<Vec<_>>(),"objects":objects,"notes":notes.items,
+            "portals":portals.scenegraph.anchors.values().collect::<Vec<_>>(),"objects":objects,"notes":notes.items,"volumes":notes.volumes,
             "sources":{"galbot":s.voxels.integrated_observations},"integrated_observations":s.voxels.integrated_observations,
             "sdk_revision":s.sdk_revision,"mode":"Runner-owned scenegraph","demo":false,"synthetic_layout":null,"sensor_positions":{},
             "authority":"Galbot mapper","authority_peer_id":s.authority_peer_id,"remote_status":null});
