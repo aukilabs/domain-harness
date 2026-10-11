@@ -8,6 +8,8 @@ struct SemanticVolume: Codable, Equatable, Identifiable {
     var position: [Float]
     var dimensions: [Float]
     var yaw: Float
+    /// Home's free-text notes for the region. Kept so an edit does not drop it.
+    var description: String? = nil
     var valid: Bool {
         UUID(uuidString: id) != nil && position.count == 3 && dimensions.count == 3
         && position.allSatisfy { $0.isFinite && abs($0) < 1_000_000 }

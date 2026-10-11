@@ -73,8 +73,9 @@ pub struct Storage {
 fn default_semantic_type() -> String { "region".into() }
 
 /// SDK/mobile representation: position is bottom-centre, not box centre.
+// Unknown fields are accepted on purpose: a newer Home adding a field to a
+// volume must not make every older phone reject the whole scene.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct SemanticVolume {
     pub id: String,
     pub name: String,
