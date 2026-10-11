@@ -18,10 +18,24 @@ struct ViewerScreen: View {
     @State private var importing = false
     @State private var connecting = false
     @State private var pairingError: String?
+    @State private var povSelection: String?
     @AppStorage("panelTab") private var panelTab = "map"
     @AppStorage("panelOpen") private var panelOpen = true
     @State private var promptedForLogin = false
     @Environment(\.scenePhase) private var phase
+    /// Whether voxels are reaching Home right now: green sending, red failing, grey idle.
+    private var sending: Bool { peer.state == "live" && peer.depthDetail.hasPrefix("Depth sent") }
+    private var sendFailed: Bool {
+        peer.state == "live" && (peer.depthDetail.hasPrefix("Depth not sent") || peer.depthDetail.hasPrefix("Color paused"))
+    }
+    private var sendColor: Color { sending ? .green : sendFailed ? .red : .gray }
+    private var sendSummary: String {
+        if controller.snoozed { return "Not sending · phone asleep" }
+        if peer.state != "live" { return "Not sending · not connected to Home" }
+        if !controller.shareDepth { return "Not sending · sharing is off" }
+        if sending || sendFailed { return peer.depthDetail }
+        return "Not sending · scan a Portal to align"
+    }
     var body: some View {
         ZStack(alignment: .bottom) {
             CameraView(controller: controller).ignoresSafeArea()
@@ -39,22 +53,29 @@ struct ViewerScreen: View {
             }
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 10) {
+                    Circle().fill(sendColor).frame(width: 12, height: 12)
+                        .accessibilityLabel(sendSummary)
                     Text(peer.profile?.sceneLabel ?? "Home Scene").font(.headline).lineLimit(1)
                     Spacer()
                     Picker("Panel", selection: $panelTab) {
                         Text("Map").tag("map")
+                        Text("POV").tag("pov")
                         Text("Status").tag("status")
-                    }.pickerStyle(.segmented).frame(width: 150)
+                    }.pickerStyle(.segmented).frame(width: 190)
                     Button { withAnimation { panelOpen.toggle() } } label: {
                         Image(systemName: panelOpen ? "chevron.down" : "chevron.up").frame(width: 30, height: 30)
                     }.accessibilityLabel(panelOpen ? "Fold panel" : "Unfold panel")
                 }
                 if !panelOpen {
-                    Text(controller.status).font(.caption).lineLimit(1)
+                    Text(sendSummary).font(.caption).lineLimit(1)
                 } else if panelTab == "map" {
                     MiniMapView(map: controller.miniMap, phone: controller.miniPhone)
                         .frame(height: 260)
+                    Text(sendSummary).font(.caption.bold()).foregroundStyle(sendColor).lineLimit(2)
                     Text(controller.status).font(.caption).lineLimit(2)
+                } else if panelTab == "pov" {
+                    PovPanel(controller: controller, selection: $povSelection).frame(height: 260)
+                    Text(sendSummary).font(.caption.bold()).foregroundStyle(sendColor).lineLimit(1)
                 } else {
                     Text(peer.detail).font(.subheadline.bold())
                     Text(controller.status).font(.subheadline)
@@ -151,90 +172,314 @@ struct ViewerScreen: View {
     }
 }
 
-/// Top-down plan of Home's scene: the highest voxel in each column, Portals,
-/// notes and this phone. Home +X is right and -Z is up, matching a floor Portal.
+/// A device whose point of view can be shown: this phone, another phone, or a robot.
+struct PovDevice: Identifiable, Equatable {
+    let id: String
+    let name: String
+    let symbol: String
+    let asleep: Bool
+    /// Camera pose in Home's frame, looking along its own -Z with +Y up on screen.
+    let transform: simd_float4x4
+    /// False for a device Home knows about that has no pose in this scene yet.
+    var located = true
+    var detail: String? = nil
+    /// Home's own, slightly delayed, record of this phone.
+    var isSelf = false
+
+    /// Phone camera poses use the sensor's landscape axes. Turn the view a
+    /// quarter about the optical axis so a phone held upright looks upright.
+    static func upright(_ camera: simd_float4x4) -> simd_float4x4 {
+        camera * simd_float4x4(simd_quatf(angle: .pi / 2, axis: SIMD3(0, 0, 1)))
+    }
+}
+
+/// The scene rendered from a chosen device's pose.
+struct PovSceneView: UIViewRepresentable {
+    let scene: SCNScene
+    let transform: simd_float4x4
+    func makeCoordinator() -> SCNNode {
+        let node = SCNNode()
+        node.camera = SCNCamera()
+        node.camera?.fieldOfView = 68
+        node.camera?.zNear = 0.05
+        node.camera?.zFar = 60
+        return node
+    }
+    func makeUIView(context: Context) -> SCNView {
+        let view = SCNView()
+        view.scene = scene
+        view.backgroundColor = UIColor(white: 0.06, alpha: 1)
+        view.antialiasingMode = .multisampling2X
+        view.rendersContinuously = false
+        scene.rootNode.addChildNode(context.coordinator)
+        context.coordinator.simdTransform = transform
+        view.pointOfView = context.coordinator
+        return view
+    }
+    func updateUIView(_ view: SCNView, context: Context) {
+        SCNTransaction.begin(); SCNTransaction.animationDuration = 0.2
+        context.coordinator.simdTransform = transform
+        SCNTransaction.commit()
+    }
+    static func dismantleUIView(_ view: SCNView, coordinator: SCNNode) { coordinator.removeFromParentNode() }
+}
+
+/// Device list on the left; the selected device's view of the map on the right.
+struct PovPanel: View {
+    @ObservedObject var controller: ViewerController
+    @Binding var selection: String?
+    var body: some View {
+        let devices = controller.devices
+        let chosen = devices.first { $0.id == selection && $0.located } ?? devices.first { $0.located }
+        HStack(spacing: 8) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(devices) { device in
+                        Button { selection = device.id } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: device.asleep ? "moon.zzz.fill" : device.symbol).frame(width: 18)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(device.name + (device.asleep ? " · asleep" : "")).font(.caption).lineLimit(2)
+                                    if !device.located {
+                                        Text(device.detail ?? "no position yet").font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                                    }
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .opacity(device.located ? 1 : 0.55)
+                            .padding(.vertical, 7).padding(.horizontal, 8)
+                            .background(device.id == chosen?.id ? Color.accentColor.opacity(0.3) : Color.clear,
+                                        in: RoundedRectangle(cornerRadius: 8))
+                        }.buttonStyle(.plain).disabled(!device.located)
+                    }
+                    if devices.isEmpty {
+                        Text("No devices yet. Align this phone or wait for others.").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }.frame(width: 118)
+            ZStack(alignment: .bottomLeading) {
+                if let chosen {
+                    PovSceneView(scene: controller.povScene, transform: chosen.transform)
+                    Text(chosen.name + (chosen.asleep ? " · asleep, last view" : "")).font(.caption2.bold())
+                        .padding(5).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 6)).padding(6)
+                } else {
+                    Color.black.opacity(0.55)
+                    Text("Pick a device").font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }.clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+    }
+}
+
+/// Home's scene for the mini map: every voxel with its color, Portals, notes.
+/// Home is Y up; +X is right and -Z is up on screen in the default top-down view.
 struct MiniMapData: Equatable {
-    struct Cell: Equatable { let x: Float; let z: Float; let rgb: [Float]? }
+    struct Cell: Equatable { let p: SIMD3<Float>; let rgb: [Float]? }
     var cells = [Cell]()
     var cellSize: Float = 0.1
-    var portals = [SIMD2<Float>]()
-    var notes = [SIMD2<Float>]()
+    var portals = [SIMD3<Float>]()
+    var notes = [SIMD3<Float>]()
+    /// Height of the ground grid: the underside of the lowest voxel.
+    var groundY: Float = 0
 
     init() {}
     init(_ map: PortalMap) {
         let size = map.render?.voxel_size ?? 0.1
         cellSize = size.isFinite && size > 0 ? size : 0.1
-        var top = [SIMD2<Int32>: (Float, [Float]?)]()
-        for voxel in map.render?.voxels ?? [] {
-            guard voxel.center.count == 3, voxel.center.allSatisfy(\.isFinite), voxel.center[1] <= 2.2 else { continue }
-            let key = SIMD2(Int32((voxel.center[0] / cellSize).rounded(.down)), Int32((voxel.center[2] / cellSize).rounded(.down)))
-            if let old = top[key], old.0 >= voxel.center[1] { continue }
-            top[key] = (voxel.center[1], voxel.linear_rgb?.count == 3 ? voxel.linear_rgb : nil)
+        cells = (map.render?.voxels ?? []).compactMap { voxel in
+            guard voxel.center.count == 3, voxel.center.allSatisfy(\.isFinite) else { return nil }
+            return Cell(p: SIMD3(voxel.center[0], voxel.center[1], voxel.center[2]),
+                        rgb: voxel.linear_rgb?.count == 3 ? voxel.linear_rgb : nil)
         }
-        cells = top.map { Cell(x: (Float($0.key.x) + 0.5) * cellSize, z: (Float($0.key.y) + 0.5) * cellSize, rgb: $0.value.1) }
         portals = map.scenegraph.anchors.values.map {
             let t = $0.pose_in_map.matrix.columns.3
-            return SIMD2(t.x, t.z)
+            return SIMD3(t.x, t.y, t.z)
         }
-        notes = (map.render?.notes ?? []).compactMap { $0.position.count == 3 ? SIMD2($0.position[0], $0.position[2]) : nil }
+        notes = (map.render?.notes ?? []).compactMap {
+            $0.position.count == 3 ? SIMD3($0.position[0], $0.position[1], $0.position[2]) : nil
+        }
+        groundY = cells.map(\.p.y).min().map { $0 - cellSize / 2 } ?? portals.map(\.y).min() ?? 0
     }
 }
-struct MiniMapPhone: Equatable { let position: SIMD2<Float>; let heading: SIMD2<Float> }
+struct MiniMapPhone: Equatable { let position: SIMD3<Float>; let heading: SIMD2<Float> }
+
+/// Standard viewport controls: one finger orbits, two fingers truck, pinch
+/// dollies, double-tap resets.
+struct MiniMapGestures: UIViewRepresentable {
+    var onOrbit: (CGSize) -> Void
+    var onTruck: (CGSize) -> Void
+    var onZoom: (CGFloat) -> Void
+    var onReset: () -> Void
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.backgroundColor = .clear
+        let orbit = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.orbit(_:)))
+        orbit.maximumNumberOfTouches = 1
+        let truck = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.truck(_:)))
+        truck.minimumNumberOfTouches = 2; truck.maximumNumberOfTouches = 2
+        let pinch = UIPinchGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.pinch(_:)))
+        let reset = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.reset))
+        reset.numberOfTapsRequired = 2
+        truck.delegate = context.coordinator; pinch.delegate = context.coordinator
+        [orbit, truck, pinch, reset].forEach(view.addGestureRecognizer)
+        return view
+    }
+    func updateUIView(_ view: UIView, context: Context) { context.coordinator.parent = self }
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var parent: MiniMapGestures
+        init(_ parent: MiniMapGestures) { self.parent = parent }
+        @objc func orbit(_ g: UIPanGestureRecognizer) {
+            let t = g.translation(in: g.view); g.setTranslation(.zero, in: g.view)
+            parent.onOrbit(CGSize(width: t.x, height: t.y))
+        }
+        @objc func truck(_ g: UIPanGestureRecognizer) {
+            let t = g.translation(in: g.view); g.setTranslation(.zero, in: g.view)
+            parent.onTruck(CGSize(width: t.x, height: t.y))
+        }
+        @objc func pinch(_ g: UIPinchGestureRecognizer) { parent.onZoom(g.scale); g.scale = 1 }
+        @objc func reset() { parent.onReset() }
+        // Two fingers may truck and dolly in the same motion.
+        func gestureRecognizer(_ a: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith b: UIGestureRecognizer) -> Bool { true }
+    }
+}
 
 struct MiniMapView: View {
     let map: MiniMapData
     let phone: MiniMapPhone?
+    /// Offset of the orbit pivot from the scene's center, in Home metres.
+    @State private var pan = SIMD3<Float>(0, 0, 0)
+    @State private var yaw: Float = 0
+    /// 90 degrees looks straight down; lower values tilt toward the horizon.
+    @State private var pitch: Float = .pi / 2
+    @State private var zoom: Float = 1
+
     var body: some View {
-        Canvas { context, size in
-            var points = map.cells.map { SIMD2($0.x, $0.z) } + map.portals + map.notes
-            if let phone { points.append(phone.position) }
-            guard let first = points.first else {
-                context.draw(Text("No map yet. Connect and scan a Portal.").font(.caption).foregroundColor(.secondary),
-                             at: CGPoint(x: size.width / 2, y: size.height / 2))
-                return
-            }
-            var low = first, high = first
-            for p in points { low = simd_min(low, p); high = simd_max(high, p) }
-            // Keep at least a 2 m window so a single Portal is not blown up.
-            let center = (low + high) / 2
-            let span = simd_max(high - low + SIMD2(repeating: 0.6), SIMD2(repeating: 2))
-            let scale = min(Float(size.width) / span.x, Float(size.height) / span.y)
-            func place(_ p: SIMD2<Float>) -> CGPoint {
-                CGPoint(x: CGFloat((p.x - center.x) * scale) + size.width / 2,
-                        y: CGFloat((p.y - center.y) * scale) + size.height / 2)
-            }
-            let side = CGFloat(map.cellSize * scale) + 0.5
-            for cell in map.cells {
-                let at = place(SIMD2(cell.x, cell.z))
-                let color = cell.rgb.map { Color(.sRGBLinear, red: Double($0[0]), green: Double($0[1]), blue: Double($0[2])) }
-                    ?? Color(red: 0.3, green: 0.62, blue: 0.82)
-                context.fill(Path(CGRect(x: at.x - side / 2, y: at.y - side / 2, width: side, height: side)), with: .color(color))
-            }
-            for note in map.notes {
-                let at = place(note)
-                context.fill(Path(ellipseIn: CGRect(x: at.x - 4, y: at.y - 4, width: 8, height: 8)), with: .color(.white))
-                context.stroke(Path(ellipseIn: CGRect(x: at.x - 4, y: at.y - 4, width: 8, height: 8)), with: .color(.black), lineWidth: 1)
-            }
-            for portal in map.portals {
-                let at = place(portal)
-                context.fill(Path(CGRect(x: at.x - 5, y: at.y - 5, width: 10, height: 10)), with: .color(.red))
-                context.stroke(Path(CGRect(x: at.x - 5, y: at.y - 5, width: 10, height: 10)), with: .color(.white), lineWidth: 1.5)
-            }
-            if let phone {
-                let at = place(phone.position)
-                let forward = CGVector(dx: CGFloat(phone.heading.x), dy: CGFloat(phone.heading.y))
-                let right = CGVector(dx: -forward.dy, dy: forward.dx)
-                var arrow = Path()
-                arrow.move(to: CGPoint(x: at.x + forward.dx * 14, y: at.y + forward.dy * 14))
-                arrow.addLine(to: CGPoint(x: at.x - forward.dx * 8 + right.dx * 8, y: at.y - forward.dy * 8 + right.dy * 8))
-                arrow.addLine(to: CGPoint(x: at.x - forward.dx * 8 - right.dx * 8, y: at.y - forward.dy * 8 - right.dy * 8))
-                arrow.closeSubpath()
-                context.fill(arrow, with: .color(.cyan))
-                context.stroke(arrow, with: .color(.white), lineWidth: 1.5)
+        GeometryReader { geometry in
+            let size = geometry.size
+            let view = projection(size)
+            ZStack(alignment: .topTrailing) {
+                Canvas { context, _ in draw(&context, size: size, view: view) }
+                MiniMapGestures(
+                    onOrbit: { d in
+                        // Orbit about the pivot, which stays at the center of the view.
+                        yaw += Float(d.width) * 0.008
+                        pitch = max(0.12, min(.pi / 2, pitch - Float(d.height) * 0.008))
+                    },
+                    onTruck: { d in
+                        // Slide the pivot along the camera's own right and up axes.
+                        let sx = Float(d.width) / view.scale, sy = Float(d.height) / view.scale
+                        let turnedX = sx, turnedZ = sy * sin(pitch), up = -sy * cos(pitch)
+                        pan -= SIMD3(turnedX * cos(yaw) + turnedZ * sin(yaw), up, -turnedX * sin(yaw) + turnedZ * cos(yaw))
+                    },
+                    onZoom: { zoom = max(0.4, min(12, zoom * Float($0))) },
+                    onReset: { withAnimation { pan = .zero; yaw = 0; pitch = .pi / 2; zoom = 1 } })
+                if pan != SIMD3<Float>(0, 0, 0) || yaw != 0 || pitch != .pi / 2 || zoom != 1 {
+                    Button { pan = .zero; yaw = 0; pitch = .pi / 2; zoom = 1 } label: {
+                        Image(systemName: "scope").padding(7).background(.thinMaterial, in: Circle())
+                    }.padding(6).accessibilityLabel("Reset map view")
+                }
             }
         }
         .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 12))
-        .accessibilityLabel("Top-down map")
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .accessibilityLabel("Mini map")
+    }
+
+    private struct Projection {
+        let center: SIMD3<Float>, scale: Float, yaw: Float, pitch: Float, size: CGSize
+        /// Orthographic: turn about Y, then tilt. Depth grows toward the viewer.
+        func place(_ p: SIMD3<Float>) -> (point: CGPoint, depth: Float) {
+            let d = p - center
+            let x = d.x * cos(yaw) - d.z * sin(yaw), z = d.x * sin(yaw) + d.z * cos(yaw)
+            let y = z * sin(pitch) - d.y * cos(pitch)
+            return (CGPoint(x: CGFloat(x * scale) + size.width / 2, y: CGFloat(y * scale) + size.height / 2),
+                    d.y * sin(pitch) + z * cos(pitch))
+        }
+    }
+
+    private func bounds() -> (low: SIMD3<Float>, high: SIMD3<Float>)? {
+        var points = map.cells.map(\.p) + map.portals + map.notes
+        if let phone { points.append(phone.position) }
+        guard var low = points.first else { return nil }
+        var high = low
+        for p in points { low = simd_min(low, p); high = simd_max(high, p) }
+        return (low, high)
+    }
+
+    private func projection(_ size: CGSize) -> Projection {
+        let (low, high) = bounds() ?? (SIMD3(repeating: -1), SIMD3(repeating: 1))
+        // Fit the footprint, with at least a 2 m window so one Portal is not blown up.
+        let span = SIMD2(max(high.x - low.x + 0.6, 2), max(high.z - low.z + 0.6, 2))
+        let fit = min(Float(size.width) / span.x, Float(size.height) / span.y)
+        let middle = (low + high) / 2
+        return Projection(center: SIMD3(middle.x, map.groundY, middle.z) + pan,
+                          scale: max(1, fit * zoom), yaw: yaw, pitch: pitch, size: size)
+    }
+
+    private func draw(_ context: inout GraphicsContext, size: CGSize, view: Projection) {
+        guard let (low, high) = bounds() else {
+            context.draw(Text("No map yet. Connect and scan a Portal.").font(.caption).foregroundColor(.secondary),
+                         at: CGPoint(x: size.width / 2, y: size.height / 2))
+            return
+        }
+        // Ground grid at the lowest level: 1 m lines, bolder every 5 m.
+        let x0 = (low.x - 1).rounded(.down), x1 = (high.x + 1).rounded(.up)
+        let z0 = (low.z - 1).rounded(.down), z1 = (high.z + 1).rounded(.up)
+        if x1 - x0 <= 200, z1 - z0 <= 200 {
+            func line(_ a: SIMD3<Float>, _ b: SIMD3<Float>, bold: Bool) {
+                var path = Path(); path.move(to: view.place(a).point); path.addLine(to: view.place(b).point)
+                context.stroke(path, with: .color(.white.opacity(bold ? 0.38 : 0.16)), lineWidth: bold ? 1.2 : 0.6)
+            }
+            var x = x0
+            while x <= x1 { line(SIMD3(x, map.groundY, z0), SIMD3(x, map.groundY, z1), bold: Int(x) % 5 == 0); x += 1 }
+            var z = z0
+            while z <= z1 { line(SIMD3(x0, map.groundY, z), SIMD3(x1, map.groundY, z), bold: Int(z) % 5 == 0); z += 1 }
+        }
+        // Painter's order: farthest first, so nearer and higher voxels cover them.
+        let placed = map.cells.map { (view.place($0.p), $0) }.sorted { $0.0.depth < $1.0.depth }
+        let side = CGFloat(map.cellSize * view.scale) + 0.5
+        let heightRange = max(0.5, high.y - map.groundY)
+        for (at, cell) in placed {
+            let color: Color
+            if let rgb = cell.rgb {
+                color = Color(.sRGBLinear, red: Double(rgb[0]), green: Double(rgb[1]), blue: Double(rgb[2]))
+            } else {
+                // Uncolored voxels are shaded by height so structure still reads.
+                let t = Double(max(0, min(1, (cell.p.y - map.groundY) / heightRange)))
+                color = Color(red: 0.16 + 0.3 * t, green: 0.45 + 0.35 * t, blue: 0.7 + 0.25 * t)
+            }
+            context.fill(Path(CGRect(x: at.point.x - side / 2, y: at.point.y - side / 2, width: side, height: side)), with: .color(color))
+        }
+        for note in map.notes {
+            let at = view.place(note).point
+            let dot = Path(ellipseIn: CGRect(x: at.x - 4, y: at.y - 4, width: 8, height: 8))
+            context.fill(dot, with: .color(.white)); context.stroke(dot, with: .color(.black), lineWidth: 1)
+        }
+        for portal in map.portals {
+            let at = view.place(portal).point
+            let square = Path(CGRect(x: at.x - 5, y: at.y - 5, width: 10, height: 10))
+            context.fill(square, with: .color(.red)); context.stroke(square, with: .color(.white), lineWidth: 1.5)
+        }
+        if let phone {
+            let at = view.place(phone.position).point
+            // A drop line shows the phone's height once the view is tilted.
+            let foot = view.place(SIMD3(phone.position.x, map.groundY, phone.position.z)).point
+            var drop = Path(); drop.move(to: at); drop.addLine(to: foot)
+            context.stroke(drop, with: .color(.cyan.opacity(0.7)), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            let ahead = view.place(phone.position + SIMD3(phone.heading.x, 0, phone.heading.y)).point
+            var forward = CGVector(dx: ahead.x - at.x, dy: ahead.y - at.y)
+            let length = max(0.001, hypot(forward.dx, forward.dy))
+            forward = CGVector(dx: forward.dx / length, dy: forward.dy / length)
+            let right = CGVector(dx: -forward.dy, dy: forward.dx)
+            var arrow = Path()
+            arrow.move(to: CGPoint(x: at.x + forward.dx * 14, y: at.y + forward.dy * 14))
+            arrow.addLine(to: CGPoint(x: at.x - forward.dx * 8 + right.dx * 8, y: at.y - forward.dy * 8 + right.dy * 8))
+            arrow.addLine(to: CGPoint(x: at.x - forward.dx * 8 - right.dx * 8, y: at.y - forward.dy * 8 - right.dy * 8))
+            arrow.closeSubpath()
+            context.fill(arrow, with: .color(.cyan)); context.stroke(arrow, with: .color(.white), lineWidth: 1.5)
+        }
     }
 }
 
@@ -259,6 +504,18 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     var onPortalSeen: ((String) -> Void)?
     @Published private(set) var miniMap = MiniMapData()
     @Published private(set) var miniPhone: MiniMapPhone?
+    /// Devices for the POV tab. This phone's entry follows its live pose.
+    @Published private(set) var devices = [PovDevice]()
+    private var remoteDevices = [PovDevice]()
+    private var selfInHome: simd_float4x4?
+    /// A copy of the map for the POV tab; geometry is shared with the AR scene.
+    let povScene = SCNScene()
+    private let povRoot = SCNNode()
+    // Waking or relaunching resumes at the last known transform.
+    private var resumeRoot: simd_float4x4?
+    private var resumeDepth: DepthAlignment?
+    private var triedColdResume = false
+    private var lastPoseSave: TimeInterval = 0
     // A phone left lying flat and still pauses its camera and reports itself asleep.
     static let sleepAfter: TimeInterval = 30
     @Published private(set) var snoozed = false
@@ -283,6 +540,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         super.init()
         view.scene = SCNScene()
         view.scene.rootNode.addChildNode(root)
+        povScene.rootNode.addChildNode(povRoot)
         view.session.delegate = self
         view.session.delegateQueue = .main
         root.isHidden = true
@@ -305,6 +563,10 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
             config.frameSemantics.insert(.sceneDepth)
         } else { depthStatus = "This phone does not provide LiDAR scene depth" }
+        // People in front of the map hide it, using their measured depth.
+        if ARWorldTrackingConfiguration.supportsFrameSemantics(.personSegmentationWithDepth) {
+            config.frameSemantics.insert(.personSegmentationWithDepth)
+        }
         view.session.run(config)
     }
 
@@ -347,8 +609,70 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             root.addChildNode(node)
         }
         renderScene(map.render)
-        if referenceChanged { realign() }
+        povRoot.childNodes.forEach { $0.removeFromParentNode() }
+        root.childNodes.forEach { povRoot.addChildNode($0.clone()) }
+        remoteDevices = Self.remoteDevices(map, ownSession: poseSession)
+        refreshDevices()
+        if referenceChanged { resetAlignment() }
         else if aligned { status = "Aligned · \(map.scenegraph.anchors.count) Portals · \(map.render?.voxels.count ?? 0) voxels" }
+    }
+
+    private static func remoteDevices(_ map: PortalMap, ownSession: String) -> [PovDevice] {
+        var found = [PovDevice]()
+        for note in map.render?.notes ?? [] {
+            guard let phone = note.phone_pose, phone.pose.translation.count == 3, phone.pose.rotation_wxyz.count == 4 else { continue }
+            // Home names each pose's source frame after the sending AR session,
+            // which identifies this phone's own entry exactly.
+            found.append(PovDevice(id: "phone:" + phone.peer_id, name: phone.name ?? note.text, symbol: "iphone",
+                                   asleep: phone.state == "asleep", transform: PovDevice.upright(phone.pose.matrix),
+                                   isSelf: phone.pose.from_frame_id == "phone-camera:" + ownSession))
+        }
+        let located = Set(found.map(\.id))
+        func robot(_ sample: RenderScene.RobotPose?, id: String, name: String) {
+            guard let pose = sample?.pose, pose.translation.count == 3, pose.rotation_xyzw.count == 4,
+                  sample?.frame == map.scenegraph.map.frame.id else { return }
+            // Raise the eye above the chassis so the view is not inside the robot.
+            var eye = pose.matrix
+            eye.columns.3.y += 0.35
+            found.append(PovDevice(id: "robot:" + id, name: name, symbol: "car.side", asleep: false, transform: eye))
+        }
+        if let runners = map.render?.local_mapping?.runners, !runners.isEmpty {
+            for (id, runner) in runners.sorted(by: { $0.key < $1.key }) {
+                if runner.robot_pose != nil {
+                    robot(runner.robot_pose, id: id, name: "Robot " + String(id.suffix(4)))
+                } else if !located.contains("phone:" + id) {
+                    // Known to Home but not placed in this scene, so there is no view to show.
+                    found.append(PovDevice(id: "peer:" + id, name: "Device " + String(id.suffix(4)), symbol: "questionmark.circle",
+                                           asleep: false, transform: matrix_identity_float4x4, located: false,
+                                           detail: "no position" + (runner.status.map { " · " + $0 } ?? "")))
+                }
+            }
+        } else { robot(map.render?.local_mapping?.robot_pose, id: "runner", name: "Robot") }
+        return found.sorted { ($0.located ? 0 : 1, $0.name) < ($1.located ? 0 : 1, $1.name) }
+    }
+
+    private func refreshDevices() {
+        var list = [PovDevice]()
+        if let selfInHome {
+            list.append(PovDevice(id: "self", name: "This phone", symbol: "iphone.gen3", asleep: false,
+                                  transform: PovDevice.upright(selfInHome)))
+        }
+        // Home lists this phone too. Its copy lags the live pose, so never show both.
+        list += remoteDevices.filter { !$0.isSelf }
+        if list != devices { devices = list }
+    }
+
+    private static let lastPoseKey = "lastCameraInHome"
+    private func saveLastPose(_ cameraInHome: simd_float4x4, frame: String) {
+        let c = cameraInHome.columns
+        let values = [c.0, c.1, c.2, c.3].flatMap { [$0.x, $0.y, $0.z, $0.w] }
+        UserDefaults.standard.set(["frame": frame, "matrix": values], forKey: Self.lastPoseKey)
+    }
+    private func loadLastPose(frame: String) -> simd_float4x4? {
+        guard let saved = UserDefaults.standard.dictionary(forKey: Self.lastPoseKey), saved["frame"] as? String == frame,
+              let v = (saved["matrix"] as? [NSNumber])?.map(\.floatValue), v.count == 16, v.allSatisfy(\.isFinite) else { return nil }
+        return simd_float4x4(SIMD4(v[0], v[1], v[2], v[3]), SIMD4(v[4], v[5], v[6], v[7]),
+                             SIMD4(v[8], v[9], v[10], v[11]), SIMD4(v[12], v[13], v[14], v[15]))
     }
 
     private func renderScene(_ scene: RenderScene?) {
@@ -456,6 +780,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         clearPlacement()
         map = nil
         miniMap = MiniMapData()
+        povRoot.childNodes.forEach { $0.removeFromParentNode() }
+        remoteDevices = []; refreshDevices()
         root.childNodes.forEach { $0.removeFromParentNode() }
         invalidate()
         status = "Connect to Home to receive its scene"
@@ -468,9 +794,17 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         depthStatus = shareDepth ? "Scan a Portal to share depth" : "Depth sharing off"
         generation += 1; aligned = false; cooldown.reset(); root.isHidden = true
         miniPhone = nil
+        if selfInHome != nil { selfInHome = nil; refreshDevices() }
     }
 
     func realign() {
+        // An explicit realign discards any resumed position.
+        resumeRoot = nil; resumeDepth = nil; triedColdResume = true
+        resetAlignment()
+    }
+
+    /// Drop the current alignment without giving up a pending resume.
+    private func resetAlignment() {
         invalidate()
         status = "\(map?.scenegraph.anchors.count ?? 0) Portals loaded. Scan a known Portal."
     }
@@ -583,6 +917,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private func snooze() {
         guard !snoozed else { return }
         snoozed = true
+        if aligned { resumeRoot = root.simdTransform; resumeDepth = depthAlignment }
         // Report sleep before withdrawing the pose so Home keeps the last one.
         onSleep?(true)
         view.session.pause()
@@ -649,6 +984,25 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             }
             return
         }
+        if !aligned, let map {
+            if let saved = resumeRoot {
+                // Waking: ARKit keeps its session frame across a pause, so the
+                // alignment from before sleep still applies.
+                root.simdTransform = saved; root.isHidden = false; aligned = true
+                depthAlignment = resumeDepth
+                resumeRoot = nil; resumeDepth = nil
+                status = "Awake · resumed last alignment. Long-press a Portal to refine."
+            } else if !triedColdResume {
+                // Relaunch: assume the phone has not moved and start from its last
+                // known pose. No depth is shared until a Portal confirms it.
+                triedColdResume = true
+                if let last = loadLastPose(frame: map.scenegraph.map.frame.id) {
+                    root.simdTransform = frame.camera.transform * last.inverse
+                    root.isHidden = false; aligned = true
+                    status = "Resumed at last known position. Scan a Portal to confirm."
+                }
+            }
+        }
         if aligned {
             root.isHidden = false
             captureDepth(frame)
@@ -660,8 +1014,14 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 // In portrait the top edge is the camera's -X axis.
                 let up = SIMD2(-cameraInHome.columns.0.x, -cameraInHome.columns.0.z)
                 let heading = simd_length(forward) > 0.3 ? simd_normalize(forward) : simd_normalize(up)
-                miniPhone = MiniMapPhone(position: SIMD2(cameraInHome.columns.3.x, cameraInHome.columns.3.z),
+                miniPhone = MiniMapPhone(position: SIMD3(cameraInHome.columns.3.x, cameraInHome.columns.3.y, cameraInHome.columns.3.z),
                                          heading: heading.x.isFinite ? heading : SIMD2(0, -1))
+                selfInHome = cameraInHome
+                refreshDevices()
+                if frame.timestamp - lastPoseSave >= 2 {
+                    lastPoseSave = frame.timestamp
+                    saveLastPose(cameraInHome, frame: map.scenegraph.map.frame.id)
+                }
                 onPose?(PhonePoseSample(session: poseSession, timestamp: frame.timestamp,
                     cameraInAR: frame.camera.transform, homeInAR: root.simdTransform,
                     homeFrame: map.scenegraph.map.frame.id))
@@ -896,8 +1256,10 @@ enum PhoneDepthCapture {
             let center = (SIMD3(Float(key.x), Float(key.y), Float(key.z)) + 0.5) * voxelSize
             let camera = cameraFromHome * SIMD4(center, 1)
             let point = SIMD3(camera.x, camera.y, camera.z)
-            let range = simd_length(point)
-            guard range >= 0.2, range <= 5 else { return nil }
+            // Home rejects the whole capture if any point is outside 0.2-5 m of
+            // camera depth. Snapping to a voxel center can move a point across
+            // that limit, so apply Home's exact rule to the center itself.
+            guard point.z <= -0.2, point.z >= -5, simd_length_squared(point) <= 64 else { return nil }
             let color: [UInt8]? = cell.colored > 0 ? {
                 let mean = cell.color / cell.colored
                 return [srgbByte(mean.x), srgbByte(mean.y), srgbByte(mean.z)]
