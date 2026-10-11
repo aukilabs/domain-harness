@@ -617,6 +617,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private var depthAlignment: DepthAlignment?
     var onPose: ((PhonePoseSample?) -> Void)?
     var onPortalSeen: ((String) -> Void)?
+    private var alignment = AlignmentFilter()
     /// A Portal missing from the scene, measured while aligned, is offered to Home.
     var onNewPortal: ((PortalReport) -> Bool)?
     private var portalCandidates = [String: (position: SIMD3<Float>, time: TimeInterval)]()
@@ -925,6 +926,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         depthAlignment = nil
         depthStatus = shareDepth ? "Scan a Portal to share depth" : "Depth sharing off"
         generation += 1; aligned = false; cooldown.reset(); root.isHidden = true
+        alignment.reset()
         miniPhone = nil
         if selfInHome != nil { selfInHome = nil; refreshDevices() }
     }
@@ -1205,7 +1207,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             }
             let width = Float(CVPixelBufferGetWidth(frame.capturedImage))
             let height = Float(CVPixelBufferGetHeight(frame.capturedImage))
-            var found: (String, simd_float4x4, simd_float4x4)?
+            var found: (String, simd_float4x4, simd_float4x4, Float)?
             var unknown: (String, simd_float4x4)?
             for code in request.results ?? [] {
                 guard let payload = code.payloadStringValue else {
@@ -1233,7 +1235,9 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 guard let pose = PortalPose.estimate(corners: corners, side: portal.side_length_m,
                                                      intrinsics: frame.camera.intrinsics) else { continue }
                 let portalInAR = frame.camera.transform * pose
-                found = (portal.anchor_id, portalInAR * portal.pose_in_map.matrix.inverse, portalInAR)
+                var edge: Float = 0
+                for i in 0..<4 { edge += simd_length(corners[i] - corners[(i + 1) % 4]) }
+                found = (portal.anchor_id, portalInAR * portal.pose_in_map.matrix.inverse, portalInAR, edge / 4)
                 break
             }
             let result = found
@@ -1244,23 +1248,37 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 guard self.generation == capturedGeneration, self.placement == nil else { return }
                 guard case .normal = self.view.session.currentFrame?.camera.trackingState else { return }
                 if let (code, portalInAR) = candidate { self.offerNewPortal(code, portalInAR: portalInAR, at: frame.timestamp) }
-                guard let (id, transform, portalInAR) = result else {
+                guard let (id, measured, portalInAR, edgePixels) = result, let portal = map.scenegraph.anchors[id] else {
                     if !self.aligned { self.status = scanFeedback }
                     return
                 }
+                // One sighting is one vote. The fused alignment only turns about
+                // gravity, so a tilted or hand-held Portal cannot tip the world.
+                let stored = portal.pose_in_map.matrix.columns.3
+                let outcome = self.alignment.add(measured: measured,
+                    portalInAR: SIMD3(portalInAR.columns.3.x, portalInAR.columns.3.y, portalInAR.columns.3.z),
+                    portalInHome: SIMD3(stored.x, stored.y, stored.z), edgePixels: edgePixels)
+                let transform = self.alignment.transform
                 self.root.simdTransform = transform
                 self.root.isHidden = false
                 self.aligned = true
-                if let portal = map.scenegraph.anchors[id] {
-                    let sessionFrame = "phone-ar:\(self.poseSession)"
-                    self.depthAlignment = DepthAlignment(timestamp_ns: UInt64(frame.timestamp * 1_000_000_000), portal_id: id,
-                        portal_to_session: .transform(portalInAR, from: portal.pose_in_map.from_frame_id, to: sessionFrame),
-                        session_to_home: .transform(transform.inverse, from: sessionFrame, to: map.scenegraph.map.frame.id))
-                }
+                // Home checks that the session-to-scene transform follows from the
+                // Portal's pose in the session, so report the Portal where the fused
+                // alignment places it, not where this single read did.
+                let sessionFrame = "phone-ar:\(self.poseSession)"
+                self.depthAlignment = DepthAlignment(timestamp_ns: UInt64(frame.timestamp * 1_000_000_000), portal_id: id,
+                    portal_to_session: .transform(transform * portal.pose_in_map.matrix, from: portal.pose_in_map.from_frame_id, to: sessionFrame),
+                    session_to_home: .transform(transform.inverse, from: sessionFrame, to: map.scenegraph.map.frame.id))
                 // Start the one-second pause when calibration is applied, not
                 // when Vision began processing the captured frame.
                 self.cooldown.accept(at: self.view.session.currentFrame?.timestamp ?? frame.timestamp)
-                self.status = "Aligned with \(id) · \(self.map?.render?.voxels.count ?? 0) voxels"
+                let voxels = self.map?.render?.voxels.count ?? 0
+                switch outcome {
+                case .locked, .relocked: self.status = "Aligned with \(id) · \(voxels) voxels"
+                case .averaged: self.status = "Aligned · refined with \(id) (\(self.alignment.sightings) reads) · \(voxels) voxels"
+                case .ignoredTilted: self.status = "Aligned · \(id) looks tilted or hand-held, so it was not used"
+                case .ignoredOutlier: self.status = "Aligned · ignored one read of \(id) that disagreed"
+                }
 
             }
         }
