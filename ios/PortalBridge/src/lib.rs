@@ -42,6 +42,21 @@ pub unsafe extern "C" fn spatial_mobile_change_note(request: *const c_char) -> i
     }).unwrap_or(0)
 }
 
+/// Report a Portal the scene does not know; Home decides whether to add it.
+/// # Safety
+/// `report` must be a NUL-terminated UTF-8 JSON string valid for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spatial_mobile_report_portal(report: *const c_char) -> i32 {
+    std::panic::catch_unwind(|| {
+        if report.is_null() { return 0; }
+        let bytes = unsafe { CStr::from_ptr(report) }.to_bytes();
+        if bytes.len() > 8192 { return 0; }
+        let Ok(report) = serde_json::from_slice(bytes) else { return 0; };
+        CLIENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+            .map_or(0, |client| i32::from(client.report_portal(report)))
+    }).unwrap_or(0)
+}
+
 /// Advertise camera availability while scanning and query SDK subscription demand.
 #[unsafe(no_mangle)]
 pub extern "C" fn spatial_mobile_camera_demand(active: i32) -> i32 {

@@ -155,6 +155,14 @@ impl CollaborativeMap {
             .map_err(|e| anyhow::anyhow!("{e:?}"))?;
         Ok(())
     }
+    /// Add a newly reported Portal to this map and adopt the resulting snapshot
+    /// as the calibration reference for later phone and robot input.
+    pub fn add_portal(&mut self, anchor: QrAnchor) -> Result<MapSnapshot> {
+        self.upsert(anchor)?;
+        let snapshot = self.portals()?;
+        self.reference = snapshot.clone();
+        Ok(snapshot)
+    }
     pub fn portals(&self) -> Result<MapSnapshot> {
         Ok((*self.map.product().latest_existing()?.unwrap().payload).clone())
     }

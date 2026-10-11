@@ -26,6 +26,13 @@ final class HomePeer: ObservableObject {
               let json = String(data: data, encoding: .utf8) else { return }
         json.withCString { spatial_mobile_pose($0) }
     }
+    /// Ask Home to add a newly seen Portal to the scene.
+    @discardableResult
+    func reportPortal(_ report: PortalReport) -> Bool {
+        guard state == "live", let data = try? JSONEncoder().encode(report),
+              let json = String(data: data, encoding: .utf8) else { return false }
+        return json.withCString { spatial_mobile_report_portal($0) == 1 }
+    }
     /// Tell Home the camera is paused; it keeps the last pose, marked asleep.
     func setAsleep(_ asleep: Bool) { spatial_mobile_sleep(asleep ? 1 : 0) }
     func publishDepth(_ sample: PhoneDepthSample?) {

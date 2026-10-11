@@ -316,6 +316,139 @@ async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated(
     result.and(cleanup)
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn phone_reports_a_new_portal_into_the_selected_scene() -> Result<()> {
+    use spatial_home::local_mapper::{compose, identity, inverse};
+    let pair = support::LocalPair::start().await?;
+    let result = async {
+        let dir = tempfile::tempdir()?;
+        let scenes = Arc::new(LocalScenes::load(dir.path())?);
+        let store = spatial_home::model::Store::open_canonical(dir.path().join("xmart.journal"))?;
+        let mut server = ScenePublisher::mount(&pair.a)?;
+        server.publish(&store.built)?;
+        let owner = pair.a.peer_id().to_string();
+        let clock = spatial_home::model::clock_entry(&owner, &uuid::Uuid::new_v4().to_string());
+        let mut publishers = spatial_home::local_mobile::Publisher::mount_all(
+            &server.runtime,
+            &server.endpoint,
+            scenes.clone(),
+            clock.clone(),
+            Instant::now(),
+        )?;
+        let home = scenes.connection("humanoid-hub-conference", HomeConnection::direct(&pair.a))?;
+        let nacs = scenes.connection("nacs", HomeConnection::direct(&pair.a))?;
+        let reference = scenes.snapshot("humanoid-hub-conference")?;
+        let portal = &reference.scenegraph.anchors["HNY3JGNLRAE"];
+        let session = uuid::Uuid::new_v4().to_string();
+        let session_frame = format!("phone-ar:{session}");
+        let camera = format!("phone-camera:{session}");
+        let q = std::f64::consts::FRAC_1_SQRT_2;
+        let home_from_session = auki_odometry::Pose {
+            translation: [4., 0., 0.],
+            rotation_xyzw: [0., q, 0., q],
+        };
+        let session_from_portal = compose(
+            &inverse(&home_from_session)?,
+            &from_rigid(&portal.pose_in_map),
+        )?;
+        let alignment = Alignment {
+            timestamp_ns: 100,
+            portal_id: portal.anchor_id.clone(),
+            portal_to_session: rigid(
+                &session_from_portal,
+                &portal.pose_in_map.from_frame_id,
+                &session_frame,
+            ),
+            session_to_home: rigid(&home_from_session, &session_frame, &home.frame),
+        };
+        let new_code = "NEWPORTAL01";
+        let new_in_home = auki_odometry::Pose {
+            translation: [2., 0., 1.],
+            ..identity()
+        };
+        let new_in_session = compose(&inverse(&home_from_session)?, &new_in_home)?;
+        let new_local = spatial_home::mobile_portal::local_frame(new_code);
+        let report = spatial_home::mobile_portal::Report {
+            session: session.clone(),
+            timestamp_ns: 250,
+            code: new_code.into(),
+            side_length_m: spatial_home::mobile_portal::DEFAULT_SIDE_M,
+            portal_to_session: rigid(&new_in_session, &new_local, &session_frame),
+            alignment: alignment.clone(),
+        };
+        let mut forged = report.clone();
+        forged.alignment.session_to_home.translation[0] += 1.;
+        assert!(
+            spatial_home::mobile_portal::send(&pair.b, &home, &forged)
+                .await
+                .is_err(),
+            "Home checks the calibration Portal before trusting a new one"
+        );
+        assert!(
+            spatial_home::mobile_portal::send(&pair.b, &nacs, &report)
+                .await
+                .is_err(),
+            "cross-scene Portal report rejected"
+        );
+        assert!(spatial_home::mobile_portal::send(&pair.b, &home, &report).await?);
+        assert!(
+            spatial_home::mobile_portal::send(&pair.b, &home, &report)
+                .await
+                .is_err(),
+            "a known Portal is not replaced"
+        );
+        let stored: auki_scenegraph::MapSnapshot = serde_json::from_slice(&std::fs::read(
+            dir.path().join("humanoid-hub-conference.json"),
+        )?)?;
+        let added = &stored.scenegraph.anchors[new_code];
+        assert_eq!(added.side_length_m, 0.15);
+        for (got, want) in added.pose_in_map.translation.iter().zip([2., 0., 1.]) {
+            assert!((got - want).abs() < 1e-9, "Home composed the new Portal pose");
+        }
+        // Depth calibrated on the new Portal is accepted, and the scene still publishes.
+        let products = spatial_home::mobile_products::MobileProducts::mount(&pair.b)?;
+        let phone = spatial_home::mobile_depth::Publisher::new(&products, &session)?;
+        let sample = Sample {
+            session: session.clone(),
+            timestamp_ns: 300,
+            camera_to_session: rigid(
+                &auki_odometry::Pose {
+                    translation: [0., 1., 0.],
+                    ..identity()
+                },
+                &camera,
+                &session_frame,
+            ),
+            alignment: Alignment {
+                timestamp_ns: 260,
+                portal_id: new_code.into(),
+                portal_to_session: rigid(&new_in_session, &new_local, &session_frame),
+                session_to_home: rigid(&home_from_session, &session_frame, &home.frame),
+            },
+            points: vec![[0., 0., -1.5]],
+            colors: None,
+        };
+        assert!(spatial_home::mobile_depth::send(&pair.b, &home, &phone.publish(sample)?).await?);
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        for publisher in &mut publishers {
+            publisher.tick()?;
+        }
+        let grown = read(&pair.b, &home).await?;
+        assert_eq!(grown["scenegraph"]["anchors"].as_object().unwrap().len(), 2);
+        assert!(grown["scenegraph"]["anchors"].get(new_code).is_some());
+        assert_eq!(grown["render"]["integrated_observations"], 1);
+        // A restart keeps the reported Portal.
+        let reloaded = LocalScenes::load(dir.path())?;
+        assert_eq!(reloaded.snapshot("humanoid-hub-conference")?.scenegraph.anchors.len(), 2);
+        drop(publishers);
+        server.close().await?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    let cleanup = pair.shutdown().await;
+    result.and(cleanup)
+}
+
 #[test]
 fn equal_axes_do_not_make_independent_origins_interchangeable() -> Result<()> {
     let dir = tempfile::tempdir()?;

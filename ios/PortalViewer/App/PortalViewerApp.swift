@@ -103,6 +103,7 @@ struct ViewerScreen: View {
             controller.onDepth = { peer.publishDepth($0) }
             peer.onDisconnect = { controller.clear() }
             controller.onSleep = { peer.setAsleep($0) }
+            controller.onNewPortal = { peer.reportPortal($0) }
             // A Portal seen before Home's map has arrived offers sign-in once.
             controller.onPortalSeen = { _ in
                 guard !peer.running, !connecting, !promptedForLogin else { return }
@@ -502,6 +503,10 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private var depthAlignment: DepthAlignment?
     var onPose: ((PhonePoseSample?) -> Void)?
     var onPortalSeen: ((String) -> Void)?
+    /// A Portal missing from the scene, measured while aligned, is offered to Home.
+    var onNewPortal: ((PortalReport) -> Bool)?
+    private var portalCandidates = [String: (position: SIMD3<Float>, time: TimeInterval)]()
+    private var portalReported = [String: TimeInterval]()
     @Published private(set) var miniMap = MiniMapData()
     @Published private(set) var miniPhone: MiniMapPhone?
     /// Devices for the POV tab. This phone's entry follows its live pose.
@@ -578,7 +583,18 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     func load(_ map: PortalMap) {
         // Only changes to the calibration reference reset alignment.
         guard self.map != map else { return }
-        let referenceChanged = self.map?.scenegraph != map.scenegraph
+        // A Portal added to the scene keeps the current alignment; only a changed
+        // frame or a moved or removed Portal invalidates it.
+        let old = self.map?.scenegraph
+        let referenceChanged = old == nil || old?.map != map.scenegraph.map
+            || (old?.anchors.contains { map.scenegraph.anchors[$0.key] != $0.value } ?? true)
+        if let old, !referenceChanged {
+            let added = map.scenegraph.anchors.keys.filter { old.anchors[$0] == nil }.sorted()
+            if !added.isEmpty {
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                showToast("Portal \(added.joined(separator: ", ")) added to the scene", good: true)
+            }
+        }
         self.map = map
         miniMap = MiniMapData(map)
         root.childNodes.forEach { $0.removeFromParentNode() }
@@ -900,6 +916,35 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         }
     }
 
+    /// Report an unknown Portal once two measurements a moment apart agree, so
+    /// one noisy read cannot place it. Needs a real Portal alignment, not a resumed one.
+    private func offerNewPortal(_ code: String, portalInAR: simd_float4x4, at time: TimeInterval) {
+        guard aligned, let alignment = depthAlignment, map?.scenegraph.anchors[code] == nil else {
+            if aligned, depthAlignment == nil { status = "Scan a known Portal first, then Portal \(code) can be added." }
+            return
+        }
+        if let last = portalReported[code], time - last < 6 { return }
+        let position = SIMD3(portalInAR.columns.3.x, portalInAR.columns.3.y, portalInAR.columns.3.z)
+        guard let previous = portalCandidates[code], time - previous.time < 3,
+              simd_distance(previous.position, position) < 0.03 else {
+            portalCandidates[code] = (position, time)
+            status = "New Portal \(code) seen. Hold still to add it."
+            return
+        }
+        portalCandidates[code] = nil
+        portalReported[code] = time
+        let report = PortalReport(session: poseSession, timestamp_ns: UInt64(time * 1_000_000_000), code: code,
+            side_length_m: PortalReport.assumedSide,
+            portal_to_session: .transform(portalInAR, from: "portal:\(code):local", to: "phone-ar:\(poseSession)"),
+            alignment: alignment)
+        if onNewPortal?(report) == true {
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            showToast("New Portal \(code) found. Asking Home to add it at 15 cm…", good: true)
+        } else {
+            showToast("New Portal \(code) found, but Home is not connected.", good: false)
+        }
+    }
+
     /// Flat (screen up or down) and rotated less than about two degrees.
     private func checkRest(_ frame: ARFrame) {
         let transform = frame.camera.transform
@@ -1044,14 +1089,22 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             let width = Float(CVPixelBufferGetWidth(frame.capturedImage))
             let height = Float(CVPixelBufferGetHeight(frame.capturedImage))
             var found: (String, simd_float4x4, simd_float4x4)?
+            var unknown: (String, simd_float4x4)?
             for code in request.results ?? [] {
                 guard let payload = code.payloadStringValue else {
                     feedback = "QR visible but unreadable. Move closer and avoid glare."
                     continue
                 }
                 guard let portal = map.matching(payload) else {
-                    if let code = PortalMap.portalCode(payload) {
-                        feedback = "Portal \(code) is missing from Home's current snapshot."
+                    if let newCode = PortalMap.portalCode(payload) {
+                        feedback = "Portal \(newCode) is not in this scene yet."
+                        // Measure it at the assumed size so Home can be asked to add it.
+                        let corners = [code.topLeft, code.topRight, code.bottomRight, code.bottomLeft]
+                            .map { SIMD2(Float($0.x) * width, (1 - Float($0.y)) * height) }
+                        if unknown == nil, let pose = PortalPose.estimate(corners: corners, side: PortalReport.assumedSide,
+                                                                          intrinsics: frame.camera.intrinsics) {
+                            unknown = (newCode, frame.camera.transform * pose)
+                        }
                     } else {
                         feedback = "QR detected, but its payload format is not recognized as a Portal."
                     }
@@ -1067,11 +1120,13 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 break
             }
             let result = found
+            let candidate = unknown
             let scanFeedback = feedback
             DispatchQueue.main.async {
                 self.busy = false
                 guard self.generation == capturedGeneration, self.placement == nil else { return }
                 guard case .normal = self.view.session.currentFrame?.camera.trackingState else { return }
+                if let (code, portalInAR) = candidate { self.offerNewPortal(code, portalInAR: portalInAR, at: frame.timestamp) }
                 guard let (id, transform, portalInAR) = result else {
                     if !self.aligned { self.status = scanFeedback }
                     return

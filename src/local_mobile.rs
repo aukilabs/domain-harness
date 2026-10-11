@@ -119,7 +119,8 @@ struct State {
 }
 pub struct Publisher {
     id: String,
-    reference: MapSnapshot,
+    /// Shared with the ingest operations: a phone-reported Portal replaces it.
+    reference: Arc<std::sync::RwLock<MapSnapshot>>,
     state: Arc<Mutex<State>>,
     inbox: crate::mobile_depth::SharedInbox,
     contributions: Arc<Mutex<crate::scene_contribution::Inbox>>,
@@ -234,9 +235,10 @@ impl Publisher {
         let contributions = Arc::new(Mutex::new(crate::scene_contribution::Inbox::default()));
         let receiver = runtime.component(ComponentSpec::new(format!("{}:{id}",crate::scene_contribution::COMPONENT)).operable(
             OperableContract{name:"ingest".into(),instruction:crate::scene_contribution::Contribution::DATATYPE.into(),result:"bool".into(),exposure:Exposure::Cluster}))?;
+        let reference = Arc::new(std::sync::RwLock::new(reference));
         let queue=contributions.clone();let reference_copy=reference.clone();
         let operation=receiver.operable("ingest",|ctx|!ctx.caller_peer_id.is_empty(),move |ctx,c:crate::scene_contribution::Contribution|{
-            queue.lock().map_err(|_|InvocationError::TargetUnavailable)?.accept(&ctx.caller_peer_id,c,&reference_copy).map_err(rejected)
+            queue.lock().map_err(|_|InvocationError::TargetUnavailable)?.accept(&ctx.caller_peer_id,c,&*reference_copy.read().map_err(|_|InvocationError::TargetUnavailable)?).map_err(rejected)
         })?;
         receiver.expose()?;endpoint.export_operable(&operation)?;components.push(receiver);
 
@@ -259,7 +261,11 @@ impl Publisher {
                 depth_inbox
                     .lock()
                     .map_err(|_| InvocationError::TargetUnavailable)?
-                    .accept(&ctx.caller_peer_id, e, &calibration)
+                    .accept(
+                        &ctx.caller_peer_id,
+                        e,
+                        &*calibration.read().map_err(|_| InvocationError::TargetUnavailable)?,
+                    )
                     .map_err(rejected)
             },
         )?;
@@ -323,6 +329,44 @@ impl Publisher {
                 exposure: Exposure::Cluster,
             }),
         )?;
+        // A phone reports a Portal this scene does not know. Home composes its
+        // pose from validated alignment evidence, adds it, and saves the scene.
+        let portals = runtime.component(
+            ComponentSpec::new(format!("{}:{id}", crate::mobile_portal::COMPONENT)).operable(
+                OperableContract {
+                    name: "add".into(),
+                    instruction: crate::mobile_portal::Report::DATATYPE.into(),
+                    result: "bool".into(),
+                    exposure: Exposure::Cluster,
+                },
+            ),
+        )?;
+        let portal_state = state.clone();
+        let portal_reference = reference.clone();
+        let scene_path = scenes.directory.join(format!("{id}.json"));
+        let add = portals.operable(
+            "add",
+            |ctx| !ctx.caller_peer_id.is_empty(),
+            move |_, report: crate::mobile_portal::Report| {
+                let mut state = portal_state
+                    .lock()
+                    .map_err(|_| InvocationError::TargetUnavailable)?;
+                let current = portal_reference
+                    .read()
+                    .map_err(|_| InvocationError::TargetUnavailable)?
+                    .clone();
+                let anchor = crate::mobile_portal::anchor(&report, &current).map_err(rejected)?;
+                let snapshot = state.map.add_portal(anchor).map_err(rejected)?;
+                save_scene(&scene_path, &snapshot).map_err(rejected)?;
+                *portal_reference
+                    .write()
+                    .map_err(|_| InvocationError::TargetUnavailable)? = snapshot;
+                Ok(true)
+            },
+        )?;
+        portals.expose()?;
+        endpoint.export_operable(&add)?;
+        components.push(portals);
         let snapshot_state = live_presence.clone();
         let snapshot_frame = frame.clone();
         let snapshot_owner = owner.clone();
@@ -398,19 +442,24 @@ impl Publisher {
                 state.map.peer_status(&peer, "rejected", &e.to_string());
             }
         }
+        let reference = self
+            .reference
+            .read()
+            .map_err(|_| anyhow!("Scene reference unavailable"))?
+            .clone();
         let scene = Scene {
             schema: SCHEMA.into(),
             authority_peer_id: self.owner.clone(),
             publication_clock: self.clock.clone(),
-            portals: self.reference.clone(),
+            portals: reference.clone(),
             geometry: state.map.scene()?,
             notes: state.notes.clone(),
             presence: state
                 .presence
                 .lock().map_err(|_| anyhow!("Phone presence unavailable"))?
-                .snapshot_in_frame(Instant::now(), &self.reference.scenegraph.map.frame.id),
+                .snapshot_in_frame(Instant::now(), &reference.scenegraph.map.frame.id),
         };
-        scene.validate(&self.owner, &self.reference.scenegraph.map.frame.id)?;
+        scene.validate(&self.owner, &reference.scenegraph.map.frame.id)?;
         let content = serde_json::to_vec(&scene)?;
         if self.last_content.as_ref() == Some(&content) {
             return Ok(());
@@ -429,6 +478,21 @@ impl Publisher {
         self.last_content = Some(content);
         Ok(())
     }
+}
+/// Replace the saved scene atomically so a restart keeps reported Portals.
+fn save_scene(path: &std::path::Path, snapshot: &MapSnapshot) -> Result<()> {
+    use std::io::Write;
+    snapshot.validate()?;
+    let directory = path.parent().ok_or_else(|| anyhow!("Scene path has no directory"))?;
+    let temporary = directory.join(format!(".portal.{}.tmp", uuid::Uuid::new_v4()));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)?;
+    file.write_all(&serde_json::to_vec_pretty(snapshot)?)?;
+    file.sync_all()?;
+    std::fs::rename(temporary, path)?;
+    Ok(())
 }
 fn rejected(e: anyhow::Error) -> InvocationError {
     InvocationError::Rejected(e.to_string())
