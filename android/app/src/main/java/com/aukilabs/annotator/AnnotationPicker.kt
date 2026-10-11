@@ -12,39 +12,27 @@ internal class AnnotationPicker(private val density: Float) {
     @Volatile var notes = "[]"
     private var parsedSource = ""
     private var parsed = emptyList<JSONObject>()
-    private var lastProjection = 0L
     fun tap(x: Float,y: Float,double: Boolean) { tap.compareAndSet(null,Tap(x,y,double,System.nanoTime())) }
-    fun paused(pick: (AnnotationPick) -> Unit, project: (List<ScreenNote>) -> Unit) {
+    fun paused(pick: (AnnotationPick) -> Unit) {
         tap.getAndSet(null)?.let { pick(AnnotationPick("",it.double,error="Tracking paused; move slowly and try again")) }
-        project(emptyList())
     }
     fun frame(frame: Frame, alignment: JSONObject?, vp: FloatArray, width: Int, height: Int,
-              pick: (AnnotationPick) -> Unit, project: (List<ScreenNote>) -> Unit) {
+              pick: (AnnotationPick) -> Unit): List<ScreenNote> {
         val gesture = tap.getAndSet(null)
         val transform = alignment?.optJSONObject("session_to_home")
         if (transform == null) {
-            project(emptyList())
             if (gesture != null) pick(AnnotationPick("",gesture.double,error="Scan this scene's portal before annotating"))
-            return
-        }
-        if (gesture == null && frame.timestamp-lastProjection < 50_000_000L) return
-        lastProjection = frame.timestamp
-        val source = notes
-        if (source != parsedSource) {
-            parsedSource = source
-            parsed = runCatching { val array = JSONArray(source); (0 until array.length()).map { array.getJSONObject(it) } }.getOrDefault(emptyList())
+            return emptyList()
         }
         val home = poseFromJson(transform)
-        val inverse = home.inverse()
-        val markers = parsed.mapNotNull { projectNote(it,inverse,vp,width,height) }
-        project(markers)
-        if (gesture == null || System.nanoTime()-gesture.captured > 500_000_000L) return
+        val markers = project(alignment,vp,width,height)
+        if (gesture == null || System.nanoTime()-gesture.captured > 500_000_000L) return markers
         val frameId = transform.getString("to_frame_id")
         val existing = markers.filter { gesture.x in (it.x-28*density)..(it.x+(14+minOf(40,it.note.optString("text").length)*8)*density) &&
             gesture.y in (it.y-28*density)..(it.y+28*density) }
             .minByOrNull { (it.x-gesture.x)*(it.x-gesture.x)+(it.y-gesture.y)*(it.y-gesture.y) }
-        if (existing != null) { pick(AnnotationPick(frameId,gesture.double,note=existing.note)); return }
-        if (!gesture.double) return
+        if (existing != null) { pick(AnnotationPick(frameId,gesture.double,note=existing.note)); return markers }
+        if (!gesture.double) return markers
         val hit = frame.hitTest(gesture.x,gesture.y).firstOrNull {
             it.distance in .05f..40f && it.trackable.trackingState == TrackingState.TRACKING && when (val trackable = it.trackable) {
                 is Plane -> trackable.isPoseInPolygon(it.hitPose)
@@ -52,8 +40,21 @@ internal class AnnotationPicker(private val density: Float) {
                 else -> false
             }
         }
-        if (hit == null) { pick(AnnotationPick(frameId,true,error="No measured surface here yet. Move slowly and try again.")); return }
+        if (hit == null) { pick(AnnotationPick(frameId,true,error="No measured surface here yet. Move slowly and try again.")); return markers }
         pick(AnnotationPick(frameId,true,origin=home.transformPoint(frame.camera.pose.translation),position=home.transformPoint(hit.hitPose.translation)))
+        return markers
+    }
+
+    /** GL-thread projection for this exact camera frame, also used for picking. */
+    internal fun project(alignment: JSONObject?, vp: FloatArray, width: Int, height: Int): List<ScreenNote> {
+        val transform = alignment?.optJSONObject("session_to_home") ?: return emptyList()
+        val source = notes
+        if (source != parsedSource) {
+            parsedSource = source
+            parsed = runCatching { val array = JSONArray(source); (0 until array.length()).map { array.getJSONObject(it) } }.getOrDefault(emptyList())
+        }
+        val inverse = poseFromJson(transform).inverse()
+        return parsed.mapNotNull { projectNote(it,inverse,vp,width,height) }
     }
 }
 

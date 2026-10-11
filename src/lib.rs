@@ -2,6 +2,7 @@ pub mod conventions;
 pub mod domain_portals;
 pub mod local_mapper;
 pub mod mobile;
+pub mod mobile_home;
 pub mod mobile_camera;
 pub mod model;
 pub mod network;

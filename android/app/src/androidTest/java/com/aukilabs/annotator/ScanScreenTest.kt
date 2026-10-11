@@ -71,6 +71,7 @@ class ScanScreenTest {
         val visible = AtomicBoolean(false)
         val mounts = AtomicInteger(0)
         val noteTaps = AtomicInteger(0)
+        val homeVisible = mutableStateOf(false)
         val cameraBounds = AtomicReference<Rect?>(null)
         val session = mutableStateOf(1)
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
@@ -79,6 +80,8 @@ class ScanScreenTest {
                 activity.setContent {
                     MaterialTheme {
                         ScanScreen(session = session.value,
+                            homeVoxelsVisible = homeVisible.value,
+                            onHomeVoxelsToggle = { homeVisible.value = !homeVisible.value },
                             annotations = { Box(Modifier.fillMaxSize().pointerInput(Unit) {
                                 detectTapGestures(onDoubleTap = { noteTaps.incrementAndGet() })
                             }) },
@@ -115,6 +118,15 @@ class ScanScreenTest {
             val y = initialBounds.top+40*density
             fun doubleTap(tx: Float = x, ty: Float = y) { tap(tx,ty); Thread.sleep(80); tap(tx,ty) }
             assertFalse(visible.get())
+            assertFalse(homeVisible.value)
+            tap(initialBounds.left+70*density,initialBounds.bottom-36*density)
+            await { homeVisible.value }
+            Thread.sleep(400)
+            tap(initialBounds.left+70*density,initialBounds.bottom-36*density)
+            await { !homeVisible.value }
+            assertEquals("Voxel button must not place annotations",0,noteTaps.get())
+            assertEquals(initialBounds,cameraBounds.get())
+            assertEquals(1,mounts.get())
             tap(x,y); Thread.sleep(400)
             assertFalse("Single tap must not reveal feedback",visible.get())
             doubleTap(initialBounds.center.x,initialBounds.center.y); Thread.sleep(400)

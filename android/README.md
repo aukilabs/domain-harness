@@ -2,13 +2,40 @@
 
 ARM64 Android app targeting the Pixel 7 Pro. Imports a Home connection profile,
 signs in with an Auki User account, and connects over authenticated SDK P2P.
-**Start local scan** opens an ARCore camera view with green voxel-center overlays.
-No Portal is required for a separate local map. A recognized Portal from the
+After the first successful connection, Annotator encrypts the sign-in with a
+device-local Android Keystore AES-GCM key and stores only ciphertext in its
+no-backup directory. The pinned SDK's legacy email/password flow does not expose
+refresh-session restoration, so this reuses the normal SDK login with encrypted
+credentials; it does not provision an App secret or bypass Domain authorization.
+Opening/returning to the app reconnects once automatically. Failed connections
+offer a manual retry rather than an unbounded login loop. **Disconnect** stops the
+peer without forgetting the sign-in; **Forget saved sign-in** removes that saved
+credential and key only, preserving the Home profile, phone identity and maps.
+App updates preserve it; uninstalling, clearing app storage, a lost Keystore key,
+or changed account credentials require signing in again. No USB tunnel is needed.
+After Home connects, **Start scan** opens an ARCore camera view with green voxel-center overlays.
+No Portal is required for the phone's separate local map. A recognized Portal from the
 selected Home scene now enables calibration and depth contributions to that scene.
-AR note authoring is implemented (see **AR annotations** below); rendering Home's
-received voxel geometry in AR remains unimplemented.
+AR note authoring and Home portal/voxel overlays are implemented (see **AR annotations** below).
 
 ## Portal calibration
+
+Notes, pose updates, depth and local-map sends share one connection-scoped SDK
+Catalog cache and its successful authenticated route. Discovery is warmed before
+producers start, single-flight, refreshed after 60 seconds or a stale manifest,
+and tries at most two read-only routes concurrently. Notes do not require a fresh
+catalog round trip on each tap. A manifest mismatch is refreshed/retried only
+because the SDK rejects it before the handler runs; ambiguous delivery is never
+automatically replayed. The explicit Retry action preserves the request ID for
+Home's existing deduplication. Discovery failures and unconfirmed operation
+delivery have different messages. Routine idle scene refreshes retain the live
+reference/alignment; real connection failures still invalidate it.
+
+Transient stream-opening I/O failures can retry up to twice with 50/100 ms
+backoff, strictly before any operation payload is sent. Authentication rejection
+and errors during payload exchange are not automatically retried. The native
+SDK server supervises authentication and handlers together under its concurrency
+bound, so another handler completing cannot cancel an incoming authentication.
 
 Import the connection profile for the desired scene, connect, start the local scan,
 and show any Portal published by that scene. IDs, metric encoded-square sizes and
@@ -17,12 +44,25 @@ sizes or floor orientations are hardcoded in the scanner, and there is no Portal
 backend lookup. Unknown QR codes cannot establish alignment.
 
 The existing SDK QR detector runs locally on a packed copy of the camera's Y
-plane, with at most one background job and a maximum 2 Hz attempt rate. CPU-image
+plane, with at most one off-render-thread job: up to 10 Hz while acquiring an
+alignment and 1 Hz rechecks after acceptance (including missed rechecks).
+Acquisition uses normal worker priority; rechecks use background priority.
+The worker retains its SDK scanner in single-frame mode; it does not reuse old
+pixels or poses across references. CPU-image
 intrinsics and physical camera pose are copied from that same ARCore Frame;
 images are closed immediately and never transmitted. The SDK square pose solver
 returns marker-to-OpenGL-camera, which is composed into phone session space.
 Home's Portal pose then determines the session-to-Home transform. Reprojection,
 front-face, distance and corner-order checks reject unusable estimates.
+
+Development builds optimize the QR Lab decoding/image-processing crates and
+the square pose solver, not just the QR Lab re-export facade. The local
+`AnnotatorCalibration` log tag reports capture-copy, worker-queue, bridge and
+result-delivery times, plus native validation/decode/pose timings, decoded and
+matched counts, and pose rejection reasons. Logs contain no image/payload/pose
+data and are limited to once per second except successful alignments. These
+timings distinguish slow work from frames that simply lack a usable Portal;
+an ideal test QR is not a measurement of real-world calibration latency.
 
 After **Aligned with …**, raw confident depth hits and explicit alignment evidence
 flow through the existing shared Rust phone-depth component operation. Home
@@ -133,10 +173,10 @@ shared Rust core; Android owns camera capture, tracking, rendering, and input.
 3. **Inspect the scene in AR.** Render received Portals, voxels, and notes in the
    calibrated frame. Check scale and placement against a physical known Portal
    before enabling writes.
-4. **Validate annotations on hardware.** The implemented Android path uses
-   ARCore depth/plane hits and the scene-scoped `change` operation described below.
-   Check placement, editing, deletion, Undo, and explicit retries against Home's
-   acknowledgements; do not infer a floor when no measured hit is available.
+4. **Validate annotations on hardware.** Android uses ARCore depth/plane hits
+   and the scene-scoped `change` operation described below. Check placement,
+   editing, deletion, Undo, and explicit retries against Home's acknowledgements;
+   do not infer a floor when no measured hit is available.
 5. **Validate aligned depth on hardware.** The shared depth contribution path is implemented. Check the device's supported depth capability
    before offering sharing. Keep capture-time transforms and observation
    provenance; annotation viewing and placement must work without depth support.
@@ -199,6 +239,15 @@ port 4323 returned `Home P2P peer is not ready` from `/api/home-connection`.
 
 ### AR annotations
 
+The bottom-left **Home voxels** button toggles the selected Home scene's voxel
+overlay, off by default for each scan. Blue wireframe cubes use Home's voxel size
+and the inverse portal calibration; they never replace the phone's green local
+points. Uncalibrated, disconnected, and mismatched-frame geometry is hidden.
+Preparation runs off the render/UI threads and uploads a GPU vertex buffer only
+when a snapshot changes. The overlay is capped at 20,000 evenly sampled voxels
+for rendering cost; Home's stored map is not modified. No Home restart is needed
+for this Android-only feature.
+
 After portal calibration, double-tap a measured surface to place a `Note` in the
 selected Home scenegraph. ARCore depth/plane picking runs on the current AR frame,
 and its hit is transformed from session-space into Home-space. There is no
@@ -215,6 +264,13 @@ and bounds duplicate-request results to five minutes / 128 requests / 4 MB per s
 No new scenegraph revision mechanism is involved. Home must run the annotation
 update before this APK can save edits.
 
+Note markers and labels are drawn in the AR OpenGL frame using the same camera
+matrix as depth and voxels, without a projection throttle or UI-thread handoff.
+Picking uses that same frame's projected positions. The Android overlay handles
+gestures and editing dialogs only. Label textures are reused while moving, with
+a bounded 64-entry cache, and rebuilt after an EGL context loss. Tracking or
+alignment loss hides notes rather than leaving stale screen positions visible.
+
 While scanning, Android advertises `phone-rgb-camera` / `frames` and the
 `phone-camera` buffer product in the same SDK Catalog as its voxel and depth
 components. Home discovers it as a standard `auki.video-frame/v1` camera.
@@ -225,6 +281,22 @@ conversion and JPEG compression run on a single bounded worker. No portal
 calibration is needed. Closing the preview releases demand; stopping scanning
 withdraws capture, and disconnecting closes the product with the peer. Pose and
 voxel/depth publication remain independent of camera demand.
+
+After calibration, saved Home portals automatically appear as amber AR outlines,
+independent of the Home voxel toggle. Each outline uses the anchor's encoded-square
+size and complete saved pose, transformed back into the current AR session. A
+chevron marks the square's top and a short stem its outward normal. These are Home
+anchors, not camera-detection boxes: compare them with the physical prints to check
+alignment. They disappear on tracking loss, loss of the Home reference, or a scene
+change until calibrated again. Outlines are diagnostic and are not occluded by
+real-world surfaces. Rendering is bounded to 256 anchors.
+
+Scanning is gated on a live Home connection with a received scene reference.
+Saved-sign-in startup and connection attempts show an indeterminate progress
+bar, the current connection status, and elapsed seconds in that step; the scan
+button appears after Home is ready. The scan-start method also checks
+readiness after camera permission returns. First-time profile/sign-in setup and
+failed-connection recovery remain accessible, without a local-scan bypass.
 
 Enable USB debugging, connect the Pixel, and authorize the Mac. Install with:
 
@@ -244,7 +316,8 @@ the same Wi-Fi does not guarantee direct reachability. Sign in on the phone with
 account authorized for the selected Domain. Authentication currently uses the
 same fixed development service environment as the iPhone annotator.
 
-Passwords stay in memory and are cleared from the form on connect. The persistent
+Passwords are cleared from the form on connect; successful sign-in is retained
+only in the encrypted device-local store described above. The persistent
 peer identity lives in Android's no-backup private directory. The imported public
 profile is retained privately. Backgrounding requests shutdown; reconnection is
 disabled until Rust reports cleanup complete. An orientation change also stops

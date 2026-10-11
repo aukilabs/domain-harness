@@ -118,21 +118,38 @@ pub struct IncomingAuthenticatedStreams {
 
 impl IncomingAuthenticatedStreams {
     pub async fn accept(&mut self) -> Option<P2PResult<AuthenticatedStream>> {
+        Some(self.accept_pending().await?.await)
+    }
+
+    /// Receiving the raw stream is cancel-safe; its authentication is not.
+    /// Managed servers move this owned future into a bounded worker, so other
+    /// handlers completing cannot cancel it and authentication doesn't block
+    /// draining libp2p's small inbound stream queue.
+    pub(crate) async fn accept_pending(
+        &mut self,
+    ) -> Option<impl std::future::Future<Output = P2PResult<AuthenticatedStream>> + Send + 'static>
+    {
         let (remote_peer_id, stream) = self.inner.next().await?;
-        let result = authenticate(
-            stream,
-            self.local_peer_id,
-            remote_peer_id,
-            &self.tokens,
-            &self.verifier,
-            &self.requirements,
-        )
-        .await;
-        if let Ok(stream) = &result {
-            self.observations
-                .authenticated(self.requirements.domain_id(), stream.remote_peer().clone());
-        }
-        Some(result)
+        let local_peer_id = self.local_peer_id;
+        let tokens = self.tokens.clone();
+        let verifier = self.verifier.clone();
+        let requirements = self.requirements.clone();
+        let observations = self.observations.clone();
+        Some(async move {
+            let result = authenticate(
+                stream,
+                local_peer_id,
+                remote_peer_id,
+                &tokens,
+                &verifier,
+                &requirements,
+            )
+            .await;
+            if let Ok(stream) = &result {
+                observations.authenticated(requirements.domain_id(), stream.remote_peer().clone());
+            }
+            result
+        })
     }
 }
 

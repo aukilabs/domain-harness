@@ -234,45 +234,21 @@ pub async fn send_change(
     home: &crate::network::HomeConnection,
     request: &ChangeNote,
 ) -> Result<NoteChange> {
-    use auki_component_protocol::{CatalogResponse, ComponentProtocolClient};
-    let expected = home.validate(peer)?;
+    let operations = crate::mobile_home::HomeOperations::new(peer,home)?;
+    send_change_via(&operations,home,request).await
+}
+
+pub async fn send_change_via(
+    operations: &crate::mobile_home::HomeOperations,
+    home: &crate::network::HomeConnection,
+    request: &ChangeNote,
+) -> Result<NoteChange> {
     ensure!(
-        request.frame == home.frame,
+        request.frame == home.frame && request.frame == operations.frame,
         "Annotation belongs to another scene"
     );
-    let client = ComponentProtocolClient::new(peer.protocols());
-    for route in &home.routes {
-        let route: auki_sdk::Multiaddr = route.parse()?;
-        if let Ok(Ok(CatalogResponse::Snapshot { snapshot })) = tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            client.catalog_exact(expected, route.clone(), None),
-        )
-        .await
-        {
-            let component = snapshot
-                .components
-                .iter()
-                .find(|c| c.manifest.component_id == home.scoped_component(COMPONENT))
-                .ok_or_else(|| anyhow!("Home annotation component unavailable"))?;
-            // Send once; the operation memo deduplicates explicit retries by caller/ID.
-            return Ok(tokio::time::timeout(
-                std::time::Duration::from_secs(15),
-                client.invoke_exact::<_, NoteChange>(
-                    expected,
-                    route,
-                    component.manifest.reference(),
-                    "change",
-                    "phone-annotations",
-                    &request.request_id,
-                    Some(std::time::Duration::from_secs(10)),
-                    request,
-                ),
-            )
-            .await??
-            .result);
-        }
-    }
-    anyhow::bail!("Home is unavailable")
+    operations.invoke(&home.scoped_component(COMPONENT),"change","phone-annotations",
+        &request.request_id,std::time::Duration::from_secs(10),request).await
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

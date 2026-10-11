@@ -995,6 +995,91 @@ async fn one_runtime_supervises_multiple_independent_authenticated_protocols() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn completing_operations_do_not_cancel_other_stream_authentication() {
+    let domain_id = Uuid::new_v4().to_string();
+    let server_node = listening_node();
+    let client_node = listening_node();
+    install_current_token(&server_node, PeerRole::Compute, vec![domain_id.clone()]).await;
+    install_current_token(&client_node, PeerRole::Robot, vec![domain_id.clone()]).await;
+    let peer = server_node.peer_id();
+    let address = listen_address(&server_node).await;
+    let protocol = ApplicationProtocol::new("/example/concurrent-operations/1").unwrap();
+    let shutdown = CancellationToken::new();
+    let server = server_node
+        .serve(
+            ApplicationProtocolSpec::new(protocol.clone(), 32, 1024).unwrap(),
+            SessionRequirements::new(&domain_id).unwrap(),
+            &shutdown,
+            |mut stream| async move {
+                let mut byte = [0];
+                if stream.read_exact(&mut byte).await.is_ok() {
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                    let _ = stream.write_all(&byte).await;
+                    let _ = stream.close().await;
+                }
+            },
+        )
+        .unwrap();
+    let mut jobs = tokio::task::JoinSet::new();
+    // Keep raw admission below libp2p-stream's zero-buffer queue limit. An
+    // authenticated request can still finish while the next is authenticating.
+    let admission = Arc::new(tokio::sync::Mutex::new(()));
+    for lane in 0..8u8 {
+        let admission = admission.clone();
+        let node = client_node.clone();
+        let address = address.clone();
+        let protocol = protocol.clone();
+        let requirements = SessionRequirements::new(&domain_id)
+            .unwrap()
+            .with_expected_remote_peer_id(peer);
+        jobs.spawn(async move {
+            let mut failures = Vec::new();
+            for _ in 0..12 {
+                let exchange = async {
+                    let opening = admission.lock().await;
+                    let mut stream = node
+                        .open_exact_route(
+                            peer,
+                            ExactRoute::Direct(address.clone()),
+                            protocol.clone(),
+                            requirements.clone(),
+                        )
+                        .await?;
+                    drop(opening);
+                    stream.write_all(&[lane]).await?;
+                    stream.flush().await?;
+                    let mut reply = [0];
+                    stream.read_exact(&mut reply).await?;
+                    assert_eq!(reply, [lane]);
+                    stream.close().await?;
+                    Ok::<(), auki_p2p::Error>(())
+                };
+                if let Err(error) = tokio::time::timeout(Duration::from_secs(5), exchange)
+                    .await
+                    .unwrap()
+                {
+                    failures.push(error.to_string());
+                }
+            }
+            failures
+        });
+    }
+    let mut failures = Vec::new();
+    while let Some(result) = jobs.join_next().await {
+        failures.extend(result.unwrap());
+    }
+    server.shutdown().await.unwrap();
+    client_node.shutdown().await.unwrap();
+    server_node.shutdown().await.unwrap();
+    assert!(
+        failures.is_empty(),
+        "{} authenticated requests failed: {:?}",
+        failures.len(),
+        failures
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn managed_protocol_server_preserves_registration_and_shutdown_barriers() {
     struct DropSignal(Option<tokio::sync::oneshot::Sender<()>>);
 

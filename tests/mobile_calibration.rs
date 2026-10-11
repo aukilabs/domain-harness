@@ -110,6 +110,16 @@ fn sdk_decodes_real_qr_pixels_without_hardcoded_marker_ids() {
         }
     }
     let result = detect(&image, &c).unwrap();
+    eprintln!(
+        "QR fixture diagnostics: {}",
+        serde_json::to_string(&result.diagnostics).unwrap()
+    );
+    assert_eq!(result.diagnostics.matched, 1);
+    assert!(result.diagnostics.decoded >= 1);
+    assert!(result.diagnostics.pose_rejection.is_none());
+    assert!(
+        result.diagnostics.total_us >= result.diagnostics.decode_us + result.diagnostics.pose_us
+    );
     assert_eq!(result.alignment.unwrap().portal_id, "ABCDEFGHIJK");
     let mut unknown = capture();
     let mut other = unknown.scenegraph.anchors.remove("ABCDEFGHIJK").unwrap();
@@ -119,12 +129,25 @@ fn sdk_decodes_real_qr_pixels_without_hardcoded_marker_ids() {
         .scenegraph
         .anchors
         .insert(other.anchor_id.clone(), other);
-    assert!(detect(&image, &unknown).unwrap().alignment.is_none());
-    assert!(
-        detect(&vec![255; 640 * 480], &c)
-            .unwrap()
-            .alignment
-            .is_none()
+    let other = detect(&image, &unknown).unwrap();
+    assert!(other.alignment.is_none());
+    assert!(other.diagnostics.decoded >= 1);
+    assert_eq!(other.diagnostics.matched, 0);
+    let blank = detect(&vec![255; 640 * 480], &c).unwrap();
+    assert!(blank.alignment.is_none());
+    assert_eq!(blank.diagnostics.decoded, 0);
+    // Reusing the detector cannot resurrect alignment from a previous reference
+    // or blank capture. The next valid capture must still work immediately.
+    assert!(detect(&image, &c).unwrap().alignment.is_some());
+    let mut distant = capture();
+    distant.fx = 50_000.;
+    distant.fy = 50_000.;
+    let rejected = detect(&image, &distant).unwrap();
+    assert!(rejected.alignment.is_none());
+    assert_eq!(rejected.diagnostics.matched, 1);
+    assert_eq!(
+        rejected.diagnostics.pose_rejection.as_deref(),
+        Some("Back-facing or distant Portal")
     );
     assert!(detect(&image[..100], &c).is_err());
 }

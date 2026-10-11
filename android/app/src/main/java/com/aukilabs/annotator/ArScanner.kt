@@ -30,6 +30,14 @@ class ArScanner(private val activity: Activity, private val session: Session, pr
     private var texture = 0
     private var background = 0
     private var pointsProgram = 0
+    private var homeProgram = 0
+    private var portalProgram = 0
+    private var homePortals: HomePortalMesh? = null
+    private var homeBuffer = 0
+    private var uploadedHome: HomeVoxelMesh? = null
+    internal val homeVoxels = AtomicReference<HomeVoxelMesh?>(null)
+    private val homeMvp = FloatArray(16)
+    private val homeModel = FloatArray(16)
     private var widthPx = 1
     private var heightPx = 1
     private val points = floats(FloatArray(10000 * 3))
@@ -50,7 +58,7 @@ class ArScanner(private val activity: Activity, private val session: Session, pr
     private val cameraPublisher = CameraPublisher()
     internal val annotations = AnnotationPicker(resources.displayMetrics.density)
     internal var annotationPick: (AnnotationPick) -> Unit = {}
-    internal var annotationProjection: (List<ScreenNote>) -> Unit = {}
+    private val noteRenderer = AnnotationRenderer(resources.displayMetrics.density)
     private val mapping = Executors.newSingleThreadExecutor { task -> Thread(task, "annotator-mapper") }
     private val work = ScanWorkGate()
     private val poseWork = ScanWorkGate()
@@ -61,11 +69,12 @@ class ArScanner(private val activity: Activity, private val session: Session, pr
     private var confidenceBytes = ByteArray(0)
     private var lumaBytes = ByteArray(0)
     @Volatile var homeReference: String? = null
+    @Volatile internal var homeAligned = false; private set
     @Volatile private var closed = false
     private val calibration = CalibrationState()
     private val detector = Executors.newSingleThreadExecutor { task -> Thread(task, "annotator-portals") }
     private var detecting = false
-    private var lastDetection = 0L
+    private var lastDetectionLog = 0L
     private var latestFrameTime = 0L
     private var alignment: JSONObject? = null
     private var calibrationStatus = "Connect to Home to load Portal references"
@@ -73,6 +82,8 @@ class ArScanner(private val activity: Activity, private val session: Session, pr
     private fun report(s: String) { if (s != lastStatus) { lastStatus = s; activity.runOnUiThread { status(s) } } }
     fun shutdown() {
         closed = true
+        queueEvent { noteRenderer.release() }
+        homeVoxels.set(null)
         cameraPublisher.close()
         poseWork.close { NativeBridge.pose(null) }
         work.close { mapped.set(null); NativeBridge.localMap(null); NativeBridge.depth(null); NativeBridge.pose(null) }
@@ -81,6 +92,7 @@ class ArScanner(private val activity: Activity, private val session: Session, pr
         detector.shutdown(); mapping.shutdown(); poseWorker.shutdown(); onPause(); session.pause(); session.close()
     }
     private fun clearAlignment() {
+        homeAligned = false
         alignment = null; calibration.reset()
         poseWork.invalidate { NativeBridge.pose(null) }; poseCadence.reset()
         work.invalidate { mapped.set(null); NativeBridge.depth(null); NativeBridge.pose(null) }
@@ -97,7 +109,13 @@ class ArScanner(private val activity: Activity, private val session: Session, pr
             "#extension GL_OES_EGL_image_external : require\nprecision mediump float; uniform samplerExternalOES camera; varying vec2 t; void main(){gl_FragColor=texture2D(camera,t);}")
         pointsProgram = program("attribute vec3 p; uniform mat4 vp; void main(){gl_Position=vp*vec4(p,1.);gl_PointSize=6.;}",
             "precision mediump float; void main(){gl_FragColor=vec4(.15,1.,.65,1.);}")
+        homeProgram = program("attribute vec3 p; uniform mat4 vp; void main(){gl_Position=vp*vec4(p,1.);}",
+            "precision mediump float; void main(){gl_FragColor=vec4(.25,.65,1.,1.);}")
+        portalProgram = program("attribute vec3 p; uniform mat4 vp; void main(){gl_Position=vp*vec4(p,1.);}",
+            "precision mediump float; void main(){gl_FragColor=vec4(1.,.7,.12,1.);}")
+        val buffers = IntArray(1); glGenBuffers(1,buffers,0); homeBuffer = buffers[0]; uploadedHome = null
         session.setCameraTextureName(texture)
+        noteRenderer.surfaceCreated(::program)
     }
     override fun onSurfaceChanged(gl: GL10?, w: Int, h: Int) { widthPx = w; heightPx = h; glViewport(0,0,w,h) }
     override fun onDrawFrame(gl: GL10?) {
@@ -106,7 +124,11 @@ class ArScanner(private val activity: Activity, private val session: Session, pr
         var cameraTimestamp = 0L
         try {
             if (closed) return
-            if (calibration.updateReference(homeReference)) clearAlignment()
+            if (calibration.updateReference(homeReference)) {
+                clearAlignment()
+                // Bounded geometry built only when Home's reference changes, not per frame.
+                homePortals = homePortalMesh(calibration.reference)
+            }
             @Suppress("DEPRECATION") val rotation = activity.windowManager.defaultDisplay.rotation
             session.setDisplayGeometry(rotation, widthPx, heightPx)
             val updateStart = System.nanoTime()
@@ -125,7 +147,7 @@ class ArScanner(private val activity: Activity, private val session: Session, pr
             // Camera observation does not require tracking or Portal calibration.
             cameraPublisher.capture(frame)
             if (camera.trackingState != TrackingState.TRACKING) {
-                annotations.paused({ p -> activity.runOnUiThread { annotationPick(p) } }, { activity.runOnUiThread { annotationProjection(emptyList()) } })
+                annotations.paused { p -> activity.runOnUiThread { if (!closed) annotationPick(p) } }
                 if (tracking) { clearAlignment(); depthFreshness.reset(); pointCount = 0; displayedCenters = null; mapId = UUID.randomUUID().toString(); NativeBridge.localMap(null) }
                 tracking = false; report("Tracking paused · ${camera.trackingFailureReason}. Move slowly toward textured surfaces."); return
             }
@@ -147,12 +169,15 @@ class ArScanner(private val activity: Activity, private val session: Session, pr
                     (if (pointCount >= 10000) "Local map full" else localStatus) + "\n$performance")
             }
             camera.getViewMatrix(view,0); camera.getProjectionMatrix(projection,0,.1f,100f); Matrix.multiplyMM(vp,0,projection,0,view,0)
-            annotations.frame(frame,alignment,vp,widthPx,heightPx,
-                { p -> activity.runOnUiThread { if (!closed) annotationPick(p) } },
-                { markers -> activity.runOnUiThread { if (!closed) annotationProjection(markers) } })
+            val markers = annotations.frame(frame,alignment,vp,widthPx,heightPx) { p ->
+                activity.runOnUiThread { if (!closed) annotationPick(p) }
+            }
             glUseProgram(pointsProgram); attribute(pointsProgram,"p",points,3)
             glUniformMatrix4fv(glGetUniformLocation(pointsProgram,"vp"),1,false,vp,0)
             glDrawArrays(GL_POINTS,0,pointCount)
+            drawHomeVoxels()
+            drawHomePortals()
+            noteRenderer.draw(markers,widthPx,heightPx)
         } catch (e: Exception) { clearAlignment(); report("AR paused: ${e.javaClass.simpleName} · ${e.message ?: ""}"); NativeBridge.localMap(null) }
         finally {
             if (!closed) metrics.record(started,System.nanoTime(),updateNs,cameraTimestamp)?.let {
@@ -160,9 +185,44 @@ class ArScanner(private val activity: Activity, private val session: Session, pr
             }
         }
     }
+    private fun drawHomePortals() {
+        val mesh = homePortals ?: return
+        if (mesh.count == 0 || !homeVoxelMatrix(mesh.frame,alignment,vp,homeMvp,homeModel)) return
+        // Diagnostic outline remains legible over voxel geometry; camera depth is not an occluder.
+        glBindBuffer(GL_ARRAY_BUFFER,0); glDisable(GL_DEPTH_TEST)
+        glUseProgram(portalProgram); attribute(portalProgram,"p",mesh.vertices,3)
+        glUniformMatrix4fv(glGetUniformLocation(portalProgram,"vp"),1,false,homeMvp,0)
+        glLineWidth(2f); glDrawArrays(GL_LINES,0,mesh.count); glLineWidth(1f)
+    }
+    private fun drawHomeVoxels() {
+        val mesh = homeVoxels.get()
+        if (mesh == null) {
+            if (uploadedHome != null) {
+                glBindBuffer(GL_ARRAY_BUFFER,homeBuffer); glBufferData(GL_ARRAY_BUFFER,0,null,GL_STATIC_DRAW); glBindBuffer(GL_ARRAY_BUFFER,0)
+                uploadedHome = null
+            }
+            return
+        }
+        if (mesh.count == 0 || !homeVoxelMatrix(mesh.frame,alignment,vp,homeMvp,homeModel)) return
+        glBindBuffer(GL_ARRAY_BUFFER,homeBuffer)
+        if (uploadedHome !== mesh) {
+            mesh.vertices.position(0)
+            glBufferData(GL_ARRAY_BUFFER,mesh.vertices.remaining()*4,mesh.vertices,GL_STATIC_DRAW)
+            uploadedHome = mesh
+        }
+        glUseProgram(homeProgram)
+        val p = glGetAttribLocation(homeProgram,"p")
+        glEnableVertexAttribArray(p); glVertexAttribPointer(p,3,GL_FLOAT,false,0,0)
+        glUniformMatrix4fv(glGetUniformLocation(homeProgram,"vp"),1,false,homeMvp,0)
+        glEnable(GL_DEPTH_TEST); glLineWidth(1f)
+        glDrawArrays(GL_LINES,0,mesh.count*24)
+        glDisable(GL_DEPTH_TEST); glBindBuffer(GL_ARRAY_BUFFER,0)
+    }
     private fun detectPortal(frame: Frame) {
-        if (detecting || !calibration.canDetect(frame.timestamp) || frame.timestamp-lastDetection < 500_000_000L) return
-        lastDetection = frame.timestamp
+        if (detecting || !calibration.canDetect(frame.timestamp)) return
+        calibration.attempted(frame.timestamp)
+        val captureStarted = System.nanoTime()
+        val acquiring = alignment == null
         val reference = calibration.reference ?: return
         try {
             frame.acquireCameraImage().use { image ->
@@ -186,9 +246,13 @@ class ArScanner(private val activity: Activity, private val session: Session, pr
                 val epoch = calibration.generation; val timestamp = frame.timestamp
                 val sessionId = mapId; val pose = frame.camera.pose
                 val imageWidth = image.width; val imageHeight = image.height
+                val copiedAt = System.nanoTime()
                 detecting = true
                 detector.execute {
-                    Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
+                    // Acquisition is interactive, but remains below the display
+                    // thread's priority. Rechecks return to background priority.
+                    Process.setThreadPriority(if (acquiring) Process.THREAD_PRIORITY_DEFAULT else Process.THREAD_PRIORITY_BACKGROUND)
+                    val workerStarted = System.nanoTime()
                     val reply = runCatching {
                         val capture = JSONObject().put("session",sessionId).put("timestamp_ns",timestamp)
                             .put("width",imageWidth).put("height",imageHeight)
@@ -198,14 +262,29 @@ class ArScanner(private val activity: Activity, private val session: Session, pr
                             .put("scenegraph",JSONObject(reference)).toString().toByteArray()
                         NativeBridge.calibrate(pixels,capture)?.let { JSONObject(it.toString(Charsets.UTF_8)) }
                     }.getOrNull()
+                    val finishedAt = System.nanoTime()
                     if (!closed) queueEvent {
                         detecting = false
+                        var outcome = "invalidated"
                         if (!closed && tracking && epoch == calibration.generation && homeReference == reference) {
                             val found = reply?.optJSONObject("alignment")
                             if (found != null && calibration.accept(epoch,timestamp,latestFrameTime)) {
                                 alignment = found
+                                homeAligned = true
                                 calibrationStatus = reply.optString("detail") + " · sharing depth to Home"
-                            } else if (alignment == null) calibrationStatus = reply?.optString("detail") ?: "Portal scan failed; try again"
+                                outcome = "accepted"
+                            } else {
+                                outcome = if (found != null) "stale" else "no_alignment"
+                                if (alignment == null) calibrationStatus = reply?.optString("detail") ?: "Portal scan failed; try again"
+                            }
+                        }
+                        val now = System.nanoTime()
+                        if (outcome == "accepted" || now-lastDetectionLog >= 1_000_000_000L) {
+                            lastDetectionLog = now
+                            Log.i("AnnotatorCalibration", "outcome=$outcome acquisition=$acquiring size=${imageWidth}x$imageHeight " +
+                                "copy_us=${(copiedAt-captureStarted)/1000} queue_us=${(workerStarted-copiedAt)/1000} " +
+                                "bridge_us=${(finishedAt-workerStarted)/1000} delivery_us=${(now-finishedAt)/1000} " +
+                                "age_ms=${(latestFrameTime-timestamp)/1_000_000} diagnostics=${reply?.optJSONObject("diagnostics")}")
                         }
                     }
                 }
