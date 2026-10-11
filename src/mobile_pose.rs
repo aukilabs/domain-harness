@@ -9,6 +9,22 @@ use std::{
 };
 
 pub const COMPONENT: &str = "home-phone-presence";
+/// Local addition: display names per phone peer, read once from
+/// `SPATIAL_PHONE_NAMES` (default `data/phone-names.json`, `{"<peer id>": "<name>"}`).
+/// The entry `"*"` names every unlisted phone; otherwise a short peer suffix is used.
+static NAMES: std::sync::LazyLock<BTreeMap<String, String>> = std::sync::LazyLock::new(|| {
+    let path = std::env::var("SPATIAL_PHONE_NAMES").unwrap_or_else(|_| "data/phone-names.json".into());
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+});
+pub fn display_name(peer: &str) -> String {
+    NAMES.get(peer).or_else(|| NAMES.get("*")).cloned().unwrap_or_else(|| {
+        let tail = &peer[peer.len().saturating_sub(4)..];
+        format!("phone {tail}")
+    })
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Sample {
@@ -83,7 +99,7 @@ impl Presence {
         let poses: Vec<_> = self.entries.iter().filter(|(_, (_,received,active))| *active && now.duration_since(*received) < Duration::from_secs(3)).map(|(peer,(s,received,_))| {
             let mut clock = crate::model::clock_entry(peer, &s.session);
             clock.clock_id = "arkit-capture".into();
-            json!({"peer_id":peer,"name":"nils","pose":s.pose,"capture_timestamp_ns":s.timestamp_ns,"clock":clock,"received_age_ms":now.duration_since(*received).as_millis()})
+            json!({"peer_id":peer,"name":display_name(peer),"pose":s.pose,"capture_timestamp_ns":s.timestamp_ns,"clock":clock,"received_age_ms":now.duration_since(*received).as_millis()})
         }).collect();
         json!({"frame":frame,"poses":poses})
     }
@@ -110,7 +126,7 @@ pub fn append_labels_in_frame(view: &mut Value, registry: &Value, frame: &str) {
     for pose in poses {
         view["notes"].as_array_mut().unwrap().push(json!({
             "id":format!("phone-name:{}",pose["peer_id"].as_str().unwrap_or("")),
-            "text":"nils", "position":pose["pose"]["translation"], "height_m":0,
+            "text":pose["name"].as_str().unwrap_or("phone"), "position":pose["pose"]["translation"], "height_m":0,
             "phone_pose":pose
         }));
     }

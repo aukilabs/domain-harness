@@ -26,7 +26,10 @@ fn pose_identity_frames_and_expiry() -> anyhow::Result<()> {
     };
     cache.accept("phone", update.clone(), now)?;
     assert_eq!(cache.snapshot(now)["poses"][0]["peer_id"], "phone");
-    assert_eq!(cache.snapshot(now)["poses"][0]["name"], "nils");
+    assert_eq!(
+        cache.snapshot(now)["poses"][0]["name"],
+        spatial_home::mobile_pose::display_name("phone")
+    );
     cache.accept("phone", update, now + Duration::from_secs(2))?;
     assert_eq!(
         cache.snapshot(now + Duration::from_secs(3))["poses"]
@@ -83,7 +86,7 @@ async fn calibrated_pose_reaches_home_over_p2p() -> anyhow::Result<()> {
         );
         let mut view = serde_json::json!({"notes":[]});
         spatial_home::mobile_pose::append_labels(&mut view, &registry);
-        assert_eq!(view["notes"][0]["text"], "nils");
+        assert_eq!(view["notes"][0]["text"], registry["poses"][0]["name"]);
         assert_eq!(
             view["notes"][0]["position"],
             serde_json::json!([1., 1.5, 2.])
