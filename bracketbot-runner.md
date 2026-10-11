@@ -355,7 +355,9 @@ The phone's Drive tab posts normalized stick values to Home's scene-scoped
 `home-phone-drive` relay. Home applies no speeds and moves nothing; it hands each
 robot only its own latest command with an age measured on Home's clock. With
 `SPATIAL_DRIVE_PEER` set by the launcher, the runner caches that one phone's
-command in `state/drive-command.json` every 50 ms. `drive-bracketbot.py` turns it
+command in `state/drive-command.json`. Home pushes each accepted command on a
+scene-scoped stream, which the runner follows; against a Home without the
+stream it polls the relay instead. Pushed input older than 400 ms is a stop. `drive-bracketbot.py` turns it
 into a `drive.ctrl` twist and reports to `state/phone-drive.json`.
 
 Speeds are teleop's: 0.20 m/s forward and a 0.15 m/s wheel difference for turns,

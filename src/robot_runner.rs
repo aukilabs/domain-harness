@@ -443,9 +443,50 @@ pub async fn run(hardware: Hardware) -> Result<()> {
         let Some(allowed) = drive_peer else {
             return std::future::pending::<()>().await;
         };
+        let own = running.peer.peer_id().to_string();
+        let now_ns = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos() as u64;
         let mut reader = crate::mobile_drive::Reader::default();
         let mut last_error = String::new();
         loop {
+            // Preferred: Home pushes each accepted command, one hop instead of a
+            // polled round trip. An older Home has no stream; fall back to polling.
+            let profile = std::fs::read(&home_path).ok().and_then(|b| serde_json::from_slice::<HomeConnection>(&b).ok());
+            if let Some(profile) = &profile
+                && let Ok(mut stream) = crate::mobile_drive::subscribe(&running.peer, profile).await {
+                eprintln!("Drive relay: following Home's pushed commands");
+                last_error.clear();
+                let mut latest_sequence = (String::new(), 0u64);
+                loop {
+                    use auki_component_protocol::RemoteObservationEvent;
+                    // The phone repeats a held stick ten times a second. Refresh the
+                    // cache on silence too, so the controller sees "no command", not a stale file.
+                    let event = tokio::time::timeout(Duration::from_millis(250), stream.next()).await;
+                    let command = match event {
+                        Ok(Ok(Some(RemoteObservationEvent::Observation(o)))) => {
+                            let c = &o.payload;
+                            if c.target_peer_id != own || c.driver_peer_id != allowed { continue; }
+                            if latest_sequence.0 == c.session && c.sequence <= latest_sequence.1 { continue; }
+                            latest_sequence = (c.session.clone(), c.sequence);
+                            Some(serde_json::json!({"driver_peer_id":c.driver_peer_id,"session":c.session,"sequence":c.sequence,
+                                "forward":c.forward,"turn":c.turn,"age_ms":0}))
+                        }
+                        Ok(Ok(Some(RemoteObservationEvent::Gap(_)))) | Err(_) => None,
+                        _ => break, // closed or failed: resubscribe or fall back
+                    };
+                    let packet = serde_json::json!({
+                        "schema":"spatial.robot-drive-input/v1","authenticated":true,"transport":"push",
+                        "allowed_driver_peer_id":allowed,"request_age_ms":0,"received_ns":now_ns(),"command":command
+                    });
+                    if let Err(error) = save(&path.with_file_name("drive-command.json"), &packet) {
+                        eprintln!("Drive command cache: {error}");
+                    }
+                }
+                let _ = stream.close().await;
+                eprintln!("Drive relay: pushed stream ended; retrying");
+            }
+            // Polling fallback, for about five seconds before trying the stream again.
+            let fallback_until = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < fallback_until {
             // Finding the relay tries each profile route in turn and can take
             // seconds; a pinned read must be quick or the command is stale.
             // A pinned read measured 130-390 ms against a live Home, so 350 ms
@@ -462,16 +503,16 @@ pub async fn run(hardware: Hardware) -> Result<()> {
                 Err(_) => format!("no reply within {} ms", budget.as_millis()),
             };
             if error != last_error {
-                if error.is_empty() { eprintln!("Drive relay: reading commands from Home"); }
+                if error.is_empty() { eprintln!("Drive relay: polling commands from Home"); }
                 else { eprintln!("Drive relay unavailable: {error}"); }
                 last_error = error.clone();
             }
-            let received_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos() as u64;
+            let received_ns = now_ns();
             let packet = match outcome {
                 Ok(Ok((snapshot, elapsed))) => {
                     let command = snapshot.command.filter(|c| c.driver_peer_id == allowed);
                     serde_json::json!({
-                        "schema":"spatial.robot-drive-input/v1","authenticated":true,
+                        "schema":"spatial.robot-drive-input/v1","authenticated":true,"transport":"poll",
                         "allowed_driver_peer_id":allowed,"request_age_ms":elapsed.as_millis() as u64,
                         "received_ns":received_ns,"command":command
                     })
@@ -486,6 +527,7 @@ pub async fn run(hardware: Hardware) -> Result<()> {
             }
             // The read itself is the slow part; poll again almost at once.
             tokio::time::sleep(Duration::from_millis(10)).await;
+            }
         }
     };
     let live_work = async {

@@ -428,15 +428,39 @@ impl Publisher {
         )?;
         let board = Arc::new(Mutex::new(crate::mobile_drive::Board::default()));
         let drive_board = board.clone();
+        // Accepted commands are also pushed, so a robot need not poll for them.
+        let drive_stream = Arc::new(Mutex::new(crate::mobile_drive::Stream::mount(
+            runtime,
+            endpoint,
+            id,
+            crate::model::clock_ref(&clock),
+            started,
+        )?));
         let drive_update = drive.operable(
             "update",
             |ctx| !ctx.caller_peer_id.is_empty(),
             move |ctx, command: crate::mobile_drive::Command| {
-                drive_board
+                let pushed = crate::mobile_drive::Pushed {
+                    driver_peer_id: ctx.caller_peer_id.clone(),
+                    target_peer_id: command.target_peer_id.clone(),
+                    session: command.session.clone(),
+                    sequence: command.sequence,
+                    forward: command.forward,
+                    turn: command.turn,
+                };
+                let accepted = drive_board
                     .lock()
                     .map_err(|_| InvocationError::TargetUnavailable)?
                     .accept(&ctx.caller_peer_id, command, Instant::now())
-                    .map_err(rejected)
+                    .map_err(rejected)?;
+                if accepted {
+                    // The polled snapshot remains the fallback if a push is lost.
+                    let _ = drive_stream
+                        .lock()
+                        .map_err(|_| InvocationError::TargetUnavailable)?
+                        .publish(pushed);
+                }
+                Ok(accepted)
             },
         )?;
         let drive_frame = frame.clone();

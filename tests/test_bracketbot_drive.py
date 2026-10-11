@@ -63,6 +63,13 @@ class DrivePolicy(unittest.TestCase):
         mismatched = dict(packet(forward=1), allowed_driver_peer_id='someone-else')
         self.assertEqual(drive(mismatched)[0], STOP, 'runner and controller must agree on the allowed phone')
 
+    def test_pushed_commands_use_the_tighter_limit(self):
+        pushed = dict(packet(forward=1, age_ms=0, request_ms=0), transport='push')
+        self.assertIsNone(drive(pushed, now_ns=1_000_000_000 + 300 * 1_000_000)[1])
+        self.assertTrue(drive(pushed, now_ns=1_000_000_000 + 450 * 1_000_000)[1])
+        polled = dict(packet(forward=1, age_ms=0, request_ms=0), transport='poll')
+        self.assertIsNone(drive(polled, now_ns=1_000_000_000 + 450 * 1_000_000)[1])
+
     def test_age_sums_every_hop(self):
         self.assertIsNone(drive(packet(forward=1, age_ms=300, request_ms=390))[1])  # 300+390+50 = 740
         self.assertTrue(drive(packet(forward=1, age_ms=600, request_ms=390))[1])    # 600+390+50 = 1040

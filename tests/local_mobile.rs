@@ -526,6 +526,27 @@ async fn phone_reports_a_new_portal_into_the_selected_scene() -> Result<()> {
         assert!(other_scene.command.is_none(), "commands do not cross scenes");
         tokio::time::sleep(spatial_home::mobile_drive::MAX_AGE).await;
         assert!(reader.read(&pair.b, &home).await?.0.command.is_none(), "silence stops the robot");
+        // Home also pushes each accepted command, so a robot need not poll.
+        let mut pushed = spatial_home::mobile_drive::subscribe(&pair.b, &home).await?;
+        let robot = pair.b.peer_id().to_string();
+        let held = spatial_home::mobile_drive::Command {
+            session: uuid::Uuid::new_v4().to_string(),
+            sequence: 1,
+            target_peer_id: robot.clone(),
+            forward: 0.25,
+            turn: 0.5,
+        };
+        assert!(spatial_home::mobile_drive::send(&pair.b, &home, &held).await?);
+        match tokio::time::timeout(Duration::from_secs(3), pushed.next()).await?? {
+            Some(auki_component_protocol::RemoteObservationEvent::Observation(o)) => {
+                assert_eq!(
+                    (o.payload.driver_peer_id.as_str(), o.payload.target_peer_id.as_str(), o.payload.forward, o.payload.turn),
+                    (robot.as_str(), robot.as_str(), 0.25, 0.5)
+                );
+            }
+            _ => panic!("expected the pushed command"),
+        }
+        pushed.close().await?;
         // A restart keeps the reported Portal.
         let reloaded = LocalScenes::load(dir.path())?;
         assert_eq!(reloaded.snapshot("humanoid-hub-conference")?.scenegraph.anchors.len(), 2);
