@@ -416,13 +416,28 @@ pub async fn run(hardware: Hardware) -> Result<()> {
             return std::future::pending::<()>().await;
         };
         let mut reader = crate::mobile_drive::Reader::default();
+        let mut last_error = String::new();
         loop {
+            // Finding the relay tries each profile route in turn and can take
+            // seconds; a pinned read must be quick or the command is stale.
+            let budget = Duration::from_millis(if reader.is_pinned() { 350 } else { 5000 });
             let work = async {
                 let profile: HomeConnection = serde_json::from_slice(&std::fs::read(&home_path)?)?;
                 reader.read(&running.peer, &profile).await
             };
+            let outcome = tokio::time::timeout(budget, work).await;
+            let error = match &outcome {
+                Ok(Ok(_)) => String::new(),
+                Ok(Err(error)) => error.to_string(),
+                Err(_) => format!("no reply within {} ms", budget.as_millis()),
+            };
+            if error != last_error {
+                if error.is_empty() { eprintln!("Drive relay: reading commands from Home"); }
+                else { eprintln!("Drive relay unavailable: {error}"); }
+                last_error = error.clone();
+            }
             let received_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos() as u64;
-            let packet = match tokio::time::timeout(Duration::from_millis(350), work).await {
+            let packet = match outcome {
                 Ok(Ok((snapshot, elapsed))) => {
                     let command = snapshot.command.filter(|c| c.driver_peer_id == allowed);
                     serde_json::json!({
@@ -433,7 +448,7 @@ pub async fn run(hardware: Hardware) -> Result<()> {
                 }
                 _ => {
                     reader = Default::default();
-                    serde_json::json!({"schema":"spatial.robot-drive-input/v1","authenticated":false,"received_ns":received_ns,"command":null})
+                    serde_json::json!({"schema":"spatial.robot-drive-input/v1","authenticated":false,"received_ns":received_ns,"command":null,"error":error})
                 }
             };
             if let Err(error) = save(&path.with_file_name("drive-command.json"), &packet) {
