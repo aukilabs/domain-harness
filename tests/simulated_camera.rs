@@ -1,7 +1,7 @@
 mod support;
 use anyhow::Result;
 use spatial_home::{
-    device_catalogs::{Catalogs, fetch},
+    device_catalogs::{fetch, Catalogs},
     sensor_preview::{self, Request},
     simulated_camera::Camera,
 };
@@ -80,6 +80,24 @@ async fn discovered_camera_uses_real_catalog_and_subscription_demand() -> Result
         // A second browser request reuses the same subscription.
         request(&tx, Some(id.clone())).await?;
         assert_eq!(camera.endpoint.active_subscriptions(), 1);
+        // A delayed catalog refresh must not tear down the live subscription.
+        let mut cached = row.clone();
+        cached["catalog_cached"] = true.into();
+        cached["catalog_refresh_status"] = "unavailable".into();
+        catalog_tx.send_replace(Catalogs::from([(pair.b.peer_id().to_string(), cached)]));
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        request(&tx, Some(id.clone())).await?;
+        assert_eq!(camera.endpoint.active_subscriptions(), 1);
+        // Cached metadata must not turn an old image into a live frame.
+        for _ in 0..12 {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let _ = request(&tx, Some(id.clone())).await;
+        }
+        assert!(request(&tx, Some(id.clone()))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("stale"));
         tokio::time::timeout(Duration::from_secs(5), async {
             while camera.demanded() {
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -87,12 +105,10 @@ async fn discovered_camera_uses_real_catalog_and_subscription_demand() -> Result
         })
         .await?;
         catalog_tx.send_replace(Catalogs::new());
-        assert!(
-            request(&tx, None).await?["sensors"]
-                .as_array()
-                .unwrap()
-                .is_empty()
-        );
+        assert!(request(&tx, None).await?["sensors"]
+            .as_array()
+            .unwrap()
+            .is_empty());
         assert!(request(&tx, Some(id)).await.is_err());
         Ok::<_, anyhow::Error>(())
     };

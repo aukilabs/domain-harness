@@ -23,6 +23,7 @@ pub mod galbot_sensors;
 pub mod portal_camera_detector;
 
 pub mod home_alignment;
+pub mod frame_transform;
 
 pub mod recent_voxels;
 
@@ -31,6 +32,7 @@ pub mod fresh_ingress;
 pub mod home_mapper;
 
 pub mod collaborative_mapper;
+pub mod scene_contribution;
 
 pub mod ar_preview;
 pub mod robot_occupancy;

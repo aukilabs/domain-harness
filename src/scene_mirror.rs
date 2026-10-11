@@ -9,12 +9,19 @@ use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
+
+async fn before_deadline<T>(deadline: tokio::time::Instant,
+    work: impl std::future::Future<Output=Result<T>>) -> Result<T> {
+    tokio::time::timeout_at(deadline,work).await
+        .map_err(|_|anyhow!("Runner scene stalled; rediscovering current publisher"))?
+}
 #[derive(Clone, Default)]
 pub struct RemoteScene {
     pub scene: Option<CanonicalScene>,
     pub status: String,
     pub detail: String,
     pub(crate) received: Option<Instant>,
+    pub frame_transform: Option<crate::frame_transform::Received>,
 }
 impl RemoteScene {
     pub fn status_view(&self) -> Value {
@@ -35,6 +42,16 @@ impl RemoteScene {
             .as_ref()
             .ok_or_else(|| anyhow!("Runner scene has not arrived yet"))?;
         let mut view = render_scene(s)?;
+        if let Some(transform) = &self.frame_transform {
+            let usable = self.status_view()["status"] == "connected" && transform.usable(s);
+            view["frame_transform"] = serde_json::to_value(&transform.value)?;
+            if usable {
+                apply_display_transform(&mut view, s, &transform.value)?;
+            } else if transform.value.validity == crate::frame_transform::Validity::Valid {
+                view["frame_transform"]["validity"] = json!("stale");
+                view["frame_transform"]["reason"] = json!("Transform stream stale or does not match current scene evidence");
+            }
+        }
         view["remote_status"] = self.status_view();
         Ok(view)
     }
@@ -94,6 +111,80 @@ pub fn render_scene(s: &CanonicalScene) -> Result<Value> {
     Ok(view)
 }
 
+/// Apply a separately received rigid relationship to the presentation only.
+/// Neither the native voxel grid nor any robot-owned snapshot is rewritten.
+pub fn display_transform(scene: &CanonicalScene, value: &crate::frame_transform::FrameTransform, display: &str) -> Result<(String, auki_odometry::Pose)> {
+    use crate::local_mapper::{compose, from_rigid, inverse, rigid, identity};
+    value.validate(&scene.authority_peer_id)?;
+    ensure!(value.validity == crate::frame_transform::Validity::Valid && value.source_frame == scene.portals.scenegraph.map.frame, "Transform is not valid for this robot frame");
+    let published = value.transform.as_ref().ok_or_else(||anyhow!("Missing transform"))?;
+    let target_display = if crate::local_mapper::is_local_frame(&published.to_frame_id) {
+        crate::local_mapper::display_frame(&published.to_frame_id)?
+    } else if crate::conventions::convention(&published.to_frame_id)? == auki_registry::CoordinateConvention::OpenGl {
+        published.to_frame_id.clone()
+    } else {
+        crate::model::FRAME.into()
+    };
+    let target_axes = crate::conventions::pose(&identity(),
+        &crate::conventions::registry("home", &published.to_frame_id)?,
+        &crate::conventions::registry("home", &target_display)?)?;
+    let transform = rigid(&compose(&target_axes, &from_rigid(published))?, &published.from_frame_id, &target_display);
+    let display_frame = crate::conventions::registry("home", display)?;
+    let native_to_display = crate::conventions::pose(&identity(), &scene.voxels.definition.frame, &display_frame)?;
+    let display_to_scene = compose(&from_rigid(&transform), &inverse(&native_to_display)?)?;
+    Ok((target_display, display_to_scene))
+}
+
+pub fn apply_display_transform(view: &mut Value, scene: &CanonicalScene, value: &crate::frame_transform::FrameTransform) -> Result<()> {
+    use crate::local_mapper::{compose, from_rigid, rigid, identity};
+    let display = view["frame"].as_str().ok_or_else(||anyhow!("Missing display frame"))?;
+    let display_frame = crate::conventions::registry("home", display)?;
+    let (target_display, display_to_scene) = display_transform(scene, value, display)?;
+    let transform = rigid(&display_to_scene, display, &target_display);
+    let point = |v: &mut Value| -> Result<()> {
+        let translation: [f64;3] = serde_json::from_value(v.clone())?;
+        *v = json!(compose(&display_to_scene, &auki_odometry::Pose{translation,..identity()})?.translation);
+        Ok(())
+    };
+    let anchor = |v: &mut Value| -> Result<()> {
+        let p: auki_scenegraph::RigidTransform = serde_json::from_value(v.clone())?;
+        *v=serde_json::to_value(rigid(&compose(&display_to_scene,&from_rigid(&p))?, &p.from_frame_id,&transform.to_frame_id))?;
+        Ok(())
+    };
+    for v in view["voxels"].as_array_mut().into_iter().flatten(){point(&mut v["center"])?;}
+    for v in view["portals"].as_array_mut().into_iter().flatten(){anchor(&mut v["pose_in_map"])?;}
+    for v in view["objects"].as_array_mut().into_iter().flatten(){
+        point(&mut v["position"])?; point(&mut v["ray_origin"])?;
+        point(&mut v["hit"]["position"])?;point(&mut v["hit"]["center"])?;
+    }
+    for v in view["notes"].as_array_mut().into_iter().flatten(){
+        point(&mut v["position"])?;
+        if v["anchor_surface"]["frame"].as_str()==Some(display_frame.frame_id.as_str()) {
+            point(&mut v["anchor_surface"]["voxel_center"])?;
+            v["anchor_surface"]["frame"]=json!(transform.to_frame_id);
+        }
+    }
+    if let Some(anchors)=view["landmarks"]["anchors"].as_object_mut(){for v in anchors.values_mut(){anchor(&mut v["pose"])?;}}
+    if let Some(points)=view["landmarks"]["landmarks"].as_object_mut(){for v in points.values_mut(){
+        if v["parent_anchor"].is_null(){point(&mut v["position"])?;v["frame"]=json!(transform.to_frame_id);}
+    }}
+    view["landmarks"]["frame"]=json!(transform.to_frame_id);
+    let robot = |v:&mut Value| -> Result<()> {
+        if v.is_null(){return Ok(())}
+        for key in ["pose","glyph_pose"] {if !v[key].is_null(){
+            let p:auki_odometry::Pose=serde_json::from_value(v[key].clone())?;
+            v[key]=serde_json::to_value(compose(&display_to_scene,&p)?)?;
+        }}
+        v["frame"]=json!(transform.to_frame_id);Ok(())
+    };
+    robot(&mut view["local_mapping"]["robot_pose"])?;
+    if let Some(runners)=view["local_mapping"]["runners"].as_object_mut(){for r in runners.values_mut(){robot(&mut r["robot_pose"])?;}}
+    view["frame"]=json!(transform.to_frame_id);
+    view["voxel_rotation_xyzw"]=json!(display_to_scene.rotation_xyzw);
+    view["display_alignment"]=json!({"product":crate::frame_transform::PRODUCT,"portal":value.evidence.as_ref().map(|e|&e.portal),"native_frame":scene.frame});
+    Ok(())
+}
+
 fn render_robot_pose(
     robot: &mut Value,
     scene: &CanonicalScene,
@@ -148,7 +239,7 @@ fn render_robot_pose(
     Ok(())
 }
 
-pub async fn monitor(
+async fn monitor_scene(
     peer: &AukiPeer,
     config: Option<&HomeConnection>,
     portals: &MapSnapshot,
@@ -168,23 +259,31 @@ pub async fn monitor(
         let work = async {
             let mut subscription = subscribe_scene(peer, config).await?;
             let result=async {
+                let mut deadline=tokio::time::Instant::now()+Duration::from_secs(10);
                 loop {
-                    let event=tokio::select! {_=stop.cancelled()=>return Ok(()),event=subscription.next()=>event?};
+                    let event=tokio::select! {_=stop.cancelled()=>return Ok(()),event=before_deadline(deadline,async {Ok(subscription.next().await?)})=>event?};
                     match event {
                         Some(RemoteObservationEvent::Observation(o))=>{
                             let s=&o.payload;s.validate(&config.peer_id)?;
                             ensure!(s.frame==config.frame || (crate::local_mapper::is_local_family(&config.frame) && s.frame.starts_with(&format!("{}:",config.frame)) && crate::local_mapper::is_local_frame(&s.frame)),"runner frame differs from connection profile");
                             ensure!(crate::model::clock_ref(&s.publication_clock)==subscription.product().producer.clock,"scene clock mismatch");
                             if !crate::local_mapper::is_local_frame(&s.frame) {ensure!(crate::conventions::matching_portals(&s.portals,portals)?,"Runner scene portal reference differs from Home");}
-                            state.send_replace(RemoteScene{scene:Some((**s).clone()),status:"connected".into(),detail:if crate::local_mapper::is_local_frame(&s.frame){if let Some(anchor)=s.registries["local_mapping"]["alignment_to_home"]["anchor"].as_str(){format!("Robot boot origin · blue observations · red Home references aligned via {anchor}")}else{"Robot boot origin · waiting for shared portal alignment".into()}}else{format!("Galbot {} → Home OpenGL · SDK conversion",s.portals.scenegraph.map.frame.convention.map(|c|c.as_str()).unwrap_or("unknown"))},received:Some(Instant::now())});
+                            deadline=tokio::time::Instant::now()+Duration::from_secs(10);
+                            state.send_modify(|state| {
+                                state.scene=Some((**s).clone());state.status="connected".into();state.received=Some(Instant::now());
+                                state.detail=if crate::local_mapper::is_local_frame(&s.frame){"Robot-native map · scene alignment is a separate Catalog Product".into()}else{"Remote scene · SDK coordinate conversion".into()};
+                            });
                         },
                         Some(RemoteObservationEvent::Gap(_))=>{}, // Complete snapshots replace prior state.
                         _=>bail!("Runner scene stream ended"),
                     }
                 }
             }.await;
-            let cleanup = subscription.close().await;
-            result.and(cleanup.map_err(Into::into))
+            let cleanup=tokio::time::timeout(Duration::from_secs(2),subscription.close()).await;
+            result.and(match cleanup {
+                Ok(value)=>value.map_err(Into::into),
+                Err(_)=>Err(anyhow!("Runner scene unsubscribe timed out")),
+            })
         };
         let result = tokio::select! {_=stop.cancelled()=>break,result=work=>result};
         if let Err(e) = result {
@@ -196,4 +295,31 @@ pub async fn monitor(
         tokio::select! {_=stop.cancelled()=>break,_=tokio::time::sleep(Duration::from_secs(5))=>{}}
     }
     state.send_modify(|s| s.status = "stopped".into());
+}
+
+pub async fn monitor(
+    peer:&AukiPeer, config:Option<&HomeConnection>, portals:&MapSnapshot,
+    state:&watch::Sender<RemoteScene>, stop:&CancellationToken,
+) {
+    let transform=async {
+        if let Some(config)=config {crate::frame_transform::follow(peer,config,state,stop).await;}
+        else {stop.cancelled().await;}
+    };
+    tokio::join!(monitor_scene(peer,config,portals,state,stop),transform);
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+    #[tokio::test]
+    async fn silent_stream_expires_instead_of_waiting_forever() {
+        let result=before_deadline(tokio::time::Instant::now()+Duration::from_millis(10),
+            std::future::pending::<Result<()>>()).await;
+        assert!(result.unwrap_err().to_string().contains("rediscovering"));
+    }
+    #[tokio::test]
+    async fn live_snapshot_passes_through() {
+        assert_eq!(before_deadline(tokio::time::Instant::now()+Duration::from_secs(1),
+            async {Ok(42)}).await.unwrap(),42);
+    }
 }

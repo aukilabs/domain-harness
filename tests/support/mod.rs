@@ -3,14 +3,14 @@
 
 use anyhow::Result;
 use auki_p2p::{
-    P2P_TOKEN_AUDIENCE, P2P_TOKEN_ISSUER, P2P_TOKEN_SCOPE, P2P_TOKEN_TYPE, P2PAccessClaims,
+    P2PAccessClaims, P2P_TOKEN_AUDIENCE, P2P_TOKEN_ISSUER, P2P_TOKEN_SCOPE, P2P_TOKEN_TYPE,
 };
 use auki_sdk::{
     AukiPeer, AukiPeerConfig, DdsVerificationKeys, ExternalAuthorityUpdate, Identity,
     SignedP2pCredential,
 };
 use chrono::{TimeZone, Utc};
-use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use p256::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
 use uuid::Uuid;
 

@@ -34,21 +34,36 @@ class StanceTests(unittest.TestCase):
             plan_wrist(np.zeros(8), lambda q: (np.array([0,0,.2]), fk(q)[1]), np.full(8,-.3), np.full(8,.3))
 
     def test_confirmation_requires_new_metric_estimates_and_shared_alignment(self):
-        t = 5_000_000_000; clock = {'id':'session-clock'}
+        t = 5_000_000_000; clock = {'id':'session-clock', 'peer_id':'robot'}
         s = {'frame':'session', 'registries':{'local_mapping':{
             'observed_portals':{'HNY3JGNLRAE':{'clock':clock, 'observations':5,
                 'capture_timestamp_ns':t, 'reprojection_rms_px':.8, 'latest_measured_pose':{'translation':[0,0,0]}}},
             'robot_pose':{'clock':clock, 'capture_timestamp_ns':t},
             'alignment_to_home':{'status':'aligned','anchor':'HNY3JGNLRAE'}}}}
-        check = lambda s, now=t: calibrated(s, 'HNY3JGNLRAE',t-1, now, 'session',clock,2)
+        s['registries']['frame_transform_product'] = {'peer_id':'robot',
+            'product_id':'robot-to-scene-transform', 'manifest_hash':'hash'}
+        s['registries']['frame_transform'] = {
+            'schema':'spatial.frame-transform/v1', 'validity':'valid', 'authority_peer_id':'robot',
+            'source_frame':{'id':'session'}, 'target_frame':{'id':'home'},
+            'transform':{'from_frame_id':'session','to_frame_id':'home'},
+            'evidence':{'portal':'HNY3JGNLRAE','clock':clock,'capture_timestamp_ns':t}}
+        s['registries']['local_mapping']['alignment_to_home'] = None
+        check = lambda s, now=t: calibrated(s, 'HNY3JGNLRAE',t-1, now, 'session',clock,'home',2)
         self.assertTrue(check(s))
         self.assertFalse(check(s,t+3_000_000_000))
-        for key, value in [('robot_pose',None), ('alignment_to_home',None), ('observed_portals',{})]:
+        for key, value in [('robot_pose',None), ('observed_portals',{})]:
             modified=copy.deepcopy(s); modified['registries']['local_mapping'][key]=value
             self.assertFalse(check(modified))
         for key, value in [('clock',{'id':'old'}),('observations',4),('capture_timestamp_ns',t-2),('reprojection_rms_px',float('nan'))]:
             modified=copy.deepcopy(s); modified['registries']['local_mapping']['observed_portals']['HNY3JGNLRAE'][key]=value
             self.assertFalse(check(modified))
+        for key, value in [('validity','stale'), ('target_frame',{'id':'wrong-home'}),
+                           ('source_frame',{'id':'old-session'}), ('authority_peer_id','other'),
+                           ('evidence',{'portal':'other','clock':clock,'capture_timestamp_ns':t})]:
+            modified = copy.deepcopy(s); modified['registries']['frame_transform'][key] = value
+            self.assertFalse(check(modified))
+        modified = copy.deepcopy(s); del modified['registries']['frame_transform']
+        self.assertFalse(check(modified))
         s['frame']='old-session'; self.assertFalse(check(s))
 
     def test_ramp_is_bounded_monotonic_and_has_soft_endpoints(self):

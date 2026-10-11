@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -152,6 +153,19 @@ def main():
             stopped.set()
     worker = threading.Thread(target=capture, name='bbos-acquisition', daemon=True)
     worker.start()
+    # Reuse the installed arm numerical runtime without mixing its packages into
+    # the camera runtime. This worker opens only feedback Readers, never Writers.
+    volume = subprocess.Popen(['/usr/bin/python3', str(Path(__file__).with_name('bracketbot-python.py')),
+        '--daemon', 'arm_left', str(Path(__file__).with_name('capture-bracketbot-volume.py'))],
+        stdout=subprocess.PIPE, text=True)
+    def volume_output():
+        for line in volume.stdout:
+            if line.startswith('SENSOR '):
+                with output_lock: output.write(line)
+        if not stopped.is_set():
+            print('Robot volume worker exited; camera/mapping capture continues', file=sys.stderr)
+    volume_worker = threading.Thread(target=volume_output, name='body-volume', daemon=True)
+    volume_worker.start()
     try:
         while not stopped.is_set() and os.getppid() == parent:
             monotonic = time.monotonic()
@@ -212,6 +226,11 @@ def main():
             time.sleep(.005)
     finally:
         stopped.set()
+        volume.terminate()
+        try: volume.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            volume.kill(); volume.wait()
+        volume_worker.join(timeout=5)
         worker.join(timeout=5)
     if worker.is_alive(): raise RuntimeError('sensor acquisition did not stop')
     if failures: raise failures[0]

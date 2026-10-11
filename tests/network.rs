@@ -316,6 +316,15 @@ async fn rgbd_component_preserves_capture_clock_color_and_calibration_over_p2p()
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn robot_occupancy_product_replaces_cells_and_expires_without_refreshing_reads() -> Result<()>
 {
+    occupancy_roundtrip(false).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bracketbot_occupancy_preserves_declared_native_body_axes() -> Result<()> {
+    occupancy_roundtrip(true).await
+}
+
+async fn occupancy_roundtrip(bracketbot: bool) -> Result<()> {
     use auki_components::{ContractType, PayloadContract, StructuredPayloadContract};
     use spatial_home::{
         galbot_sensors::{Sensor, SensorSpec},
@@ -329,7 +338,7 @@ async fn robot_occupancy_product_replaces_cells_and_expires_without_refreshing_r
         let mut body=RobotOccupancy {session_id:"body-test".into(),model_sha256:"a".repeat(64),voxel_size_m:0.05,
             grid_origin_m:[0.;3],cells:vec![[1,2,3]],covered_links:vec!["base".into()],missing_links:vec![],approximate_links:vec![],compute_ms:1.};
         let mut sensor=Sensor::mount(&publisher.runtime,&publisher.endpoint,SensorSpec {id:"robot.occupancy".into(),clock,
-            frame_definition:Some(auki_registry::FrameRegistryEntry::ros_body(&owner,"robot.base")),
+            frame_definition:Some(if bracketbot {auki_registry::FrameRegistryEntry::in_convention(&owner,"robot.base",auki_registry::CoordinateConvention::ZUpRightForward)} else {auki_registry::FrameRegistryEntry::ros_body(&owner,"robot.base")}),
             payload:PayloadContract::Structured(StructuredPayloadContract {datatype:RobotOccupancy::DATATYPE.into(),schema:"spatial.robot-occupancy/v1".into(),modality:"robot_occupancy".into(),observes:"robot".into(),unit:Some("meters".into())}),
             metadata:serde_json::json!({"model_sha256":body.model_sha256,"session_id":body.session_id}),
         }).map_err(anyhow::Error::msg)?;
@@ -341,6 +350,7 @@ async fn robot_occupancy_product_replaces_cells_and_expires_without_refreshing_r
             let checks=async {
                 while cache.lock().unwrap().get(&owner).is_none(){tokio::time::sleep(Duration::from_millis(50)).await;}
                 let received=cache.lock().unwrap()[&owner].back().unwrap().received;
+                assert_eq!(cache.lock().unwrap()[&owner].back().unwrap().frame, sensor.spec.frame_definition.clone().unwrap());
                 tokio::time::sleep(Duration::from_millis(700)).await;
                 assert_eq!(cache.lock().unwrap()[&owner].back().unwrap().received,received);
                 body.cells=vec![[9,8,7]];

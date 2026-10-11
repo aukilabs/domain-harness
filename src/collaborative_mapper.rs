@@ -317,6 +317,17 @@ impl CollaborativeMap {
         }
         Ok(accepted)
     }
+    pub fn integrate_contribution(&mut self, contribution: crate::scene_contribution::Contribution) -> Result<bool> {
+        let peer = contribution.source.peer_id.clone();
+        let provenance = serde_json::to_value(&contribution)?;
+        let scan = contribution.localize(&self.reference, self.map.snapshot_reference())?;
+        let accepted = self.integrate(scan)?;
+        if accepted {
+            self.input_registries.insert(format!("peer:{peer}"), provenance);
+            self.peer_status(&peer, "aligned", "Scene contribution · native measurements and separate alignment");
+        }
+        Ok(accepted)
+    }
     pub fn peer_status(&mut self, peer: &str, status: &str, detail: &str) {
         let value = self.peers.entry(peer.into()).or_insert_with(|| json!({}));
         value["status"] = json!(status);

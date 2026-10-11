@@ -1,13 +1,39 @@
 //! Read actual peer catalogs without blocking Home's mapping/publication loop.
-use auki_component_protocol::{CATALOG_PROTOCOL_ID, CatalogResponse, ComponentProtocolClient};
+use auki_component_protocol::{CatalogResponse, ComponentProtocolClient, CATALOG_PROTOCOL_ID};
 use auki_sdk::{AukiPeer, AukiPeerIdentity, Multiaddr, PeerId};
-use futures::{StreamExt, stream};
-use serde_json::{Value, json};
-use std::{collections::BTreeMap, time::Duration};
+use futures::{stream, StreamExt};
+use serde_json::{json, Value};
+use std::{
+    collections::BTreeMap,
+    time::{Duration, Instant},
+};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 pub type Catalogs = BTreeMap<String, Value>;
+
+// Catalog availability is not stream liveness. Preserve authenticated product
+// references across brief discovery/refresh failures; never refresh this lease
+// on failure. Frame freshness and stream authentication remain independently
+// enforced by consumers.
+const CATALOG_GRACE: Duration = Duration::from_secs(60);
+
+fn refreshed(previous: Option<&Value>, result: Value, age: Option<Duration>) -> Value {
+    if result["catalog_status"] == "ready" {
+        return result; // Including empty catalogs and changed manifests.
+    }
+    if let Some(previous) =
+        previous.filter(|p| p["catalog"].is_object() && age.is_some_and(|age| age < CATALOG_GRACE))
+    {
+        let mut cached = previous.clone();
+        cached["catalog_cached"] = json!(true);
+        cached["catalog_refresh_status"] = json!("unavailable");
+        cached["catalog_detail"] =
+            json!("Catalog refresh unavailable; using last known catalog temporarily");
+        return cached;
+    }
+    result
+}
 
 pub async fn fetch(peer: &AukiPeer, id: PeerId, configured: &[String]) -> Value {
     let work = async {
@@ -95,6 +121,7 @@ pub async fn monitor(
     output: watch::Sender<Catalogs>,
     stop: &CancellationToken,
 ) {
+    let mut last_success = BTreeMap::<String, Instant>::new();
     let mut tick = tokio::time::interval(Duration::from_secs(5));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -123,7 +150,27 @@ pub async fn monitor(
             }
         }
         let mut current = output.borrow().clone();
+        // Discovery can fail independently of a healthy authenticated stream.
+        // Retry recent peers using their last authenticated catalog route.
+        for (id, row) in &current {
+            if last_success
+                .get(id)
+                .is_some_and(|t| t.elapsed() < CATALOG_GRACE)
+            {
+                if let Ok(peer_id) = id.parse() {
+                    let entry = candidates
+                        .entry(peer_id)
+                        .or_insert_with(|| (Vec::new(), row["discovered"] == true));
+                    if let Some(route) = row["catalog_route"].as_str() {
+                        if !entry.0.iter().any(|r| r == route) {
+                            entry.0.push(route.into());
+                        }
+                    }
+                }
+            }
+        }
         current.retain(|id, _| candidates.keys().any(|p| p.to_string() == *id));
+        last_success.retain(|id, _| current.contains_key(id));
         for (id, (_, discovered)) in &candidates {
             current
                 .entry(id.to_string())
@@ -143,10 +190,46 @@ pub async fn monitor(
             let Some((id, value)) = result else {
                 break;
             };
+            if value["catalog_status"] == "ready" {
+                last_success.insert(id.clone(), Instant::now());
+            }
+            let age = last_success.get(&id).map(Instant::elapsed);
             output.send_modify(|catalogs| {
+                let value = refreshed(catalogs.get(&id), value, age);
                 catalogs.insert(id, value);
             });
         }
     }
     output.send_replace(Catalogs::new());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn refresh_failure_retains_references_but_not_forever() {
+        let ready = json!({"catalog_status":"ready", "catalog_route":"route", "catalog":{"products":[{"manifest_hash":"old"}]}});
+        let failure = json!({"catalog_status":"unavailable"});
+        let cached = refreshed(Some(&ready), failure.clone(), Some(Duration::from_secs(5)));
+        assert_eq!(cached["catalog"], ready["catalog"]);
+        assert_eq!(cached["catalog_route"], ready["catalog_route"]);
+        assert_eq!(cached["catalog_status"], "ready");
+        assert_eq!(cached["catalog_cached"], true);
+        assert_eq!(
+            refreshed(Some(&cached), failure.clone(), Some(CATALOG_GRACE)),
+            failure
+        );
+        assert_eq!(refreshed(None, failure.clone(), None), failure);
+    }
+    #[test]
+    fn successful_refresh_immediately_replaces_or_removes_old_products() {
+        let old = json!({"catalog_status":"ready","catalog_cached":true,"catalog":{"products":[{"manifest_hash":"old"}]}});
+        for products in [json!([]), json!([{"manifest_hash":"new"}])] {
+            let new = json!({"catalog_status":"ready","catalog":{"products":products}});
+            assert_eq!(
+                refreshed(Some(&old), new.clone(), Some(Duration::ZERO)),
+                new
+            );
+        }
+    }
 }

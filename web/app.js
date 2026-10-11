@@ -124,7 +124,7 @@ function build(data){
  const first=current===null||current?.frame!==data.frame;data.receivedAt=performance.now();current=data;selectable=[];Object.values(groups).forEach(clear);
  const voxels=new THREE.InstancedMesh(boxGeometry,cubeMaterial,data.voxels.length);voxels.castShadow=true;voxels.receiveShadow=true;
  const matrix=new THREE.Matrix4(),color=new THREE.Color();
- data.voxels.forEach((v,i)=>{const scale=data.voxel_size*.95;matrix.compose(new THREE.Vector3(...v.center),new THREE.Quaternion(),new THREE.Vector3(scale,scale,scale));voxels.setMatrixAt(i,matrix);const furnishing=data.synthetic_layout?.boxes.findLast(b=>v.center.every((n,j)=>n>=b.min[j]-.051&&n<=b.max[j]+.051));if(v.linear_rgb){color.setRGB(...v.linear_rgb,THREE.LinearSRGBColorSpace);}else color.set(furnishing?.color||(v.center[1]<0?'#c6cbbb':'#a7b4ac'));voxels.setColorAt(i,color);});
+ data.voxels.forEach((v,i)=>{const scale=data.voxel_size*.95;matrix.compose(new THREE.Vector3(...v.center),new THREE.Quaternion(...(data.voxel_rotation_xyzw||[0,0,0,1])),new THREE.Vector3(scale,scale,scale));voxels.setMatrixAt(i,matrix);const furnishing=data.synthetic_layout?.boxes.findLast(b=>v.center.every((n,j)=>n>=b.min[j]-.051&&n<=b.max[j]+.051));if(v.linear_rgb){color.setRGB(...v.linear_rgb,THREE.LinearSRGBColorSpace);}else color.set(furnishing?.color||(v.center[1]<0?'#c6cbbb':'#a7b4ac'));voxels.setColorAt(i,color);});
  voxels.userData.kind='voxels';groups.voxels.add(voxels);selectable.push(voxels);
  if(data.occupancy_tiles){
   const tiles=new THREE.InstancedMesh(boxGeometry,new THREE.MeshBasicMaterial(),data.occupancy_tiles.length);
@@ -242,14 +242,14 @@ function renderSpatialLists(){
 }
 function updateMapUI(){
  const local=Boolean(current?.local_map)||((isRunner()||activeMap==='home-live')&&!current);
- $('frame-info').textContent=activeMap==='home-live'?'Live origin: UCOF1J40N7O · shared Home frame':local?'Local origin: robot boot pose · fixed frame': activeMap==='domain'?'Stored domain frame · OpenGL · Y up · meters':'Home origin: UCOF1J40N7O · OpenGL · Y up · meters';
+ $('frame-info').textContent=activeMap==='home-live'?'Live origin: UCOF1J40N7O · shared Home frame':local?(current?.display_alignment?`Display frame: ${current.frame} · robot-native frame unchanged`:'Local origin: robot boot pose · fixed frame'): activeMap==='domain'?'Stored domain frame · OpenGL · Y up · meters':'Home origin: UCOF1J40N7O · OpenGL · Y up · meters';
  $('portal-info').textContent=activeMap==='home-live'?'Blue: measured portals. Each robot calibrates through its own observed canonical portal.':local?'Blue: camera observations. Red: Home references aligned through a shared portal. The robot boot origin stays fixed.':'Stored Y = 0 for every portal. Actual mounting heights are unverified.';
  $('portal-swatch').style.background=local?'#2477ec':'#e53935';
  const domain=activeMap==='domain';$('domain-info').hidden=false;$('demo-controls').hidden=domain||!current?.demo;
  $('scene-title').textContent=activeMap==='home-live'?'Home live map':isRunner()?runnerDisplay()+' scenegraph':domain?'13 stored domain portals':(current?.demo?'Domain + synthetic scene':current?.environment_name||'Canonical portals');
  $('map-authority').textContent=isRunner()?runnerDisplay()+' mapper':'Home Server';
  $('scene-badge').textContent=activeMap==='home-live'?'HOME LIVE MAP':isRunner()?'GALBOT SCENEGRAPH':domain?'STORED DOMAIN POSES':(current?.demo?'DOMAIN + SYNTHETIC SCENE':'CANONICAL PORTALS');
- $('scene-note').textContent=activeMap==='home-live'?'Mapped on Home from both robots’ raw observations, each calibrated through known portal poses. UCOF1J40N7O defines the fixed origin.':local?(current?.local_mapping?.alignment_to_home?`Home references aligned via ${current.local_mapping.alignment_to_home.anchor}. Updated from its latest observed pose.`:'Robot-space map. Waiting for a shared portal to align Home references.'):domain?'Supplied poses and sizes. Grid is a coordinate reference, not a measured floor.':(current?.demo?'Illustrative L-shaped workspace fitted to the marker footprint. Furniture and walls are synthetic; stored portal poses are unchanged.':'Canonical portal record with supplied poses and sizes. Live geometry is in Home live map.');
+ $('scene-note').textContent=activeMap==='home-live'?'Mapped on Home from both robots’ raw observations, each calibrated through known portal poses. UCOF1J40N7O defines the fixed origin.':local?(current?.display_alignment?`Display aligned via ${current.display_alignment.portal}. Robot data remains in its native frame.`:current?.frame_transform?.validity==='stale'?'Robot-native map. Portal transform is stale; waiting for a fresh tracked observation.':'Robot-native map. Waiting for a shared portal transform from its Catalog.'):domain?'Supplied poses and sizes. Grid is a coordinate reference, not a measured floor.':(current?.demo?'Illustrative L-shaped workspace fitted to the marker footprint. Furniture and walls are synthetic; stored portal poses are unchanged.':'Canonical portal record with supplied poses and sizes. Live geometry is in Home live map.');
  document.querySelector('.flow').hidden=domain||!current?.demo;
  $('demo-view').hidden=!current?.demo;
  document.querySelector('#inspect-snapshot').href=document.querySelector('.export').href=activeMap==='home-live'?'/api/home-live-snapshot':isRunner()?runnerUrl('/api/runner-snapshot'):domain?'/api/domain-snapshot':'/api/snapshots';
@@ -343,7 +343,11 @@ function updatePairingDownload(){const link=$('pairing-download');link.href=isLo
 async function refreshPeer(){try{const peer=await api('/api/peer');$('p2p-status').textContent=peer.enabled?'P2P · '+peer.status:'P2P disabled';$('p2p-detail').textContent=peer.connection?peer.connection.peer_id:peer.detail||'Configure a peer to join the network.';$('pairing-download').hidden=peer.status!=='Ready';updatePairingDownload();fleetNetwork=peer;renderFleetRows();}catch{$('p2p-status').textContent='P2P unavailable';$('pairing-download').hidden=true;fleetNetwork=null;renderFleetRows();}}
 
 // Dynamic telemetry is independent of scene updates and synthetic peer scans.
-const robots=new Map(),poseUpdates=new Map();
+const robots=new Map(),poseUpdates=new Map(),robotVolumes=new Map(),bodyVolumePeers=new Set();
+function usesBodyVolume(key){
+ const peer=key==='selected'?(current?.authority_peer_id||(activeMap.startsWith('runner:')?activeMap.slice(7):primaryRunnerPeer)):key;
+ return bodyVolumePeers.has(peer)||(key==='selected'&&(current?.source_frame||current?.frame||'').startsWith('bracketbot-local:'));
+}
 const poseColors=['#e49b32','#985cdb','#219b96'];
 let runner=null,runnerBusy=false,lastRunnerReply=0;
 function hideRobots(){for(const glyph of robots.values())glyph.group.visible=false;}
@@ -382,7 +386,7 @@ function renderRunners(entries){
  entries.forEach((entry,i)=>{
   const glyph=glyphFor(entry.key,entry.name),state=entry.state;
   glyph.tag.visible=activeMap!=='home-live';
-  glyph.state=state;glyph.group.visible=Boolean(state.pose)&&$('runner-layer').checked;
+  glyph.state=state;glyph.group.visible=Boolean(state.pose)&&$('runner-layer').checked&&!usesBodyVolume(entry.key);
   if(state.pose){glyph.group.position.fromArray(state.pose.translation);glyph.group.quaternion.fromArray(state.pose.rotation_xyzw);}
   glyph.material.color.set(state.status==='live'?glyph.color:'#84908f');glyph.material.opacity=state.status==='live'?.82:.35;glyph.arrow.setColor(state.status==='live'?glyph.color:'#84908f');
   const row=list.children[i];row.dataset.status=state.status;row.dataset.visible=String(glyph.group.visible);
@@ -432,7 +436,7 @@ function showHomeRunners(local,fresh){
   const distance=Math.max(4,size.length()*1.5/Math.min(camera.aspect,1));controls.target.copy(center);camera.position.copy(center).add(new THREE.Vector3(0,distance,distance*.6));controls.update();
  };
 }
-$('runner-layer').onchange=()=>{for(const glyph of robots.values())glyph.group.visible=Boolean(glyph.state?.pose)&&$('runner-layer').checked;refreshRunner();};
+$('runner-layer').onchange=()=>{refreshRunner();};
 async function refreshRunner(){
  if(isLocalScene()){hideRobots();$('runner-status').textContent='No robot aligned to this scene';return;}
  if(activeMap.startsWith('peer-scene:')){
@@ -453,7 +457,7 @@ async function refreshRunner(){
   const local=current?.local_mapping, remote=current?.remote_status;
   const fresh=remote?.status==='connected' && remote.age_ms<10000 && performance.now()-(current?.receivedAt||0)<5000;
   if(activeMap==='home-live'&&local?.runners){showHomeRunners(local,fresh);return;}
-  showRunner({status:fresh&&local?.robot_pose?'live':'stale',pose:robotGlyphPose(local?.robot_pose),detail:local?(activeMap==='home-live'?'Pose in Home’s observed portal frame':'Pose in the robot boot frame'):'Waiting for independent robot pose'});return;
+  showRunner({status:fresh&&local?.robot_pose?'live':'stale',pose:robotGlyphPose(local?.robot_pose),detail:local?(activeMap==='home-live'?'Pose in Home’s observed portal frame':current?.display_alignment?'Display pose uses the Catalog transform; robot pose remains native':'Pose in the robot boot frame'):'Waiting for independent robot pose'});return;
  }
  if(runnerBusy)return;runnerBusy=true;try{const state=await api('/api/runner-pose');lastRunnerReply=performance.now();if(!(isLocalScene()||isRunner()||isSimulation()||activeMap==='home-live'||activeMap.startsWith('peer-scene:')))showRunner(state);}catch{if(!(isLocalScene()||isRunner()||isSimulation()||activeMap==='home-live'||activeMap.startsWith('peer-scene:')))showRunner({...runner,status:'unavailable',pose:null,detail:'Home telemetry connection lost'});}finally{runnerBusy=false;}}
 runnerCatalog();refreshRunner();setInterval(refreshRunner,250);
@@ -571,13 +575,25 @@ sensorCatalog();
 
 // Transient body occupancy: keep cube axes in robot.base, transform the entire
 // group with the SDK-composed capture-time pose. Never add cells to topography.
-const robotVolumes=new Map();let volumeBusy=false;
+let volumeBusy=false,volumeScope=null;
+function volumeContext(){return JSON.stringify([activeMap,current?.frame,current?.source_frame,current?.local_mapping?.map_correction,current?.display_alignment]);}
+function staleVolume(v){
+ v.stale=true;v.material.color.set('#84908f');v.material.emissive.set('#000000');v.material.transparent=true;v.material.opacity=.35;
+ if(!v.tag){v.tag=label('Last known position · tracking lost','#84908f');v.tag.position.set(0,0,1);v.group.add(v.tag);}
+ v.group.visible=$('robot-volume-layer').checked;
+}
+function volumeStatus(){
+ const values=[...robotVolumes.values()],stale=values.filter(v=>v.stale).length;
+ const status=$('robot-volume-status');status.dataset.robots=String(values.length);status.dataset.stale=String(stale);status.dataset.cells=String(values.reduce((n,v)=>n+v.cells,0));
+ if(stale)status.textContent=`${stale} robot${stale===1?'':'s'} · last known position · tracking lost · not live`;
+}
 function removeVolume(key){const v=robotVolumes.get(key);if(v){scene.remove(v.group);clear(v.group);robotVolumes.delete(key);}}
-function resetVolumes(){for(const key of [...robotVolumes.keys()])removeVolume(key);}
+function resetVolumes(){for(const key of [...robotVolumes.keys()])removeVolume(key);volumeScope=null;}
 $('map-select').addEventListener('change',resetVolumes);
 $('robot-volume-layer').onchange=()=>{for(const v of robotVolumes.values())v.group.visible=$('robot-volume-layer').checked;};
 async function refreshRobotVolumes(){
  if(volumeBusy)return;
+ const scope=volumeContext();if(volumeScope!==scope){resetVolumes();volumeScope=scope;}
  if(!(activeMap==='home-live'||isRunner())){resetVolumes();$('robot-volume-status').textContent='Robot volume · choose a live map';return;}
  const selected=activeMap,frame=current?.frame;
  const peer=selected==='runner'?primaryRunnerPeer:selected.startsWith('runner:')?selected.slice(7):null;
@@ -585,11 +601,12 @@ async function refreshRobotVolumes(){
  volumeBusy=true;
  try{
   const data=await api('/api/robot-occupancy'+(peer?'?peer='+encodeURIComponent(peer):''));
-  if(selected!==activeMap||frame!==current?.frame)return;
+  if(selected!==activeMap||frame!==current?.frame||scope!==volumeContext())return;
   const entries=(data.robots||[]).filter(r=>r.frame===frame);
-  const keys=new Set(entries.map(r=>r.peer_id));for(const key of [...robotVolumes.keys()])if(!keys.has(key))removeVolume(key);
+  const keys=new Set(entries.map(r=>r.peer_id));for(const [key,v] of robotVolumes)if(!keys.has(key))staleVolume(v);
   for(const r of entries){
-   const signature=JSON.stringify([r.model_sha256,r.timestamp_ns,r.sequence]);let v=robotVolumes.get(r.peer_id);
+   bodyVolumePeers.add(r.peer_id);
+   const signature=JSON.stringify([r.model_sha256,r.timestamp_ns,r.sequence,r.frame,r.pose]);let v=robotVolumes.get(r.peer_id);
    if(!v||v.signature!==signature){
     removeVolume(r.peer_id);
     const group=new THREE.Group(),material=new THREE.MeshStandardMaterial({color:'#ff2020',emissive:'#a00000',emissiveIntensity:.3,roughness:.7});
@@ -597,18 +614,20 @@ async function refreshRobotVolumes(){
     r.cells.forEach((c,i)=>{const s=r.voxel_size;matrix.makeScale(s*.96,s*.96,s*.96);matrix.setPosition(...c.map(n=>(n+.5)*s));mesh.setMatrixAt(i,matrix);});
     mesh.instanceMatrix.needsUpdate=true;mesh.computeBoundingSphere();group.add(mesh);
     group.position.fromArray(r.pose.translation);group.quaternion.fromArray(r.pose.rotation_xyzw);group.visible=$('robot-volume-layer').checked;
-    scene.add(group);v={group,signature,at:performance.now()};robotVolumes.set(r.peer_id,v);
+    scene.add(group);v={group,material,signature,cells:r.cells.length,at:performance.now(),stale:false};robotVolumes.set(r.peer_id,v);
    }
   }
   const count=entries.reduce((n,r)=>n+r.cells.length,0),missing=entries.reduce((n,r)=>n+r.missing_links.length,0);
   const status=$('robot-volume-status');status.dataset.robots=String(entries.length);status.dataset.cells=String(count);
   status.dataset.poses=JSON.stringify(entries.map(r=>({peer:r.peer_id,pose:r.pose})));
-  status.textContent=entries.length?`${entries.length} robot${entries.length===1?'':'s'} · ${count.toLocaleString()} red cells · 2 Hz${missing?' · '+missing+' links missing':''}${entries.some(r=>r.approximate_links.length)?' · gripper travel envelopes':''}`:
+  status.textContent=entries.length?`${entries.length} robot${entries.length===1?'':'s'} · ${count.toLocaleString()} red cells · 2 Hz${missing?' · '+missing+' links missing':''}${entries.some(r=>r.approximate_links.length)?' · approximate envelopes':''}`:
    'Robot volume · '+(data.unavailable?.[0]?.detail||data.status||'waiting for runner');
- }catch(e){$('robot-volume-status').textContent='Robot volume · '+e.message;}
+  volumeStatus();
+  refreshRunner();
+ }catch(e){if(selected!==activeMap||scope!==volumeContext())return;for(const v of robotVolumes.values())staleVolume(v);$('robot-volume-status').textContent='Robot volume · '+e.message;volumeStatus();}
  finally{volumeBusy=false;}
 }
-setInterval(()=>{for(const [key,v] of robotVolumes)if(performance.now()-v.at>3000)removeVolume(key);refreshRobotVolumes();},500);
+setInterval(()=>{for(const v of robotVolumes.values())if(performance.now()-v.at>3000)staleVolume(v);volumeStatus();refreshRobotVolumes();},500);
 
 function uiButton(text,action,className='panel-row'){
  const button=document.createElement('button');button.type='button';button.className=className;button.textContent=text;button.onclick=action;return button;
@@ -637,7 +656,7 @@ function catalogType(entry,kind,catalog){
  const signature=types.map(t=>[t.kind,t.modality,t.datatype,t.schema].filter(Boolean).join(' ')).join(' ')+' '+(entry.metadata?.schema||'');
  if(types.some(t=>t.kind==='camera')||/video[-_.]?frame|camera[-_.]?frame/i.test(signature))return 'Cameras';
  if(/scenegraph|canonical-scene|voxel|occupancy/i.test(signature))return 'Maps';
- if(/odometry|pose[-_.]?update|\bpose\b/i.test(signature))return 'Poses & odometry';
+ if(/odometry|pose[-_.]?update|frame[-_]?transform|\bpose\b/i.test(signature))return 'Poses & odometry';
  if(/detection|landmark-observations/i.test(signature))return 'Detections';
  if(/lidar|depth|sensor|mapping.observation|mapping-input/i.test(signature))return 'Sensors & observations';
  return 'Other';
@@ -656,6 +675,7 @@ function renderFleetRows(){
   if(!peer.self){const identity=document.createElement('p');identity.className='panel-hint';identity.textContent=peer.peer_id;group.append(identity);}
   if(peer.received_observations!==undefined){const count=document.createElement('p');count.className='panel-hint';count.dataset.observations=String(peer.received_observations);count.textContent=peer.received_observations+' observations received over P2P';group.append(count);}
   if(!peer.self){const catalogStatus=document.createElement('p');catalogStatus.className='panel-hint';catalogStatus.dataset.catalogStatus=peer.catalog_status||'unknown';catalogStatus.textContent=peer.catalog_status==='ready'?((peer.catalog?.components?.length||0)+' components · '+(peer.catalog?.products?.length||0)+' products'):peer.catalog_status==='unavailable'?(peer.catalog_detail||'Component catalog unavailable'):peer.catalog?'':'Loading component catalog…';if(catalogStatus.textContent)group.append(catalogStatus);}
+  if(peer.catalog_cached){const hint=document.createElement('p');hint.className='panel-hint';hint.textContent='Catalog refresh delayed · using last known entries; stream freshness checked separately';group.append(hint);}
   const feeds=document.createElement('section');feeds.setAttribute('aria-label','Camera feeds');const feedsHeading=document.createElement('h3');feedsHeading.textContent=`Camera feeds (${options.length})`;feeds.append(feedsHeading);
   for(const option of options.sort((a,b)=>a.textContent.localeCompare(b.textContent))){const button=uiButton(option.textContent+($('sensor-select').value===option.value?' · PiP ●':''),()=>{$('sensor-select').value=$('sensor-select').value===option.value?'':option.value;$('sensor-select').dispatchEvent(new Event('change'));});button.setAttribute('aria-pressed',String($('sensor-select').value===option.value));feeds.append(button);}
   if(!options.length){const empty=document.createElement('p');empty.className='panel-hint';empty.textContent='No camera feeds available';feeds.append(empty);}group.append(feeds);

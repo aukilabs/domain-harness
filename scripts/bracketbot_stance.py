@@ -53,7 +53,7 @@ def plan_wrist(start, fk, lower, upper):
     return target
 
 
-def calibrated(scene, portal, started_ns, now_ns, frame, clock, baseline=0):
+def calibrated(scene, portal, started_ns, now_ns, frame, clock, home_frame, baseline=0):
     """Require multiple new SDK metric estimates, current tracking and Home alignment.
 
     QR detection alone is insufficient. Reject old evidence, session changes,
@@ -63,7 +63,9 @@ def calibrated(scene, portal, started_ns, now_ns, frame, clock, baseline=0):
         mapping = scene['registries']['local_mapping']
         e = mapping['observed_portals'][portal]
         pose = mapping['robot_pose']
-        alignment = mapping['alignment_to_home']
+        alignment = scene['registries']['frame_transform']
+        product = scene['registries']['frame_transform_product']
+        evidence = alignment['evidence']
         return bool(scene['frame'] == frame and e['clock'] == clock
                     and e['observations'] >= baseline+3
                     and started_ns <= e['capture_timestamp_ns'] <= now_ns+100_000_000
@@ -73,8 +75,19 @@ def calibrated(scene, portal, started_ns, now_ns, frame, clock, baseline=0):
                     and np.isfinite(e['reprojection_rms_px'])
                     and e['reprojection_rms_px'] <= 3.
                     and e.get('latest_measured_pose')
-                    and alignment and alignment.get('status') == 'aligned'
-                    and alignment.get('anchor') == portal)
+                    and alignment['schema'] == 'spatial.frame-transform/v1'
+                    and alignment['validity'] == 'valid'
+                    and alignment['authority_peer_id'] == clock['peer_id']
+                    and product['peer_id'] == clock['peer_id']
+                    and product['product_id'] == 'robot-to-scene-transform'
+                    and bool(product['manifest_hash'])
+                    and alignment['source_frame']['id'] == frame
+                    and alignment['target_frame']['id'] == home_frame
+                    and alignment['transform']['from_frame_id'] == frame
+                    and alignment['transform']['to_frame_id'] == home_frame
+                    and evidence['portal'] == portal
+                    and evidence['clock'] == clock
+                    and evidence['capture_timestamp_ns'] == e['capture_timestamp_ns'])
     except (KeyError, TypeError, ValueError):
         return False
 

@@ -16,6 +16,8 @@ use std::{
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
 type Inbox = Arc<Mutex<FreshIngress>>;
+#[path = "robot_live.rs"]
+mod live;
 #[derive(serde::Serialize)]
 struct DiskState {
     scene: Option<CanonicalScene>,
@@ -68,6 +70,10 @@ pub async fn run(hardware: Hardware) -> Result<()> {
         local.set_portal_sizes(crate::portal_sizes::PortalSizes::load(path)?)?;
     }
     local.export_sources(&publisher.endpoint)?;
+    local.copy_native_scans();
+    let contribution_clock = crate::model::clock_entry(&owner, &session);
+    let contribution_owner = owner.clone();
+    let (contribution_send, mut contribution_receive) = tokio::sync::mpsc::channel::<crate::scene_contribution::Contribution>(2);
     let mut connection = HomeConnection::current(&running.peer)?;
     connection.frame = if hardware == Hardware::Bracketbot {
         family.into()
@@ -122,12 +128,14 @@ pub async fn run(hardware: Hardware) -> Result<()> {
     let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
     let sensors: Inbox = Default::default();
     let mapping: Inbox = Default::default();
+    let live = Arc::new(Mutex::new(live::LiveState::new(hardware == Hardware::Bracketbot)));
     let stop = Arc::new(AtomicBool::new(false));
     let disk = Arc::new(Mutex::new(None::<DiskState>));
     let sensor_status = Arc::new(Mutex::new(serde_json::json!({})));
     let home_status = Arc::new(Mutex::new(serde_json::json!({"status":"connecting"})));
     let (home_send, home_receive) = std::sync::mpsc::sync_channel::<(String, auki_scenegraph::MapSnapshot)>(1);
     let reader = {
+        let live = live.clone();
         let sensors = sensors.clone();
         let mapping = mapping.clone();
         tokio::spawn(async move {
@@ -135,6 +143,10 @@ pub async fn run(hardware: Hardware) -> Result<()> {
                 if let Some(raw) = line.strip_prefix("SENSOR ") {
                     ensure!(raw.len() < 16 * 1024 * 1024, "sensor packet exceeds limit");
                     let value: serde_json::Value = serde_json::from_str(raw)?;
+                    if matches!(value["kind"].as_str(), Some("odometry" | "tracking_lost" | "map_correction")) {
+                        let event: SensorEvent = serde_json::from_value(value.clone())?;
+                        live.lock().unwrap().accept(&event);
+                    }
                     let q = if matches!(
                         value["kind"].as_str(),
                         Some("sensor_sample" | "register_sensor")
@@ -155,6 +167,7 @@ pub async fn run(hardware: Hardware) -> Result<()> {
         let endpoint = publisher.endpoint.clone();
         let status = sensor_status.clone();
         tokio::task::spawn_blocking(move || -> Result<()> {
+            let detector_budget = Arc::new(crate::portal_camera_detector::DetectorBudget::default());
             let mut mounted =
                 std::collections::BTreeMap::<String, crate::galbot_sensors::Sensor>::new();
             let work = (|| -> Result<()> {
@@ -182,6 +195,7 @@ pub async fn run(hardware: Hardware) -> Result<()> {
                                         &runtime,
                                         &endpoint,
                                         &sensor.spec,
+                                        detector_budget.clone(),
                                     )?,
                                 );
                             }
@@ -217,6 +231,7 @@ pub async fn run(hardware: Hardware) -> Result<()> {
         })
     };
     let mapper = {
+        let live = live.clone();
         let stop = stop.clone();
         let home_status = home_status.clone();
         let disk = disk.clone();
@@ -267,11 +282,43 @@ pub async fn run(hardware: Hardware) -> Result<()> {
                         }
                     }
                     if last_odom.elapsed() > Duration::from_secs(3) {
+                        if hardware != Hardware::Bracketbot && let Some((timestamp, _)) = &local.latest_pose {
+                            local.alignment_after_ns = Some(local.metadata()["local_mapping"]["observed_portals"]
+                                .as_object().into_iter().flat_map(|m|m.values())
+                                .filter_map(|v|v["capture_timestamp_ns"].as_u64())
+                                .max().unwrap_or(*timestamp).max(*timestamp));
+                        }
                         local.latest_pose = None;
                     }
                     local.export_camera_preview(&publisher.endpoint)?;
+                    let scans = local.take_localized_scans();
+                    if let Ok(transform) = crate::frame_transform::FrameTransform::from_local(&local, &contribution_owner) {
+                        if transform.validity == crate::frame_transform::Validity::Valid {
+                            if let (Some(alignment),Some(evidence)) = (&transform.transform,&transform.evidence) {
+                                let measured = local.portals()?;
+                                if let Some(anchor) = measured.scenegraph.anchors.get(&evidence.portal) {
+                                    for scan in scans {
+                                        let o=scan.observation;
+                                        if o.timestamp_ns < evidence.capture_timestamp_ns { continue; }
+                                        let c=crate::scene_contribution::Contribution {
+                                            source:o.source,sequence:o.sequence,clock:contribution_clock.clone(),timestamp_ns:o.timestamp_ns,
+                                            sensor_frame:scan.binding.sensor_frame,
+                                            native_frame:crate::conventions::registry(&contribution_owner,&local.frame)?,
+                                            sensor_to_native:o.pose.sensor_to_map,alignment_timestamp_ns:evidence.capture_timestamp_ns,
+                                            portal_id:evidence.portal.clone(),portal_to_native:crate::scene_contribution::portal_measurement(anchor, &evidence.reference_anchor)?,
+                                            native_to_scene:alignment.clone(),points:o.hit_points_m,colors:scan.colors,
+                                        };
+                                        let _=contribution_send.try_send(c);
+                                    }
+                                }
+                            }
+                        }
+                    }
                     if last_publish.elapsed() >= Duration::from_millis(250) {
                         let scene = publisher.publish_local(&local)?;
+                        if let Some(scene) = &scene {
+                            live.lock().unwrap().set_basis(scene);
+                        }
                         let status = serde_json::json!({"frame":frame,"origin":local.origin,"detail":local.detail,"capture_status":capture_status,"scan_progress":local.scan_progress(),"status":if local.latest_pose.is_some(){"mapping"}else{"waiting_for_odometry"},"mapper_batch_ms":started.elapsed().as_millis(),"coalesced_samples":mapping.lock().unwrap().replaced,"sensors":sensor_status.lock().unwrap().clone(),"home_reference":home_status.lock().unwrap().clone(),"home_reference_applied":local.home_portals.is_some()});
                         *disk.lock().unwrap() = Some(DiskState {
                             scene,
@@ -333,8 +380,56 @@ pub async fn run(hardware: Hardware) -> Result<()> {
             tokio::time::sleep(Duration::from_secs(30)).await;
         }
     };
+    let phone_work = async {
+        let mut presence_reader = crate::mobile_pose::PresenceReader::default();
+        loop {
+            let work = async {
+                let profile: HomeConnection = serde_json::from_slice(&std::fs::read(&home_path)?)?;
+                let (snapshot, age) = presence_reader.read(&running.peer, &profile).await?;
+                Ok::<_, anyhow::Error>((profile, snapshot, age))
+            };
+            let packet = match tokio::time::timeout(Duration::from_millis(800), work).await {
+                Ok(Ok((profile, snapshot, age))) => serde_json::json!({
+                    "schema":"spatial.robot-phone-input/v1", "authenticated":true,
+                    "home_peer_id":profile.peer_id,"home_frame":profile.frame,
+                    "robot_peer_id":running.peer.peer_id().to_string(),
+                    "request_age_ms":age.as_millis(),"presence":snapshot.presence,
+                    "received_ns":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos() as u64
+                }),
+                _ => {
+                    presence_reader = Default::default();
+                    serde_json::json!({"schema":"spatial.robot-phone-input/v1","authenticated":false,"presence":null})
+                },
+            };
+            if let Err(error) = save(&path.with_file_name("phone-presence.json"), &packet) {
+                eprintln!("Phone presence cache: {error}");
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    };
+    let live_work = async {
+        loop {
+            let snapshot = live.lock().unwrap().snapshot();
+            if let Some(snapshot) = snapshot
+                && let Err(error) = save(&path.with_file_name("robot-control.json"), &snapshot) {
+                eprintln!("Robot control snapshot: {error}");
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    };
     #[cfg(unix)]
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let contributions = async {
+        while let Some(c) = contribution_receive.recv().await {
+            let work = async {
+                let profile:HomeConnection=serde_json::from_slice(&std::fs::read(&home_path)?)?;
+                crate::scene_contribution::send(&running.peer,&profile,&c).await
+            };
+            if let Err(e) = tokio::time::timeout(Duration::from_secs(3),work).await.unwrap_or_else(|_|Err(anyhow!("Contribution timed out"))) {
+                eprintln!("Scene contribution: {e}");
+            }
+        }
+    };
     let health = async {
         loop {
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -347,7 +442,7 @@ pub async fn run(hardware: Hardware) -> Result<()> {
             }
         }
     };
-    tokio::select! {_=tokio::signal::ctrl_c()=>{},_=terminate.recv()=>{},_=home_work=>{},_=health=>{}}
+    tokio::select! {_=tokio::signal::ctrl_c()=>{},_=terminate.recv()=>{},_=home_work=>{},_=health=>{},_=contributions=>{},_=phone_work=>{},_=live_work=>{}}
     let _ = child.start_kill();
     let _ = child.wait().await;
     stop.store(true, Ordering::Relaxed);

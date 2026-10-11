@@ -39,6 +39,64 @@ pub fn display_name(peer: &str) -> String {
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct ReadPresence { pub frame: String }
+impl auki_components::ContractType for ReadPresence {
+    const DATATYPE: &'static str = "spatial.phone-presence-read/v1";
+}
+#[derive(Clone, Serialize, Deserialize)]
+pub struct PresenceSnapshot { pub authority_peer_id: String, pub presence: Value }
+impl auki_components::ContractType for PresenceSnapshot {
+    const DATATYPE: &'static str = "spatial.phone-presence-snapshot/v1";
+}
+
+/// Live, scene-scoped authenticated read. Unlike retained scene geometry, this
+/// samples the presence cache at invocation time; request RTT bounds transit age.
+pub async fn fetch(peer: &auki_sdk::AukiPeer, home: &crate::network::HomeConnection) -> Result<PresenceSnapshot> {
+    Ok(PresenceReader::default().read(peer, home).await?.0)
+}
+
+/// Cache only discovery, never poses. A changed profile or failed invocation
+/// discards the pinned reference before the next read.
+#[derive(Default)]
+pub struct PresenceReader {
+    target: Option<(String, auki_sdk::Multiaddr, auki_components::ComponentReference)>,
+}
+impl PresenceReader {
+pub async fn read(&mut self, peer: &auki_sdk::AukiPeer, home: &crate::network::HomeConnection) -> Result<(PresenceSnapshot, Duration)> {
+    use auki_component_protocol::{CatalogResponse, ComponentProtocolClient};
+    let expected = home.validate(peer)?;
+    let client = ComponentProtocolClient::new(peer.protocols());
+    let key = serde_json::to_string(home)?;
+    if self.target.as_ref().is_some_and(|(old,_,_)| old != &key) { self.target = None; }
+    if self.target.is_none() {
+    for route in &home.routes {
+        let route: auki_sdk::Multiaddr = route.parse()?;
+        let Ok(CatalogResponse::Snapshot { snapshot }) = client.catalog_exact(expected, route.clone(), None).await else {continue};
+        let entry = snapshot.components.iter().find(|c| c.manifest.component_id == home.scoped_component(COMPONENT))
+            .ok_or_else(|| anyhow::anyhow!("Home phone presence unavailable"))?;
+        ensure!(entry.manifest.peer_id == home.peer_id, "Presence authority mismatch");
+        self.target = Some((key.clone(), route, entry.manifest.reference()));
+        break;
+    }
+    }
+    let (_,route,reference) = self.target.as_ref().ok_or_else(|| anyhow::anyhow!("Home phone presence unavailable"))?;
+    let began = Instant::now();
+    let result = client.invoke_exact::<_, PresenceSnapshot>(expected, route.clone(), reference.clone(),
+            "snapshot", "robot-phone-target", uuid::Uuid::new_v4().to_string(), Some(Duration::from_millis(700)),
+            &ReadPresence {frame: home.frame.clone()}).await;
+    let age = began.elapsed();
+    let value = match result {
+        Ok(reply) => reply.result,
+        Err(error) => { self.target = None; return Err(error.into()); }
+    };
+    if value.authority_peer_id != home.peer_id || value.presence["frame"] != home.frame { self.target = None; }
+        ensure!(value.authority_peer_id == home.peer_id && value.presence["frame"] == home.frame,
+                "Phone presence belongs to another Home/scene");
+    Ok((value, age))
+}
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Sample {
     pub session: String,
     pub timestamp_ns: u64,

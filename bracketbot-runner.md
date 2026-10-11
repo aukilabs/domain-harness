@@ -250,8 +250,8 @@ calibration and capture-time wrist-to-base transforms are declared explicitly:
 wrist AR and metric Portal localization are not enabled using guessed values.
 The calibrated head camera remains the source of metric Portal observations.
 
-`seek-bracketbot-portal.py` is a separate, one-shot controller. It is not started
-by the sensor adapter or its automatic restart loop. It saves both actual arm
+`seek-bracketbot-portal.py` supports one-shot and supervised search. It is never
+started by the sensor adapter. It saves both actual arm
 poses, uses the factory FK model and measured limits to solve a wrist-only
 45° forward/down finger direction, moves over eight seconds, then restores
 those saved poses over eight seconds. Mast, shoulder, elbow and gripper goals
@@ -261,7 +261,7 @@ only the verified hanging-arm starting envelope; it rejects arbitrary arm poses.
 Read-only plan on robot 0184:
 
 ```sh
-bb ssh 0184 'cd /home/bracketbot/deployments/domain-harness/runner/source && python3 scripts/bracketbot-python.py scripts/seek-bracketbot-portal.py --state ../state'
+bb ssh 0184 'cd /home/bracketbot/deployments/domain-harness/runner/source && python3 scripts/bracketbot-python.py --daemon arm_left scripts/seek-bracketbot-portal.py --state ../state'
 ```
 
 To perform one search/return cycle, append `--execute`. `--max-seconds` bounds
@@ -281,6 +281,90 @@ of attempting an unobserved recovery. No high-priority writers are acquired.
 The initial enable phase holds the saved pose while BBOS verifies motor modes;
 normal movement requires fresh feedback. Factory protections remain active.
 
+### Automatic behavior controller
+
+The runner supervisor launches `control-bracketbot-behavior.py` in read-only
+mode by default. `state/arm-behavior.status.json` exposes its phase and the
+separate search/pointing execution gates. After confirming empty hands and a
+clear wrist workspace, the launcher flag `--execute-portal-search` enables
+supervised wrist search. This flag must be supplied on each launcher restart;
+it is intentionally not a persistent motor-enable setting.
+
+Search holds until the mapper publishes a valid Home transform, unless feedback,
+temperature, controller ownership, or supervisor health requires an
+earlier stop. The helper's one-shot duration limit still applies outside this
+supervised mode. The controller requests restoration before another search;
+unexpected exits and safety stops latch a fault instead of automatically
+retrying. A lost Home transform requests search again with a live runner.
+Fixed wrist search uses fresh local arm feedback, not SLAM pose freshness;
+it remains available during localization loss. Fresh world pose is required
+before considering a phone target, not before entering the fixed search pose.
+A QR leaving view does not by itself invalidate an established transform.
+
+`--execute-phone-reach` additionally enables persistent full-arm reaching after
+calibration. Home exposes a scene-scoped authenticated `snapshot` operation on
+its phone-presence component; the robot caches only that small live response,
+with request duration and local receipt time. No HTTP control channel or foreign
+clock subtraction is used. Phone age must be at most 2000 ms including request
+duration; robot pose at most 800 ms, control snapshot 750 ms, arm feedback 250 ms.
+The controller reads `state/robot-control.json`, refreshed every 50 ms from
+capture ingress independently of QR decoding, voxel integration and scene-file
+writes. The native origin and alignment still come from the mapper. Tracking
+loss immediately pauses reaching. BBOS recovery into the same map resumes the
+existing alignment; an actual map correction still invalidates it until new
+portal evidence. A mapper basis older than three seconds is also rejected.
+Phone discovery is cached by the complete Home profile, but every pose read is
+a new authenticated invocation. Profile changes, failures and timeouts discard
+discovery; freshness includes invocation RTT, not the earlier catalog lookup.
+
+The nearest localized phone is selected by robot-origin distance; the nearest
+measured hand chooses the arm. The mast and gripper remain unchanged. The six
+arm joints solve against factory FK with the mast fixed, within measured joint
+limits, a same-side hand workspace and a 72-degree per-joint excursion.
+A segment extends the hand at most 30 cm toward the target and stops 20 cm short
+of its position (farther away if limited by the arm workspace). Wrist
+orientation is free: the IK objective is hand position. The tracked point is the phone camera;
+the hand reference is the factory EEF, so these are modeled—not measured surface
+clearance—distances. This does not claim full-body or room collision checking.
+
+Commands are bounded to 0.04 motor turns/s and modeled hand translation 20 cm/s.
+Targets outside the envelope or without a valid sampled IK path are rejected.
+The gesture keeps its chosen direction instead of cancelling for small phone
+movements. Brief network jitter is tolerated within the two-second phone age
+budget; proximity still stops extension at 20 cm. It holds indefinitely,
+records measured joint/hand travel and replans extension/re-aiming in the
+background while continuing motor updates. Checked return paths are compacted
+where possible so repeated adjustments do not accumulate motion history. Expired
+inputs or lost tracking also return along the checked path. A local
+feedback/ownership fault releases control instead
+of attempting blind recovery. `state/phone-reach.json` records planning, motion,
+return and rejection reasons. Ordinary-priority writers yield to manual control.
+Both execution flags must be explicitly supplied on launcher restarts.
+
+### Change the reaching target without rebuilding
+
+With the reach controller running, select a fixed note by its exact display name:
+
+```sh
+python3 scripts/select-bracketbot-reach-note.py 'this is dan'
+```
+
+This resolves the unique note in the selected Home scene and atomically replaces
+`state/reach-target.json` over the operator's SSH connection. The command checks
+the robot's configured Home owner/frame before accepting the target. Missing or
+ambiguous names are errors. Neither compilation nor runner restart is involved.
+Use `--preview` to resolve without commanding a reach.
+
+A note request overrides phone targeting. The nearer hand reaches and stays
+extended, adjusting as the robot's scene-relative position changes. There is no
+completion timeout or consumed request ID: the target remains active until
+replaced or the controller is stopped. `state/note-reach.json` records the
+request ID, measured extension and any replan limitation. A new target during
+motion cancels the old reach, returns, then selects the new one.
+The fixed note has no phone-feed freshness dependency; robot localization,
+feedback and joint limits still apply. Target coordinates remain scene-framed,
+and the robot continues to operate in Bracketbot space.
+
 Verified on 0184 on 2026-10-11: all 13 capture/stance unit checks passed locally
 and on the robot. Home received both wrist feeds. A 30-second physical search
 cycle reached the target within 0.66° (left) / 0.72° (right), then timed out and
@@ -289,3 +373,43 @@ All stance control writers were released afterward. Only the existing Home
 process on port 4329 was used. Actual calibration-triggered return remains
 unverified: BBOS reports `waiting_for_odometry`, no Portal estimate has been
 accepted, and wrist optics/extrinsics still need calibration.
+
+### Handoff status — 2026-10-11
+
+The previous paragraph describes the earlier wrist-search check, not a successful
+continuous reach. Later, portal localization did succeed and the note controller
+entered `reaching`, but tracking loss cancelled the movement after roughly three
+seconds. Sustained reaching and measured target extension remain unverified.
+
+- Robot: Bracketbot 0184. Runtime root:
+  `/home/bracketbot/deployments/domain-harness/runner`; scripts in `source/scripts`,
+  reports in `state`. Home was running at `http://127.0.0.1:4329`.
+- Persistent selected target: `this is dan`, note ID
+  `40f71b61-bdef-42d9-b360-e48eea01309d`. Selection is in `state/reach-target.json`.
+  The current launch enables reaching but not wrist-search motion. Genuine
+  hardware faults remain latched until explicit rearming.
+- A low-battery fault was followed by a battery swap; fresh voltage was 20.30 V
+  against the installed BBOS 17.8 V cutoff. Do not infer current battery health
+  from this historical measurement.
+- Home previously retained a pre-reboot scene indefinitely. The scene monitor
+  now times out silent streams after 10 seconds and bounds unsubscribe to two
+  seconds before rediscovery. Live Home receipt was verified at 298–302 scans,
+  approximately 6,500 voxels, and sub-second receive age. Later tracking loss
+  occurred while Home remained connected; these are separate failures.
+- BBOS intermittently stops producing valid poses. `/dev/shm/slam.log` reports
+  `pnp unsolved`, failed relocalization consensus, and pose-graph optimization
+  `cost nan -> nan ok=0`. The NaN cause is not established. The head image was
+  unobstructed. In a 12-second runner-pause test, SLAM remained lost before,
+  during, and after the pause; this does not rule out load contributing to loss.
+  The runner was resumed, and no SLAM reset was performed during that test.
+- The installed SLAM engine is `bbos/daemons/slam/bbslam.so`; its C++ source was
+  not found in the installed tree. The repository named in BBOS's README was
+  unavailable to the current GitHub account (404). Further engine diagnosis
+  needs the matching source/build or BBOS maintainer assistance.
+- Read `local-scene.status.json`, `robot-control.json`, `arm-behavior.status.json`,
+  and `note-reach.json` with their timestamps/PIDs. Old reports and old log tails
+  can survive process restarts; a running child is not proof of arm motion.
+
+The runtime note target can be changed without compilation or runner restart.
+No motor, SLAM, or robot state changes are required to review this PR. The robot
+and Home were left running at handoff; no claim is made that tracking is healthy.

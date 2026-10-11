@@ -16,6 +16,7 @@ import time
 import numpy as np
 from bracketbot_capture import timestamp
 from bracketbot_stance import calibrated, ease, hand_axis, plan_wrist
+from bracketbot_behavior import supervisor_fresh
 
 
 def main():
@@ -24,13 +25,18 @@ def main():
     ap.add_argument('--portal', default='HNY3JGNLRAE')
     ap.add_argument('--execute', action='store_true')
     ap.add_argument('--max-seconds', type=float, default=300.)
+    ap.add_argument('--hold-until-calibrated', action='store_true',
+                    help='Supervised search: hold until alignment, cancellation or safety stop')
+    ap.add_argument('--controller-pid', type=int)
     args = ap.parse_args()
     if not 1 <= args.max_seconds <= 300: ap.error('--max-seconds must be 1..300')
+    if args.hold_until_calibrated and not args.controller_pid:
+        ap.error('--hold-until-calibrated requires a supervising controller')
     from bbos import Config, Reader, Type, Writer
     configs = {side: Config('arm_'+side) for side in ('left', 'right')}
     args.state.mkdir(parents=True, exist_ok=True)
     status_path = args.state/'portal-stance.json'
-    scene_path = args.state/'local-scene.json'
+    scene_path = args.state/'robot-control.json'
     capture_status_path = args.state/'local-scene.status.json'
     def capture_status():
         if time.time()-capture_status_path.stat().st_mtime > 5:
@@ -40,9 +46,16 @@ def main():
         if not scene_path.exists(): return None
         return json.loads(scene_path.read_text())
     capture = capture_status()
-    frame = capture['frame']
-    clock = capture['sensors']['sources'][0]['clock']
+    home_frame = json.loads((args.state/'home-connection.json').read_text())['frame']
     initial_scene = scene()
+    frame = initial_scene['frame'] if initial_scene else capture['frame']
+    # Mapping can establish its origin before the independent camera catalog
+    # worker publishes its first source. The origin owns the capture clock.
+    clock = ((initial_scene or {}).get('registries',{}).get('local_mapping',{}).get('origin') or {}).get('capture_clock')
+    if clock is None:
+        sources=capture.get('sensors',{}).get('sources',[])
+        if not sources:raise RuntimeError('capture clock not ready')
+        clock=sources[0]['clock']
     baseline = (initial_scene['registries']['local_mapping']['observed_portals'].get(args.portal, {}).get('observations', 0)
                 if initial_scene and initial_scene['frame'] == frame else 0)
     report = dict(pid=os.getpid(), portal=args.portal, frame=frame, execute=args.execute,
@@ -56,7 +69,7 @@ def main():
     with (args.state/'portal-stance.lock').open('a') as lock, contextlib.ExitStack() as readers_stack:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if calibrated(initial_scene, args.portal, time.time_ns()-2_000_000_000,
-                      time.time_ns(), frame, clock):
+                      time.time_ns(), frame, clock, home_frame):
             status('already_calibrated')
             return
         readers = {side: readers_stack.enter_context(Reader('arm_'+side+'.state', keeptime=False)) for side in configs}
@@ -123,6 +136,10 @@ def main():
                             if int.from_bytes(f.read(4), 'little') != os.getpid():
                                 raise RuntimeError('control preempted; yielding without reacquiring')
                 def publish(goals, enable=True, arm_max_age=.25):
+                    if args.controller_pid:
+                        heartbeat = json.loads((args.state/'arm-behavior.status.json').read_text())
+                        if not supervisor_fresh(heartbeat, args.controller_pid, os.getppid(), time.time_ns()):
+                            raise RuntimeError('search supervisor unavailable; relinquishing control')
                     owns_control()
                     states = healthy(arm_max_age)
                     for side in configs:
@@ -174,7 +191,7 @@ def main():
                         status('searching', measured_hand_axes={s:v.tolist() for s,v in measured.items()}, angular_error_deg=angles)
                         until = time.monotonic()+args.max_seconds
                         last_check = 0
-                        while time.monotonic() < until and not stop:
+                        while (args.hold_until_calibrated or time.monotonic() < until) and not stop:
                             states = publish(target)
                             if max(float(np.max(d['temp'])) for d in states.values()) >= 48:
                                 reason = 'temperature_margin'; break
@@ -185,7 +202,7 @@ def main():
                                     if capture['frame'] != frame:
                                         reason = 'mapping_session_changed'; break
                                     observed = scene()
-                                    if calibrated(observed, args.portal, report['started_ns'], time.time_ns(), frame, clock, baseline):
+                                    if calibrated(observed, args.portal, report['started_ns'], time.time_ns(), frame, clock, home_frame, baseline):
                                         reason = 'calibrated'; break
                                 except (OSError, ValueError, KeyError):
                                     reason = 'mapping_unavailable'; break

@@ -128,7 +128,7 @@ fn recognition(value: &Recognition) -> Result<()> {
     valid_text(&value.identity)?;
     Ok(())
 }
-fn provenance(value: &Provenance) -> Result<()> {
+pub(crate) fn provenance(value: &Provenance) -> Result<()> {
     for reference in [&value.detected_by, &value.mapped_by].into_iter().flatten() {
         component(reference)?;
     }

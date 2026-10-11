@@ -192,6 +192,7 @@ pub async fn monitor(
                         status: "connected".into(),
                         detail: map.detail(),
                         received: Some(Instant::now()),
+                        frame_transform: None,
                     });
                 } else {
                     task_state.send_modify(|s| {
