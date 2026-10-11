@@ -10,7 +10,14 @@ def main():
     if len(sys.argv) < 2:
         raise SystemExit("Usage: bracketbot-python.py SCRIPT [ARGS...]")
     root = Path(os.environ.get("BBOS_ROOT", "/home/bracketbot/bbos"))
-    daemon = root / "bbos/daemons/depth"
+    args = sys.argv[1:]
+    name = 'depth'
+    if args[:1] == ['--daemon']:
+        name = args[1]
+        if name not in ('depth', 'arm_left'):
+            raise SystemExit('Unsupported read-only adapter runtime')
+        args = args[2:]
+    daemon = root / 'bbos/daemons' / name
     with (daemon / ".devenv/bbos-env.json").open() as source:
         cached = json.load(source)
     env = os.environ.copy()
@@ -19,7 +26,7 @@ def main():
             env[key] = cached[key]
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     python = str(daemon / ".venv/bin/python")
-    os.execve(python, [python, *sys.argv[1:]], env)
+    os.execve(python, [python, *args], env)
 
 
 if __name__ == "__main__":

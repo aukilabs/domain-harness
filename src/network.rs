@@ -194,6 +194,7 @@ pub struct ScenePublisher {
     started: Instant,
     last_scene: Option<Vec<u8>>,
     inputs: crate::shared_inputs::InputPublisher,
+    frame_transform: Option<crate::frame_transform::Publisher>,
     live: Option<(
         Component,
         ConfiguredObservable<CanonicalScene>,
@@ -243,6 +244,7 @@ impl ScenePublisher {
             crate::shared_inputs::InputPublisher::mount(&runtime, &endpoint, clock_ref(&clock))?;
         Ok(Self {
             inputs,
+            frame_transform: None,
             live: None,
             endpoint: Arc::new(endpoint),
             capture,
@@ -476,16 +478,20 @@ impl ScenePublisher {
         &mut self,
         local: &crate::local_mapper::LocalMap,
     ) -> Result<Option<CanonicalScene>> {
+        if self.frame_transform.is_none() {
+            self.frame_transform = Some(crate::frame_transform::Publisher::mount(
+                &self.runtime, &self.endpoint, clock_ref(&self.clock),
+            )?);
+        }
+        let transform = self.frame_transform.as_ref().unwrap();
+        let published_transform = transform.publish(local, &self.peer_id, self.started.elapsed().as_nanos() as u64)?;
         let Some(voxels) = &local.voxels else {
             return Ok(None);
         };
-        let mut portals = local.portals()?;
+        let portals = local.portals()?;
         let mut registries = local.metadata();
-        if let Some(home) = &local.home_portals {
-            let (aligned, metadata) = home.align(&portals)?;
-            portals = aligned;
-            registries["local_mapping"]["alignment_to_home"] = metadata;
-        }
+        registries["frame_transform_product"] = serde_json::to_value(transform.reference())?;
+        registries["frame_transform"] = serde_json::to_value(published_transform)?;
         registries["landmarks"] = serde_json::to_value(local.landmarks(&portals)?)?;
         let scene = CanonicalScene {
             schema: SCENE_SCHEMA.into(),

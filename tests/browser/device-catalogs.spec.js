@@ -28,6 +28,10 @@ test('normal Devices shows local and remote catalogs and clears unavailable entr
  await phone.locator('summary').first().click();await expect(phone).toContainText('Loading component catalog');
  peer.catalog_status='ready';peer.catalog=catalog;
  await expect(phone).toContainText('Component · android-local-mapper');await expect(phone).toContainText('Product · phone-local-voxels');
+ peer.catalog_cached=true;peer.catalog_refresh_status='unavailable';
+ await expect(phone).toContainText('Catalog refresh delayed');
+ await expect(phone).toContainText('Product · phone-local-voxels');
+ delete peer.catalog_cached;delete peer.catalog_refresh_status;
  const home=page.locator('#fleet-sensors > details[data-peer="home-peer"]');await home.locator('summary').first().click();await expect(home).toContainText('Component · home-phone-local-scenes');
  peer.catalog_status='unavailable';delete peer.catalog;
  await expect(phone).toContainText('Component catalog unavailable');await expect(phone.locator('[data-component]')).toHaveCount(0);

@@ -78,6 +78,7 @@ pub struct Sample {
     pub sequence: u64,
     pub timestamp_ns: u64,
     pub clock: ClockReference,
+    pub frame: auki_registry::FrameRegistryEntry,
     pub body: RobotOccupancy,
     pub received: Instant,
 }
@@ -122,7 +123,11 @@ pub async fn monitor(
                     cache.lock().unwrap().remove(&target.peer_id); product=None;continue;
                 }
                 let Some(observation)=batch.observations.last() else {continue};
-                if observation.payload.validate().is_err() || batch.producer.spatial_frame.as_ref().is_none_or(|f| f.definition != auki_registry::FrameRegistryEntry::ros_body(&target.peer_id,"robot.base") || f.validate().is_err()) {continue;}
+                let Some(frame) = batch.producer.spatial_frame.as_ref() else {continue};
+                let ros = auki_registry::FrameRegistryEntry::ros_body(&target.peer_id,"robot.base");
+                let bracket = auki_registry::FrameRegistryEntry::in_convention(&target.peer_id,"robot.base",auki_registry::CoordinateConvention::ZUpRightForward);
+                if observation.payload.validate().is_err() || frame.validate().is_err()
+                    || (frame.definition != ros && frame.definition != bracket) {continue;}
                 let mut cache=cache.lock().unwrap();
                 // Re-reading the same observation must not refresh its expiry.
                 let history=cache.entry(target.peer_id.clone()).or_default();
@@ -130,7 +135,7 @@ pub async fn monitor(
                 if history.back().is_some_and(|s|s.reference!=*reference) {history.clear();}
                 if history.len()==6 {history.pop_front();}
                 history.push_back(Sample {reference:reference.clone(),sequence:observation.sequence,timestamp_ns:observation.timestamp_ns,
-                    clock:batch.producer.clock.clone(),body:(*observation.payload).clone(),received:Instant::now()});
+                    clock:batch.producer.clock.clone(),frame:frame.definition.clone(),body:(*observation.payload).clone(),received:Instant::now()});
             }
             Ok::<_,anyhow::Error>(())
         }.await;
@@ -179,7 +184,7 @@ pub fn render(
         history.contract.clock == sample.clock
             && history.contract.session_id == sample.body.session_id
             && history.contract.from_frame
-                == auki_registry::FrameRegistryEntry::ros_body(peer, "robot.base")
+                == sample.frame
             && origin.capture_clock == sample.clock
             && sample.timestamp_ns >= origin.capture_timestamp_ns,
         "Robot volume session mismatch"

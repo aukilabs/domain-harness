@@ -2,6 +2,117 @@ use anyhow::Result;
 use auki_components::ComponentRuntime;
 use auki_odometry::Pose;
 use spatial_home::local_mapper::*;
+mod support;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn portal_transform_is_separate_catalog_product_and_never_rebases_robot() -> Result<()> {
+    use spatial_home::{frame_transform::{self, FrameTransform, Validity, Received}, network::{ScenePublisher, HomeConnection}};
+    use auki_component_protocol::RemoteObservationEvent;
+    use std::time::{Duration, Instant};
+    let pair = support::LocalPair::start().await?;
+    let result = async {
+        let owner = pair.a.peer_id().to_string();
+        let runtime = ComponentRuntime::new(owner.as_str());
+        let mut map = LocalMap::new_for_robot(&runtime, &owner, &uuid::Uuid::new_v4().to_string(), BRACKETBOT_FAMILY, spatial_home::rgbd::FRAME, serde_json::from_str(include_str!("../config/portals.json"))?)?;
+        let t = 1_000_000_000;
+        map.copy_native_scans();
+        map.accept(SensorEvent::Odometry { timestamp_ns:t, pose:identity() })?;
+        map.accept(SensorEvent::Camera { sample:sample("HRIPLL40GL6",t) })?;
+        let copied = map.take_localized_scans();
+        assert!(!copied.is_empty());
+        assert!(copied.iter().all(|scan|scan.observation.pose.sensor_to_map.to_frame_id==map.frame));
+        assert!(map.voxels.as_ref().unwrap().integrated_observations>0,"copying does not disable native integration");
+        let native = serde_json::to_value(map.portals()?)?;
+        let origin = map.origin.as_ref().unwrap().odometry_to_local.clone();
+        let checkpoint = map.voxels.as_ref().unwrap().checkpoint.clone();
+        let reference = spatial_home::conventions::portals(&spatial_home::domain_portals::load()?, spatial_home::model::FRAME)?;
+        map.accept_home_portals(reference.clone(), "home".into())?;
+        let value = FrameTransform::from_local(&map, &owner)?;
+        assert_eq!(value.validity, Validity::Valid);
+        assert_eq!(serde_json::to_value(map.portals()?)?, native);
+        assert_eq!(map.origin.as_ref().unwrap().odometry_to_local, origin);
+        assert_eq!(map.voxels.as_ref().unwrap().checkpoint, checkpoint);
+        let mut publisher = ScenePublisher::mount_in_frame(&pair.a, &map.frame)?;
+        let scene = publisher.publish_local(&map)?.unwrap();
+        assert_eq!(scene.frame, map.frame);
+        assert!(scene.portals.scenegraph.anchors.keys().all(|k|!k.starts_with("home:")));
+        let connection = HomeConnection::direct(&pair.a);
+        let mut subscription = frame_transform::subscribe(&pair.b, &connection).await?;
+        let Some(RemoteObservationEvent::Observation(o)) = tokio::time::timeout(Duration::from_secs(10), subscription.next()).await?? else { panic!("No transform observation") };
+        o.payload.validate(&owner)?;
+        let received = Received { value:(*o.payload).clone(), product:subscription.product().reference(), received:Instant::now() };
+        assert!(received.usable(&scene));
+        let (state, mut updates)=tokio::sync::watch::channel(spatial_home::scene_mirror::RemoteScene::default());
+        let stop=tokio_util::sync::CancellationToken::new();
+        let (_, followed)=tokio::join!(frame_transform::follow(&pair.b,&connection,&state,&stop), async {
+            let result=tokio::time::timeout(Duration::from_secs(10),async {
+                loop {
+                    updates.changed().await?;
+                    if let Some(value)=updates.borrow().frame_transform.as_ref() {
+                        assert!(value.usable(&scene));
+                        return Ok::<_,anyhow::Error>(());
+                    }
+                }
+            }).await;
+            stop.cancel();result
+        });
+        followed??;
+        let mut replaced=scene.clone();
+        replaced.registries["frame_transform_product"]["manifest_hash"]=serde_json::json!("different-run");
+        assert!(!received.usable(&replaced));
+        let mut expired = received.clone();
+        expired.received = Instant::now()-Duration::from_secs(4);
+        assert!(!expired.usable(&scene));
+        let mut wrong = scene.clone(); wrong.frame = "wrong".into(); wrong.portals.scenegraph.map.frame.id = "wrong".into();
+        assert!(!received.usable(&wrong));
+        let mut forged = value.clone(); forged.authority_peer_id = "other".into();
+        assert!(forged.validate(&owner).is_err());
+        let before = serde_json::to_value(&scene)?;
+        let mut view = spatial_home::scene_mirror::render_scene(&scene)?;
+        spatial_home::scene_mirror::apply_display_transform(&mut view, &scene, &value)?;
+        let displayed = view["portals"].as_array().unwrap().iter().find(|v|v["anchor_id"]=="HRIPLL40GL6").unwrap();
+        let expected = &reference.scenegraph.anchors["HRIPLL40GL6"].pose_in_map;
+        let actual:auki_scenegraph::RigidTransform=serde_json::from_value(displayed["pose_in_map"].clone())?;
+        for (a,b) in actual.translation.iter().zip(expected.translation) {assert!((a-b).abs()<1e-8);}
+        let dot:f64=actual.rotation_wxyz.iter().zip(expected.rotation_wxyz).map(|(a,b)|a*b).sum();
+        assert!((dot.abs()-1.).abs()<1e-8);
+        assert_eq!(serde_json::to_value(&scene)?, before, "display never mutates native snapshot");
+        map.accept(SensorEvent::TrackingLost {timestamp_ns:t+1})?;
+        assert_eq!(FrameTransform::from_local(&map,&owner)?.validity, Validity::Stale);
+        map.accept(SensorEvent::Odometry {timestamp_ns:t*2,pose:identity()})?;
+        assert_eq!(FrameTransform::from_local(&map,&owner)?.validity, Validity::Valid,
+                   "BBOS tracking recovery in the same map does not require another portal");
+        assert_eq!(map.origin.as_ref().unwrap().odometry_to_local, origin);
+        map.accept(SensorEvent::Camera {sample:sample("HRIPLL40GL6",t*2)})?;
+        assert_eq!(FrameTransform::from_local(&map,&owner)?.validity, Validity::Valid);
+        map.accept(SensorEvent::MapCorrection {timestamp_ns:t*3,pgo_count:1,pose:identity()})?;
+        assert_eq!(FrameTransform::from_local(&map,&owner)?.validity, Validity::Unavailable);
+        let corrected=publisher.publish_local(&map)?.unwrap();
+        assert_eq!(corrected.frame,scene.frame);
+        assert_eq!(corrected.registries["frame_transform_product"],scene.registries["frame_transform_product"]);
+        assert!(!received.usable(&corrected));
+        subscription.close().await?;
+        publisher.close().await?;
+        Ok::<_,anyhow::Error>(())
+    }.await;
+    let cleanup=pair.shutdown().await;
+    result.and(cleanup)
+}
+
+#[test]
+fn delayed_image_does_not_rewind_live_robot_pose() -> Result<()> {
+    let runtime = ComponentRuntime::new("robot");
+    let mut map = LocalMap::new(&runtime, "robot", &uuid::Uuid::new_v4().to_string())?;
+    map.accept(SensorEvent::Odometry { timestamp_ns:100_000_000, pose:identity() })?;
+    map.accept(SensorEvent::Odometry {
+        timestamp_ns:200_000_000, pose:Pose { translation:[0.1,0.,0.], ..identity() }
+    })?;
+    let latest = map.latest_pose.clone();
+    map.accept(SensorEvent::Camera { sample:sample("HRIPLL40GL6",100_000_000) })?;
+    assert_eq!(map.latest_pose, latest);
+    assert_eq!(map.voxels.as_ref().unwrap().integrated_observations, 1);
+    Ok(())
+}
 
 #[test]
 fn scan_diagnostics_distinguish_live_poses_from_actual_integration() -> Result<()> {

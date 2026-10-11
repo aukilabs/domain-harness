@@ -205,6 +205,7 @@ pub struct LocalMap {
     pub frame: String,
 
     pub home_portals: Option<crate::home_alignment::HomePortals>,
+    pub(crate) alignment_after_ns: Option<u64>,
     pub origin: Option<Origin>,
     pub detail: String,
     owner: String,
@@ -238,6 +239,7 @@ pub struct LocalMap {
     pub voxels: Option<VoxelSnapshot>,
     recent_voxels: crate::recent_voxels::RecentVoxels,
     emit_scans: bool,
+    copy_scans: bool,
     localized_scans: Vec<crate::collaborative_mapper::LocalizedScan>,
     _voxel_component: Option<VoxelMapComponent>,
     sizes: crate::portal_sizes::PortalSizes,
@@ -528,6 +530,7 @@ impl LocalMap {
             frame,
 
             home_portals: None,
+            alignment_after_ns: None,
             origin: None,
             detail: if portal_origin {
                 "Waiting for UCOF1J40N7O in raw camera observations"
@@ -564,6 +567,7 @@ impl LocalMap {
             recent_voxels: Default::default(),
             emit_scans: false,
             localized_scans: Vec::new(),
+            copy_scans: false,
             _voxel_component: None,
             sizes: serde_json::from_str(include_str!("../config/portals.json"))?,
             evidence: BTreeMap::new(),
@@ -579,6 +583,8 @@ impl LocalMap {
     pub fn emit_localized_scans(&mut self) {
         self.emit_scans = true;
     }
+    /// Export bounded raw scans without changing native mapping or its origin.
+    pub fn copy_native_scans(&mut self) { self.copy_scans = true; }
     pub fn calibrate_against(&mut self, canonical: &MapSnapshot) -> Result<()> {
         ensure!(
             self.origin.is_none(),
@@ -654,7 +660,11 @@ impl LocalMap {
 
             anchor,
         };
-        home.align(&observed)?;
+        home.portals.validate()?;
+        crate::conventions::validate_frame(&home.portals.scenegraph.map.frame)?;
+        ensure!((home.portals.scenegraph.anchors[&home.anchor].side_length_m
+            - observed.scenegraph.anchors[&home.anchor].side_length_m).abs() < 1e-6,
+            "alignment portal sizes differ");
         self.home_portals = Some(home);
         Ok(())
     }
@@ -728,6 +738,12 @@ impl LocalMap {
                 self.detail = format!("SLAM correction {pgo_count} · local geometry invalidated; connection retained");
             }
             SensorEvent::TrackingLost { timestamp_ns } => {
+                // BBOS recovers into the same SLAM map. A missing pose pauses
+                // localization, but does not change the map-to-Home transform.
+                // MapCorrection still clears all portal/alignment evidence.
+                if !self.frame.starts_with(&format!("{BRACKETBOT_FAMILY}:")) {
+                    self.alignment_after_ns = Some(timestamp_ns);
+                }
                 self.odometry.publish(timestamp_ns, Tracking::Lost)?;
                 self.latest_pose = None;
                 self.scan_diagnostics.discarded_on_tracking_loss += self.pending.len() as u64;
@@ -827,9 +843,7 @@ impl LocalMap {
                 pose: pose.clone(),
             }),
             Tracking::Lost => {
-                self.odometry.publish(timestamp_ns, Tracking::Lost)?;
-                self.latest_pose = None;
-                Ok(())
+                self.accept(SensorEvent::TrackingLost { timestamp_ns })
             }
         }
     }
@@ -1293,10 +1307,14 @@ impl LocalMap {
         };
         if self.origin.is_some() {
             self.initialize_voxels()?;
-            self.latest_pose = Some((
-                s.timestamp_ns,
-                compose(&self.origin.as_ref().unwrap().odometry_to_local, base)?,
-            ));
+            // A delayed image uses its capture-time pose for mapping, but must
+            // not rewind the live robot pose supplied by newer odometry.
+            if self.latest_pose.as_ref().is_none_or(|(t, _)| s.timestamp_ns >= *t) {
+                self.latest_pose = Some((
+                    s.timestamp_ns,
+                    compose(&self.origin.as_ref().unwrap().odometry_to_local, base)?,
+                ));
+            }
             if self.emit_scans
                 && self
                     .origin
@@ -1428,6 +1446,12 @@ impl LocalMap {
                 portal_snapshot: saved.definition.portal_snapshot.clone(),
             },
         };
+        if self.copy_scans {
+            if self.localized_scans.len() >= 32 { self.localized_scans.remove(0); }
+            self.localized_scans.push(crate::collaborative_mapper::LocalizedScan {
+                observation:observation.clone(),binding:binding.clone(),colors:colors.clone(),origin:self.origin.clone().unwrap(),
+            });
+        }
         if self.emit_scans {
             ensure!(
                 self.localized_scans.len() < 32,

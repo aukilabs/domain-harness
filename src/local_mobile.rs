@@ -100,7 +100,7 @@ impl Scene {
         view["local_reference"] = json!(true);
         view["mobile_enabled"] = json!(true);
         view["convention"] = json!("OpenGL · meters");
-        view["authority"] = json!("Home · scene-specific phone mapper");
+        view["authority"] = json!("Home · scene-specific peer mapper");
         view["mode"] = json!("Home-owned scenegraph");
         view["demo"] = json!(false);
         Ok(view)
@@ -122,6 +122,7 @@ pub struct Publisher {
     reference: MapSnapshot,
     state: Arc<Mutex<State>>,
     inbox: crate::mobile_depth::SharedInbox,
+    contributions: Arc<Mutex<crate::scene_contribution::Inbox>>,
     scenes: Arc<LocalScenes>,
     output: ConfiguredObservable<Scene>,
     capture: BufferProductCapture<Scene>,
@@ -230,6 +231,14 @@ impl Publisher {
         )?;
         endpoint.export_product(&capture.product())?;
         let mut components = vec![component];
+        let contributions = Arc::new(Mutex::new(crate::scene_contribution::Inbox::default()));
+        let receiver = runtime.component(ComponentSpec::new(format!("{}:{id}",crate::scene_contribution::COMPONENT)).operable(
+            OperableContract{name:"ingest".into(),instruction:crate::scene_contribution::Contribution::DATATYPE.into(),result:"bool".into(),exposure:Exposure::Cluster}))?;
+        let queue=contributions.clone();let reference_copy=reference.clone();
+        let operation=receiver.operable("ingest",|ctx|!ctx.caller_peer_id.is_empty(),move |ctx,c:crate::scene_contribution::Contribution|{
+            queue.lock().map_err(|_|InvocationError::TargetUnavailable)?.accept(&ctx.caller_peer_id,c,&reference_copy).map_err(rejected)
+        })?;
+        receiver.expose()?;endpoint.export_operable(&operation)?;components.push(receiver);
 
         let depth = runtime.component(
             ComponentSpec::new(format!("{}:{id}", crate::mobile_depth::COMPONENT)).operable(
@@ -307,8 +316,25 @@ impl Publisher {
                     result: "bool".into(),
                     exposure: Exposure::Cluster,
                 },
-            ),
+            ).operable(OperableContract {
+                name: "snapshot".into(),
+                instruction: crate::mobile_pose::ReadPresence::DATATYPE.into(),
+                result: crate::mobile_pose::PresenceSnapshot::DATATYPE.into(),
+                exposure: Exposure::Cluster,
+            }),
         )?;
+        let snapshot_state = live_presence.clone();
+        let snapshot_frame = frame.clone();
+        let snapshot_owner = owner.clone();
+        let snapshot_op = presence.operable("snapshot", |ctx| !ctx.caller_peer_id.is_empty(),
+            move |_, request: crate::mobile_pose::ReadPresence| {
+                if request.frame != snapshot_frame {
+                    return Err(InvocationError::Rejected("Presence scene mismatch".into()));
+                }
+                let presence = snapshot_state.lock().map_err(|_| InvocationError::TargetUnavailable)?
+                    .snapshot_in_frame(Instant::now(), &snapshot_frame);
+                Ok(crate::mobile_pose::PresenceSnapshot { authority_peer_id: snapshot_owner.clone(), presence })
+            })?;
         let presence_state = live_presence;
         let op = presence.operable(
             "update",
@@ -324,12 +350,14 @@ impl Publisher {
         )?;
         presence.expose()?;
         endpoint.export_operable(&op)?;
+        endpoint.export_operable(&snapshot_op)?;
         components.push(presence);
         let mut publisher = Self {
             id: id.into(),
             reference,
             state,
             inbox,
+            contributions,
             scenes,
             output,
             capture,
@@ -360,6 +388,10 @@ impl Publisher {
             .state
             .lock()
             .map_err(|_| anyhow!("Scene unavailable"))?;
+        for contribution in self.contributions.lock().map_err(|_|anyhow!("Contribution inbox unavailable"))?.take() {
+            let peer=contribution.source.peer_id.clone();
+            if let Err(e)=state.map.integrate_contribution(contribution){state.map.peer_status(&peer,"rejected",&e.to_string());}
+        }
         for envelope in pending {
             let peer = envelope.source.peer_id.clone();
             if let Err(e) = state.map.integrate_phone(envelope) {

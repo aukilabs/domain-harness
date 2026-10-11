@@ -148,6 +148,15 @@ async fn robot_occupancy(
         };
         match spatial_home::robot_occupancy::render_latest(history, &s.ar_frames, scene, q.peer.is_none()) {
             Ok(mut view) => {
+                if let Some(transform) = &remote.frame_transform
+                    && transform.usable(scene)
+                {
+                    let (frame, alignment) = spatial_home::scene_mirror::display_transform(
+                        scene, &transform.value, view["frame"].as_str().ok_or_else(||anyhow::anyhow!("Missing body display frame"))?)?;
+                    let pose = serde_json::from_value(view["pose"].clone()).map_err(anyhow::Error::from)?;
+                    view["pose"] = serde_json::to_value(spatial_home::local_mapper::compose(&alignment, &pose)?).map_err(anyhow::Error::from)?;
+                    view["frame"] = json!(frame);
+                }
                 view["name"] = json!(
                     s.runners
                         .get(peer)

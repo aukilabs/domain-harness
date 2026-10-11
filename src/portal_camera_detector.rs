@@ -3,6 +3,14 @@ use crate::{galbot_sensors::SensorSpec, landmarks::*};
 use auki_component_protocol::ComponentProtocolEndpoint;
 use auki_components::*;
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
+
+/// One decode at a time, followed by three times its wall duration idle.
+/// This budgets the four camera workers together, without throttling previews.
+pub struct DetectorBudget(Mutex<Instant>);
+impl Default for DetectorBudget {
+    fn default() -> Self { Self(Mutex::new(Instant::now())) }
+}
 
 type Pending = Arc<(Mutex<(bool, Option<Observation<VideoFrame>>)>, Condvar)>;
 pub struct PortalCameraDetector {
@@ -26,14 +34,16 @@ impl PortalCameraDetector {
         runtime: &ComponentRuntime,
         endpoint: &ComponentProtocolEndpoint,
         spec: &SensorSpec,
+        budget: Arc<DetectorBudget>,
     ) -> anyhow::Result<Self> {
-        let (detector, product) = Self::create(runtime, spec)?;
+        let (detector, product) = Self::create(runtime, spec, Some(budget))?;
         endpoint.export_product(&product)?;
         Ok(detector)
     }
     fn create(
         runtime: &ComponentRuntime,
         spec: &SensorSpec,
+        budget: Option<Arc<DetectorBudget>>,
     ) -> anyhow::Result<(Self, RetainedProduct<LandmarkObservations>)> {
         let id = format!("{}.portal-detector", spec.id);
         let component =
@@ -75,6 +85,7 @@ impl PortalCameraDetector {
             let _capture = capture;
             let mut detector = auki_qr_detector::QrDetector::new(Default::default());
             let mut last = None;
+            let mut next_camera = Instant::now();
             loop {
                 let (lock, ready) = &*queue;
                 let mut state = lock.lock().unwrap();
@@ -84,8 +95,24 @@ impl PortalCameraDetector {
                 if state.0 {
                     break;
                 }
+                // Wait interruptibly and leave the latest-only mailbox intact.
+                // A per-camera interval also prevents a fast wrist worker from
+                // continuously taking the shared budget from another camera.
+                let mut permit = None;
+                if let Some(budget) = &budget {
+                    if Instant::now() >= next_camera {
+                        if let Ok(slot) = budget.0.try_lock() {
+                            if Instant::now() >= *slot { permit = Some(slot); }
+                        }
+                    }
+                    if permit.is_none() {
+                        let _ = ready.wait_timeout(state, Duration::from_millis(50)).unwrap();
+                        continue;
+                    }
+                }
                 let observation = state.1.take().unwrap();
                 drop(state);
+                let started = Instant::now();
                 let result = (|| -> anyhow::Result<()> {
                     let (decoded, landmarks) = detect(&mut detector, &observation.payload.bytes)?;
                     let identities = landmarks
@@ -119,6 +146,11 @@ impl PortalCameraDetector {
                     }
                     Ok(())
                 })();
+                if let Some(mut slot) = permit {
+                    *slot = Instant::now() + started.elapsed().saturating_mul(3)
+                        .max(Duration::from_millis(250));
+                    next_camera = Instant::now() + Duration::from_secs(1);
+                }
                 if let Err(e) = result {
                     let mut status = worker_status.lock().unwrap();
                     status.errors += 1;
@@ -222,7 +254,8 @@ mod tests {
                     .in_registered_frame(auki_registry::FrameRegistryEntry::ros_optical("robot", id)),
             )?;
             source.expose()?;
-            let (detector, product) = PortalCameraDetector::create(&runtime, &spec)?;
+            let budget = Arc::new(DetectorBudget::default());
+            let (detector, product) = PortalCameraDetector::create(&runtime, &spec, Some(budget.clone()))?;
             for (t, data) in [
                 (1, jpeg(Some("https://r8.hr/2ZWHV5L6I04"))),
                 (2, jpeg(None)),
@@ -237,7 +270,13 @@ mod tests {
                     }),
                 )?;
                 let sequence = observation.sequence;
+                // Hold the shared slot unavailable: submitting must remain
+                // nonblocking, and no decode may run before the budget opens.
+                *budget.0.lock().unwrap() = Instant::now() + Duration::from_millis(150);
+                let before = detector.status().processed_frames;
                 detector.submit(observation);
+                std::thread::sleep(Duration::from_millis(75));
+                assert_eq!(detector.status().processed_frames, before);
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
                 while detector.status().last_timestamp_ns != Some(t) {
                     anyhow::ensure!(

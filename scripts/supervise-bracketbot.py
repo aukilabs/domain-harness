@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import signal
 import subprocess
+import sys
 import time
 
 
@@ -14,6 +15,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--state', type=Path, required=True)
     ap.add_argument('--binary', type=Path, required=True)
+    ap.add_argument('--execute-portal-search', action='store_true',
+                    help='Enable supervised wrist search; requires a clear workspace and empty hands')
+    ap.add_argument('--execute-phone-reach', action='store_true')
     args = ap.parse_args()
     args.state.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (args.state/'supervisor.lock').open('a') as lock:
@@ -22,14 +26,27 @@ def main():
         pidfile.write_text(str(os.getpid()))
         stopped = False
         child = None
+        behavior = None
+        def heartbeat(running):
+            tmp = args.state/'supervisor-live.tmp'
+            tmp.write_text(json.dumps(dict(pid=os.getpid(), updated_ns=time.time_ns(), running=running)))
+            tmp.replace(args.state/'supervisor-live.json')
         def stop(*_):
             nonlocal stopped
             stopped = True
             if child and child.poll() is None: child.terminate()
+            if behavior and behavior.poll() is None: behavior.terminate()
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
         failures = 0
         try:
+            heartbeat(False)
+            behavior_args = [sys.executable, str(Path(__file__).with_name('control-bracketbot-behavior.py')),
+                             '--state', str(args.state), '--supervisor-pid', str(os.getpid())]
+            if args.execute_portal_search: behavior_args.append('--execute-search')
+            if args.execute_phone_reach: behavior_args.append('--execute-phone-reach')
+            # Never automatically restart a failed arm controller.
+            behavior = subprocess.Popen(behavior_args, stdin=subprocess.DEVNULL)
             while not stopped:
                 log = args.state/'runner.log'
                 if log.exists() and log.stat().st_size > 8*1024*1024:
@@ -40,12 +57,14 @@ def main():
                         str(args.state/'local-scene.json'), str(args.state/'connection.json')],
                         stdin=subprocess.DEVNULL, stdout=output, stderr=output)
                     while child.poll() is None:
+                        heartbeat(not stopped)
                         if stopped:
                             try: child.wait(timeout=25)
                             except subprocess.TimeoutExpired:
                                 child.kill(); child.wait()
                             break
                         time.sleep(.25)
+                heartbeat(False)
                 (args.state/'supervisor-status.json').write_text(json.dumps({
                     'pid': os.getpid(), 'last_exit': child.returncode,
                     'stopped': stopped, 'last_runtime_seconds': round(time.monotonic()-started, 2)}))
@@ -54,6 +73,12 @@ def main():
                 until = time.monotonic()+delay
                 while not stopped and time.monotonic() < until: time.sleep(.25)
         finally:
+            heartbeat(False)
+            if behavior and behavior.poll() is None:
+                behavior.terminate()
+                try: behavior.wait(timeout=68)
+                except subprocess.TimeoutExpired:
+                    behavior.kill(); behavior.wait()
             pidfile.unlink(missing_ok=True)
 
 

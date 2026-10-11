@@ -18,6 +18,13 @@ test('independent and shared maps apply SDK glyph poses while retaining body pos
  await page.goto('/');await page.selectOption('#map-select','runner',{force:true});
  await expect(page.locator('#runner-card')).toHaveAttribute('data-rotation','[-0.5,0.5,0.5,0.5]');
  await expect(page.locator('#runner-card')).toHaveAttribute('data-position','[1,2,3]');
+ local.frame=base.frame;local.display_alignment={portal:'test-portal'};
+ local.voxel_rotation_xyzw=[0,Math.SQRT1_2,0,Math.SQRT1_2];
+ await expect(page.locator('#scene-note')).toContainText('Display aligned via test-portal');
+ await expect(page.locator('#frame-info')).toContainText('robot-native frame unchanged');
+ delete local.display_alignment;local.frame_transform={validity:'stale'};
+ local.frame='bracketbot-local:test:opengl';
+ await expect(page.locator('#scene-note')).toContainText('Portal transform is stale');
  await page.selectOption('#map-select','home-live',{force:true});
  const bb=page.locator('.runner-pose-row[data-peer="bb"]');
  const other=page.locator('.runner-pose-row[data-peer="ros"]');
