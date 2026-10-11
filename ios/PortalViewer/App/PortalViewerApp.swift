@@ -561,6 +561,10 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
             config.frameSemantics.insert(.sceneDepth)
         } else { depthStatus = "This phone does not provide LiDAR scene depth" }
+        // People in front of the map hide it, using their measured depth.
+        if ARWorldTrackingConfiguration.supportsFrameSemantics(.personSegmentationWithDepth) {
+            config.frameSemantics.insert(.personSegmentationWithDepth)
+        }
         view.session.run(config)
     }
 
