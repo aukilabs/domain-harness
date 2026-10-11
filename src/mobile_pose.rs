@@ -9,7 +9,7 @@ use std::{
 };
 
 pub const COMPONENT: &str = "home-phone-presence";
-/// Local addition: display names per phone peer, read once from
+/// Display names per phone peer, read once from
 /// `SPATIAL_PHONE_NAMES` (default `data/phone-names.json`, `{"<peer id>": "<name>"}`).
 /// The entry `"*"` names every unlisted phone; otherwise a short peer suffix is used.
 static NAMES: std::sync::LazyLock<BTreeMap<String, String>> = std::sync::LazyLock::new(|| {

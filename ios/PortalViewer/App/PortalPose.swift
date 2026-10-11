@@ -35,7 +35,7 @@ enum PortalPose {
             let projected = k * point
             error += simd_length_squared(SIMD2(projected.x, projected.y) / projected.z - pixel)
         }
-        // Local change: Vision's corner noise grows with the code's size in the
+        // Vision's corner noise grows with the code's size in the
         // image, so allow 2% of its mean edge length, never less than 3 px.
         var edge: Float = 0
         for i in 0..<4 { edge += simd_length(corners[i] - corners[(i + 1) % 4]) }
