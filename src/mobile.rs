@@ -145,6 +145,7 @@ pub struct MobileClient {
     local_map: tokio::sync::watch::Sender<Option<(crate::mobile_local::Snapshot, Instant)>>,
     depth: tokio::sync::watch::Sender<Option<(crate::mobile_depth::Sample, std::time::Instant)>>,
     pose: tokio::sync::watch::Sender<Option<crate::mobile_pose::Sample>>,
+    asleep: AtomicBool,
     stop: CancellationToken,
     state: Mutex<MobileState>,
     finished: AtomicBool,
@@ -165,6 +166,7 @@ impl Default for MobileClient {
             camera_demand: AtomicBool::new(false),
             local_map: tokio::sync::watch::channel(None).0,
             pose: tokio::sync::watch::channel(None).0,
+            asleep: AtomicBool::new(false),
             depth: tokio::sync::watch::channel(None).0,
             commands,
             receiver: Mutex::new(Some(receiver)),
@@ -220,6 +222,13 @@ impl MobileClient {
     }
     pub fn update_pose(&self, sample: Option<crate::mobile_pose::Sample>) {
         self.pose.send_replace(sample);
+    }
+    /// The phone paused its camera. Home keeps the last pose, marked asleep.
+    pub fn set_asleep(&self, asleep: bool) {
+        self.asleep.store(asleep, Ordering::Release);
+        if asleep {
+            self.pose.send_replace(None);
+        }
     }
     pub fn annotate(&self, request: crate::mobile_notes::PlaceNote) -> bool {
         if self.snapshot().state != "live" {
@@ -397,13 +406,21 @@ impl MobileClient {
                 };
                 let pose_work = async {
                     // Latest-only watch channel: send immediately, never queue old poses.
-                    while poses.changed().await.is_ok() {
+                    loop {
+                        // While asleep, repeat the status so Home keeps the phone listed.
+                        let asleep = self.asleep.load(Ordering::Acquire);
+                        tokio::select! {
+                            changed = poses.changed() => if changed.is_err() { break },
+                            _ = tokio::time::sleep(Duration::from_secs(20)), if asleep => {}
+                        }
                         let sample = poses.borrow_and_update().clone();
+                        let status = (sample.is_none() && self.asleep.load(Ordering::Acquire))
+                            .then(|| "asleep".to_string());
                         let _ = tokio::time::timeout(
                             Duration::from_secs(2),
                             operations.invoke::<_,bool>(&home.scoped_component(crate::mobile_pose::COMPONENT),
                                 "update","phone-pose",&uuid::Uuid::new_v4().to_string(),Duration::from_secs(1),
-                                &crate::mobile_pose::Update { sample }),
+                                &crate::mobile_pose::Update { sample, status }),
                         )
                         .await;
                     }
@@ -508,7 +525,11 @@ impl MobileClient {
                     crate::mobile_pose::send(
                         &peer,
                         &home,
-                        &crate::mobile_pose::Update { sample: None },
+                        // A phone that locks while asleep stays listed as asleep.
+                        &crate::mobile_pose::Update {
+                            sample: None,
+                            status: self.asleep.load(Ordering::Acquire).then(|| "asleep".to_string()),
+                        },
                     ),
                 )
                 .await;

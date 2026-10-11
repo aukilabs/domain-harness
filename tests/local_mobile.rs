@@ -191,6 +191,7 @@ async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated(
                 timestamp_ns: 200,
                 pose: rigid(&home_from_session, &camera, &home.frame),
             }),
+            status: None,
         };
         spatial_home::mobile_pose::send(&pair.b, &home, &pose).await?;
         // Presence is immediately readable, without waiting for the 1 Hz scene tick.

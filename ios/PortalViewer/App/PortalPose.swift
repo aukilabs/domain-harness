@@ -35,7 +35,12 @@ enum PortalPose {
             let projected = k * point
             error += simd_length_squared(SIMD2(projected.x, projected.y) / projected.z - pixel)
         }
-        guard error.isFinite, sqrt(error / 4) < 3 else { return nil }
+        // Vision's corner noise grows with the code's size in the
+        // image, so allow 2% of its mean edge length, never less than 3 px.
+        var edge: Float = 0
+        for i in 0..<4 { edge += simd_length(corners[i] - corners[(i + 1) % 4]) }
+        let tolerance = max(3, 0.02 * edge / 4)
+        guard error.isFinite, sqrt(error / 4) < tolerance else { return nil }
         let optical = simd_float4x4(SIMD4(x, 0), SIMD4(y, 0), SIMD4(z, 0), SIMD4(t, 1))
         // Camera optical +Y down/+Z forward -> ARKit +Y up/+Z backward.
         let conversion = simd_float4x4(diagonal: SIMD4<Float>(1, -1, -1, 1))

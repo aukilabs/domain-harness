@@ -2,6 +2,7 @@ import SwiftUI
 import ARKit
 import SceneKit
 import Vision
+import CoreMotion
 import UniformTypeIdentifiers
 
 @main
@@ -17,10 +18,23 @@ struct ViewerScreen: View {
     @State private var importing = false
     @State private var connecting = false
     @State private var pairingError: String?
+    @State private var promptedForLogin = false
     @Environment(\.scenePhase) private var phase
     var body: some View {
         ZStack(alignment: .bottom) {
             CameraView(controller: controller).ignoresSafeArea()
+            if controller.snoozed {
+                ZStack {
+                    Color.black.opacity(0.88)
+                    VStack(spacing: 10) {
+                        Image(systemName: "moon.zzz.fill").font(.system(size: 54))
+                        Text("Asleep").font(.title.bold())
+                        Text("Camera off. Pick up the phone or tap to wake.").font(.subheadline)
+                    }.foregroundStyle(.white)
+                }
+                .ignoresSafeArea()
+                .onTapGesture { controller.wake() }
+            }
             VStack(alignment: .leading, spacing: 12) {
                 Text(peer.profile?.sceneLabel ?? "Home Scene").font(.title2.bold())
                 Text(peer.detail).font(.subheadline.bold())
@@ -47,6 +61,12 @@ struct ViewerScreen: View {
             controller.onPose = { peer.publishPose($0) }
             controller.onDepth = { peer.publishDepth($0) }
             peer.onDisconnect = { controller.clear() }
+            controller.onSleep = { peer.setAsleep($0) }
+            // A Portal seen before Home's map has arrived offers sign-in once.
+            controller.onPortalSeen = { _ in
+                guard !peer.running, !connecting, !promptedForLogin else { return }
+                promptedForLogin = true; connecting = true
+            }
         }
         .sheet(isPresented: $connecting) {
             NavigationStack {
@@ -129,6 +149,14 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private var lastDepthCapture: TimeInterval = 0
     private var depthAlignment: DepthAlignment?
     var onPose: ((PhonePoseSample?) -> Void)?
+    var onPortalSeen: ((String) -> Void)?
+    // A phone left lying flat and still pauses its camera and reports itself asleep.
+    static let sleepAfter: TimeInterval = 30
+    @Published private(set) var snoozed = false
+    var onSleep: ((Bool) -> Void)?
+    private var restReference: simd_quatf?
+    private var restSince: TimeInterval = 0
+    private let motion = CMMotionManager()
     private let poseSession = UUID().uuidString
     private var lastPosePublication: TimeInterval = 0
     @Published var placement: NotePlacement?
@@ -152,9 +180,14 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         let tap = UITapGestureRecognizer(target: self, action: #selector(doubleTap(_:)))
         tap.numberOfTapsRequired = 2
         view.addGestureRecognizer(tap)
+        // Long-press means "look for a Portal here, now".
+        let press = UILongPressGestureRecognizer(target: self, action: #selector(longPress(_:)))
+        press.minimumPressDuration = 0.35
+        view.addGestureRecognizer(press)
     }
 
     func start() {
+        guard !snoozed else { return }
         guard ARWorldTrackingConfiguration.isSupported else {
             status = "AR requires a supported physical iPhone"; return
         }
@@ -330,7 +363,166 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         status = "\(map?.scenegraph.anchors.count ?? 0) Portals loaded. Scan a known Portal."
     }
 
+    private var toast: UILabel?
+    private func showToast(_ text: String, good: Bool) {
+        toast?.removeFromSuperview()
+        let label = UILabel()
+        label.text = text; label.numberOfLines = 0; label.textAlignment = .center
+        label.font = .systemFont(ofSize: 17, weight: .semibold); label.textColor = .white
+        label.backgroundColor = (good ? UIColor.systemGreen : UIColor.systemOrange).withAlphaComponent(0.92)
+        label.layer.cornerRadius = 14; label.layer.masksToBounds = true
+        let width = view.bounds.width - 40
+        let height = label.sizeThatFits(CGSize(width: width - 24, height: 400)).height + 24
+        label.frame = CGRect(x: 20, y: view.safeAreaInsets.top + 12, width: width, height: height)
+        view.addSubview(label); toast = label
+        UIView.animate(withDuration: 0.4, delay: 2.6, options: []) { label.alpha = 0 } completion: { _ in
+            label.removeFromSuperview()
+        }
+    }
+    private func showOutline(_ points: [CGPoint], good: Bool) {
+        guard points.count == 4 else { return }
+        let path = UIBezierPath(); path.move(to: points[0])
+        points.dropFirst().forEach { path.addLine(to: $0) }; path.close()
+        let layer = CAShapeLayer()
+        layer.path = path.cgPath; layer.fillColor = UIColor.clear.cgColor; layer.lineWidth = 5
+        layer.strokeColor = (good ? UIColor.systemGreen : UIColor.systemOrange).cgColor
+        view.layer.addSublayer(layer)
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 1; fade.toValue = 0; fade.beginTime = CACurrentMediaTime() + 1.2; fade.duration = 0.6
+        fade.fillMode = .forwards; fade.isRemovedOnCompletion = false
+        layer.add(fade, forKey: "fade")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { layer.removeFromSuperlayer() }
+    }
+
+    /// Explicit user scan: always gives visible feedback, and forces the next
+    /// alignment attempt instead of waiting for the cooldown.
+    @objc private func longPress(_ gesture: UILongPressGestureRecognizer) {
+        guard gesture.state == .began else { return }
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        guard let frame = view.session.currentFrame else {
+            showToast("Camera is not ready yet", good: false); return
+        }
+        showToast("Looking for a Portal…", good: true)
+        let size = view.bounds.size
+        let orientation = view.window?.windowScene?.interfaceOrientation ?? .portrait
+        let display = frame.displayTransform(for: orientation, viewportSize: size)
+        let image = frame.capturedImage
+        let map = self.map
+        visionQueue.async {
+            let request = VNDetectBarcodesRequest()
+            request.symbologies = [.qr]
+            try? VNImageRequestHandler(cvPixelBuffer: image, orientation: .up).perform([request])
+            let codes = (request.results ?? []).map { code -> (String?, [CGPoint]) in
+                let corners = [code.topLeft, code.topRight, code.bottomRight, code.bottomLeft].map { p -> CGPoint in
+                    // Vision: origin bottom-left. ARKit image space: origin top-left.
+                    let shown = CGPoint(x: p.x, y: 1 - p.y).applying(display)
+                    return CGPoint(x: shown.x * size.width, y: shown.y * size.height)
+                }
+                return (code.payloadStringValue, corners)
+            }
+            DispatchQueue.main.async {
+                guard let (payload, corners) = codes.first(where: { $0.0.flatMap(PortalMap.portalCode) != nil }) ?? codes.first else {
+                    UINotificationFeedbackGenerator().notificationOccurred(.warning)
+                    self.showToast("No QR code in view. Get the whole code in frame and hold still.", good: false)
+                    return
+                }
+                guard let payload, let code = PortalMap.portalCode(payload) else {
+                    self.showOutline(corners, good: false)
+                    UINotificationFeedbackGenerator().notificationOccurred(.warning)
+                    self.showToast("That QR code is not an Auki Portal.", good: false)
+                    return
+                }
+                guard let map else {
+                    self.showOutline(corners, good: true)
+                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    self.showToast("Portal \(code) found. Connecting to Home…", good: true)
+                    self.onPortalSeen?(code)
+                    return
+                }
+                guard map.matching(payload) != nil else {
+                    self.showOutline(corners, good: false)
+                    UINotificationFeedbackGenerator().notificationOccurred(.warning)
+                    self.showToast("Portal \(code) is not part of this scene.", good: false)
+                    return
+                }
+                self.showOutline(corners, good: true)
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                self.showToast("Portal \(code) found. Aligning…", good: true)
+                // Scan again on the very next frame, ignoring the cooldown.
+                self.cooldown.reset(); self.lastAttempt = 0
+            }
+        }
+    }
+
+    /// Flat (screen up or down) and rotated less than about two degrees.
+    private func checkRest(_ frame: ARFrame) {
+        let transform = frame.camera.transform
+        let flat = abs(transform.columns.2.y) > 0.9
+        let orientation = simd_quatf(transform)
+        guard flat, let reference = restReference,
+              abs(simd_dot(reference.vector, orientation.vector)) > 0.99985 else {
+            restReference = flat ? orientation : nil
+            restSince = frame.timestamp
+            return
+        }
+        if frame.timestamp - restSince >= Self.sleepAfter { snooze() }
+    }
+
+    private func snooze() {
+        guard !snoozed else { return }
+        snoozed = true
+        // Report sleep before withdrawing the pose so Home keeps the last one.
+        onSleep?(true)
+        view.session.pause()
+        invalidate()
+        restReference = nil
+        status = "Asleep · camera off. Pick up the phone or tap to wake."
+        guard motion.isDeviceMotionAvailable else { return }
+        motion.deviceMotionUpdateInterval = 0.2
+        motion.startDeviceMotionUpdates(to: .main) { [weak self] sample, _ in
+            guard let sample else { return }
+            let a = sample.userAcceleration
+            let moved = (a.x * a.x + a.y * a.y + a.z * a.z).squareRoot() > 0.12
+            if abs(sample.gravity.z) < 0.8 || moved { self?.wake() }
+        }
+    }
+
+    func wake() {
+        guard snoozed else { return }
+        motion.stopDeviceMotionUpdates()
+        snoozed = false
+        onSleep?(false)
+        status = map == nil ? "Connect to Home to receive its scene" : "Awake. Scan a known Portal."
+        start()
+    }
+
+    /// Before Home's map arrives: read Portal QR codes anyway so the user gets
+    /// feedback and sign-in can start. No alignment is attempted here.
+    private func scanBeforeMap(_ frame: ARFrame) {
+        guard !busy, frame.timestamp - lastAttempt > 0.5 else { return }
+        busy = true; lastAttempt = frame.timestamp
+        let capturedGeneration = generation
+        let image = frame.capturedImage
+        visionQueue.async {
+            let request = VNDetectBarcodesRequest()
+            request.symbologies = [.qr]
+            try? VNImageRequestHandler(cvPixelBuffer: image, orientation: .up).perform([request])
+            let code = (request.results ?? []).compactMap { $0.payloadStringValue }
+                .compactMap { PortalMap.portalCode($0) }.first
+            DispatchQueue.main.async {
+                self.busy = false
+                guard self.generation == capturedGeneration, self.map == nil, let code else { return }
+                self.status = "Portal \(code) in view. It aligns as soon as Home's map arrives."
+                self.onPortalSeen?(code)
+            }
+        }
+    }
+
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
+        if snoozed { return }
+        checkRest(frame)
+        if snoozed { return }
+        if map == nil { scanBeforeMap(frame); return }
         guard case .normal = frame.camera.trackingState else {
             if map != nil {
                 let message: String
@@ -445,14 +637,16 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     func session(_ session: ARSession, cameraDidChangeTrackingState camera: ARCamera) {
+        if snoozed { return }
         if case .normal = camera.trackingState { return }
         invalidate()
         status = "Tracking limited. Move slowly, then scan a known Portal again."
     }
     func sessionWasInterrupted(_ session: ARSession) {
+        if snoozed { return }
         invalidate(); status = "AR interrupted. Rescan a Portal when the camera returns."
     }
-    func sessionInterruptionEnded(_ session: ARSession) { realign(); start() }
+    func sessionInterruptionEnded(_ session: ARSession) { if snoozed { return }; realign(); start() }
     func session(_ session: ARSession, didFailWithError error: Error) {
         invalidate(); status = error.localizedDescription
     }

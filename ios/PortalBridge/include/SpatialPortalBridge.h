@@ -9,6 +9,7 @@ char *spatial_mobile_poll(void);
 void spatial_mobile_stop(void);
 int32_t spatial_mobile_local_map(const char *sample);
 void spatial_mobile_pose(const char *sample);
+void spatial_mobile_sleep(int32_t asleep);
 void spatial_mobile_depth(const char *sample);
 int32_t spatial_mobile_camera_demand(int32_t active);
 void spatial_mobile_camera(uint64_t timestamp, const uint8_t *jpeg, size_t length);
