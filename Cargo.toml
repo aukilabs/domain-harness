@@ -72,3 +72,17 @@ opt-level = 2
 opt-level = 2
 [profile.dev.package.qr-lab]
 opt-level = 2
+# qr-lab is a re-export facade: optimize the crates that actually scan pixels.
+# Per-package profile overrides do not propagate to dependencies.
+[profile.dev.package.qr-lab-qr]
+opt-level = 2
+[profile.dev.package.qr-lab-imgproc]
+opt-level = 2
+[profile.dev.package.qr-lab-image]
+opt-level = 2
+[profile.dev.package.qr-lab-geometry]
+opt-level = 2
+[profile.dev.package.auki-geometry]
+opt-level = 2
+[profile.dev.package.pnp-core]
+opt-level = 2

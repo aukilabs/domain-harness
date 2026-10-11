@@ -6,6 +6,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -26,6 +28,8 @@ internal fun ScanScreen(
     feedback: @Composable () -> Unit,
     annotations: @Composable () -> Unit = {},
     messages: @Composable () -> Unit = {},
+    homeVoxelsVisible: Boolean = false,
+    onHomeVoxelsToggle: (() -> Unit)? = null,
 ) {
     val view = LocalView.current
     DisposableEffect(view) {
@@ -61,6 +65,12 @@ internal fun ScanScreen(
             .pointerInput(session) {
                 detectTapGestures(onDoubleTap = { feedbackVisible = !feedbackVisible })
             })
-        Box(Modifier.align(Alignment.BottomCenter)) { messages() }
+        if (onHomeVoxelsToggle != null) {
+            FilterChip(selected = homeVoxelsVisible,onClick = onHomeVoxelsToggle,
+                label = { Text(if (homeVoxelsVisible) "Home voxels · On" else "Home voxels") },
+                modifier = Modifier.align(Alignment.BottomStart).padding(start=16.dp,bottom=12.dp)
+                    .heightIn(min=48.dp).semantics { contentDescription = "Toggle Home voxels" })
+        }
+        Box(Modifier.align(Alignment.BottomCenter).padding(bottom=if (onHomeVoxelsToggle != null) 76.dp else 0.dp)) { messages() }
     }
 }

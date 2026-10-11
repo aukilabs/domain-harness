@@ -14,7 +14,6 @@ internal class AnnotationController(
     private val send: (ByteArray) -> Boolean = NativeBridge::changeNote,
     private val notify: (String, String?, (() -> Unit)?) -> Unit,
 ) {
-    var markers by mutableStateOf<List<ScreenNote>>(emptyList()); private set
     var editor by mutableStateOf<JSONObject?>(null); private set
     var text by mutableStateOf("")
     private var frame: String? = null
@@ -29,7 +28,7 @@ internal class AnnotationController(
 
     fun scene(frame: String?, notes: JSONArray?) {
         if (this.frame != frame) {
-            pending = null; preview = null; acknowledged.clear(); markers = emptyList(); editor = null
+            pending = null; preview = null; acknowledged.clear(); editor = null
         }
         this.frame = frame
         scene = (0 until (notes?.length() ?: 0)).map { notes!!.getJSONObject(it) }
@@ -52,7 +51,6 @@ internal class AnnotationController(
     fun expireAcknowledgements() {
         if (acknowledged.entries.removeAll { System.nanoTime() >= it.value.expires }) render()
     }
-    fun project(notes: List<ScreenNote>) { markers = notes }
     fun pick(hit: AnnotationPick) {
         if (pending != null) { notify("Waiting for Home…",null,null); return }
         if (hit.error != null) { notify(hit.error,null,null); return }
@@ -97,7 +95,11 @@ internal class AnnotationController(
         pending = null; preview = null
         if (!result.optBoolean("saved")) {
             render()
-            notify(result.optString("detail","Home did not confirm the change"),"Retry") {
+            val detail = result.optString("detail","Home did not confirm the change")
+            // Only locally classified operation failures; no note text, poses or auth material.
+            if (detail.startsWith("Home did not confirm the operation ("))
+                android.util.Log.w("AnnotatorNote",detail)
+            notify(detail,"Retry") {
                 submit(command.getJSONObject("action"),oldPreview,command)
             }
             return

@@ -291,19 +291,16 @@ impl Node {
                             tracing::warn!(%error, "authenticated application protocol handler failed");
                         }
                     }
-                    accepted = incoming.accept(), if handlers.len() < max_concurrency => {
-                        let Some(accepted) = accepted else { break; };
-                        let stream = match accepted {
-                            Ok(stream) => stream,
-                            Err(error) => {
-                                tracing::warn!(%error, "authenticated application protocol session was rejected");
-                                continue;
-                            }
-                        };
+                    // Only the raw receive is selected. Authentication stays owned
+                    // by this bounded task through unrelated handler completions.
+                    accepted = incoming.accept_pending(), if handlers.len() < max_concurrency => {
+                        let Some(authenticate) = accepted else { break; };
                         let handler = Arc::clone(&handler);
                         handlers.spawn(async move {
-                            handler(AuthenticatedApplicationStream::new(stream, max_frame_bytes))
-                                .await
+                            match authenticate.await {
+                                Ok(stream) => handler(AuthenticatedApplicationStream::new(stream,max_frame_bytes)).await,
+                                Err(error) => tracing::warn!(%error, "authenticated application protocol session was rejected"),
+                            }
                         });
                     }
                 }

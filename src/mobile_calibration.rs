@@ -6,6 +6,14 @@ use anyhow::{Result, ensure};
 use auki_geometry::pnp::{Camera, Vector2, Vector3, estimate_square_pose_from_pixels, pose_tools};
 use auki_scenegraph::{RigidTransform, Scenegraph};
 use serde::{Deserialize, Serialize};
+use std::{cell::RefCell, time::Instant};
+
+thread_local! {
+    // Each capture worker retains its SDK scanner; no poses or Home references
+    // are cached here. Keep single-frame mode so old pixels cannot align a new scene.
+    static DETECTOR: RefCell<auki_qr_detector::QrDetector> =
+        RefCell::new(auki_qr_detector::QrDetector::new(Default::default()));
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -25,6 +33,20 @@ pub struct Capture {
 pub struct Report {
     pub detail: String,
     pub alignment: Option<crate::mobile_depth::Alignment>,
+    pub diagnostics: DetectionDiagnostics,
+}
+
+/// Local diagnostics only: no pixels, decoded payloads, credentials or poses.
+#[derive(Default, Serialize)]
+pub struct DetectionDiagnostics {
+    pub validation_us: u64,
+    pub decode_us: u64,
+    pub pose_us: u64,
+    pub total_us: u64,
+    pub decoded: usize,
+    pub matched: usize,
+    pub mirrored: usize,
+    pub pose_rejection: Option<String>,
 }
 
 impl Capture {
@@ -77,16 +99,29 @@ impl Capture {
 }
 
 pub fn detect(luma: &[u8], capture: &Capture) -> Result<Report> {
+    let started = Instant::now();
     capture.validate()?;
     ensure!(
         luma.len() == capture.width * capture.height,
         "Invalid packed luma image"
     );
-    let mut detector = auki_qr_detector::QrDetector::new(Default::default());
-    let codes = detector.detect_luma(luma, capture.width, capture.height, capture.width)?;
+    let validation_us = started.elapsed().as_micros() as u64;
+    let decoding = Instant::now();
+    let codes = DETECTOR.with(|detector| {
+        detector
+            .borrow_mut()
+            .detect_luma(luma, capture.width, capture.height, capture.width)
+    })?;
     let mut report = Report {
         detail: "Show a Portal from the selected Home scene".into(),
         alignment: None,
+        diagnostics: DetectionDiagnostics {
+            validation_us,
+            decode_us: decoding.elapsed().as_micros() as u64,
+            decoded: codes.codes.len(),
+            mirrored: codes.codes.iter().filter(|c| c.mirrored).count(),
+            ..Default::default()
+        },
     };
     for code in codes.codes.iter().filter(|c| !c.mirrored) {
         let Some(anchor) = capture
@@ -107,14 +142,18 @@ pub fn detect(luma: &[u8], capture: &Capture) -> Result<Report> {
             .as_ref()
             .unwrap_or(&code.corners_px)
             .map(|p| [p.x, p.y]);
-        match align(capture, &anchor.anchor_id, corners) {
+        report.diagnostics.matched += 1;
+        let solving = Instant::now();
+        let result = align(capture, &anchor.anchor_id, corners);
+        report.diagnostics.pose_us += solving.elapsed().as_micros() as u64;
+        match result {
             Ok(alignment) => {
-                return Ok(Report {
-                    detail: format!("Aligned with {}", anchor.anchor_id),
-                    alignment: Some(alignment),
-                });
+                report.detail = format!("Aligned with {}", anchor.anchor_id);
+                report.alignment = Some(alignment);
+                break;
             }
-            Err(_) => {
+            Err(error) => {
+                report.diagnostics.pose_rejection = Some(error.to_string());
                 report.detail = format!(
                     "Recognized {} · move closer and hold steady",
                     anchor.anchor_id
@@ -122,6 +161,7 @@ pub fn detect(luma: &[u8], capture: &Capture) -> Result<Report> {
             }
         }
     }
+    report.diagnostics.total_us = started.elapsed().as_micros() as u64;
     Ok(report)
 }
 

@@ -4,6 +4,23 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class CalibrationStateTest {
+    @Test fun acquisitionIsTenHzAndRechecksAreOneHzEvenAfterMisses() {
+        val state = CalibrationState(); state.updateReference("scene")
+        val first = 5_000_000_000L
+        assertTrue(state.canDetect(first))
+        state.attempted(first)
+        assertFalse(state.canDetect(first+99_999_999L))
+        assertTrue(state.canDetect(first+100_000_000L))
+        assertTrue(state.accept(state.generation,first,first+10_000_000L))
+        assertFalse(state.canDetect(first+1_000_000_000L))
+        val recheck = first+1_010_000_000L
+        assertTrue(state.canDetect(recheck))
+        state.attempted(recheck) // A missed recheck must not return to 10 Hz.
+        assertFalse(state.canDetect(recheck+100_000_000L))
+        assertTrue(state.canDetect(recheck+1_000_000_000L))
+        state.reset()
+        assertTrue(state.canDetect(recheck+100_000_000L))
+    }
     @Test fun resetsRejectInFlightDetections() {
         val state = CalibrationState()
         assertFalse(state.canDetect(1))

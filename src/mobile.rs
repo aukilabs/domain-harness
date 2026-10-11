@@ -330,6 +330,10 @@ impl MobileClient {
         let result = match peer {
             Ok(peer) => {
                 let work = async {
+                let operations = crate::mobile_home::HomeOperations::new(&peer,&home)?;
+                // Warm once before high-rate producers start, so their short
+                // sample deadlines cannot repeatedly cancel cold discovery.
+                tokio::select! { _ = self.stop.cancelled() => return Ok(()), _ = operations.warm() => {} }
                 let products = crate::mobile_products::MobileProducts::mount(&peer)?;
                 let mut camera = None;
                 let mut frames = self.camera.subscribe();
@@ -381,7 +385,7 @@ impl MobileClient {
                 let mut changes = self.change_receiver.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap();
                 let change_work = async {
                     while let Some(request) = changes.recv().await {
-                        let result = tokio::time::timeout(Duration::from_secs(20), crate::mobile_notes::send_change(&peer, &home, &request)).await
+                        let result = tokio::time::timeout(Duration::from_secs(25), crate::mobile_notes::send_change_via(&operations, &home, &request)).await
                             .unwrap_or_else(|_| Err(anyhow::anyhow!("Home did not confirm the note change; retry to check its result")));
                         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
                         state.version += 1;
@@ -397,11 +401,9 @@ impl MobileClient {
                         let sample = poses.borrow_and_update().clone();
                         let _ = tokio::time::timeout(
                             Duration::from_secs(2),
-                            crate::mobile_pose::send(
-                                &peer,
-                                &home,
-                                &crate::mobile_pose::Update { sample },
-                            ),
+                            operations.invoke::<_,bool>(&home.scoped_component(crate::mobile_pose::COMPONENT),
+                                "update","phone-pose",&uuid::Uuid::new_v4().to_string(),Duration::from_secs(1),
+                                &crate::mobile_pose::Update { sample }),
                         )
                         .await;
                     }
@@ -438,7 +440,8 @@ impl MobileClient {
                             let envelope = depth_publisher.as_ref().unwrap().publish(sample)?;
                             let accepted = tokio::time::timeout(
                                 Duration::from_secs(2),
-                                crate::mobile_depth::send(&peer, &home, &envelope),
+                                operations.invoke::<_,bool>(&home.scoped_component(crate::mobile_depth::COMPONENT),
+                                    "ingest","phone-depth",&uuid::Uuid::new_v4().to_string(),Duration::from_secs(1),&envelope),
                             )
                             .await??;
                             ensure!(accepted, "Home rejected stale depth sample");
@@ -468,7 +471,10 @@ impl MobileClient {
                                 local_publisher = Some(crate::mobile_local::Publisher::new(&products)?);
                             }
                             let envelope = local_publisher.as_ref().unwrap().publish(sample)?;
-                            crate::mobile_local::send(&peer, &home, &envelope).await
+                            let accepted = operations.invoke::<_,bool>(crate::mobile_local::RECEIVER,
+                                "ingest","phone-local",&uuid::Uuid::new_v4().to_string(),Duration::from_secs(3),&envelope).await?;
+                            ensure!(accepted,"Home rejected stale local map");
+                            Ok::<(),anyhow::Error>(())
                         }
                         .await;
                         self.local_status(match result {
@@ -577,7 +583,11 @@ impl MobileClient {
             if self.stop.is_cancelled() {
                 return Ok(());
             }
-            self.status("connecting", "Connecting to Home over authenticated P2P");
+            // A routine idle refresh is not a disconnect. Keep the current
+            // reference/alignment until a real failure or replacement arrives.
+            if self.snapshot().state != "live" {
+                self.status("connecting", "Connecting to Home over authenticated P2P");
+            }
             let result =
                 receive_portals(peer, home, &self.stop, Duration::from_secs(45), |portals| {
                     let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
