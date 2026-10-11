@@ -35,6 +35,27 @@ async fn catalogs_are_real_refreshable_and_not_retained_as_live_peers() -> Resul
         );
         let mut cache = Catalogs::new();
         cache.insert(pair.b.peer_id().to_string(), catalog);
+        // The phone owns its map even without portal alignment or a Home push.
+        let session = uuid::Uuid::new_v4().to_string();
+        publisher.publish(spatial_home::mobile_local::Snapshot {
+            session: session.clone(), timestamp_ns: 1, cells: vec![[1, 2, 3]],
+        })?;
+        let scenes = spatial_home::sensor_preview::scene_products(&cache);
+        assert_eq!(scenes.len(), 1);
+        assert!(spatial_home::mobile_local::render(&pair.b.peer_id().to_string()).is_err());
+        let client = auki_component_protocol::ComponentProtocolClient::new(pair.a.protocols());
+        let view = spatial_home::sensor_preview::read_scene(&client, &scenes[0]).await?;
+        assert_eq!(view["authority_peer_id"], pair.b.peer_id().to_string());
+        assert_eq!(view["product_id"], "phone-local-voxels");
+        assert!(view["frame"].as_str().unwrap().ends_with(&session));
+        assert_eq!(view["voxels"].as_array().unwrap().len(), 1);
+        let next_session = uuid::Uuid::new_v4().to_string();
+        publisher.publish(spatial_home::mobile_local::Snapshot {
+            session: next_session.clone(), timestamp_ns: 2, cells: vec![],
+        })?;
+        let view = spatial_home::sensor_preview::read_scene(&client, &scenes[0]).await?;
+        assert!(view["frame"].as_str().unwrap().ends_with(&next_session));
+        assert!(view["voxels"].as_array().unwrap().is_empty());
         cache.insert(
             "not-a-connected-peer".into(),
             serde_json::json!({"catalog_status":"ready"}),

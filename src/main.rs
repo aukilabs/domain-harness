@@ -351,12 +351,57 @@ async fn scene(State(s): State<Shared>) -> ApiResult {
     let mut view = serde_json::to_value(&store.built.view).map_err(anyhow::Error::from)?;
     view["environment_name"] = json!(spatial_home::environments::reference_name());
     view["landmarks"] = store.built.registries["landmarks"].clone();
+    view["semantic_volumes"] = serde_json::to_value(s.local_scenes.volumes.get("canonical", spatial_home::model::FRAME)?).map_err(anyhow::Error::from)?;
+    view["volumes"] = json!(s.local_scenes.volumes.mobile("canonical",spatial_home::model::FRAME)?);
     view["notes"] = json!(
         spatial_home::notes::from_registries(&store.built.registries, spatial_home::model::FRAME)?
             .items
     );
     spatial_home::mobile_pose::append_labels(&mut view, &store.built.registries["mobile_presence"]);
     Ok(Json(view))
+}
+#[derive(Deserialize)]
+struct VolumeQuery { scene: String }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VolumeWrite {
+    frame: String,
+    volume: Option<spatial_home::semantic_volumes::Volume>,
+}
+fn volume_context(s: &Shared, scene: &str) -> Result<(String, String), ApiError> {
+    if let Some(id) = scene.strip_prefix("local:") {
+        let snapshot = s.local_scenes.snapshot(id)?;
+        Ok((id.into(), snapshot.scenegraph.map.frame.id.clone()))
+    } else {
+        if scene != "demo" { return Err(anyhow::anyhow!("Choose a local Home scene to edit volumes").into()); }
+        Ok(("canonical".into(), spatial_home::model::FRAME.into()))
+    }
+}
+async fn get_volumes(State(s): State<Shared>, axum::extract::Query(q): axum::extract::Query<VolumeQuery>) -> ApiResult {
+    let (key, frame) = volume_context(&s, &q.scene)?;
+    Ok(Json(serde_json::to_value(s.local_scenes.volumes.get(&key, &frame)?).map_err(anyhow::Error::from)?))
+}
+fn write_volume(s: &Shared, scene: &str, id: Option<&str>, value: VolumeWrite) -> ApiResult {
+    let (key, frame) = volume_context(s, scene)?;
+    let volumes = s.local_scenes.volumes.change(&key, &frame, id, value.volume, &value.frame)?;
+    if key == "canonical" { lock(s)?.built.registries["semantic_volumes"] = json!(volumes); s.changes.send_replace(()); }
+    Ok(Json(json!(volumes)))
+}
+async fn create_volume(State(s): State<Shared>, headers: HeaderMap, axum::extract::Query(q): axum::extract::Query<VolumeQuery>, Json(mut value): Json<VolumeWrite>) -> ApiResult {
+    local_write(&headers)?;
+    let volume = value.volume.as_mut().ok_or_else(|| anyhow::anyhow!("Missing volume"))?;
+    volume.id = uuid::Uuid::new_v4().to_string();
+    write_volume(&s, &q.scene, None, value)
+}
+async fn update_volume(State(s): State<Shared>, headers: HeaderMap, axum::extract::Path(id): axum::extract::Path<String>, axum::extract::Query(q): axum::extract::Query<VolumeQuery>, Json(value): Json<VolumeWrite>) -> ApiResult {
+    local_write(&headers)?;
+    if value.volume.is_none() { return Err(anyhow::anyhow!("Missing volume").into()); }
+    write_volume(&s, &q.scene, Some(&id), value)
+}
+async fn delete_volume(State(s): State<Shared>, headers: HeaderMap, axum::extract::Path(id): axum::extract::Path<String>, axum::extract::Query(q): axum::extract::Query<VolumeQuery>, Json(value): Json<VolumeWrite>) -> ApiResult {
+    local_write(&headers)?;
+    if value.volume.is_some() { return Err(anyhow::anyhow!("Delete cannot contain a volume").into()); }
+    write_volume(&s, &q.scene, Some(&id), value)
 }
 async fn local_scene(
     State(s): State<Shared>,
@@ -620,14 +665,27 @@ async fn snapshots(State(s): State<Shared>) -> ApiResult {
 }
 // Local test control boundary: JSON only, no CORS, and reject foreign browser
 // origins. This is intentionally not remote peer authentication or an SDK P2P API.
+fn ui_bind_address(configured: Option<&str>) -> Result<std::net::IpAddr, std::net::AddrParseError> {
+    configured.unwrap_or("0.0.0.0").parse()
+}
+
 fn local_write(headers: &HeaderMap) -> Result<(), ApiError> {
+    ui_write(headers, &std::env::var("SPATIAL_UI_HOSTS").unwrap_or_default())
+}
+// LAN exposure does not remove the Host and same-origin write protections.
+fn ui_write(headers: &HeaderMap, lan_hosts: &str) -> Result<(), ApiError> {
     let host = headers
         .get(header::HOST)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    let allowed = host.starts_with("127.0.0.1:") || host.starts_with("localhost:");
+    let authority = host.parse::<axum::http::uri::Authority>().ok();
+    let allowed = authority.as_ref().is_some_and(|a| {
+        a.port_u16().is_some()
+            && (matches!(a.host(), "127.0.0.1" | "localhost" | "[::1]")
+                || lan_hosts.split(',').any(|allowed| allowed.trim() == host))
+    });
     if !allowed {
-        return Err(ApiError(anyhow::anyhow!("localhost Host required")));
+        return Err(ApiError(anyhow::anyhow!("UI Host is not allowed")));
     }
     if let Some(origin) = headers.get(header::ORIGIN)
         && origin.to_str().ok() != Some(format!("http://{host}").as_str())
@@ -811,6 +869,9 @@ async fn main() -> anyhow::Result<()> {
         &lock_path.with_extension("scenes"),
     )?);
     spatial_home::notes::initialize(&mut store)?;
+    local_scenes.volumes.import_notes("canonical",spatial_home::model::FRAME,
+        &spatial_home::notes::from_registries(&store.built.registries,spatial_home::model::FRAME)?.volumes)?;
+    store.built.registries["semantic_volumes"] = json!(local_scenes.volumes.get("canonical", spatial_home::model::FRAME)?);
     store.built.registries["fiducials"] = {
         let fiducials = fiducials
             .lock()
@@ -835,12 +896,13 @@ async fn main() -> anyhow::Result<()> {
     let ar_frames = spatial_home::ar_preview::Frames::default();
     let shutdown = tokio_util::sync::CancellationToken::new();
     let simulation_disconnect = tokio_util::sync::CancellationToken::new();
-    // Bind the local UI before starting a remote peer, so a busy UI port cannot
+    // Bind the UI before starting a remote peer, so a busy UI port cannot
     // leave a discovery registration or relay reservation alive.
     let port: u16 = std::env::var("SPATIAL_PORT")
         .unwrap_or_else(|_| "4319".into())
         .parse()?;
-    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await?;
+    let bind = ui_bind_address(std::env::var("SPATIAL_BIND").ok().as_deref())?;
+    let listener = tokio::net::TcpListener::bind((bind, port)).await?;
     let (simulation_task, simulation) = if simulate {
         let (tx, rx) =
             tokio::sync::watch::channel(spatial_home::simulated_robot::SimulationState::default());
@@ -984,6 +1046,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/sensors", get(sensor_preview))
         .route("/api/robot-occupancy", get(robot_occupancy))
         .route("/api/scene", get(scene))
+        .route("/api/semantic-volumes", get(get_volumes).post(create_volume))
+        .route("/api/semantic-volumes/{id}", axum::routing::patch(update_volume).delete(delete_volume))
+        .route("/semantic-volumes.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/semantic-volumes.js")) }))
         .route("/api/notes", post(add_note))
         .route("/api/notes/{id}", delete(delete_note).patch(rename_note))
         .route("/api/label-pick", post(label_pick))
@@ -1026,7 +1091,7 @@ async fn main() -> anyhow::Result<()> {
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
         .with_state(state);
     println!(
-        "Spatial Home: http://127.0.0.1:{port} — SDK PR #425; P2P {}",
+        "Spatial Home: http://127.0.0.1:{port} (listening on {bind}:{port}) — SDK PR #425; P2P {}",
         if simulate {
             "isolated robot simulation (loopback only)"
         } else if network.is_some() {
@@ -1051,4 +1116,46 @@ async fn main() -> anyhow::Result<()> {
     }
     server?;
     Ok(())
+}
+
+#[cfg(test)]
+mod ui_access_tests {
+    use super::*;
+
+    #[test]
+    fn lan_is_default_and_explicit_bind_is_respected() {
+        assert_eq!(ui_bind_address(None).unwrap(), "0.0.0.0".parse::<std::net::IpAddr>().unwrap());
+        assert_eq!(ui_bind_address(Some("127.0.0.1")).unwrap(), "127.0.0.1".parse::<std::net::IpAddr>().unwrap());
+        assert!(ui_bind_address(Some("invalid")).is_err());
+    }
+
+    fn request(host: &str, origin: Option<&str>) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, host.parse().unwrap());
+        if let Some(origin) = origin {
+            headers.insert(header::ORIGIN, origin.parse().unwrap());
+        }
+        headers
+    }
+
+    #[test]
+    fn permits_only_configured_lan_host_and_same_origin() {
+        let host = "192.168.1.26:4329";
+        let headers = request(host, Some("http://192.168.1.26:4329"));
+        assert!(ui_write(&headers, host).is_ok());
+        assert!(ui_write(&headers, "").is_err());
+        assert!(ui_write(&request(host, Some("https://foreign.example")), host).is_err());
+        assert!(ui_write(&request("192.168.1.26:4330", None), host).is_err());
+        assert!(ui_write(&request("foreign.example:4329", None), host).is_err());
+    }
+
+    #[test]
+    fn preserves_loopback_and_rejects_malformed_hosts() {
+        for host in ["localhost:4329", "127.0.0.1:4329", "[::1]:4329"] {
+            assert!(ui_write(&request(host, Some(&format!("http://{host}"))), "").is_ok());
+        }
+        for host in ["localhost.evil:4329", "localhost:bad", "", "127.0.0.1:4329@evil"] {
+            assert!(ui_write(&request(host, None), "").is_err());
+        }
+    }
 }

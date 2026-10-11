@@ -5,6 +5,7 @@ import io
 import os
 import threading
 import time
+import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
 from pathlib import Path
@@ -14,6 +15,8 @@ from bracketbot_capture import (FramePairs, NewSessionRequired, PoseGate, calibr
                                fresh_jpeg, optical_points, rotation_quaternion, sampled_points,
                                wrist_camera_spec, right_camera_transform, RIGHT_CAMERA_FRAME,
                                head_camera_specs, CAMERA_FRAME, CaptureMailbox)
+from bracketbot_capture import corrected_portal_poses, POSE_HISTORY_DTYPE
+from bracketbot_capture import trajectory_correction
 
 
 def record(t, **kwargs):
@@ -200,7 +203,7 @@ class BracketbotCaptureTests(unittest.TestCase):
         gate = PoseGate(); t = 1_000_000_000
         gate.accept(valid_pose(t), health(t), t)
         self.assertIsNone(gate.correction)
-        for n in [2, 3, 0]:
+        for n in [2, 3]:
             t += 100_000_000
             result = gate.accept(valid_pose(t, n), health(t), t)
             self.assertEqual(gate.correction, dict(kind='map_correction', timestamp_ns=t,
@@ -208,6 +211,42 @@ class BracketbotCaptureTests(unittest.TestCase):
             self.assertTrue(gate.tracking)
             self.assertIsNone(gate.accept(valid_pose(t, n), health(t), t))
             self.assertIsNone(gate.correction)
+
+    def test_pose_graph_reset_requires_a_new_capture_session(self):
+        gate=PoseGate(); t=1_000_000_000
+        gate.accept(valid_pose(t,3),health(t),t)
+        with self.assertRaises(NewSessionRequired):
+            gate.accept(valid_pose(t+10,0),health(t+10),t+10)
+
+    def test_corrected_history_interpolates_detector_capture_not_current_pose(self):
+        rows=np.zeros(2,dtype=POSE_HISTORY_DTYPE)
+        rows['ts_ns']=[1_000_000_000,1_200_000_000]
+        rows['pos']=[[2,0,0],[4,0,0]]; rows['quat']=[[0,0,0,1],[0,0,1,0]]
+        raw=b'BBPOSE1\0'+np.array([40,2,5,3],dtype='<i8').tobytes()+rows.tobytes()
+        evidence={'portal':dict(capture_timestamp_ns=1_100_000_000,base_odometry_pose={'translation':[0,0,0]})}
+        result=corrected_portal_poses(raw,3,evidence)['portal']
+        self.assertEqual(result['timestamp_ns'],1_100_000_000)
+        self.assertEqual(result['pose']['translation'],[3,0,0])
+        np.testing.assert_allclose(result['pose']['rotation_xyzw'],[0,0,2**-.5,2**-.5])
+        self.assertEqual(corrected_portal_poses(raw,4,evidence),{})
+        evidence['portal']['capture_timestamp_ns']=1_300_000_000
+        self.assertEqual(corrected_portal_poses(raw,3,evidence),{})
+        self.assertEqual(corrected_portal_poses(raw[:-1],3,evidence),{})
+
+    def test_history_must_match_pgo_and_cover_retained_depth_before_replay(self):
+        import json
+        rows=np.zeros(2,dtype=POSE_HISTORY_DTYPE)
+        rows['ts_ns']=[1_000_000_000,1_200_000_000];rows['quat'][:,3]=1
+        with tempfile.TemporaryDirectory() as directory:
+            control=Path(directory)/'control.json';history=Path(directory)/'history'
+            control.write_text(json.dumps(dict(registries=dict(local_mapping=dict(observed_portals={},retained_depth_timestamps=[1_100_000_000])))))
+            history.write_bytes(b'BBPOSE1\0'+np.array([40,2,5,2],dtype='<i8').tobytes()+rows.tobytes())
+            self.assertFalse(trajectory_correction(dict(pgo_count=3),control,history)['history_ready'])
+            history.write_bytes(b'BBPOSE1\0'+np.array([40,2,5,3],dtype='<i8').tobytes()+rows.tobytes())
+            result=trajectory_correction(dict(pgo_count=3),control,history)
+            self.assertTrue(result['history_ready']);self.assertIn('1100000000',result['corrected_depth'])
+            control.write_text(json.dumps(dict(registries=dict(local_mapping=dict(observed_portals={},retained_depth_timestamps=[1_300_000_000])))))
+            self.assertFalse(trajectory_correction(dict(pgo_count=3),control,history)['history_ready'])
 
     def test_correction_during_loss_waits_for_a_fresh_valid_pose(self):
         gate = PoseGate(); t = 1_000_000_000

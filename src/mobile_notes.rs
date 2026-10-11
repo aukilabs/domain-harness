@@ -20,6 +20,12 @@ pub struct ChangeNote {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NoteAction {
+    PutVolume {
+        volume: crate::semantic_volumes::SemanticVolume,
+    },
+    DeleteVolume {
+        id: String,
+    },
     Place {
         id: String,
         origin: [f64; 3],
@@ -133,6 +139,20 @@ pub fn apply_change(
         Ok(())
     };
     let (note, deleted) = match &request.action {
+        NoteAction::PutVolume { volume } => {
+            volume.validate()?;
+            if let Some(old) = next.volumes.iter_mut().find(|v| v.id == volume.id) {
+                *old = volume.clone();
+            } else {
+                next.volumes.push(volume.clone());
+            }
+            (None, false)
+        }
+        NoteAction::DeleteVolume { id } => {
+            uuid::Uuid::parse_str(id)?;
+            next.volumes.retain(|v| v.id != *id);
+            (None, true)
+        }
         NoteAction::Place {
             id,
             origin,

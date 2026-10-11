@@ -9,33 +9,76 @@ use std::{
 };
 
 pub const COMPONENT: &str = "home-phone-presence";
-/// Display names per phone peer, read once from
-/// `config/phone-names.json`, overridden by `SPATIAL_PHONE_NAMES` (default
-/// `data/phone-names.json`). Both are `{"<peer id>": "<name>"}`.
-/// The entry `"*"` names every unlisted phone; otherwise a short peer suffix is used.
-static NAMES: std::sync::LazyLock<BTreeMap<String, String>> = std::sync::LazyLock::new(|| {
-    // Checked-in names first; a local file or SPATIAL_PHONE_NAMES overrides per peer.
-    let read = |path: &str| -> BTreeMap<String, String> {
-        std::fs::read(path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
-    };
-    let mut names = read("config/phone-names.json");
-    let local =
-        std::env::var("SPATIAL_PHONE_NAMES").unwrap_or_else(|_| "data/phone-names.json".into());
-    names.extend(read(&local));
-    names
-});
+/// Display names per phone peer. Checked-in `config/phone-names.json` first,
+/// then the local file (`SPATIAL_PHONE_NAMES`, default `data/phone-names.json`),
+/// both `{"<peer id>": "<name>"}`. A phone can also name itself at runtime with
+/// the presence `name` operation; that takes effect at once and is saved to the
+/// local file, so no restart is needed. The entry `"*"` names every unlisted
+/// phone; otherwise a short peer suffix is used.
+static NAMES: std::sync::LazyLock<std::sync::RwLock<BTreeMap<String, String>>> =
+    std::sync::LazyLock::new(|| {
+        let mut names = read_names("config/phone-names.json");
+        names.extend(read_names(&local_names_path()));
+        std::sync::RwLock::new(names)
+    });
+fn local_names_path() -> String {
+    std::env::var("SPATIAL_PHONE_NAMES").unwrap_or_else(|_| "data/phone-names.json".into())
+}
+fn read_names(path: &str) -> BTreeMap<String, String> {
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
 pub fn display_name(peer: &str) -> String {
-    NAMES
+    let names = NAMES.read().unwrap_or_else(|e| e.into_inner());
+    names
         .get(peer)
-        .or_else(|| NAMES.get("*"))
+        .or_else(|| names.get("*"))
         .cloned()
         .unwrap_or_else(|| {
             let tail = &peer[peer.len().saturating_sub(4)..];
             format!("phone {tail}")
         })
+}
+/// A phone names itself. The transport identity is the key, so a phone can
+/// never rename another device.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetName {
+    pub name: String,
+}
+impl auki_components::ContractType for SetName {
+    const DATATYPE: &'static str = "spatial.phone-name/v1";
+}
+pub fn set_name(peer: &str, name: &str) -> Result<()> {
+    let name = name.trim();
+    ensure!(!peer.is_empty() && peer != "*", "Missing phone identity");
+    ensure!(
+        (1..=24).contains(&name.chars().count()) && !name.chars().any(char::is_control),
+        "A name is 1 to 24 printable characters"
+    );
+    let mut names = NAMES.write().unwrap_or_else(|e| e.into_inner());
+    if names.get(peer).map(String::as_str) == Some(name) {
+        return Ok(());
+    }
+    ensure!(
+        names.contains_key(peer) || names.len() < 256,
+        "Phone name capacity reached"
+    );
+    // Save only to the local file; the checked-in file is never rewritten.
+    let path = local_names_path();
+    let mut saved = read_names(&path);
+    saved.insert(peer.into(), name.into());
+    let target = std::path::Path::new(&path);
+    if let Some(parent) = target.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temporary = target.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+    std::fs::write(&temporary, serde_json::to_vec_pretty(&saved)?)?;
+    std::fs::rename(temporary, target)?;
+    names.insert(peer.into(), name.into());
+    Ok(())
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -230,6 +273,14 @@ pub async fn send(
     home: &crate::network::HomeConnection,
     update: &Update,
 ) -> Result<()> {
+    send_component(peer, home, COMPONENT, update).await
+}
+pub async fn send_component<T: auki_components::ContractType + Serialize>(
+    peer: &auki_sdk::AukiPeer,
+    home: &crate::network::HomeConnection,
+    component: &str,
+    update: &T,
+) -> Result<()> {
     use auki_component_protocol::{CatalogResponse, ComponentProtocolClient};
     let expected = home.validate(peer)?;
     let client = ComponentProtocolClient::new(peer.protocols());
@@ -246,7 +297,7 @@ pub async fn send(
         let entry = snapshot
             .components
             .iter()
-            .find(|c| c.manifest.component_id == home.scoped_component(COMPONENT))
+            .find(|c| c.manifest.component_id == home.scoped_component(component))
             .ok_or_else(|| anyhow::anyhow!("Home phone presence unavailable"))?;
         client
             .invoke_exact::<_, bool>(

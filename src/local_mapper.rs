@@ -69,6 +69,15 @@ pub enum SensorEvent {
         pgo_count: i64,
         pose: Pose,
     },
+    TrajectoryCorrection {
+        timestamp_ns: u64,
+        pgo_count: i64,
+        pose: Pose,
+        corrected_portals: BTreeMap<String, HistoricalPose>,
+        #[serde(default, deserialize_with = "deserialize_depth_poses")]
+        corrected_depth: BTreeMap<u64, Pose>,
+    },
+    CorrectionPending { timestamp_ns:u64, pgo_count:i64 },
     Camera {
         sample: CameraSample,
     },
@@ -83,6 +92,23 @@ pub enum SensorEvent {
 }
 impl ContractType for SensorEvent {
     const DATATYPE: &'static str = "spatial-harness.local-sensors/v1";
+}
+fn deserialize_depth_poses<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<BTreeMap<u64, Pose>, D::Error> {
+    BTreeMap::<String, Pose>::deserialize(d)?.into_iter().map(|(timestamp, pose)| {
+        timestamp.parse::<u64>().map(|t| (t, pose)).map_err(serde::de::Error::custom)
+    }).collect()
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HistoricalPose {
+    pub timestamp_ns: u64,
+    pub pose: Pose,
+}
+#[derive(Clone)]
+struct RetainedDepth {
+    observation: DepthObservation,
+    colors: Vec<Option<[u8;3]>>,
+    base_pose: Pose,
+    sensor_to_base: Pose,
 }
 
 pub fn identity() -> Pose {
@@ -238,6 +264,7 @@ pub struct LocalMap {
     runtime: ComponentRuntime,
     pub voxels: Option<VoxelSnapshot>,
     recent_voxels: crate::recent_voxels::RecentVoxels,
+    retained_depth: Vec<RetainedDepth>,
     emit_scans: bool,
     copy_scans: bool,
     localized_scans: Vec<crate::collaborative_mapper::LocalizedScan>,
@@ -565,6 +592,7 @@ impl LocalMap {
             runtime: runtime.clone(),
             voxels: None,
             recent_voxels: Default::default(),
+            retained_depth: Vec::new(),
             emit_scans: false,
             localized_scans: Vec::new(),
             copy_scans: false,
@@ -679,9 +707,11 @@ impl LocalMap {
     pub fn metadata(&self) -> Value {
         json!({"local_mapping":{"status":if self.latest_pose.is_some(){"mapping"}else{"waiting_for_odometry"},"detail":self.detail,"origin":self.origin,
             "scan_progress":self.scan_progress(),
-            "map_correction":self.correction.map(|(t,n)|json!({"capture_timestamp_ns":t,"pgo_count":n,"policy":"invalidate_geometry_and_alignment_in_place"})),
+            "map_correction":self.correction.map(|(t,n)|json!({"capture_timestamp_ns":t,"pgo_count":n,"policy":"reproject_calibration_when_history_available",
+                "alignment_reprojected":self.home_portals.as_ref().is_some_and(|h|self.evidence[&h.anchor]["trajectory_correction_ns"].as_u64()==Some(t))})),
             "voxel_policy":{"kind":"latest_observations_per_cell","window":3,"free_space":"SDK measured rays only","unseen_cells":"retained"},"alignment_to_home":null,"portal_poses":"observed","portal_color":"blue","portal_axes":"+X printed right; +Y printed top; +Z out of marker",
             "observed_portals":self.evidence,
+            "retained_depth_timestamps":self.retained_depth.iter().map(|d|d.observation.timestamp_ns).collect::<std::collections::BTreeSet<_>>(),
             "camera_scans":self.cameras.iter().map(|(frame,c)| (frame.clone(), c.scan_status.clone())).collect::<BTreeMap<_,_>>(),
             "robot_pose":self.latest_pose.as_ref().map(|(t,p)|json!({"capture_timestamp_ns":t,"clock":self.clock,"pose":p,"from_frame":self.contract.from_frame,"frame":self.frame}))},
             "landmark_components":[crate::landmarks::ComponentCapabilities { component: self.processor.reference().clone(), landmark_types: Some(vec![crate::landmarks::PORTAL.into()]) }],
@@ -712,6 +742,47 @@ impl LocalMap {
     }
     pub fn accept(&mut self, event: SensorEvent) -> Result<()> {
         match event {
+            SensorEvent::CorrectionPending { pgo_count, .. } => {
+                self.pending.clear();self.localized_scans.clear();self.latest_pose=None;
+                self.detail=format!("PGO {pgo_count} · waiting for optimized history; geometry retained");
+            }
+            SensorEvent::TrajectoryCorrection { timestamp_ns, pgo_count, pose, corrected_portals, corrected_depth } => {
+                ensure!(corrected_portals.len() <= 256, "Correction landmark limit");
+                ensure!(corrected_depth.len() <= 2048, "Correction depth history limit");
+                let retained = std::mem::take(&mut self.retained_depth);
+                let count = self.voxels.as_ref().map(|v|v.integrated_observations).unwrap_or(0);
+                let portals = self.portals()?;
+                let evidence = self.evidence.clone();
+                let home = self.home_portals.take();
+                let origin = self.origin.as_ref().map(|o|o.odometry_to_local.clone());
+                self.accept(SensorEvent::MapCorrection { timestamp_ns, pgo_count, pose })?;
+                if let Some(origin) = origin {
+                    for (id, corrected) in corrected_portals {
+                        let Some(old) = evidence.get(&id) else { continue; };
+                        if old["capture_timestamp_ns"].as_u64() != Some(corrected.timestamp_ns) { continue; }
+                        let Some(anchor) = portals.scenegraph.anchors.get(&id) else { continue; };
+                        let Ok(base) = serde_json::from_value::<Pose>(old["base_odometry_pose"].clone()) else { continue; };
+                        corrected.pose.validate()?;
+                        let delta = compose(&compose(&origin, &corrected.pose)?, &inverse(&compose(&origin, &base)?)?)?;
+                        let placement = compose(&delta, &from_rigid(&anchor.pose_in_map))?;
+                        let mut corrected_anchor = anchor.clone();
+                        corrected_anchor.pose_in_map = rigid(&placement, &anchor.pose_in_map.from_frame_id, &self.frame);
+                        InMemoryTransport.invoke(self.map.upsert_qr(), InvocationContext {
+                            invocation_id:uuid::Uuid::new_v4().to_string(),caller_peer_id:self.owner.clone(),caller_component_id:"local-mapper".into()
+                        }, UpsertQr { expected_snapshot:self.map.snapshot_reference(),anchor:corrected_anchor }).map_err(|e|anyhow!("{e:?}"))?;
+                        let mut updated = old.clone();
+                        updated["base_odometry_pose"] = json!(corrected.pose);
+                        updated["latest_measured_pose"] = json!(placement);
+                        updated["trajectory_correction_ns"] = json!(timestamp_ns);
+                        self.evidence.insert(id, updated);
+                    }
+                }
+                if let Some(home) = home && self.evidence.contains_key(&home.anchor) {
+                    self.home_portals = Some(home);
+                    self.detail = format!("SLAM correction {pgo_count} · calibration reprojected from optimized history");
+                }
+                self.rebuild_depth(retained, &corrected_depth, count)?;
+            }
             SensorEvent::MapCorrection { timestamp_ns, pgo_count, pose } => {
                 pose.validate()?;
                 ensure!(timestamp_ns > 0 && self.correction.is_none_or(|(t,_)| timestamp_ns > t), "out-of-order map correction");
@@ -721,6 +792,7 @@ impl LocalMap {
                 self.home_portals = None;
                 self.ar_frame = None;
                 self.recent_voxels = Default::default();
+                self.retained_depth.clear();
                 self.last_integration = None;
                 self.correction = Some((timestamp_ns, pgo_count));
                 for channel in self.cameras.values_mut() { channel.scan_status = json!({"status":"awaiting_corrected_scan"}); }
@@ -1288,7 +1360,7 @@ impl LocalMap {
                 .and_then(|v| v["observations"].as_u64())
                 .unwrap_or(0)
                 + 1;
-            self.evidence.insert(short.into(),json!({"observations":n,"capture_timestamp_ns":s.timestamp_ns,"clock":self.clock,"camera_product":camera_product,"reprojection_rms_px":estimate.reprojection_rms_px,"latest_measured_pose":measured,"provenance":provenance}));
+            self.evidence.insert(short.into(),json!({"observations":n,"capture_timestamp_ns":s.timestamp_ns,"clock":self.clock,"camera_product":camera_product,"reprojection_rms_px":estimate.reprojection_rms_px,"latest_measured_pose":measured,"base_odometry_pose":base,"provenance":provenance}));
             accepted += 1;
             channel.scan_status["mapped_portals"] = json!(accepted);
         }
@@ -1491,7 +1563,7 @@ impl LocalMap {
             1.,
         )?;
         let mut recent = self.recent_voxels.clone();
-        let checkpoint = recent.observe(&update, &endpoints)?;
+        let checkpoint = recent.observe_at(&update, &endpoints, t)?;
         let mut accumulator = saved.accumulator()?;
         accumulator.apply(&checkpoint)?;
         saved.checkpoint = accumulator.checkpoint_update().encode_to_vec();
@@ -1500,8 +1572,42 @@ impl LocalMap {
         saved.accumulator()?;
         self.voxels = Some(saved);
         self.recent_voxels = recent;
+        self.retained_depth.push(RetainedDepth { observation,colors,base_pose:base.clone(),sensor_to_base:sensor_base.clone() });
+        let needed = self.recent_voxels.needed_timestamps();
+        self.retained_depth.retain(|d|needed.contains(&d.observation.timestamp_ns));
+        if self.retained_depth.len()>2048 { self.retained_depth.drain(..self.retained_depth.len()-2048); }
         self.last_integration = Some(std::time::Instant::now());
 
+        Ok(())
+    }
+    fn rebuild_depth(&mut self, retained:Vec<RetainedDepth>, corrected:&BTreeMap<u64,Pose>, count:u64) -> Result<()> {
+        let Some(mut saved)=self.voxels.clone() else { return Ok(()); };
+        let Some(origin)=self.origin.as_ref().map(|o|o.odometry_to_local.clone()) else { return Ok(()); };
+        let mapper=PortalVoxelMapper::new(saved.definition.clone())?;
+        let voxelizer=auki_mappers::Voxelizer::new(0.1,16)?;
+        let mut recent=crate::recent_voxels::RecentVoxels::default();
+        let mut replayed=Vec::new();
+        for mut depth in retained {
+            let Some(base)=corrected.get(&depth.observation.timestamp_ns) else { continue; };
+            base.validate()?;
+            let sensor=compose(&origin,&compose(base,&depth.sensor_to_base)?)?;
+            depth.observation.pose.sensor_to_map=rigid(&sensor,&depth.observation.sensor_frame_id,&self.frame);
+            let mut rays=mapper.map_observation(&depth.observation)?;
+            crate::voxel_color::add(&mut rays,&depth.observation.hit_points_m,&depth.colors,&spatial(&sensor),0.1)?;
+            let endpoints=voxelizer.map_sensor_points(depth.observation.hit_points_m.iter().map(|p|auki_datatypes::pose::Vec3{x:p[0],y:p[1],z:p[2]}),&spatial(&sensor),1.)?;
+            recent.record(&rays,&endpoints,depth.observation.timestamp_ns)?;
+            depth.base_pose=base.clone();
+            replayed.push(depth);
+        }
+        if !replayed.is_empty() {
+            let mut accumulator=saved.accumulator()?;
+            accumulator.apply(&recent.checkpoint()?)?;
+            saved.checkpoint=accumulator.checkpoint_update().encode_to_vec();
+            saved.integrated_observations=count;
+            saved.latest_observation=replayed.last().map(|d|(&d.observation).into());
+            self.voxels=Some(saved);self.recent_voxels=recent;self.retained_depth=replayed;
+            self.last_integration=Some(std::time::Instant::now());
+        }
         Ok(())
     }
 }

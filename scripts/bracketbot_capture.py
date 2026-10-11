@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import threading
+from pathlib import Path
 import numpy as np
 
 CAMERA_FRAME = 'bracketbot_head_rectified_optical'
@@ -183,6 +184,8 @@ class PoseGate:
         if t < self.last_timestamp:
             raise NewSessionRequired('SLAM capture clock regressed')
         pgo = int(record['pgo_count'])
+        if pgo < 0 or (self.pgo_count is not None and pgo < self.pgo_count):
+            raise NewSessionRequired('SLAM pose graph reset; new map session required')
         if t == self.last_timestamp:
             return None
         result = pose(record)
@@ -193,6 +196,72 @@ class PoseGate:
         self.tracking = True
         self.last_timestamp = t
         return t, result
+
+
+POSE_HISTORY_DTYPE = np.dtype([('ts_ns','<i8'),('pos','<f4',3),('quat','<f4',4),('pad','u1',4)])
+
+
+def corrected_portal_poses(raw, expected_pgo, evidence):
+    """Interpolate optimized keyframes at the original detector captures.
+
+    No extrapolation, no nearest-pose substitution, no new detector observation.
+    Missing/incompatible history deliberately leaves calibration unavailable.
+    """
+    if len(raw) < 40 or raw[:8] != b'BBPOSE1\0': return {}
+    size, count, generation, pgo = np.frombuffer(raw[8:40], '<i8').tolist()
+    if size != POSE_HISTORY_DTYPE.itemsize or not 0 < count <= 1000000 or pgo != expected_pgo:
+        return {}
+    if len(raw) != 40+size*count: return {}
+    rows = np.frombuffer(raw[40:], POSE_HISTORY_DTYPE)
+    stamps = rows['ts_ns']
+    if np.any(stamps[1:] <= stamps[:-1]): return {}
+    corrected = {}
+    for identity, original in evidence.items():
+        t = original.get('capture_timestamp_ns')
+        if not isinstance(t,int) or isinstance(t,bool) or not original.get('base_odometry_pose'): continue
+        at = int(np.searchsorted(stamps,t))
+        if at < len(rows) and stamps[at] == t:
+            p = pose(rows[at])
+        elif 0 < at < len(rows) and int(stamps[at]-stamps[at-1]) <= 1_000_000_000:
+            left, right = pose(rows[at-1]), pose(rows[at])
+            f = (t-int(stamps[at-1]))/int(stamps[at]-stamps[at-1])
+            q0, q1 = np.array(left['rotation_xyzw']), np.array(right['rotation_xyzw'])
+            dot = float(np.dot(q0,q1))
+            if dot < 0: q1 = -q1; dot = -dot
+            if dot > .9995: q = (1-f)*q0+f*q1
+            else:
+                theta=math.acos(min(1.,dot))
+                q=(math.sin((1-f)*theta)*q0+math.sin(f*theta)*q1)/math.sin(theta)
+            q /= np.linalg.norm(q)
+            p=dict(translation=((1-f)*np.array(left['translation'])+f*np.array(right['translation'])).tolist(),rotation_xyzw=q.tolist())
+        else: continue
+        corrected[identity] = dict(timestamp_ns=t,pose=p)
+    return corrected
+
+
+def trajectory_correction(correction, control_path, history_path):
+    try:
+        control = json.loads(Path(control_path).read_text())
+        evidence = control['registries']['local_mapping']['observed_portals']
+        raw = Path(history_path).read_bytes()
+        ready = (len(raw)>=40 and raw[:8]==b'BBPOSE1\0'
+                 and int(np.frombuffer(raw[8:40],'<i8')[-1]) == correction['pgo_count'])
+        if not ready: return dict(correction,history_ready=False)
+        size,count,_,_=np.frombuffer(raw[8:40],'<i8').tolist()
+        if size!=POSE_HISTORY_DTYPE.itemsize or not 0<count<=1000000 or len(raw)!=40+size*count:
+            return dict(correction,history_ready=False)
+        rows=np.frombuffer(raw[40:],POSE_HISTORY_DTYPE)
+        times=control['registries']['local_mapping'].get('retained_depth_timestamps',[])[:2048]
+        targets=times+[v['capture_timestamp_ns'] for v in evidence.values()]
+        if targets and int(rows['ts_ns'][-1])<max(targets):
+            return dict(correction,history_ready=False)
+        corrected = corrected_portal_poses(raw, correction['pgo_count'], evidence)
+        depth_evidence = {str(t):dict(capture_timestamp_ns=t,base_odometry_pose=True) for t in times}
+        depth = corrected_portal_poses(raw, correction['pgo_count'], depth_evidence)
+        return dict(correction,kind='trajectory_correction',corrected_portals=corrected,
+                    corrected_depth={key:value['pose'] for key,value in depth.items()},history_ready=True)
+    except (OSError,KeyError,ValueError,TypeError):
+        return dict(correction,history_ready=False)
 
 
 class FramePairs:
@@ -263,6 +332,12 @@ class CaptureMailbox:
             if gate.correction:
                 self.boundary = gate.correction['timestamp_ns']
                 self.pairs = FramePairs(48)
+
+    def pause_for_correction(self,t):
+        with self.lock:
+            self.tracking=False
+            self.boundary=max(self.boundary,t)
+            self.pairs=FramePairs(48)
 
     def take_scan(self, after, now_ns):
         with self.lock:

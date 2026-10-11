@@ -31,7 +31,13 @@ pub struct Scene {
     pub portals: MapSnapshot,
     pub geometry: Option<CanonicalScene>,
     pub notes: Notes,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_volumes: Option<crate::semantic_volumes::Volumes>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volumes: Vec<crate::semantic_volumes::SemanticVolume>,
     pub presence: Value,
+    #[serde(default)]
+    pub robot_presence: Value,
 }
 impl ContractType for Scene {
     const DATATYPE: &'static str = SCHEMA;
@@ -65,6 +71,10 @@ impl Scene {
             "Mobile scene/profile mismatch"
         );
         self.notes.validate(frame)?;
+        let mut volume_layer=Notes::empty(frame);
+        volume_layer.volumes=self.volumes.clone();
+        volume_layer.validate(frame)?;
+        if let Some(volumes) = &self.semantic_volumes { volumes.validate(frame)?; }
         ensure!(
             self.presence["frame"] == frame,
             "Presence belongs to another scene"
@@ -94,7 +104,14 @@ impl Scene {
                 "landmarks":crate::landmarks::portal_map(&self.portals,None,&Default::default())?})
         };
         view["notes"] = json!(self.notes.items);
+        view["volumes"] = json!(self.volumes);
+        view["semantic_volumes"] = serde_json::to_value(self.semantic_volumes.clone().unwrap_or_else(|| {
+            let mut collection=crate::semantic_volumes::Volumes::empty(&self.portals.scenegraph.map.frame.id);
+            collection.items=self.volumes.iter().map(|v|crate::semantic_volumes::Volume::from_mobile(v,None)).collect();
+            collection
+        }))?;
         crate::mobile_pose::append_labels_in_frame(&mut view, &self.presence, &map.frame.id);
+        crate::robot_presence::append_labels(&mut view, &self.robot_presence, &map.frame.id);
         view["environment_name"] = json!(map.name);
         view["frame_description"] = json!(map.frame.origin_description);
         view["local_reference"] = json!(true);
@@ -116,6 +133,7 @@ struct State {
     map: crate::collaborative_mapper::CollaborativeMap,
     notes: Notes,
     presence: Arc<Mutex<crate::mobile_pose::Presence>>,
+    robot_presence: Arc<Mutex<crate::robot_presence::Presence>>,
 }
 pub struct Publisher {
     id: String,
@@ -186,7 +204,9 @@ impl Publisher {
             Notes::empty(&frame)
         };
         notes.validate(&frame)?;
+        scenes.volumes.import_notes(id,&frame,&notes.volumes)?;
         let live_presence = Arc::new(Mutex::new(crate::mobile_pose::Presence::default()));
+        let robot_presence = Arc::new(Mutex::new(crate::robot_presence::Presence::default()));
         scenes.phone_presence.lock().map_err(|_| anyhow!("Phone presence unavailable"))?
             .insert(id.into(), live_presence.clone());
         let state = Arc::new(Mutex::new(State {
@@ -197,6 +217,7 @@ impl Publisher {
             )?,
             notes,
             presence: live_presence.clone(),
+            robot_presence: robot_presence.clone(),
         }));
         let inbox = Arc::new(Mutex::new(crate::mobile_depth::Inbox::default()));
         let component = runtime.component(
@@ -288,10 +309,15 @@ impl Publisher {
         let change_state = state.clone();
         let change_frame = frame.clone();
         let change_path = notes_path.clone();
+        let volume_scenes=scenes.clone();
+        let volume_key=id.to_owned();
         let memo = std::sync::Mutex::new(crate::mobile_notes::ChangeMemo::default());
         let change = annotations.operable("change", |ctx| !ctx.caller_peer_id.is_empty(),
             move |ctx, request: crate::mobile_notes::ChangeNote| {
                 memo.lock().map_err(|_| InvocationError::TargetUnavailable)?.run(&ctx.caller_peer_id, &request, || {
+                if matches!(request.action,crate::mobile_notes::NoteAction::PutVolume{..}|crate::mobile_notes::NoteAction::DeleteVolume{..}) {
+                    return volume_scenes.volumes.sdk_change(&volume_key,&change_frame,&request);
+                }
                 let mut state = change_state.lock().map_err(|_| InvocationError::TargetUnavailable)?;
                 let (notes, result) = crate::mobile_notes::apply_change(&state.notes, &request, &change_frame)?;
                 persist_notes(&notes, &change_path)?;
@@ -314,6 +340,20 @@ impl Publisher {
         endpoint.export_operable(&change)?;
         components.push(annotations);
 
+        let robot_component = runtime.component(ComponentSpec::new(format!("{}:{id}",crate::robot_presence::COMPONENT))
+            .operable(OperableContract { name:"update".into(), instruction:crate::robot_presence::Update::DATATYPE.into(),
+                result:"bool".into(), exposure:Exposure::Cluster }))?;
+        let robot_home = owner.clone();
+        let robot_frame = frame.clone();
+        let robot_op = robot_component.operable("update", |ctx| !ctx.caller_peer_id.is_empty(),
+            move |ctx, update:crate::robot_presence::Update| {
+                robot_presence.lock().map_err(|_|InvocationError::TargetUnavailable)?
+                    .accept(&ctx.caller_peer_id,&robot_home,&robot_frame,update,Instant::now()).map_err(rejected)?;
+                Ok(true)
+            })?;
+        robot_component.expose()?;
+        endpoint.export_operable(&robot_op)?;
+        components.push(robot_component);
         let presence = runtime.component(
             ComponentSpec::new(format!("{}:{id}", crate::mobile_pose::COMPONENT)).operable(
                 OperableContract {
@@ -326,6 +366,11 @@ impl Publisher {
                 name: "snapshot".into(),
                 instruction: crate::mobile_pose::ReadPresence::DATATYPE.into(),
                 result: crate::mobile_pose::PresenceSnapshot::DATATYPE.into(),
+                exposure: Exposure::Cluster,
+            }).operable(OperableContract {
+                name: "name".into(),
+                instruction: crate::mobile_pose::SetName::DATATYPE.into(),
+                result: "bool".into(),
                 exposure: Exposure::Cluster,
             }),
         )?;
@@ -422,6 +467,15 @@ impl Publisher {
         portals.expose()?;
         endpoint.export_operable(&add)?;
         components.push(portals);
+        // A phone names itself; it applies at once and is saved, with no restart.
+        let name_op = presence.operable(
+            "name",
+            |ctx| !ctx.caller_peer_id.is_empty(),
+            |ctx, request: crate::mobile_pose::SetName| {
+                crate::mobile_pose::set_name(&ctx.caller_peer_id, &request.name).map_err(rejected)?;
+                Ok(true)
+            },
+        )?;
         let snapshot_state = live_presence.clone();
         let snapshot_frame = frame.clone();
         let snapshot_owner = owner.clone();
@@ -450,6 +504,7 @@ impl Publisher {
         presence.expose()?;
         endpoint.export_operable(&op)?;
         endpoint.export_operable(&snapshot_op)?;
+        endpoint.export_operable(&name_op)?;
         components.push(presence);
         let mut publisher = Self {
             id: id.into(),
@@ -508,11 +563,15 @@ impl Publisher {
             publication_clock: self.clock.clone(),
             portals: reference.clone(),
             geometry: state.map.scene()?,
-            notes: state.notes.clone(),
+            notes: { let mut notes=state.notes.clone();notes.volumes.clear();notes },
+            volumes: self.scenes.volumes.mobile(&self.id,&reference.scenegraph.map.frame.id)?,
+            semantic_volumes: Some(self.scenes.volumes.get(&self.id, &reference.scenegraph.map.frame.id)?),
             presence: state
                 .presence
                 .lock().map_err(|_| anyhow!("Phone presence unavailable"))?
                 .snapshot_in_frame(Instant::now(), &reference.scenegraph.map.frame.id),
+            robot_presence: state.robot_presence.lock().map_err(|_|anyhow!("Robot presence unavailable"))?
+                .snapshot(Instant::now(), &reference.scenegraph.map.frame.id),
         };
         scene.validate(&self.owner, &reference.scenegraph.map.frame.id)?;
         let content = serde_json::to_vec(&scene)?;
@@ -625,6 +684,18 @@ pub async fn receive(
     idle: Duration,
     mut accept: impl FnMut(Value),
 ) -> Result<()> {
+    receive_scene(peer, home, stop, idle, |scene| { accept(scene.mobile()?); Ok(()) }).await
+}
+
+/// Consume the authenticated scene without constructing its potentially large
+/// render representation. Volume consumers need only the semantic extension.
+pub async fn receive_scene(
+    peer: &auki_sdk::AukiPeer,
+    home: &HomeConnection,
+    stop: &tokio_util::sync::CancellationToken,
+    idle: Duration,
+    mut accept: impl FnMut(&Scene) -> Result<()>,
+) -> Result<()> {
     let expected = home.validate(peer)?;
     let client = ComponentProtocolClient::new(peer.protocols());
     let mut failures = Vec::new();
@@ -691,7 +762,7 @@ pub async fn receive(
                     Some(RemoteObservationEvent::Observation(o))=>{
                         o.payload.validate(&home.peer_id,&home.frame)?;
                         ensure!(crate::model::clock_ref(&o.payload.publication_clock)==clock,"Scene clock mismatch");
-                        accept(o.payload.mobile()?); received=true;
+                        accept(&o.payload)?; received=true;
                     },
                     Some(RemoteObservationEvent::Gap(_))=>{},
                     _=>bail!("Scene stream ended"),

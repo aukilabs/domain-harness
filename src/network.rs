@@ -270,6 +270,15 @@ impl ScenePublisher {
         changed: Arc<tokio::sync::Notify>,
         live: Option<tokio::sync::watch::Receiver<crate::scene_mirror::RemoteScene>>,
     ) -> Result<()> {
+        self.enable_annotations_with_volumes(store,changed,live,None)
+    }
+    pub fn enable_annotations_with_volumes(
+        &self,
+        store: Arc<std::sync::Mutex<crate::model::Store>>,
+        changed: Arc<tokio::sync::Notify>,
+        live: Option<tokio::sync::watch::Receiver<crate::scene_mirror::RemoteScene>>,
+        scenes: Option<Arc<crate::local_scenes::LocalScenes>>,
+    ) -> Result<()> {
         use auki_components::{ContractType, InvocationError, OperableContract};
         let component =
             self.runtime
@@ -289,6 +298,12 @@ impl ScenePublisher {
                 memo.lock().map_err(|_| InvocationError::TargetUnavailable)?.run(&ctx.caller_peer_id, &request, || {
                 let mut store = change_store.lock().map_err(|_| InvocationError::TargetUnavailable)?;
                 let result = (|| -> Result<_> {
+                    if matches!(request.action,crate::mobile_notes::NoteAction::PutVolume{..}|crate::mobile_notes::NoteAction::DeleteVolume{..})
+                        && let Some(scenes)=&scenes {
+                        let result=scenes.volumes.sdk_change("canonical",crate::model::FRAME,&request)?;
+                        store.built.registries["semantic_volumes"]=serde_json::to_value(scenes.volumes.get("canonical",crate::model::FRAME)?)?;
+                        return Ok(result);
+                    }
                     let notes = crate::notes::from_registries(&store.built.registries, crate::model::FRAME)?;
                     let (notes, result) = crate::mobile_notes::apply_change(&notes, &request, crate::model::FRAME)?;
                     crate::model::persist(&store.path.with_extension("notes.json"), &notes)?;
@@ -636,7 +651,7 @@ pub async fn serve_scene(
                 };
                 publisher.enable_phone_depth(phone_depth.clone(),remote_portals.clone())?;
                 let annotation_changes = Arc::new(tokio::sync::Notify::new());
-                publisher.enable_annotations_with_live(store.clone(), annotation_changes.clone(), Some(home_live.subscribe()))?;
+                publisher.enable_annotations_with_volumes(store.clone(), annotation_changes.clone(), Some(home_live.subscribe()),Some(local_scenes.clone()))?;
                 let phone_presence = publisher.enable_phone_presence(store.clone(), annotation_changes.clone())?;
                 let mut presence_tick = tokio::time::interval(std::time::Duration::from_millis(500));
                 let mut live_updates=home_live.subscribe();

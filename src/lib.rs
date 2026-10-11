@@ -11,6 +11,7 @@ pub mod portal_sizes;
 pub mod raycast;
 pub mod rgbd;
 pub mod runner_pose;
+pub mod robot_presence;
 pub mod runner_voxels;
 pub mod scene_mirror;
 pub mod shared_inputs;
@@ -66,5 +67,6 @@ pub mod simulator_mapper;
 pub mod environments;
 pub mod local_scenes;
 pub mod local_mobile;
+pub mod semantic_volumes;
 
 pub mod robot_runner;

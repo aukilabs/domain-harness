@@ -185,6 +185,86 @@ fn correction_invalidates_geometry_without_recreating_components_or_changing_ses
 }
 
 #[test]
+fn trajectory_correction_json_timestamp_keys() -> Result<()> {
+    let event=SensorEvent::TrajectoryCorrection{timestamp_ns:1791759410000000000,pgo_count:128,pose:identity(),corrected_portals:Default::default(),corrected_depth:std::collections::BTreeMap::from([(1791759348506457234,identity())])};
+    let wire=serde_json::to_string(&event)?;
+    let decoded:SensorEvent=serde_json::from_str(&wire)?;
+    match decoded { SensorEvent::TrajectoryCorrection{corrected_depth,..} => assert!(corrected_depth.contains_key(&1791759348506457234)),_=>panic!("wrong event") }
+    Ok(())
+}
+
+#[test]
+fn delayed_correction_after_tracking_loss_replays_depth() -> Result<()> {
+    let runtime=ComponentRuntime::new("robot");
+    let mut map=LocalMap::new_for_robot(&runtime,"robot",&uuid::Uuid::new_v4().to_string(),BRACKETBOT_FAMILY,
+        spatial_home::rgbd::FRAME,serde_json::from_str(include_str!("../config/portals.json"))?)?;
+    let t=1_000_000_000;
+    map.accept(SensorEvent::Odometry{timestamp_ns:t,pose:identity()})?;
+    map.accept(SensorEvent::Camera{sample:sample("HRIPLL40GL6",t)})?;
+    map.accept(SensorEvent::CorrectionPending{timestamp_ns:t*2,pgo_count:2})?;
+    map.accept(SensorEvent::TrackingLost{timestamp_ns:t*3})?;
+    map.accept(SensorEvent::TrajectoryCorrection{timestamp_ns:t*4,pgo_count:2,pose:identity(),corrected_portals:Default::default(),corrected_depth:std::collections::BTreeMap::from([(t,identity())])})?;
+    assert_eq!(map.voxels.as_ref().unwrap().integrated_observations,1);
+    assert!(map.latest_pose.is_some());
+    Ok(())
+}
+
+#[test]
+fn corrected_trajectory_retains_calibration_without_marker_reobservation() -> Result<()> {
+    use spatial_home::frame_transform::{FrameTransform,Validity};
+    let runtime=ComponentRuntime::new("robot");
+    let mut map=LocalMap::new_for_robot(&runtime,"robot",&uuid::Uuid::new_v4().to_string(),BRACKETBOT_FAMILY,
+        spatial_home::rgbd::FRAME,serde_json::from_str(include_str!("../config/portals.json"))?)?;
+    let t=1_000_000_000;
+    map.copy_native_scans();
+    map.accept(SensorEvent::Odometry{timestamp_ns:t,pose:identity()})?;
+    map.accept(SensorEvent::Camera{sample:sample("HRIPLL40GL6",t)})?;
+    map.take_localized_scans();
+    map.accept_home_portals(map.portals()?,"home".into())?;
+    let frame=map.frame.clone();
+    let origin=map.origin.as_ref().unwrap().odometry_to_local.clone();
+    let corrected_capture=Pose{translation:[2.,0.,0.],..identity()};
+    let current=Pose{translation:[3.,0.,0.],..identity()};
+    let before=map.voxels.as_ref().unwrap().checkpoint.clone();
+    map.accept(SensorEvent::CorrectionPending{timestamp_ns:t*2,pgo_count:2})?;
+    assert_eq!(map.voxels.as_ref().unwrap().checkpoint,before,"waiting for asynchronous history must preserve the map");
+    assert!(map.latest_pose.is_none(),"uncorrected poses must not be published while history is pending");
+    map.accept(SensorEvent::TrajectoryCorrection{timestamp_ns:t*2,pgo_count:2,pose:current.clone(),
+        corrected_depth:std::collections::BTreeMap::from([(t,corrected_capture.clone())]),
+        corrected_portals:std::collections::BTreeMap::from([("HRIPLL40GL6".into(),HistoricalPose{timestamp_ns:t,pose:corrected_capture})])})?;
+    let transform=FrameTransform::from_local(&map,"robot")?;
+    assert_eq!(transform.validity,Validity::Valid);
+    let alignment=transform.transform.unwrap();
+    let [w,x,y,z]=alignment.rotation_wxyz;
+    let in_home=compose(&Pose{translation:alignment.translation,rotation_xyzw:[x,y,z,w]},&current)?;
+    assert!((in_home.translation[0]-1.).abs()<1e-8,"corrected calibration cancels the map correction, not actual driving");
+    assert_eq!(map.frame,frame);
+    assert_eq!(map.origin.as_ref().unwrap().odometry_to_local,origin);
+    assert_eq!(map.metadata()["local_mapping"]["observed_portals"]["HRIPLL40GL6"]["capture_timestamp_ns"],t);
+    assert_eq!(map.metadata()["local_mapping"]["map_correction"]["alignment_reprojected"],true);
+    assert!(map.voxels.as_ref().unwrap().integrated_observations>0,"correction must not empty local geometry");
+    assert!(!map.voxels.as_ref().unwrap().accumulator()?.viewer_snapshot(0.)?.chunks.is_empty());
+    map.accept(SensorEvent::Odometry{timestamp_ns:t*3,pose:current})?;
+    map.accept(SensorEvent::Camera{sample:sample("not-a-portal",t*3)})?;
+    assert!(!map.take_localized_scans().is_empty(),"depth contributions continue without visible portal");
+    assert_eq!(FrameTransform::from_local(&map,"robot")?.validity,Validity::Valid);
+    let count=map.voxels.as_ref().unwrap().integrated_observations;
+    for (n,pgo) in [(4,3),(5,4)] {
+        map.accept(SensorEvent::CorrectionPending{timestamp_ns:t*n,pgo_count:pgo})?;
+        let shift=n as f64/10.;
+        map.accept(SensorEvent::TrajectoryCorrection{timestamp_ns:t*n,pgo_count:pgo,pose:identity(),
+            corrected_portals:std::collections::BTreeMap::from([("HRIPLL40GL6".into(),HistoricalPose{timestamp_ns:t,pose:Pose{translation:[2.+shift,0.,0.],..identity()}})]),
+            corrected_depth:std::collections::BTreeMap::from([(t,Pose{translation:[2.+shift,0.,0.],..identity()}),(t*3,Pose{translation:[3.+shift,0.,0.],..identity()})])})?;
+        assert_eq!(map.voxels.as_ref().unwrap().integrated_observations,count,"replayed data must not reset or increment the measured scan counter");
+        assert!(!map.voxels.as_ref().unwrap().accumulator()?.viewer_snapshot(0.)?.chunks.is_empty(),"repeated PGO must retain geometry");
+        assert_eq!(FrameTransform::from_local(&map,"robot")?.validity,Validity::Valid);
+    }
+    map.accept(SensorEvent::TrajectoryCorrection{timestamp_ns:t*6,pgo_count:5,pose:identity(),corrected_portals:Default::default(),corrected_depth:Default::default()})?;
+    assert!(map.home_portals.is_none(),"missing optimized history must never silently reuse an uncorrected calibration");
+    Ok(())
+}
+
+#[test]
 fn decoded_portal_with_unknown_size_is_not_reported_as_no_detection() -> Result<()> {
     let runtime = ComponentRuntime::new("robot");
     let mut map = LocalMap::new(&runtime, "robot", &uuid::Uuid::new_v4().to_string())?;

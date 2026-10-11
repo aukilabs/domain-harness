@@ -19,11 +19,20 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 pub const VOXEL_SCHEMA: &str = "auki.voxel-map.snapshot/v3";
-pub const MAX_SNAPSHOT_BYTES: usize = 4 * 1024 * 1024;
+/// Bound on a snapshot's JSON encoding. The checkpoint is written as a JSON
+/// byte array, about 3.6 bytes per real byte, and colored maps reached the
+/// former 4 MiB bound near 20,000 occupied voxels, after which every further
+/// contribution was rejected. 16 MiB stays under the 24 MiB scene publication
+/// bound and the 32 MiB payload frame.
+pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_SOURCES: usize = 64;
 pub const MAX_POINTS: usize = 1024;
 pub const MAX_RAY_SAMPLES: usize = 65_536;
-pub const MAX_VOXELS: usize = 65_536;
+/// Bound on stored cells, occupied and free. Raised with `MAX_SNAPSHOT_BYTES`:
+/// a cell costs about 66 bytes of snapshot JSON, so the two former bounds were
+/// reached together and raising only one gained a few percent. 196,608 cells
+/// is about 13 MiB, inside the 16 MiB snapshot bound.
+pub const MAX_VOXELS: usize = 196_608;
 
 #[derive(Debug, thiserror::Error)]
 #[error("voxel map: {0}")]

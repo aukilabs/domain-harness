@@ -195,6 +195,26 @@ aside{display:block;padding:0;min-width:0;max-height:none;overflow:hidden;backgr
 #fleet-sensors summary{cursor:pointer;font-size:11px;color:var(--text-2);padding:9px 0}
 #fleet-sensors details .panel-row{padding-left:14px;font-size:10px}
 .note-form label{display:block;color:var(--muted);font-size:10px;margin-bottom:10px}
+.volume-actions{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}
+.volume-actions button{padding:7px 10px;border:1px solid var(--line);border-radius:4px;background:var(--panel-3);color:var(--text);cursor:pointer;font-size:11px}
+.volume-actions button:disabled{opacity:.4;cursor:default}
+.volume-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 10px}
+.volume-grid input{min-width:0}
+.volume-handles{position:absolute;inset:0;pointer-events:none;z-index:80}
+.volume-handle-leaders{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.volume-resize-handle{position:absolute;transform:translate(-50%,-50%);width:48px;height:48px;padding:0;border:0;border-radius:50%;background:transparent;color:#3b82f6;pointer-events:auto;cursor:grab;touch-action:none;display:grid;place-items:center}
+.volume-resize-handle[hidden]{display:none}
+.volume-resize-handle .handle-ring{stroke:#1d4ed8}
+.volume-resize-handle.active{color:#f59e0b}
+.volume-resize-handle.active .handle-ring{stroke:#f8fafc}
+.volume-resize-handle:active{cursor:grabbing}
+.volume-resize-handle:focus-visible{outline:3px solid var(--accent);outline-offset:3px}
+.volume-tool-bar{position:absolute;bottom:45px;left:50%;transform:translateX(-50%);display:flex;gap:4px;padding:4px;border:1px solid var(--line);border-radius:12px;background:var(--panel-3);box-shadow:0 8px 20px #0005;z-index:81;white-space:nowrap}
+.volume-tool-bar button{display:flex;align-items:center;gap:6px;background:transparent;border:0;border-radius:8px;color:#a1a1aa;padding:8px 12px;font:500 12px system-ui;cursor:pointer}
+.volume-tool-bar button[aria-pressed="true"]{background:#3b82f6;color:#f8fafc}
+.volume-tool-bar button:disabled{opacity:.4;cursor:default}
+.volume-layer{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:11px}
+#volume-list small{display:block;white-space:pre-wrap;color:var(--muted);margin-top:4px}
 .note-form input{display:block;width:100%;height:auto;margin-top:5px;padding:7px;border:1px solid var(--line);border-radius:3px;color:var(--text);background:var(--panel-3);font:inherit;cursor:text}
 .note-actions{display:flex;gap:6px}.note-actions button{flex:1;padding:7px;border:1px solid var(--line);border-radius:3px;background:var(--panel-3);color:var(--accent);font-size:10px}
 .note-form textarea{display:block;width:100%;min-height:85px;margin-top:5px;padding:7px;resize:vertical;background:var(--panel-3);color:var(--text);border:1px solid var(--line);font:inherit}

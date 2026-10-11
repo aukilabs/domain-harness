@@ -356,3 +356,91 @@ Final adapter and rollback paths are recorded in each installation's
 links in its currently installed body-only URDF. Both measured publication
 counters advanced four samples over two seconds. Geometry, timestamp joins,
 transport replacement/expiry and viewer behavior passed their checks.
+
+## Semantic volume speech (Bracketbot)
+
+### Bracketbot pose-graph correction handling
+
+Known limitations from the 2026-10-12 live investigation: correction-history
+waiting still suppresses live odometry, and retained-depth replay is synchronous.
+BBOS can report healthy tracking while the runner reports waiting for odometry.
+A stationary 60-second runner-off comparison reduced median total CPU usage
+from 97.8% to 66.0%; restoring the runner raised it to 94.5%. No sampled BBOS
+tracking loss occurred in any window, so causation of actual SLAM loss is not
+established. Background correction and generation-triggered history reads remain
+follow-up work. Older deployed SDK volume decoders also reject the new optional
+`description` field; this wire compatibility issue remains unresolved.
+
+Routine BBOS PGO updates are not map resets. Capture reads the atomic optimized
+`slam.poses` history and interpolates the base pose at each saved portal's
+original detector timestamp (bounded gaps, no extrapolation). The mapper
+reprojects the saved marker pose using that correction, keeps the observation's
+clock/provenance, and recomputes its native-to-Home relationship. Pre-correction
+queued scans are dropped, but local geometry is rebuilt from retained raw depth
+using corrected capture-time poses. Retention follows the last three votes per
+voxel and is capped at 2,048 captures. Capture pauses mapping admission while
+the matching optimized history catches up; existing geometry remains available
+during that wait. Corrected calibration does not require the marker to be visible
+again. The native frame and boot origin remain unchanged.
+
+Corrected depth timestamps are JSON object keys and therefore strings on the
+wire. The tagged sensor-event decoder explicitly parses these into `u64`; the
+wire-format regression test uses full nanosecond timestamps. Without this adapter,
+the first trajectory correction terminated the runner and the supervisor started
+a new map session instead of replaying the retained scans.
+
+Invalid/missing history fails closed. Producer restart, clock regression and a
+decreasing PGO counter require a new capture session and fresh calibration.
+After an ordinary runner restart, show a known portal once before driving away.
+
+The 2026-10-12 fix was built on the laptop with cached Linux ARM64 Docker:
+`build-bracketbot-correction.py`, then transferred/compatibility-checked with
+`install-bracketbot-correction.py`. The installer refuses to overwrite newer
+deployed sources. `restart-bracketbot-presence.py` keeps the existing supervisor
+arguments/environment. Home and the BBOS SLAM daemon are not rebuilt/restarted.
+Tests verify that corrected calibration survives with no new marker observation
+and post-correction depth scans remain available for contributions. Live driving
+verification still requires a fresh portal observation after deployment.
+
+### Presence and speech
+
+Robot name labels use a separate authenticated `home-robot-presence:<scene>`
+operation, independent of geometry contribution acceptance. The runner supplies
+its native `robot.base` pose and mapper-owned Home transform; Home composes them
+without rebasing the robot. Presence expires after three seconds and is withdrawn
+when tracking/alignment is unavailable. Robot labels are read-only and separate
+from phone presence, so robots never become phone-reaching targets. Pose
+publication diagnostics are written to `robot-presence-status.json`.
+
+The pose path passes local authenticated integration tests, including publication
+without any voxel geometry. The runner-only update was installed on Bracketbot
+0184 on 2026-10-12 using `build-bracketbot-presence.py`; unrelated deployed
+sources were preserved. `restart-bracketbot-presence.py` restarted its existing
+supervisor with identical arguments/environment, retaining phone driving. Home
+was not rebuilt or restarted; its receiver must be deployed separately. Current
+pose diagnostics report the receiver unavailable and the mapper alignment stale.
+
+The supervisor starts `speak-bracketbot-volumes.py` by default. The runner
+subscribes to the authenticated Home mobile scene selected by
+`home-connection.json` and writes only its semantic-volume extension to
+`semantic-volumes.json`. This currently uses the shared scene Product (including
+its geometry on the wire), not a dedicated lightweight volume Product.
+
+The speech controller transforms the live **robot.base** position into Home
+space without changing the robot's native frame. It reads each nonblank
+description after a 0.5-second entry dwell. Boxes honor yaw and height; overlapping
+volumes are announced in stable ID order. A 5 cm exit margin suppresses boundary
+chatter. Lost/stale localization pauses announcements and is not treated as an
+exit. Editing a description while already inside does not repeat it.
+
+Offline synthesis requires `espeak-ng` (or `espeak`) on the robot. Playback uses
+the existing BBOS `speaker.audio` topic and speaker daemon's Python environment,
+including its NumPy and soxr dependencies, without claiming the ALSA device. The speech
+worker reports backend/playback errors in `volume-speech-status.json` and does
+not block SLAM, change audio services, or command motors. Failed announcements
+are not retried continuously. Use supervisor `--disable-volume-speech` to opt out.
+
+Verified on Bracketbot 0184 on 2026-10-12: ARM64 build/install, offline synthesis,
+BBOS speaker playback smoke test, and authenticated ingestion of the Home
+`Office` volume. The launched runner resumed mapping but its Home alignment
+remained stale, so a real localized volume-entry announcement remains unverified.

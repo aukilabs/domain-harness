@@ -9,6 +9,28 @@ users inspect either that map or a runner's independent map. The browser display
 measured voxels, manually sized portals, live robot poses, robot body volumes,
 camera previews, calibrated AR overlays, persistent spatial text annotations, and
 locally registered printable ArUco/AprilTag fiducials.
+Home's **Volumes** panel creates semantic boxes: drag an oriented front edge or
+enter a center, base elevation, width, depth, height, and Y-axis rotation. Each
+volume has a stable identity, required title, and optional description. Select a
+box to edit it using Peyote-style blue circular axis-rail handles: resize from
+either side, change height or depth, move on the ground, or rotate a bottom corner
+around the opposite corner. Existing-volume handle edits save on release;
+Escape cancels the active drag. Shift snaps resizing/moving to 10 cm and rotation
+to 15 degrees. During creation, Shift locks the front edge to X or Z; new volumes
+start with Peyote's 60 cm depth and 2 m height, and require a title and Save.
+The viewer toolbar switches between Select and Create volume. This ports the
+fixture/volume manipulation UI, not Peyote's shelving, inventory or measurement
+features. Select a
+local Home scene first; saved volumes are isolated by scene and coordinate frame,
+persist across restarts, and can be selected, edited, hidden, or deleted.
+The `spatial-harness.semantic-volumes/v1` collection uses meters and radians and
+is included as `semantic_volumes` in the scene-specific mobile Scene Product.
+Its authoritative HTTP representation is `GET /api/semantic-volumes?scene=local:<id>`;
+creation (`POST`), replacement (`PATCH /api/semantic-volumes/<uuid>`), and deletion
+(`DELETE` at the same URL) require the selected `scene` query and its current
+`frame` in the request body. POST/PATCH also require a `volume`; Home assigns
+the identity on creation. These authored regions are not robot occupancy or
+measured geometry and do not alter portal calibration.
 The iPhone app aligns its ARKit session by observing a known portal, displays
 Home geometry, places annotations, publishes phone presence, and contributes
 high-confidence camera-local LiDAR depth with separate alignment evidence.
@@ -45,7 +67,12 @@ cargo run --locked
 Open [the local viewer](http://127.0.0.1:4319). The default view uses the supplied
 portal geometry and has no synthetic voxels. P2P is opt-in; real robot observations
 require the configuration below. `SPATIAL_PORT` changes the HTTP port; the server
-binds to `127.0.0.1`.
+binds to `0.0.0.0` by default so the UI is reachable on the LAN. Set
+`SPATIAL_BIND=127.0.0.1` only for an explicitly localhost-only instance.
+For LAN editing, set `SPATIAL_UI_HOSTS` to the server's LAN address and port
+(for example `192.168.1.26:4329`; comma-separated for multiple hosts).
+Browser writes must still be same-origin. These checks are not user authentication;
+run Home on a trusted network. Rebuilds should preserve LAN access by default.
 
 For the separate synthetic demonstration:
 

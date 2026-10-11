@@ -146,6 +146,8 @@ pub struct MobileClient {
     depth: tokio::sync::watch::Sender<Option<(crate::mobile_depth::Sample, std::time::Instant)>>,
     pose: tokio::sync::watch::Sender<Option<crate::mobile_pose::Sample>>,
     asleep: AtomicBool,
+    /// The name this phone asks Home to show for it. Empty means unset.
+    name: tokio::sync::watch::Sender<String>,
     /// Latest joystick input: (robot peer, forward, turn). None means released.
     drive: tokio::sync::watch::Sender<Option<(String, f32, f32)>>,
     stop: CancellationToken,
@@ -175,6 +177,7 @@ impl Default for MobileClient {
             pose: tokio::sync::watch::channel(None).0,
             asleep: AtomicBool::new(false),
             drive: tokio::sync::watch::channel(None).0,
+            name: tokio::sync::watch::channel(String::new()).0,
             depth: tokio::sync::watch::channel(None).0,
             commands,
             receiver: Mutex::new(Some(receiver)),
@@ -246,6 +249,10 @@ impl MobileClient {
     }
     pub fn change_note(&self, request: crate::mobile_notes::ChangeNote) -> bool {
         self.snapshot().state == "live" && self.changes.try_send(request).is_ok()
+    }
+    /// Name this phone on Home. Sent on connect and whenever it changes.
+    pub fn set_name(&self, name: String) {
+        self.name.send_replace(name);
     }
     /// Set or release the joystick. Releasing sends explicit stops.
     pub fn set_drive(&self, input: Option<(String, f32, f32)>) {
@@ -436,9 +443,29 @@ impl MobileClient {
                         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
                         state.version += 1;
                         state.annotation = Some(match result {
-                            Ok(change) => serde_json::json!({"id":request.request_id,"saved":true,"deleted":change.deleted,"note":change.note}),
+                            Ok(change) => serde_json::json!({"id":request.request_id,"saved":true,"deleted":change.deleted,"note":change.note,"detail":"Saved to Home"}),
                             Err(e) => serde_json::json!({"id":request.request_id,"saved":false,"detail":e.to_string()}),
                         });
+                    }
+                };
+                let mut names = self.name.subscribe();
+                names.mark_changed();
+                let name_work = async {
+                    while names.changed().await.is_ok() {
+                        let name = names.borrow_and_update().trim().to_owned();
+                        if name.is_empty() {
+                            continue;
+                        }
+                        // An older Home has no such operation; that is not an error for the phone.
+                        let _ = tokio::time::timeout(
+                            Duration::from_secs(3),
+                            operations.invoke::<_, bool>(
+                                &home.scoped_component(crate::mobile_pose::COMPONENT),
+                                "name", "phone-name", &uuid::Uuid::new_v4().to_string(),
+                                Duration::from_secs(2), &crate::mobile_pose::SetName { name },
+                            ),
+                        )
+                        .await;
                     }
                 };
                 let mut drive_input = self.drive.subscribe();
@@ -622,6 +649,7 @@ impl MobileClient {
                     _ = change_work => Ok(()),
                     _ = portal_work => Ok(()),
                     _ = drive_work => Ok(()),
+                    _ = name_work => Ok(()),
                     result = local_work => result,
                     _ = pose_work => Ok(()),
                     _ = depth_work => Ok(()),

@@ -66,6 +66,12 @@ async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated(
         )?;
         let home = scenes.connection("humanoid-hub-conference", HomeConnection::direct(&pair.a))?;
         let nacs = scenes.connection("nacs", HomeConnection::direct(&pair.a))?;
+        let semantic_volume = spatial_home::semantic_volumes::Volume {
+            id: uuid::Uuid::new_v4().to_string(), title: "Meeting area".into(),
+            description: "Team gathering space".into(), center: [1., 1., 2.], size: [2., 2., 3.], yaw: 0.,
+            semantic_type: "room".into(),
+        };
+        scenes.volumes.change("humanoid-hub-conference", &home.frame, None, Some(semantic_volume.clone()), &home.frame)?;
         home.validate(&pair.b)?;
         let runner_reference = spatial_home::network::fetch_home_portals(&pair.b, &home).await?;
         assert_eq!(runner_reference.scenegraph.map.frame.id, home.frame);
@@ -211,6 +217,28 @@ async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated(
         let mapped = read(&pair.b, &home).await?;
         assert_eq!(mapped["render"]["integrated_observations"], 1);
         assert_eq!(mapped["render"]["frame"], home.frame);
+        assert_eq!(mapped["render"]["semantic_volumes"]["items"][0], serde_json::to_value(&semantic_volume)?);
+        let mut phone_volume=semantic_volume.mobile();
+        phone_volume.name="iPhone edit".into();
+        phone_volume.position=[3.,0.5,4.];
+        phone_volume.description=None; // Existing iPhone wire format.
+        let put=request(NoteAction::PutVolume{volume:phone_volume.clone()});
+        assert!(send_change(&pair.b,&nacs,&put).await.is_err());
+        send_change(&pair.b,&home,&put).await?;
+        send_change(&pair.b,&home,&put).await?;
+        let shared=scenes.volumes.get("humanoid-hub-conference",&home.frame)?;
+        assert_eq!(shared.items.len(),1);
+        assert_eq!(shared.items[0].title,"iPhone edit");
+        assert_eq!(shared.items[0].center,[3.,1.5,4.]);
+        assert_eq!(shared.items[0].description,"Team gathering space");
+        let mut browser_edit=shared.items[0].clone();browser_edit.title="Home edit".into();
+        scenes.volumes.change("humanoid-hub-conference",&home.frame,Some(&browser_edit.id),Some(browser_edit.clone()),&home.frame)?;
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        for publisher in &mut publishers { publisher.tick()?; }
+        let published=read(&pair.b,&home).await?;
+        assert_eq!(published["render"]["volumes"][0]["name"],"Home edit");
+        assert_eq!(published["render"]["semantic_volumes"]["items"][0]["id"],browser_edit.id);
+        assert!(scenes.volumes.get("nacs",&nacs.frame)?.items.is_empty());
         assert!(
             mapped["render"]["voxels"]
                 .as_array()
@@ -239,6 +267,7 @@ async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated(
                 .any(|n| n["phone_pose"].is_object())
         );
         let untouched = read(&pair.b, &nacs).await?;
+        assert!(untouched["render"]["semantic_volumes"]["items"].as_array().unwrap().is_empty());
         assert!(untouched["render"]["voxels"].as_array().unwrap().is_empty());
         assert!(untouched["render"]["notes"].as_array().unwrap().is_empty());
         let xmart =
@@ -304,6 +333,7 @@ async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated(
             Instant::now(),
         )?;
         let restored = read(&pair.b, &home).await?;
+        assert_eq!(restored["render"]["semantic_volumes"]["items"][0], serde_json::to_value(&browser_edit)?);
         assert_eq!(restored["render"]["notes"].as_array().unwrap().len(), 1);
         assert_eq!(restored["render"]["notes"][0]["id"], note.id);
         assert!(restored["render"]["voxels"].as_array().unwrap().is_empty());

@@ -190,6 +190,11 @@ pub struct Reader {
     )>,
 }
 impl Reader {
+    /// False until discovery has found Home's relay. Discovery walks every
+    /// route and needs far longer than a pinned command read.
+    pub fn is_pinned(&self) -> bool {
+        self.pinned.is_some()
+    }
     pub async fn read(
         &mut self,
         peer: &auki_sdk::AukiPeer,

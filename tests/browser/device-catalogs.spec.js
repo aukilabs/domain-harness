@@ -1,4 +1,31 @@
 import {test,expect} from '@playwright/test';
+test('Maps lists a phone-owned Catalog map once, independently of the push cache',async({page})=>{
+ const peer='android-peer',id='peer-scene:'+peer+'/phone-local-voxels';
+ let phones=[{id:'phone:'+peer,name:'Android cached map',peer_id:peer}],requests=0;
+ await page.route('**/api/scene-sources',r=>{
+  requests++;
+  return r.fulfill({json:{local:[{id:'demo',name:'Home'}],phones,scenes:[{id,name:'phone-local-voxels',peer_id:peer}],runners:[]}});
+ });
+ await page.route('**/api/sensors?scene=true&sensor=*',r=>r.fulfill({json:{
+  product_id:'phone-local-voxels',authority_peer_id:peer,frame:'phone-local:android-peer:session',
+  convention:'OpenGL · Y up · meters',local_map:true,voxel_size:0.1,
+  portals:[],objects:[],notes:[],sources:{},integrated_observations:0,voxels:[{center:[0.05,0.05,0.05]}]
+ }}));
+ await page.goto('/');
+ const network=page.locator('#map-select optgroup[label="Network"] option');
+ await expect(network).toHaveCount(1);
+ await expect(network).toHaveAttribute('value',id);
+ await expect(network).toContainText('Android · local map');
+ await page.selectOption('#map-select',id,{force:true});
+ await expect(page.locator('#scene-title')).toHaveText('Android · local voxel map');
+ await expect(page.locator('#scene-badge')).toHaveText('PHONE-LOCAL MAP');
+ await expect(page.locator('#voxel-count')).toHaveText('1');
+ const before=requests;
+ phones=[];
+ await expect.poll(()=>requests).toBeGreaterThan(before);
+ await expect(network).toHaveCount(1);
+ await expect(network).toHaveAttribute('value',id);
+});
 test('Devices groups types and puts camera feeds first',async({page})=>{
  const component=(id,payload)=>({manifest_hash:id,manifest:{component_id:id,observables:[]},current_outputs:{out:{manifest:{payload}}}});
  const catalog={components:[component('z-camera',{kind:'camera'}),component('a-map',{modality:'scenegraph'}),component('b-pose',{datatype:'auki.pose-update/v1'}),component('a-camera',{kind:'camera'}),component('camera-name-only',{datatype:'custom/v1'})],products:[{manifest:{product_id:'camera-history',producer:{component_id:'z-camera',component_manifest_hash:'z-camera',slot:'out'}}}]};
