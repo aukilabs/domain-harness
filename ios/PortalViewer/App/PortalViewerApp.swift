@@ -750,7 +750,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 self.depthBusy = false
                 guard self.generation == capturedGeneration, self.aligned, self.shareDepth else { return }
                 guard let sample else { self.depthStatus = "No reliable depth here. Aim at nearby surfaces."; return }
-                self.depthStatus = "LiDAR active · \(sample.points.count) points per capture"
+                self.depthStatus = "LiDAR active · \(sample.points.count) \(sample.colors == nil ? "" : "colored ")voxels per capture"
                 self.onDepth?(sample)
             }
         }
@@ -808,6 +808,26 @@ struct AnnotationEditor: View {
 
 
 enum PhoneDepthCapture {
+    /// Home's voxel edge. Cells are aligned to Home's frame so a sent voxel
+    /// center lands in exactly one Home cell.
+    static let voxelSize: Float = 0.1
+    static let maxVoxels = 2048
+
+    private static func linear(_ byte: Float) -> Float {
+        let c = byte / 255
+        return c <= 0.04045 ? c / 12.92 : powf((c + 0.055) / 1.055, 2.4)
+    }
+    private static func srgbByte(_ linear: Float) -> UInt8 {
+        let c = max(0, min(1, linear))
+        let encoded = c <= 0.0031308 ? c * 12.92 : 1.055 * powf(c, 1 / 2.4) - 0.055
+        return UInt8(max(0, min(255, (encoded * 255).rounded())))
+    }
+
+    /// Voxelize one LiDAR capture on the phone. Every high-confidence depth
+    /// pixel is unprojected, moved into Home's frame, and binned into 10 cm
+    /// cells; each cell's camera color is averaged in linear light. The result
+    /// is one colored point per occupied voxel (its center), expressed back in
+    /// this capture's camera frame so Home can still validate pose and rays.
     static func read(_ frame: ARFrame, alignment: DepthAlignment, session: String) -> PhoneDepthSample? {
         guard let depth = frame.sceneDepth, let confidence = depth.confidenceMap else { return nil }
         let buffer = depth.depthMap
@@ -821,9 +841,8 @@ enum PhoneDepthCapture {
         let width = CVPixelBufferGetWidth(buffer), height = CVPixelBufferGetHeight(buffer)
         guard CVPixelBufferGetWidth(confidence) == width, CVPixelBufferGetHeight(confidence) == height else { return nil }
         let rowBytes = CVPixelBufferGetBytesPerRow(buffer), confidenceRow = CVPixelBufferGetBytesPerRow(confidence)
-        let step = max(1, Int(ceil(sqrt(Double(width * height) / 1500))))
         let imageWidth = CVPixelBufferGetWidth(frame.capturedImage), imageHeight = CVPixelBufferGetHeight(frame.capturedImage)
-        var points = [[Float]]()
+
         // Color comes from the same frame's camera image (bi-planar YCbCr).
         let image = frame.capturedImage
         let format = CVPixelBufferGetPixelFormatType(image)
@@ -836,8 +855,8 @@ enum PhoneDepthCapture {
         let chroma = colorable ? CVPixelBufferGetBaseAddressOfPlane(image, 1) : nil
         let lumaRow = colorable ? CVPixelBufferGetBytesPerRowOfPlane(image, 0) : 0
         let chromaRow = colorable ? CVPixelBufferGetBytesPerRowOfPlane(image, 1) : 0
-        var colors = [[UInt8]]()
-        func color(x: Int, y: Int) -> [UInt8]? {
+        /// Linear-light RGB of the camera pixel behind a depth pixel.
+        func linearColor(x: Int, y: Int) -> SIMD3<Float>? {
             guard let luma, let chroma else { return nil }
             let px = min(imageWidth - 1, x * imageWidth / width), py = min(imageHeight - 1, y * imageHeight / height)
             var yValue = Float(luma.load(fromByteOffset: py * lumaRow + px, as: UInt8.self))
@@ -845,27 +864,56 @@ enum PhoneDepthCapture {
             var cb = Float(chroma.load(fromByteOffset: offset, as: UInt8.self)) - 128
             var cr = Float(chroma.load(fromByteOffset: offset + 1, as: UInt8.self)) - 128
             if !fullRange { yValue = (yValue - 16) * 255 / 219; cb *= 255 / 224; cr *= 255 / 224 }
-            // BT.601 YCbCr to sRGB, as ARKit's camera image is specified.
+            // BT.601 YCbCr to gamma-encoded sRGB, then to linear for averaging.
             let r = yValue + 1.402 * cr, g = yValue - 0.344136 * cb - 0.714136 * cr, b = yValue + 1.772 * cb
-            return [r, g, b].map { UInt8(max(0, min(255, $0.rounded()))) }
+            return SIMD3(linear(max(0, min(255, r))), linear(max(0, min(255, g))), linear(max(0, min(255, b))))
         }
-        for y in stride(from: 0, to: height, by: step) {
+
+        let homeFromCamera = alignment.session_to_home.matrix * frame.camera.transform
+        let cameraFromHome = homeFromCamera.inverse
+        struct Cell { var samples: Float = 0; var color = SIMD3<Float>(repeating: 0); var colored: Float = 0 }
+        var cells = [SIMD3<Int32>: Cell]()
+        // Every second pixel is under 4 cm apart at 5 m, finer than a voxel.
+        for y in stride(from: 0, to: height, by: 2) {
             let depths = base.advanced(by: y * rowBytes).assumingMemoryBound(to: Float32.self)
             let confidences = confidenceBase.advanced(by: y * confidenceRow).assumingMemoryBound(to: UInt8.self)
-            for x in stride(from: 0, to: width, by: step) {
+            for x in stride(from: 0, to: width, by: 2) {
                 guard confidences[x] >= UInt8(ARConfidenceLevel.high.rawValue),
                       let point = DepthProjection.point(x: x, y: y, depth: depths[x], width: width, height: height,
                           imageWidth: imageWidth, imageHeight: imageHeight, intrinsics: frame.camera.intrinsics) else { continue }
-                points.append(point)
-                if let rgb = color(x: x, y: y) { colors.append(rgb) }
-                if points.count == 2048 { break }
+                let home = homeFromCamera * SIMD4(point[0], point[1], point[2], 1)
+                let key = SIMD3(Int32((home.x / voxelSize).rounded(.down)), Int32((home.y / voxelSize).rounded(.down)),
+                                Int32((home.z / voxelSize).rounded(.down)))
+                var cell = cells[key] ?? Cell()
+                cell.samples += 1
+                if let rgb = linearColor(x: x, y: y) { cell.color += rgb; cell.colored += 1 }
+                cells[key] = cell
             }
-            if points.count == 2048 { break }
         }
-        guard !points.isEmpty else { return nil }
+        // One stray depth pixel does not make a voxel.
+        var voxels = cells.compactMap { key, cell -> (point: SIMD3<Float>, color: [UInt8]?)? in
+            guard cell.samples >= 2 else { return nil }
+            let center = (SIMD3(Float(key.x), Float(key.y), Float(key.z)) + 0.5) * voxelSize
+            let camera = cameraFromHome * SIMD4(center, 1)
+            let point = SIMD3(camera.x, camera.y, camera.z)
+            let range = simd_length(point)
+            guard range >= 0.2, range <= 5 else { return nil }
+            let color: [UInt8]? = cell.colored > 0 ? {
+                let mean = cell.color / cell.colored
+                return [srgbByte(mean.x), srgbByte(mean.y), srgbByte(mean.z)]
+            }() : nil
+            return (point, color)
+        }
+        guard !voxels.isEmpty else { return nil }
+        if voxels.count > maxVoxels {
+            // Home accepts a bounded capture; keep the nearest, best-measured voxels.
+            voxels.sort { simd_length_squared($0.point) < simd_length_squared($1.point) }
+            voxels.removeLast(voxels.count - maxVoxels)
+        }
+        let colors = voxels.compactMap(\.color)
         return PhoneDepthSample(session: session, timestamp_ns: UInt64(frame.timestamp * 1_000_000_000),
             camera_to_session: .transform(frame.camera.transform, from: "phone-camera:\(session)", to: "phone-ar:\(session)"),
-            alignment: alignment, points: points,
-            colors: colors.count == points.count ? colors : nil)
+            alignment: alignment, points: voxels.map { [$0.point.x, $0.point.y, $0.point.z] },
+            colors: colors.count == voxels.count ? colors : nil)
     }
 }
