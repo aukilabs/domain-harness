@@ -771,7 +771,13 @@ impl MobileClient {
             if self.stop.is_cancelled() {
                 return Ok(());
             }
-            if result.is_err() {
+            if let Err(error) = &result {
+                // Say why, bounded and on one line; "Home unavailable" alone hid
+                // format mismatches between a phone build and Home.
+                let mut reason = format!("{error:#}").replace('\n', " ");
+                reason.truncate(220);
+                eprintln!("[peer] Home follow failed: {reason}");
+                self.local_status(format!("Home follow failed: {reason}"));
                 failures += 1;
                 ensure!(
                     failures < 3,

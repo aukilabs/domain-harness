@@ -70,7 +70,7 @@ async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated(
         // Volume creation uses the same authenticated scene-scoped operation as notes.
         let volume = spatial_home::semantic_volumes::SemanticVolume {
             id: uuid::Uuid::new_v4().to_string(), name: "Kitchen".into(),
-            semantic_type: "room".into(), position: [1., 0., 2.],
+            semantic_type: "room".into(), description: None, position: [1., 0., 2.],
             dimensions: [2., 2.5, 3.], yaw: 0.5,
         };
         let request = spatial_home::mobile_notes::ChangeNote {
