@@ -152,15 +152,20 @@ pub struct MobileClient {
     commands: tokio::sync::mpsc::Sender<crate::mobile_notes::PlaceNote>,
     changes: tokio::sync::mpsc::Sender<crate::mobile_notes::ChangeNote>,
     change_receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::mobile_notes::ChangeNote>>>,
+    portal_reports: tokio::sync::mpsc::Sender<crate::mobile_portal::Report>,
+    portal_receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::mobile_portal::Report>>>,
     receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::mobile_notes::PlaceNote>>>,
 }
 impl Default for MobileClient {
     fn default() -> Self {
         let (commands, receiver) = tokio::sync::mpsc::channel(1);
         let (changes, change_receiver) = tokio::sync::mpsc::channel(1);
+        let (portal_reports, portal_receiver) = tokio::sync::mpsc::channel(4);
         Self {
             changes,
             change_receiver: Mutex::new(Some(change_receiver)),
+            portal_reports,
+            portal_receiver: Mutex::new(Some(portal_receiver)),
             camera: tokio::sync::watch::channel(None).0,
             camera_active: AtomicBool::new(false),
             camera_demand: AtomicBool::new(false),
@@ -238,6 +243,10 @@ impl MobileClient {
     }
     pub fn change_note(&self, request: crate::mobile_notes::ChangeNote) -> bool {
         self.snapshot().state == "live" && self.changes.try_send(request).is_ok()
+    }
+    /// Queue a newly seen Portal for Home to add to the scene.
+    pub fn report_portal(&self, report: crate::mobile_portal::Report) -> bool {
+        self.snapshot().state == "live" && self.portal_reports.try_send(report).is_ok()
     }
     pub fn stop(&self) {
         self.stop.cancel();
@@ -392,6 +401,27 @@ impl MobileClient {
                 };
                 let mut poses = self.pose.subscribe();
                 let mut changes = self.change_receiver.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap();
+                let mut portal_reports = self.portal_receiver.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap();
+                let portal_work = async {
+                    while let Some(report) = portal_reports.recv().await {
+                        let code = report.code.clone();
+                        let result = tokio::time::timeout(
+                            Duration::from_secs(4),
+                            operations.invoke::<_, bool>(
+                                &home.scoped_component(crate::mobile_portal::COMPONENT),
+                                "add", "phone-portal", &uuid::Uuid::new_v4().to_string(),
+                                Duration::from_secs(3), &report,
+                            ),
+                        )
+                        .await;
+                        self.local_status(match result {
+                            Ok(Ok(true)) => format!("Portal {code} added to Home's scene"),
+                            Ok(Ok(false)) => format!("Home did not add Portal {code}"),
+                            Ok(Err(error)) => format!("Portal {code} not added: {error}"),
+                            Err(_) => format!("Portal {code} not added: Home did not answer"),
+                        });
+                    }
+                };
                 let change_work = async {
                     while let Some(request) = changes.recv().await {
                         let result = tokio::time::timeout(Duration::from_secs(25), crate::mobile_notes::send_change_via(&operations, &home, &request)).await
@@ -533,6 +563,7 @@ impl MobileClient {
                 let work = tokio::select! {
                     result = camera_work => result,
                     _ = change_work => Ok(()),
+                    _ = portal_work => Ok(()),
                     result = local_work => result,
                     _ = pose_work => Ok(()),
                     _ = depth_work => Ok(()),

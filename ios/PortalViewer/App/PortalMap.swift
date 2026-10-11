@@ -277,6 +277,17 @@ struct DepthAlignment: Encodable {
     let portal_to_session: Portal.Pose
     let session_to_home: Portal.Pose
 }
+/// A Portal this scene does not know yet, measured in the phone's AR session.
+/// Home validates `alignment` and composes the Portal's scene pose itself.
+struct PortalReport: Encodable {
+    static let assumedSide: Float = 0.15
+    let session: String
+    let timestamp_ns: UInt64
+    let code: String
+    let side_length_m: Float
+    let portal_to_session: Portal.Pose
+    let alignment: DepthAlignment
+}
 struct PhoneDepthSample: Encodable {
     let session: String
     let timestamp_ns: UInt64

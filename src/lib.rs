@@ -43,6 +43,7 @@ pub mod picking;
 
 pub mod mobile_notes;
 
+pub mod mobile_portal;
 pub mod mobile_pose;
 
 pub mod mobile_geometry;

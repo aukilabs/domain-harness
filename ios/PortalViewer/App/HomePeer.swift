@@ -26,6 +26,13 @@ final class HomePeer: ObservableObject {
               let json = String(data: data, encoding: .utf8) else { return }
         json.withCString { spatial_mobile_pose($0) }
     }
+    /// Ask Home to add a newly seen Portal to the scene.
+    @discardableResult
+    func reportPortal(_ report: PortalReport) -> Bool {
+        guard state == "live", let data = try? JSONEncoder().encode(report),
+              let json = String(data: data, encoding: .utf8) else { return false }
+        return json.withCString { spatial_mobile_report_portal($0) == 1 }
+    }
     /// Tell Home the camera is paused; it keeps the last pose, marked asleep.
     func setAsleep(_ asleep: Bool) { spatial_mobile_sleep(asleep ? 1 : 0) }
     func publishDepth(_ sample: PhoneDepthSample?) {
@@ -35,6 +42,9 @@ final class HomePeer: ObservableObject {
         json.withCString { spatial_mobile_depth($0) }
     }
     var onMap: ((PortalMap) -> Void)?
+    /// Home's answer to a new-Portal report, for the user to see.
+    var onPortalResult: ((String) -> Void)?
+    private var portalDetail = ""
     var onDisconnect: (() -> Void)?
     private var profileJSON = ""
     private var timer: Timer?
@@ -132,6 +142,7 @@ final class HomePeer: ObservableObject {
         let portals: PortalMap?
         let annotation: AnnotationResult?
         let depth_detail: String
+        let local_detail: String?
     }
     private func poll() {
         guard let pointer = spatial_mobile_poll() else { return }
@@ -143,6 +154,10 @@ final class HomePeer: ObservableObject {
                 // User-requested Stop must not briefly redisplay an in-flight scene.
                 if state != "stopping" {
                     depthDetail = response.update.depth_detail
+                    if let note = response.update.local_detail, note != portalDetail, note.hasPrefix("Portal ") || note.hasPrefix("Home did not add") {
+                        portalDetail = note
+                        onPortalResult?(note)
+                    }
                     annotationResult = response.update.annotation
                     state = response.update.state
                     detail = response.update.detail
