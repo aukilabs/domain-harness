@@ -111,6 +111,9 @@ pub struct Notes {
     pub schema: String,
     pub frame: String,
     pub items: Vec<TextNote>,
+    /// Separate typed layer, persisted atomically with the scene's annotations.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volumes: Vec<crate::semantic_volumes::SemanticVolume>,
 }
 impl Notes {
     pub fn empty(frame: &str) -> Self {
@@ -118,9 +121,16 @@ impl Notes {
             schema: "spatial.text-notes/v1".into(),
             frame: frame.into(),
             items: vec![],
+            volumes: vec![],
         }
     }
     pub fn validate(&self, frame: &str) -> Result<()> {
+        ensure!(self.volumes.len() <= 256, "Too many semantic volumes");
+        let mut volume_ids = std::collections::BTreeSet::new();
+        for volume in &self.volumes {
+            volume.validate()?;
+            ensure!(volume_ids.insert(&volume.id), "Duplicate semantic volume ID");
+        }
         ensure!(
             self.schema == "spatial.text-notes/v1"
                 && self.frame == frame

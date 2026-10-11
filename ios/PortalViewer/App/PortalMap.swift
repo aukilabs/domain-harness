@@ -150,6 +150,7 @@ struct RenderScene: Decodable, Equatable {
     let voxels: [Voxel]
     let objects: [ObjectLabel]
     let notes: [Note]
+    var volumes: [SemanticVolume]? = nil
     let local_mapping: Mapping?
     struct Voxel: Decodable, Equatable {
         let center: [Float]

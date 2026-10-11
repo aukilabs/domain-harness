@@ -45,7 +45,10 @@ cargo run --locked
 Open [the local viewer](http://127.0.0.1:4319). The default view uses the supplied
 portal geometry and has no synthetic voxels. P2P is opt-in; real robot observations
 require the configuration below. `SPATIAL_PORT` changes the HTTP port; the server
-binds to `127.0.0.1`.
+binds to `0.0.0.0` by default so LAN clients can connect. Keep LAN enabled for
+demo launches. Set `SPATIAL_UI_HOSTS` to the comma-separated LAN `host:port`
+authorities used by browsers to permit same-origin UI writes. `SPATIAL_BIND`
+can explicitly restrict the listener when required; it is not needed for LAN.
 
 For the separate synthetic demonstration:
 

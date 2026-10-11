@@ -143,6 +143,18 @@ function build(data){
  }
  if(first)phoneTrails.reset(data.frame);
  if(!isLocalScene())phoneTrails.ingest(data.frame,(data.notes||[]).filter(n=>n.phone_pose).map(n=>n.phone_pose));
+ for(const volume of data.volumes||[]){
+  const [w,h,d]=volume.dimensions;
+  const group=new THREE.Group();group.position.fromArray(volume.position);group.rotation.y=volume.yaw;
+  const geometry=new THREE.BoxGeometry(w,h,d);
+  const body=new THREE.Mesh(geometry,new THREE.MeshBasicMaterial({color:0x22cddd,transparent:true,opacity:.25,depthWrite:false}));
+  body.position.y=h/2;group.add(body);
+  const edges=new THREE.LineSegments(new THREE.EdgesGeometry(geometry),new THREE.LineBasicMaterial({color:0x22cddd}));
+  edges.position.y=h/2;group.add(edges);
+  const tag=label(volume.name+' · '+volume.semantic_type,'#087b88');tag.position.set(0,h+.12,0);group.add(tag);
+  groups.objects.add(group);
+ }
+ $('canvas').dataset.volumeCount=String((data.volumes||[]).length);
  for(const note of data.notes||[]){
   if(note.phone_pose)continue;
   const tag=label(noteTitle(note),'#a12522');tag.position.fromArray(note.position);tag.material.depthWrite=false;tag.material.sizeAttenuation=false;tag.scale.set(.16,.04,1);tag.renderOrder=80;
