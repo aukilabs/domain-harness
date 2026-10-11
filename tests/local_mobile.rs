@@ -437,6 +437,32 @@ async fn phone_reports_a_new_portal_into_the_selected_scene() -> Result<()> {
         assert_eq!(grown["scenegraph"]["anchors"].as_object().unwrap().len(), 2);
         assert!(grown["scenegraph"]["anchors"].get(new_code).is_some());
         assert_eq!(grown["render"]["integrated_observations"], 1);
+        // Joystick relay: the phone posts for one robot; that robot reads it back
+        // with Home's own measure of its age. Here one peer plays both roles.
+        let me = pair.b.peer_id().to_string();
+        let stick = spatial_home::mobile_drive::Command {
+            session: uuid::Uuid::new_v4().to_string(),
+            sequence: 1,
+            target_peer_id: me.clone(),
+            forward: 0.5,
+            turn: -0.25,
+        };
+        assert!(spatial_home::mobile_drive::send(&pair.b, &home, &stick).await?);
+        assert!(
+            spatial_home::mobile_drive::send(&pair.b, &nacs, &spatial_home::mobile_drive::Command {
+                forward: 2., ..stick.clone()
+            }).await.is_err(),
+            "out-of-range stick rejected"
+        );
+        let mut reader = spatial_home::mobile_drive::Reader::default();
+        let (seen, _) = reader.read(&pair.b, &home).await?;
+        let command = seen.command.expect("fresh command for this robot");
+        assert_eq!((command.driver_peer_id, command.forward, command.turn), (me, 0.5, -0.25));
+        assert!(command.age_ms < 1000);
+        let (other_scene, _) = reader.read(&pair.b, &nacs).await?;
+        assert!(other_scene.command.is_none(), "commands do not cross scenes");
+        tokio::time::sleep(spatial_home::mobile_drive::MAX_AGE).await;
+        assert!(reader.read(&pair.b, &home).await?.0.command.is_none(), "silence stops the robot");
         // A restart keeps the reported Portal.
         let reloaded = LocalScenes::load(dir.path())?;
         assert_eq!(reloaded.snapshot("humanoid-hub-conference")?.scenegraph.anchors.len(), 2);

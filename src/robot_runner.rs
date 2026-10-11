@@ -407,6 +407,41 @@ pub async fn run(hardware: Hardware) -> Result<()> {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     };
+    // Phone driving is off unless the launcher names the one phone allowed to
+    // drive. This only caches Home's command for the local drive controller,
+    // which owns every motor decision.
+    let drive_peer = std::env::var("SPATIAL_DRIVE_PEER").ok().filter(|v| !v.is_empty());
+    let drive_work = async {
+        let Some(allowed) = drive_peer else {
+            return std::future::pending::<()>().await;
+        };
+        let mut reader = crate::mobile_drive::Reader::default();
+        loop {
+            let work = async {
+                let profile: HomeConnection = serde_json::from_slice(&std::fs::read(&home_path)?)?;
+                reader.read(&running.peer, &profile).await
+            };
+            let received_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos() as u64;
+            let packet = match tokio::time::timeout(Duration::from_millis(350), work).await {
+                Ok(Ok((snapshot, elapsed))) => {
+                    let command = snapshot.command.filter(|c| c.driver_peer_id == allowed);
+                    serde_json::json!({
+                        "schema":"spatial.robot-drive-input/v1","authenticated":true,
+                        "allowed_driver_peer_id":allowed,"request_age_ms":elapsed.as_millis() as u64,
+                        "received_ns":received_ns,"command":command
+                    })
+                }
+                _ => {
+                    reader = Default::default();
+                    serde_json::json!({"schema":"spatial.robot-drive-input/v1","authenticated":false,"received_ns":received_ns,"command":null})
+                }
+            };
+            if let Err(error) = save(&path.with_file_name("drive-command.json"), &packet) {
+                eprintln!("Drive command cache: {error}");
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    };
     let live_work = async {
         loop {
             let snapshot = live.lock().unwrap().snapshot();
@@ -442,7 +477,7 @@ pub async fn run(hardware: Hardware) -> Result<()> {
             }
         }
     };
-    tokio::select! {_=tokio::signal::ctrl_c()=>{},_=terminate.recv()=>{},_=home_work=>{},_=health=>{},_=contributions=>{},_=phone_work=>{},_=live_work=>{}}
+    tokio::select! {_=tokio::signal::ctrl_c()=>{},_=terminate.recv()=>{},_=home_work=>{},_=health=>{},_=contributions=>{},_=phone_work=>{},_=live_work=>{},_=drive_work=>{}}
     let _ = child.start_kill();
     let _ = child.wait().await;
     stop.store(true, Ordering::Relaxed);

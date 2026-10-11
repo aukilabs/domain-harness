@@ -329,6 +329,61 @@ impl Publisher {
                 exposure: Exposure::Cluster,
             }),
         )?;
+        // Joystick relay: a phone posts stick values for one robot, and that
+        // robot reads its own latest command. Home never moves anything.
+        let drive = runtime.component(
+            ComponentSpec::new(format!("{}:{id}", crate::mobile_drive::COMPONENT))
+                .operable(OperableContract {
+                    name: "update".into(),
+                    instruction: crate::mobile_drive::Command::DATATYPE.into(),
+                    result: "bool".into(),
+                    exposure: Exposure::Cluster,
+                })
+                .operable(OperableContract {
+                    name: "snapshot".into(),
+                    instruction: crate::mobile_drive::ReadDrive::DATATYPE.into(),
+                    result: crate::mobile_drive::Snapshot::DATATYPE.into(),
+                    exposure: Exposure::Cluster,
+                }),
+        )?;
+        let board = Arc::new(Mutex::new(crate::mobile_drive::Board::default()));
+        let drive_board = board.clone();
+        let drive_update = drive.operable(
+            "update",
+            |ctx| !ctx.caller_peer_id.is_empty(),
+            move |ctx, command: crate::mobile_drive::Command| {
+                drive_board
+                    .lock()
+                    .map_err(|_| InvocationError::TargetUnavailable)?
+                    .accept(&ctx.caller_peer_id, command, Instant::now())
+                    .map_err(rejected)
+            },
+        )?;
+        let drive_frame = frame.clone();
+        let drive_owner = owner.clone();
+        let drive_snapshot = drive.operable(
+            "snapshot",
+            |ctx| !ctx.caller_peer_id.is_empty(),
+            move |ctx, request: crate::mobile_drive::ReadDrive| {
+                if request.frame != drive_frame {
+                    return Err(InvocationError::Rejected("Drive scene mismatch".into()));
+                }
+                // A robot can read only the command addressed to itself.
+                let command = board
+                    .lock()
+                    .map_err(|_| InvocationError::TargetUnavailable)?
+                    .read(&ctx.caller_peer_id, Instant::now());
+                Ok(crate::mobile_drive::Snapshot {
+                    authority_peer_id: drive_owner.clone(),
+                    frame: drive_frame.clone(),
+                    command,
+                })
+            },
+        )?;
+        drive.expose()?;
+        endpoint.export_operable(&drive_update)?;
+        endpoint.export_operable(&drive_snapshot)?;
+        components.push(drive);
         // A phone reports a Portal this scene does not know. Home composes its
         // pose from validated alignment evidence, adds it, and saves the scene.
         let portals = runtime.component(

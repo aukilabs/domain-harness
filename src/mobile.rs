@@ -146,6 +146,8 @@ pub struct MobileClient {
     depth: tokio::sync::watch::Sender<Option<(crate::mobile_depth::Sample, std::time::Instant)>>,
     pose: tokio::sync::watch::Sender<Option<crate::mobile_pose::Sample>>,
     asleep: AtomicBool,
+    /// Latest joystick input: (robot peer, forward, turn). None means released.
+    drive: tokio::sync::watch::Sender<Option<(String, f32, f32)>>,
     stop: CancellationToken,
     state: Mutex<MobileState>,
     finished: AtomicBool,
@@ -172,6 +174,7 @@ impl Default for MobileClient {
             local_map: tokio::sync::watch::channel(None).0,
             pose: tokio::sync::watch::channel(None).0,
             asleep: AtomicBool::new(false),
+            drive: tokio::sync::watch::channel(None).0,
             depth: tokio::sync::watch::channel(None).0,
             commands,
             receiver: Mutex::new(Some(receiver)),
@@ -243,6 +246,10 @@ impl MobileClient {
     }
     pub fn change_note(&self, request: crate::mobile_notes::ChangeNote) -> bool {
         self.snapshot().state == "live" && self.changes.try_send(request).is_ok()
+    }
+    /// Set or release the joystick. Releasing sends explicit stops.
+    pub fn set_drive(&self, input: Option<(String, f32, f32)>) {
+        self.drive.send_replace(input);
     }
     /// Queue a newly seen Portal for Home to add to the scene.
     pub fn report_portal(&self, report: crate::mobile_portal::Report) -> bool {
@@ -434,6 +441,56 @@ impl MobileClient {
                         });
                     }
                 };
+                let mut drive_input = self.drive.subscribe();
+                let drive_work = async {
+                    let session = uuid::Uuid::new_v4().to_string();
+                    let mut sequence = 0u64;
+                    let mut held: Option<String> = None;
+                    let mut stops_left = 0u8;
+                    let mut tick = tokio::time::interval(Duration::from_millis(100));
+                    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    loop {
+                        // Send on every change and at 10 Hz while the stick is held.
+                        tokio::select! { _ = tick.tick() => {}, changed = drive_input.changed() => if changed.is_err() { break } }
+                        let input = drive_input.borrow_and_update().clone();
+                        let (target, forward, turn) = match input {
+                            Some((target, forward, turn)) => {
+                                held = Some(target.clone());
+                                stops_left = 3;
+                                (target, forward, turn)
+                            }
+                            // On release, say "stop" a few times so one lost
+                            // message cannot leave the robot on its last command.
+                            None => match (&held, stops_left) {
+                                (Some(target), 1..) => {
+                                    stops_left -= 1;
+                                    (target.clone(), 0., 0.)
+                                }
+                                _ => {
+                                    held = None;
+                                    continue;
+                                }
+                            },
+                        };
+                        sequence += 1;
+                        let command = crate::mobile_drive::Command {
+                            session: session.clone(),
+                            sequence,
+                            target_peer_id: target,
+                            forward: forward.clamp(-1., 1.),
+                            turn: turn.clamp(-1., 1.),
+                        };
+                        let _ = tokio::time::timeout(
+                            Duration::from_millis(250),
+                            operations.invoke::<_, bool>(
+                                &home.scoped_component(crate::mobile_drive::COMPONENT),
+                                "update", "phone-drive", &uuid::Uuid::new_v4().to_string(),
+                                Duration::from_millis(200), &command,
+                            ),
+                        )
+                        .await;
+                    }
+                };
                 let pose_work = async {
                     // Latest-only watch channel: send immediately, never queue old poses.
                     loop {
@@ -564,6 +621,7 @@ impl MobileClient {
                     result = camera_work => result,
                     _ = change_work => Ok(()),
                     _ = portal_work => Ok(()),
+                    _ = drive_work => Ok(()),
                     result = local_work => result,
                     _ = pose_work => Ok(()),
                     _ = depth_work => Ok(()),

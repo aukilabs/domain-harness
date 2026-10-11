@@ -277,6 +277,28 @@ pub unsafe extern "C" fn spatial_mobile_pose(value: *const c_char) {
     });
 }
 
+/// Hold the joystick for `target` (a robot peer ID) at `forward`/`turn` in
+/// -1...1. A null target releases it, which sends stops.
+/// # Safety
+/// A non-null `target` must be a NUL-terminated UTF-8 string for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spatial_mobile_drive(target: *const c_char, forward: f32, turn: f32) {
+    let _ = std::panic::catch_unwind(|| {
+        let input = if target.is_null() || !forward.is_finite() || !turn.is_finite() {
+            None
+        } else {
+            let bytes = unsafe { CStr::from_ptr(target) }.to_bytes();
+            match std::str::from_utf8(bytes) {
+                Ok(id) if !id.is_empty() && id.len() <= 128 => Some((id.to_owned(), forward, turn)),
+                _ => None,
+            }
+        };
+        if let Some(client) = CLIENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            client.set_drive(input);
+        }
+    });
+}
+
 /// Report that the phone paused (1) or resumed (0) its camera.
 #[unsafe(no_mangle)]
 pub extern "C" fn spatial_mobile_sleep(asleep: i32) {

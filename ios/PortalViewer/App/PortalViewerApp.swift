@@ -19,6 +19,7 @@ struct ViewerScreen: View {
     @State private var connecting = false
     @State private var pairingError: String?
     @State private var povSelection: String?
+    @State private var driveSelection: String?
     @AppStorage("panelTab") private var panelTab = "map"
     @AppStorage("panelOpen") private var panelOpen = true
     @State private var promptedForLogin = false
@@ -60,8 +61,9 @@ struct ViewerScreen: View {
                     Picker("Panel", selection: $panelTab) {
                         Text("Map").tag("map")
                         Text("POV").tag("pov")
+                        Text("Drive").tag("drive")
                         Text("Status").tag("status")
-                    }.pickerStyle(.segmented).frame(width: 190)
+                    }.pickerStyle(.segmented).frame(width: 240)
                     Button { withAnimation { panelOpen.toggle() } } label: {
                         Image(systemName: panelOpen ? "chevron.down" : "chevron.up").frame(width: 30, height: 30)
                     }.accessibilityLabel(panelOpen ? "Fold panel" : "Unfold panel")
@@ -73,6 +75,8 @@ struct ViewerScreen: View {
                         .frame(height: 260)
                     Text(sendSummary).font(.caption.bold()).foregroundStyle(sendColor).lineLimit(2)
                     Text(controller.status).font(.caption).lineLimit(2)
+                } else if panelTab == "drive" {
+                    DrivePanel(controller: controller, peer: peer, selection: $driveSelection).frame(height: 260)
                 } else if panelTab == "pov" {
                     PovPanel(controller: controller, selection: $povSelection).frame(height: 260)
                     Text(sendSummary).font(.caption.bold()).foregroundStyle(sendColor).lineLimit(1)
@@ -169,8 +173,100 @@ struct ViewerScreen: View {
         }
         .onChange(of: phase) { _, value in
             if value == .active { controller.start() } else { controller.pause() }
+            // Leaving the foreground always lets go of the joystick.
+            if value != .active { peer.drive(target: nil) }
             if value == .background { peer.disconnect(background: true) }
         }
+    }
+}
+
+/// Hold-to-drive joystick for one robot. Motion only while a finger is on the
+/// stick; lifting it, leaving this tab, or leaving the app releases it. The
+/// robot itself decides whether this phone may drive and how fast.
+struct DrivePanel: View {
+    @ObservedObject var controller: ViewerController
+    @ObservedObject var peer: HomePeer
+    @Binding var selection: String?
+    @State private var armed = false
+    @State private var stick = CGSize.zero
+    private let radius: CGFloat = 78
+
+    /// Devices Home lists by peer ID that are not phones with a pose.
+    private var robots: [(id: String, name: String)] {
+        controller.devices.compactMap { device in
+            for prefix in ["robot:", "peer:"] where device.id.hasPrefix(prefix) {
+                return (String(device.id.dropFirst(prefix.count)), device.name)
+            }
+            return nil
+        }
+    }
+
+    var body: some View {
+        let robots = robots
+        let chosen = robots.first { $0.id == selection } ?? robots.first
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 8) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(robots, id: \.id) { robot in
+                            Button { release(); selection = robot.id } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "car.side").frame(width: 18)
+                                    Text(robot.name).font(.caption).lineLimit(2)
+                                    Spacer(minLength: 0)
+                                }
+                                .padding(.vertical, 7).padding(.horizontal, 8)
+                                .background(robot.id == chosen?.id ? Color.accentColor.opacity(0.3) : Color.clear,
+                                            in: RoundedRectangle(cornerRadius: 8))
+                            }.buttonStyle(.plain)
+                        }
+                        if robots.isEmpty {
+                            Text("No robot in this scene yet.").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                Toggle("Arm", isOn: $armed).font(.caption.bold())
+                    .disabled(chosen == nil || peer.state != "live")
+            }.frame(width: 118)
+            VStack(spacing: 6) {
+                ZStack {
+                    Circle().fill(Color.black.opacity(0.55))
+                    Circle().stroke(armed ? Color.green : Color.gray, lineWidth: 2)
+                    Circle().fill(armed ? Color.green : Color.gray).frame(width: 54, height: 54).offset(stick)
+                }
+                .frame(width: radius * 2, height: radius * 2)
+                .contentShape(Circle())
+                .gesture(DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        guard armed, let chosen, peer.state == "live" else { return }
+                        var dx = value.location.x - radius, dy = value.location.y - radius
+                        let length = max(1, hypot(dx, dy))
+                        if length > radius { dx *= radius / length; dy *= radius / length }
+                        stick = CGSize(width: dx, height: dy)
+                        // Up is forward. Left is a counter-clockwise turn, which is positive.
+                        peer.drive(target: chosen.id, forward: Float(-dy / radius), turn: Float(-dx / radius))
+                    }
+                    .onEnded { _ in release() })
+                Text(caption(chosen?.name)).font(.caption).multilineTextAlignment(.center).lineLimit(3)
+                    .foregroundStyle(stick == .zero ? Color.secondary : Color.green)
+            }.frame(maxWidth: .infinity)
+        }
+        .onChange(of: armed) { _, on in if !on { release() } }
+        .onChange(of: peer.state) { _, state in if state != "live" { armed = false; release() } }
+        .onDisappear { armed = false; release() }
+    }
+
+    private func release() {
+        stick = .zero
+        peer.drive(target: nil)
+    }
+
+    private func caption(_ name: String?) -> String {
+        guard let name else { return "Waiting for a robot to join this scene." }
+        if peer.state != "live" { return "Connect to Home to drive." }
+        if !armed { return "Switch Arm on to drive \(name)." }
+        return stick == .zero ? "Hold the stick to drive \(name). Let go to stop."
+                              : "Driving \(name). Let go to stop."
     }
 }
 
