@@ -178,8 +178,17 @@ struct PovDevice: Identifiable, Equatable {
     let name: String
     let symbol: String
     let asleep: Bool
-    /// Camera pose in Home's frame, looking along its own -Z.
+    /// Camera pose in Home's frame, looking along its own -Z with +Y up on screen.
     let transform: simd_float4x4
+    /// False for a device Home knows about that has no pose in this scene yet.
+    var located = true
+    var detail: String? = nil
+
+    /// Phone camera poses use the sensor's landscape axes. Turn the view a
+    /// quarter about the optical axis so a phone held upright looks upright.
+    static func upright(_ camera: simd_float4x4) -> simd_float4x4 {
+        camera * simd_float4x4(simd_quatf(angle: .pi / 2, axis: SIMD3(0, 0, 1)))
+    }
 }
 
 /// The scene rendered from a chosen device's pose.
@@ -219,7 +228,7 @@ struct PovPanel: View {
     @Binding var selection: String?
     var body: some View {
         let devices = controller.devices
-        let chosen = devices.first { $0.id == selection } ?? devices.first
+        let chosen = devices.first { $0.id == selection && $0.located } ?? devices.first { $0.located }
         HStack(spacing: 8) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 6) {
@@ -227,13 +236,19 @@ struct PovPanel: View {
                         Button { selection = device.id } label: {
                             HStack(spacing: 6) {
                                 Image(systemName: device.asleep ? "moon.zzz.fill" : device.symbol).frame(width: 18)
-                                Text(device.name + (device.asleep ? " · asleep" : "")).font(.caption).lineLimit(2)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(device.name + (device.asleep ? " · asleep" : "")).font(.caption).lineLimit(2)
+                                    if !device.located {
+                                        Text(device.detail ?? "no position yet").font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                                    }
+                                }
                                 Spacer(minLength: 0)
                             }
+                            .opacity(device.located ? 1 : 0.55)
                             .padding(.vertical, 7).padding(.horizontal, 8)
                             .background(device.id == chosen?.id ? Color.accentColor.opacity(0.3) : Color.clear,
                                         in: RoundedRectangle(cornerRadius: 8))
-                        }.buttonStyle(.plain)
+                        }.buttonStyle(.plain).disabled(!device.located)
                     }
                     if devices.isEmpty {
                         Text("No devices yet. Align this phone or wait for others.").font(.caption).foregroundStyle(.secondary)
@@ -601,8 +616,9 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         for note in map.render?.notes ?? [] {
             guard let phone = note.phone_pose, phone.pose.translation.count == 3, phone.pose.rotation_wxyz.count == 4 else { continue }
             found.append(PovDevice(id: "phone:" + phone.peer_id, name: phone.name ?? note.text, symbol: "iphone",
-                                   asleep: phone.state == "asleep", transform: phone.pose.matrix))
+                                   asleep: phone.state == "asleep", transform: PovDevice.upright(phone.pose.matrix)))
         }
+        let located = Set(found.map(\.id))
         func robot(_ sample: RenderScene.RobotPose?, id: String, name: String) {
             guard let pose = sample?.pose, pose.translation.count == 3, pose.rotation_xyzw.count == 4,
                   sample?.frame == map.scenegraph.map.frame.id else { return }
@@ -612,19 +628,29 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             found.append(PovDevice(id: "robot:" + id, name: name, symbol: "car.side", asleep: false, transform: eye))
         }
         if let runners = map.render?.local_mapping?.runners, !runners.isEmpty {
-            for (id, runner) in runners.sorted(by: { $0.key < $1.key }) { robot(runner.robot_pose, id: id, name: "Robot " + String(id.suffix(4))) }
+            for (id, runner) in runners.sorted(by: { $0.key < $1.key }) {
+                if runner.robot_pose != nil {
+                    robot(runner.robot_pose, id: id, name: "Robot " + String(id.suffix(4)))
+                } else if !located.contains("phone:" + id) {
+                    // Known to Home but not placed in this scene, so there is no view to show.
+                    found.append(PovDevice(id: "peer:" + id, name: "Device " + String(id.suffix(4)), symbol: "questionmark.circle",
+                                           asleep: false, transform: matrix_identity_float4x4, located: false,
+                                           detail: "no position" + (runner.status.map { " · " + $0 } ?? "")))
+                }
+            }
         } else { robot(map.render?.local_mapping?.robot_pose, id: "runner", name: "Robot") }
-        return found.sorted { $0.name < $1.name }
+        return found.sorted { ($0.located ? 0 : 1, $0.name) < ($1.located ? 0 : 1, $1.name) }
     }
 
     private func refreshDevices() {
         var list = [PovDevice]()
         if let selfInHome {
-            list.append(PovDevice(id: "self", name: "This phone", symbol: "iphone.gen3", asleep: false, transform: selfInHome))
+            list.append(PovDevice(id: "self", name: "This phone", symbol: "iphone.gen3", asleep: false,
+                                  transform: PovDevice.upright(selfInHome)))
         }
         // Home lists this phone too; hide the duplicate sitting at our own position.
         list += remoteDevices.filter { other in
-            guard let selfInHome, !other.asleep else { return true }
+            guard let selfInHome, !other.asleep, other.located else { return true }
             return simd_distance(other.transform.columns.3, selfInHome.columns.3) > 0.2
         }
         if list != devices { devices = list }

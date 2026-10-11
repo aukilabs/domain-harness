@@ -177,7 +177,11 @@ struct RenderScene: Decodable, Equatable {
         let robot_pose: RobotPose?
         let runners: [String: Runner]?
     }
-    struct Runner: Decodable, Equatable { let robot_pose: RobotPose? }
+    struct Runner: Decodable, Equatable {
+        let robot_pose: RobotPose?
+        let status: String?
+        let detail: String?
+    }
     struct RobotPose: Decodable, Equatable {
         let frame: String
         let pose: RobotTransform
