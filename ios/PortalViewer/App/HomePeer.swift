@@ -57,6 +57,23 @@ final class HomePeer: ObservableObject {
         onDisconnect?()
     }
 
+    // Public pairing files transferred over USB are offered explicitly, never
+    // silently substituted for a user's saved connection.
+    var transferredConnections: [URL] {
+        guard let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
+              let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.fileSizeKey]) else { return [] }
+        return files.filter { url in
+            guard url.lastPathComponent.hasPrefix("home-connection-"), url.pathExtension == "json",
+                  let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 32 * 1024,
+                  let data = try? Data(contentsOf: url) else { return false }
+            return (try? HomeProfile.load(data)) != nil
+        }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+    func transferredConnectionName(_ url: URL) -> String {
+        guard let data = try? Data(contentsOf: url), let profile = try? HomeProfile.load(data) else { return url.lastPathComponent }
+        return profile.sceneLabel
+    }
+
     func connect() {
         guard !running, profile != nil, !email.isEmpty, !password.isEmpty else { return }
         do {

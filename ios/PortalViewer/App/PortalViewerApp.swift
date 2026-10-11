@@ -22,7 +22,7 @@ struct ViewerScreen: View {
         ZStack(alignment: .bottom) {
             CameraView(controller: controller).ignoresSafeArea()
             VStack(alignment: .leading, spacing: 12) {
-                Text("Home Scene").font(.title2.bold())
+                Text(peer.profile?.sceneLabel ?? "Home Scene").font(.title2.bold())
                 Text(peer.detail).font(.subheadline.bold())
                 Text(controller.status).font(.subheadline)
                 Toggle("Share LiDAR depth", isOn: $controller.shareDepth)
@@ -52,12 +52,19 @@ struct ViewerScreen: View {
             NavigationStack {
                 Form {
                     Section("Home connection") {
+                        ForEach(peer.transferredConnections, id: \.self) { url in
+                            Button("Use \(peer.transferredConnectionName(url)) (USB)") {
+                                do { try peer.pair(Data(contentsOf: url)); pairingError = nil }
+                                catch { pairingError = error.localizedDescription }
+                            }
+                        }
                         Button("Import Home connection profile") { importing = true }
                         if let profile = peer.profile {
+                            Text("Scene: \(profile.sceneLabel)").font(.headline)
                             Text("Peer: \(profile.peer_id)").font(.caption).textSelection(.enabled)
                             Text("Domain: \(profile.domain_id)").font(.caption).textSelection(.enabled)
                         }
-                        Text("Download runner connection from Home's viewer, then save it to Files on this iPhone.")
+                        Text("Select your scene in Home, download its phone connection, then save it to Files on this iPhone.")
                             .font(.caption)
                         if let pairingError { Text(pairingError).foregroundStyle(.red) }
                     }

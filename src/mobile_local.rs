@@ -128,14 +128,14 @@ pub fn mount_receiver(
 pub struct Publisher {
     output: ConfiguredObservable<Snapshot>,
     capture: BufferProductCapture<Snapshot>,
-    endpoint: ComponentProtocolEndpoint,
+    endpoint: Arc<ComponentProtocolEndpoint>,
     _component: Component,
     _runtime: ComponentRuntime,
 }
 impl Publisher {
-    pub fn new(peer: &auki_sdk::AukiPeer) -> Result<Self> {
-        let owner = peer.peer_id().to_string();
-        let runtime = ComponentRuntime::new(owner.clone());
+    pub fn new(products: &crate::mobile_products::MobileProducts) -> Result<Self> {
+        let runtime = products.runtime.clone();
+        let owner = runtime.peer_id().to_string();
         let component = runtime.component(
             ComponentSpec::new("android-local-mapper").observable(ObservableContract {
                 name: "voxels".into(),
@@ -165,7 +165,7 @@ impl Publisher {
             BufferLimits::entries(1),
             |s: &Snapshot| serde_json::to_vec(s).map_or(usize::MAX, |v| v.len()),
         )?;
-        let endpoint = ComponentProtocolEndpoint::mount(peer.protocols(), runtime.clone())?;
+        let endpoint = products.endpoint.clone();
         endpoint.export_product(&capture.product())?;
         Ok(Self {
             output,
@@ -186,8 +186,9 @@ impl Publisher {
         })
     }
     pub async fn close(self) -> Result<()> {
-        self.capture.cancel();
-        self.endpoint.close().await?;
+        self.endpoint
+            .unexport_product(&self.capture.product().manifest.product_id);
+        self.capture.delete()?;
         Ok(())
     }
 }

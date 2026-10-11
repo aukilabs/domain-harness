@@ -9,7 +9,8 @@ use spatial_home::{
 async fn catalogs_are_real_refreshable_and_not_retained_as_live_peers() -> Result<()> {
     let pair = support::LocalPair::start().await?;
     let result = async {
-        let publisher = Publisher::new(&pair.b)?;
+        let products = spatial_home::mobile_products::MobileProducts::mount(&pair.b)?;
+        let publisher = Publisher::new(&products)?;
         let routes: Vec<_> = pair
             .b
             .listen_addresses()
@@ -44,15 +45,18 @@ async fn catalogs_are_real_refreshable_and_not_retained_as_live_peers() -> Resul
         ));
         assert!(!rows.iter().any(|r| r["peer_id"] == "not-a-connected-peer"));
         publisher.close().await?;
+        products.close().await?;
         let unavailable = fetch(&pair.a, pair.b.peer_id(), &routes).await;
         assert_eq!(unavailable["catalog_status"], "unavailable");
         assert!(unavailable.get("catalog").is_none());
-        let restored = Publisher::new(&pair.b)?;
+        let products = spatial_home::mobile_products::MobileProducts::mount(&pair.b)?;
+        let restored = Publisher::new(&products)?;
         assert_eq!(
             fetch(&pair.a, pair.b.peer_id(), &routes).await["catalog_status"],
             "ready"
         );
         restored.close().await?;
+        products.close().await?;
         Ok::<_, anyhow::Error>(())
     }
     .await;

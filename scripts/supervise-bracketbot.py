@@ -1,0 +1,60 @@
+#!/usr/bin/env python3
+"""Restart the isolated runner with a fresh map session after source resets."""
+import argparse
+import fcntl
+import json
+import os
+from pathlib import Path
+import signal
+import subprocess
+import time
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument('--state', type=Path, required=True)
+    ap.add_argument('--binary', type=Path, required=True)
+    args = ap.parse_args()
+    args.state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with (args.state/'supervisor.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        pidfile = args.state/'runner.pid'
+        pidfile.write_text(str(os.getpid()))
+        stopped = False
+        child = None
+        def stop(*_):
+            nonlocal stopped
+            stopped = True
+            if child and child.poll() is None: child.terminate()
+        signal.signal(signal.SIGTERM, stop)
+        signal.signal(signal.SIGINT, stop)
+        failures = 0
+        try:
+            while not stopped:
+                log = args.state/'runner.log'
+                if log.exists() and log.stat().st_size > 8*1024*1024:
+                    log.replace(args.state/'runner.previous.log')
+                started = time.monotonic()
+                with log.open('ab', buffering=0) as output:
+                    child = subprocess.Popen([str(args.binary), str(args.state/'peer.json'),
+                        str(args.state/'local-scene.json'), str(args.state/'connection.json')],
+                        stdin=subprocess.DEVNULL, stdout=output, stderr=output)
+                    while child.poll() is None:
+                        if stopped:
+                            try: child.wait(timeout=25)
+                            except subprocess.TimeoutExpired:
+                                child.kill(); child.wait()
+                            break
+                        time.sleep(.25)
+                (args.state/'supervisor-status.json').write_text(json.dumps({
+                    'pid': os.getpid(), 'last_exit': child.returncode,
+                    'stopped': stopped, 'last_runtime_seconds': round(time.monotonic()-started, 2)}))
+                failures = 0 if time.monotonic()-started > 30 else failures+1
+                delay = min(30, 2**min(failures, 5))
+                until = time.monotonic()+delay
+                while not stopped and time.monotonic() < until: time.sleep(.25)
+        finally:
+            pidfile.unlink(missing_ok=True)
+
+
+if __name__ == '__main__': main()

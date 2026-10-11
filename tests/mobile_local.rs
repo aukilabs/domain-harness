@@ -11,7 +11,8 @@ async fn authenticated_phone_product_reaches_separate_home_view() -> Result<()> 
     let result = async {
         let home = ScenePublisher::mount(&pair.a)?;
         mount_receiver(&home.runtime, &home.endpoint)?;
-        let phone = Publisher::new(&pair.b)?;
+        let products = spatial_home::mobile_products::MobileProducts::mount(&pair.b)?;
+        let phone = Publisher::new(&products)?;
         let session = uuid::Uuid::new_v4().to_string();
         let e = phone.publish(Snapshot {
             session: session.clone(),
@@ -46,6 +47,7 @@ async fn authenticated_phone_product_reaches_separate_home_view() -> Result<()> 
                 .is_empty()
         );
         phone.close().await?;
+        products.close().await?;
         home.close().await?;
         Ok::<_, anyhow::Error>(())
     }

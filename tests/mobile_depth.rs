@@ -74,7 +74,8 @@ async fn phone_local_depth_reaches_home_and_is_transformed_once() -> Result<()> 
         let server = ScenePublisher::mount(&pair.a)?;
         server.enable_phone_depth(inbox.clone(), canonical.clone())?;
         let session = uuid::Uuid::new_v4().to_string();
-        let publisher = Publisher::new(&pair.b, &session)?;
+        let products = spatial_home::mobile_products::MobileProducts::mount(&pair.b)?;
+        let publisher = Publisher::new(&products, &session)?;
         let packet = sample(&canonical, &session)?;
         let envelope = publisher.publish(packet.clone())?;
         assert_eq!(
@@ -187,17 +188,134 @@ async fn phone_local_depth_reaches_home_and_is_transformed_once() -> Result<()> 
         );
         let previous_source = pending[0].source.clone();
         publisher.close().await?;
-        let resumed = Publisher::new(&pair.b, &session)?;
+        products.close().await?;
+        let products = spatial_home::mobile_products::MobileProducts::mount(&pair.b)?;
+        let resumed = Publisher::new(&products, &session)?;
         let mut later = packet; later.timestamp_ns = 500;
         let resumed_envelope = resumed.publish(later)?;
         assert_ne!(resumed_envelope.source.manifest_hash, previous_source.manifest_hash,
                    "a reconnected publisher has a fresh source sequence identity while AR space stays unchanged");
         assert!(spatial_home::mobile_depth::send(&pair.b, &home, &resumed_envelope).await?);
         resumed.close().await?;
+        products.close().await?;
         server.close().await?;
         Ok::<_, anyhow::Error>(())
     }
     .await;
     let cleanup = pair.shutdown().await;
     result.and(cleanup)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_phone_catalog_serves_both_products_across_ar_resets() -> Result<()> {
+    use spatial_home::{mobile_local, mobile_products::MobileProducts};
+    let pair = support::LocalPair::start().await?;
+    let result = async {
+        let dir = tempfile::tempdir()?;
+        let canonical = Store::open_canonical(dir.path().join("home.json"))?
+            .built
+            .portals;
+        let inbox = std::sync::Arc::new(std::sync::Mutex::new(Inbox::default()));
+        let server = ScenePublisher::mount(&pair.a)?;
+        server.enable_phone_depth(inbox.clone(), canonical.clone())?;
+        mobile_local::mount_receiver(&server.runtime, &server.endpoint)?;
+        let home = HomeConnection::direct(&pair.a);
+        let routes = pair
+            .b
+            .listen_addresses()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        for local_first in [true, false] {
+            let products = MobileProducts::mount(&pair.b)?;
+            let session = uuid::Uuid::new_v4().to_string();
+            let (local, mut depth) = if local_first {
+                let local = mobile_local::Publisher::new(&products)?;
+                (local, Publisher::new(&products, &session)?)
+            } else {
+                let depth = Publisher::new(&products, &session)?;
+                (mobile_local::Publisher::new(&products)?, depth)
+            };
+            let envelope = local.publish(mobile_local::Snapshot {
+                session: session.clone(),
+                timestamp_ns: 100,
+                cells: vec![[1, 2, 3]],
+            })?;
+            mobile_local::send(&pair.b, &home, &envelope).await?;
+            let envelope = depth.publish(sample(&canonical, &session)?)?;
+            assert!(spatial_home::mobile_depth::send(&pair.b, &home, &envelope).await?);
+            let mut map = spatial_home::collaborative_mapper::CollaborativeMap::new(
+                &pair.a.peer_id().to_string(),
+                &uuid::Uuid::new_v4().to_string(),
+                &canonical,
+            )?;
+            for frame in inbox.lock().unwrap().take() {
+                assert!(map.integrate_phone(frame)?);
+            }
+            assert!(
+                !spatial_home::mobile_geometry::render(&map.scene()?.unwrap())?["voxels"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty()
+            );
+            let before =
+                spatial_home::device_catalogs::fetch(&pair.a, pair.b.peer_id(), &routes).await;
+            assert_eq!(before["catalog_status"], "ready");
+            assert_eq!(before["catalog"]["components"].as_array().unwrap().len(), 2);
+            assert_eq!(before["catalog"]["products"].as_array().unwrap().len(), 2);
+            let mut previous = session;
+            for _ in 0..3 {
+                let next = uuid::Uuid::new_v4().to_string();
+                depth.reconfigure(&next, 300)?;
+                assert!(
+                    spatial_home::mobile_depth::send(
+                        &pair.b,
+                        &home,
+                        &depth.publish(sample(&canonical, &next)?)?
+                    )
+                    .await?
+                );
+                let catalog =
+                    spatial_home::device_catalogs::fetch(&pair.a, pair.b.peer_id(), &routes).await;
+                assert_eq!(
+                    catalog["catalog"]["components"].as_array().unwrap().len(),
+                    2,
+                    "stable components, not one per reset"
+                );
+                let entries = catalog["catalog"]["products"].as_array().unwrap();
+                assert_eq!(entries.len(), 2, "retired depth Products are removed");
+                assert!(
+                    entries
+                        .iter()
+                        .any(|e| e["manifest"]["product_id"] == format!("phone-depth:{next}"))
+                );
+                assert!(
+                    !entries
+                        .iter()
+                        .any(|e| e["manifest"]["product_id"] == format!("phone-depth:{previous}"))
+                );
+                previous = next;
+            }
+            depth.close().await?;
+            let catalog =
+                spatial_home::device_catalogs::fetch(&pair.a, pair.b.peer_id(), &routes).await;
+            assert_eq!(
+                catalog["catalog_status"], "ready",
+                "closing depth must not close shared protocols"
+            );
+            assert_eq!(catalog["catalog"]["products"].as_array().unwrap().len(), 1);
+            let envelope = local.publish(mobile_local::Snapshot {
+                session: previous,
+                timestamp_ns: 400,
+                cells: vec![[4, 5, 6]],
+            })?;
+            mobile_local::send(&pair.b, &home, &envelope).await?;
+            local.close().await?;
+            products.close().await?;
+        }
+        server.close().await?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    result.and(pair.shutdown().await)
 }

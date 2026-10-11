@@ -33,6 +33,7 @@ pub struct CollaborativeMap {
     clock: auki_components::clock::ClockRegistryEntry,
     map: MapComponent,
     reference: MapSnapshot,
+    origin_portal: String,
     _runtime: ComponentRuntime,
     recent: crate::recent_voxels::RecentVoxels,
     watermarks: BTreeMap<String, (u64, u64)>,
@@ -43,9 +44,69 @@ pub struct CollaborativeMap {
 }
 impl CollaborativeMap {
     pub fn new(owner: &str, session: &str, canonical: &MapSnapshot) -> Result<Self> {
+        let frame = format!("home-live:{session}:zup");
+        let definition = MapDefinition {
+            map_id: format!("home-collaborative-{session}"),
+            name: Some("Home collaborative sensor map".into()),
+            domain_reference: None,
+            frame: crate::conventions::frame(&frame)?,
+        };
+        Self::create(
+            owner,
+            session,
+            definition,
+            reference_in_frame(canonical, &frame)?,
+            ORIGIN_PORTAL,
+        )
+    }
+
+    /// A saved scene already declares its origin and OpenGL axes. No rebase,
+    /// relabeling, or Xmart conversion is involved in this mapper.
+    pub fn for_scene(owner: &str, session: &str, reference: &MapSnapshot) -> Result<Self> {
+        reference.validate()?;
+        let frame = &reference.scenegraph.map.frame.id;
+        ensure!(
+            crate::local_scenes::frame_scene_id(frame)
+                == Some(reference.scenegraph.map.map_id.as_str()),
+            "Independent scene identity mismatch"
+        );
+        let origin = frame.split_once(":portal-").unwrap().1;
+        let anchor = reference
+            .scenegraph
+            .anchors
+            .get(origin)
+            .ok_or_else(|| anyhow::anyhow!("Scene origin Portal missing"))?;
+        ensure!(
+            anchor
+                .pose_in_map
+                .translation
+                .iter()
+                .all(|v| v.abs() < 1e-8),
+            "Scene origin must be at zero"
+        );
+        let mut map = Self::create(
+            owner,
+            session,
+            reference.scenegraph.map.clone(),
+            reference.clone(),
+            origin,
+        )?;
+        for anchor in reference.scenegraph.anchors.values() {
+            map.upsert(anchor.clone())?;
+        }
+        Ok(map)
+    }
+
+    fn create(
+        owner: &str,
+        session: &str,
+        definition: MapDefinition,
+        reference: MapSnapshot,
+        origin_portal: &str,
+    ) -> Result<Self> {
         let runtime = ComponentRuntime::new(owner.to_owned());
         let clock = crate::model::clock_entry(owner, session);
-        let frame = format!("home-live:{session}:zup");
+        let frame = definition.frame.id.clone();
         let writer = owner.to_owned();
         let map = MapComponent::new(
             &runtime,
@@ -53,18 +114,12 @@ impl CollaborativeMap {
                 component_id: "collaborative-portals".into(),
                 publication_id: session.into(),
                 clock: crate::model::clock_ref(&clock),
-                map: MapDefinition {
-                    map_id: format!("home-collaborative-{session}"),
-                    name: Some("Home collaborative sensor map".into()),
-                    domain_reference: None,
-                    frame: crate::conventions::frame(&frame)?,
-                },
+                map: definition,
             },
             crate::local_mapper::now,
             |_| true,
             move |c| c.caller_peer_id == writer && c.caller_component_id == "home-fusion",
         )?;
-        let reference = reference_in_frame(canonical, &frame)?;
         Ok(Self {
             frame,
 
@@ -73,6 +128,7 @@ impl CollaborativeMap {
             clock,
             map,
             reference,
+            origin_portal: origin_portal.into(),
             _runtime: runtime,
             recent: Default::default(),
             watermarks: BTreeMap::new(),
@@ -146,8 +202,12 @@ impl CollaborativeMap {
             "capture-time transform mismatch"
         );
         ensure!(
-            o.pose.sensor_to_map.to_frame_id.starts_with("home-live:")
-                && o.pose.sensor_to_map.to_frame_id.ends_with(":zup"),
+            if crate::local_scenes::frame_scene_id(&self.frame).is_some() {
+                o.pose.sensor_to_map.to_frame_id == self.frame
+            } else {
+                o.pose.sensor_to_map.to_frame_id.starts_with("home-live:")
+                    && o.pose.sensor_to_map.to_frame_id.ends_with(":zup")
+            },
             "unexpected localization basis"
         );
         ensure!(
@@ -322,6 +382,8 @@ impl CollaborativeMap {
             objects: vec![],
             registries: json!({"local_mapping":{"status":"mapping","detail":"Collaborative raw-observation mapping","origin":{"kind":"canonical_portals","portal":ORIGIN_PORTAL},"robot_pose":robot,"runners":self.peers,"alignment_to_home":null,"voxel_policy":{"kind":"latest_observations_per_cell","window":3,"ordering":"Home arrival order; capture clocks remain per peer"}},"collaborative_mapping":{"origin_portal":ORIGIN_PORTAL,"contributors":self.contributions,"runners":self.peers},"mapping_input":{"kind":"raw_runner_sensors","scenegraph_ingestion":false},"frames":[voxels.definition.frame],"clocks":[self.clock],"input_registries":self.input_registries,"source_bindings":voxels.definition.sources}),
         };
+        scene.registries["local_mapping"]["origin"]["portal"] = json!(self.origin_portal);
+        scene.registries["collaborative_mapping"]["origin_portal"] = json!(self.origin_portal);
         let mut landmarks = crate::landmarks::portal_map(
             &scene.portals,
             Some(self.map.component().reference().clone()),

@@ -1,0 +1,324 @@
+//! Pixel-only Portal detection, independent of tracking and camera calibration.
+use crate::{galbot_sensors::SensorSpec, landmarks::*};
+use auki_component_protocol::ComponentProtocolEndpoint;
+use auki_components::*;
+use std::sync::{Arc, Condvar, Mutex};
+
+type Pending = Arc<(Mutex<(bool, Option<Observation<VideoFrame>>)>, Condvar)>;
+pub struct PortalCameraDetector {
+    pending: Pending,
+    worker: Option<std::thread::JoinHandle<()>>,
+    status: Arc<Mutex<DetectorStatus>>,
+}
+#[derive(Default, Clone, serde::Serialize)]
+pub struct DetectorStatus {
+    processed_frames: u64,
+    decoded_qrs: u64,
+    portal_observations: u64,
+    errors: u64,
+    last_timestamp_ns: Option<u64>,
+    last_portal_timestamp_ns: Option<u64>,
+    last_portal_landmarks: Vec<String>,
+    last_error: Option<String>,
+}
+impl PortalCameraDetector {
+    pub fn mount(
+        runtime: &ComponentRuntime,
+        endpoint: &ComponentProtocolEndpoint,
+        spec: &SensorSpec,
+    ) -> anyhow::Result<Self> {
+        let (detector, product) = Self::create(runtime, spec)?;
+        endpoint.export_product(&product)?;
+        Ok(detector)
+    }
+    fn create(
+        runtime: &ComponentRuntime,
+        spec: &SensorSpec,
+    ) -> anyhow::Result<(Self, RetainedProduct<LandmarkObservations>)> {
+        let id = format!("{}.portal-detector", spec.id);
+        let component =
+            runtime.component(ComponentSpec::new(&id).observable(ObservableContract {
+                name: "landmarks".into(),
+                datatype: OBSERVATIONS_SCHEMA.into(),
+                schema: OBSERVATIONS_SCHEMA.into(),
+                access: vec![ObservationAccess::FollowNew],
+                exposure: Exposure::Cluster,
+            }))?;
+        let output = component.configured_observable::<LandmarkObservations>(
+            ConfiguredObservableSpec::new(
+                "landmarks",
+                uuid::Uuid::new_v4().to_string(),
+                spec.clock.clone(),
+                PayloadContract::Structured(StructuredPayloadContract {
+                    modality: "detection".into(),
+                    observes: "Portal corners in source camera pixels".into(),
+                    unit: Some("pixels".into()),
+                    datatype: OBSERVATIONS_SCHEMA.into(),
+                    schema: OBSERVATIONS_SCHEMA.into(),
+                }),
+            ),
+        )?;
+        component.expose()?;
+        let capture = runtime.capture_buffer(
+            &format!("{id}-history"),
+            &output,
+            BufferLimits::entries(2),
+            |v: &LandmarkObservations| serde_json::to_vec(v).map_or(0, |v| v.len()),
+        )?;
+        let product = capture.product();
+        let status = Arc::new(Mutex::new(DetectorStatus::default()));
+        let worker_status = status.clone();
+        let pending: Pending = Arc::new((Mutex::new((false, None)), Condvar::new()));
+        let queue = pending.clone();
+        let clock = spec.clock.clone();
+        let worker = std::thread::spawn(move || {
+            let _capture = capture;
+            let mut detector = auki_qr_detector::QrDetector::new(Default::default());
+            let mut last = None;
+            loop {
+                let (lock, ready) = &*queue;
+                let mut state = lock.lock().unwrap();
+                while !state.0 && state.1.is_none() {
+                    state = ready.wait(state).unwrap();
+                }
+                if state.0 {
+                    break;
+                }
+                let observation = state.1.take().unwrap();
+                drop(state);
+                let result = (|| -> anyhow::Result<()> {
+                    let (decoded, landmarks) = detect(&mut detector, &observation.payload.bytes)?;
+                    let identities = landmarks
+                        .iter()
+                        .map(|l| l.recognition.identity.clone())
+                        .collect::<Vec<_>>();
+                    output.publish(
+                        observation.timestamp_ns,
+                        Arc::new(LandmarkObservations {
+                            schema: OBSERVATIONS_SCHEMA.into(),
+                            detected_by: component.reference().clone(),
+                            source_observation: SourceObservation {
+                                output: observation.output,
+                                sequence: observation.sequence,
+                                timestamp_ns: observation.timestamp_ns,
+                                clock: clock.clone(),
+                            },
+                            landmarks,
+                        }),
+                    )?;
+                    last = Some(observation.timestamp_ns);
+                    let mut status = worker_status.lock().unwrap();
+                    status.processed_frames += 1;
+                    status.decoded_qrs += decoded as u64;
+                    status.portal_observations += (identities.len() / 4) as u64;
+                    status.last_timestamp_ns = last;
+                    status.last_error = None;
+                    if !identities.is_empty() {
+                        status.last_portal_timestamp_ns = last;
+                        status.last_portal_landmarks = identities;
+                    }
+                    Ok(())
+                })();
+                if let Err(e) = result {
+                    let mut status = worker_status.lock().unwrap();
+                    status.errors += 1;
+                    status.last_error = Some(e.to_string());
+                    eprintln!("{id}: {e}");
+                }
+            }
+            if let Some(t) = last {
+                let _ = output.end(t, ObservationEndReason::Reconfigured { replacement: None });
+            }
+        });
+        Ok((
+            Self {
+                pending,
+                worker: Some(worker),
+                status,
+            },
+            product,
+        ))
+    }
+    pub fn status(&self) -> DetectorStatus {
+        self.status.lock().unwrap().clone()
+    }
+    pub fn submit(&self, observation: Observation<VideoFrame>) {
+        // Keep only the newest frame; detection never blocks camera publishing.
+        self.pending.0.lock().unwrap().1 = Some(observation);
+        self.pending.1.notify_one();
+    }
+}
+fn detect(
+    detector: &mut auki_qr_detector::QrDetector,
+    jpeg: &[u8],
+) -> anyhow::Result<(usize, Vec<ImageLandmark>)> {
+    let gray = image::load_from_memory_with_format(jpeg, image::ImageFormat::Jpeg)?.to_luma8();
+    let codes = detector.detect_luma(
+        gray.as_raw(),
+        gray.width() as usize,
+        gray.height() as usize,
+        gray.width() as usize,
+    )?;
+    Ok((
+        codes.codes.len(),
+        codes
+            .codes
+            .iter()
+            .filter(|c| !c.mirrored)
+            .filter_map(|c| {
+                crate::local_mapper::portal_code(&c.payload)
+                    .map(|id| (id, c.refined_corners_px.as_ref().unwrap_or(&c.corners_px)))
+            })
+            .flat_map(|(id, corners)| {
+                CORNERS
+                    .into_iter()
+                    .zip(corners)
+                    .map(move |(corner, p)| ImageLandmark {
+                        recognition: Recognition {
+                            landmark_type: PORTAL.into(),
+                            identity: format!("{id}/{corner}"),
+                        },
+                        pixel: [p.x, p.y],
+                    })
+            })
+            .collect(),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn head_detectors_publish_with_no_odometry_or_depth() -> anyhow::Result<()> {
+        for id in ["camera.head", "camera.head.right"] {
+            let runtime = ComponentRuntime::new("robot");
+            let clock = crate::model::clock_ref(&crate::model::clock_entry("robot", "test"));
+            let payload = PayloadContract::Camera(CameraPayloadContract {
+                datatype: "video_frame".into(),
+                schema: "auki.video-frame/v1".into(),
+                encoding: "jpeg".into(),
+                width: 640,
+                height: 480,
+                nominal_frame_rate_hz: Some(5),
+                observes: id.into(),
+            });
+            let spec = SensorSpec {
+                id: id.into(),
+                clock: clock.clone(),
+                frame_definition: None,
+                payload: payload.clone(),
+                metadata: serde_json::json!({}),
+            };
+            let source =
+                runtime.component(ComponentSpec::new(id).observable(ObservableContract {
+                    name: "frames".into(),
+                    datatype: "video_frame".into(),
+                    schema: "auki.video-frame/v1".into(),
+                    access: vec![ObservationAccess::FollowNew],
+                    exposure: Exposure::Cluster,
+                }))?;
+            let output = source.configured_observable::<VideoFrame>(
+                ConfiguredObservableSpec::new("frames", "test", clock.clone(), payload)
+                    .in_registered_frame(auki_registry::FrameRegistryEntry::ros_optical("robot", id)),
+            )?;
+            source.expose()?;
+            let (detector, product) = PortalCameraDetector::create(&runtime, &spec)?;
+            for (t, data) in [
+                (1, jpeg(Some("https://r8.hr/2ZWHV5L6I04"))),
+                (2, jpeg(None)),
+            ] {
+                let (observation, _) = output.publish(
+                    t,
+                    Arc::new(VideoFrame {
+                        width: 640,
+                        height: 480,
+                        encoding: "jpeg".into(),
+                        bytes: data.into(),
+                    }),
+                )?;
+                let sequence = observation.sequence;
+                detector.submit(observation);
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while detector.status().last_timestamp_ns != Some(t) {
+                    anyhow::ensure!(
+                        std::time::Instant::now() < deadline,
+                        "detector did not publish"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                let batch = product.latest_existing()?.unwrap();
+                assert_eq!(batch.payload.source_observation.output.component_id, id);
+                assert_eq!(batch.payload.source_observation.sequence, sequence);
+                assert_eq!(batch.payload.source_observation.timestamp_ns, t);
+                assert_eq!(batch.payload.source_observation.clock, clock);
+                assert_eq!(batch.payload.landmarks.len(), if t == 1 { 4 } else { 0 });
+            }
+            let status = detector.status();
+            assert_eq!(status.processed_frames, 2);
+            assert_eq!(status.decoded_qrs, 1);
+            assert_eq!(status.portal_observations, 1);
+            assert_eq!(status.last_portal_timestamp_ns, Some(1));
+            assert_eq!(status.errors, 0);
+        }
+        Ok(())
+    }
+    fn jpeg(payload: Option<&str>) -> Vec<u8> {
+        let mut pixels = image::GrayImage::from_pixel(640, 480, image::Luma([255]));
+        if let Some(payload) = payload {
+            let qr = qrcode::QrCode::new(payload).unwrap();
+            for y in 0..qr.width() {
+                for x in 0..qr.width() {
+                    if qr[(x, y)] == qrcode::Color::Dark {
+                        for dy in 0..8 {
+                            for dx in 0..8 {
+                                pixels.put_pixel(
+                                    (100 + x * 8 + dx) as u32,
+                                    (80 + y * 8 + dy) as u32,
+                                    image::Luma([0]),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let mut bytes = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 90)
+            .encode_image(&pixels)
+            .unwrap();
+        bytes
+    }
+    #[test]
+    fn wrist_jpeg_yields_four_named_corners_without_calibration() {
+        let mut detector = auki_qr_detector::QrDetector::new(Default::default());
+        let (decoded, found) =
+            detect(&mut detector, &jpeg(Some("https://r8.hr/2ZWHV5L6I04"))).unwrap();
+        assert_eq!(decoded, 1);
+        assert_eq!(found.len(), 4);
+        for (landmark, corner) in found.iter().zip(CORNERS) {
+            assert_eq!(
+                landmark.recognition.identity,
+                format!("2ZWHV5L6I04/{corner}")
+            );
+            assert_eq!(landmark.recognition.landmark_type, PORTAL);
+            assert!(landmark.pixel.iter().all(|p| p.is_finite()));
+        }
+        assert!(detect(&mut detector, &jpeg(None)).unwrap().1.is_empty());
+        assert!(
+            detect(&mut detector, &jpeg(Some("not a portal")))
+                .unwrap()
+                .1
+                .is_empty()
+        );
+        assert!(detect(&mut detector, b"invalid jpeg").is_err());
+    }
+}
+impl Drop for PortalCameraDetector {
+    fn drop(&mut self) {
+        self.pending.0.lock().unwrap().0 = true;
+        self.pending.1.notify_one();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}

@@ -111,6 +111,7 @@ pub enum SensorOutput {
     ),
 }
 pub struct Sensor {
+    pub portal_detector: Option<crate::portal_camera_detector::PortalCameraDetector>,
     pub spec: SensorSpec,
     pub output: SensorOutput,
     pub last: Option<u64>,
@@ -285,6 +286,7 @@ impl Sensor {
             }
         };
         Ok(Self {
+            portal_detector: None,
             spec,
             output,
             last: None,
@@ -331,7 +333,7 @@ impl Sensor {
                 if reader.into_dimensions().map_err(err)? != (c.width, c.height) {
                     return Err("JPEG dimensions differ from camera contract".into());
                 }
-                output
+                let (observation, _) = output
                     .publish(
                         timestamp,
                         Arc::new(VideoFrame {
@@ -342,6 +344,9 @@ impl Sensor {
                         }),
                     )
                     .map_err(err)?;
+                if let Some(detector) = &self.portal_detector {
+                    detector.submit(observation);
+                }
             }
             SensorOutput::Measurement(output, _) => {
                 let reading: SensorReading = serde_json::from_str(data).map_err(err)?;
@@ -382,7 +387,8 @@ impl Sensor {
             SensorOutput::Camera(_, capture) => capture.product().reference(),
             SensorOutput::Measurement(_, capture) => capture.product().reference(),
         };
-        serde_json::json!({"product": product, "published": self.count, "last_timestamp_ns": self.last, "clock": self.spec.clock})
+        serde_json::json!({"product": product, "published": self.count, "last_timestamp_ns": self.last, "clock": self.spec.clock,
+            "portal_detector": self.portal_detector.as_ref().map(|d| d.status())})
     }
     pub fn end(&self) {
         if let Some(timestamp) = self.last {

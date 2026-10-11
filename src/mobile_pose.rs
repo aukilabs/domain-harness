@@ -30,6 +30,15 @@ pub struct Presence {
 }
 impl Presence {
     pub fn accept(&mut self, peer: &str, update: Update, now: Instant) -> Result<()> {
+        self.accept_in_frame(peer, update, now, FRAME)
+    }
+    pub fn accept_in_frame(
+        &mut self,
+        peer: &str,
+        update: Update,
+        now: Instant,
+        frame: &str,
+    ) -> Result<()> {
         ensure!(!peer.is_empty(), "Missing phone identity");
         let Some(sample) = update.sample else {
             if let Some(entry) = self.entries.get_mut(peer) {
@@ -39,7 +48,7 @@ impl Presence {
         };
         uuid::Uuid::parse_str(&sample.session)?;
         ensure!(
-            sample.pose.to_frame_id == FRAME
+            sample.pose.to_frame_id == frame
                 && sample.pose.from_frame_id == format!("phone-camera:{}", sample.session),
             "Phone pose frame mismatch"
         );
@@ -68,12 +77,15 @@ impl Presence {
         Ok(())
     }
     pub fn snapshot(&self, now: Instant) -> Value {
-        let poses: Vec<_> = self.entries.iter().filter(|(_, (_,received,active))| *active && now.duration_since(*received) < Duration::from_secs(3)).map(|(peer,(s,_,_))| {
+        self.snapshot_in_frame(now, FRAME)
+    }
+    pub fn snapshot_in_frame(&self, now: Instant, frame: &str) -> Value {
+        let poses: Vec<_> = self.entries.iter().filter(|(_, (_,received,active))| *active && now.duration_since(*received) < Duration::from_secs(3)).map(|(peer,(s,received,_))| {
             let mut clock = crate::model::clock_entry(peer, &s.session);
             clock.clock_id = "arkit-capture".into();
-            json!({"peer_id":peer,"name":"nils","pose":s.pose,"capture_timestamp_ns":s.timestamp_ns,"clock":clock})
+            json!({"peer_id":peer,"name":"nils","pose":s.pose,"capture_timestamp_ns":s.timestamp_ns,"clock":clock,"received_age_ms":now.duration_since(*received).as_millis()})
         }).collect();
-        json!({"frame":FRAME,"poses":poses})
+        json!({"frame":frame,"poses":poses})
     }
 }
 pub fn sync(store: &mut crate::model::Store, presence: &Presence, now: Instant) {
@@ -83,7 +95,10 @@ pub fn sync(store: &mut crate::model::Store, presence: &Presence, now: Instant) 
     }
 }
 pub fn append_labels(view: &mut Value, registry: &Value) {
-    if registry["frame"] != FRAME {
+    append_labels_in_frame(view, registry, FRAME)
+}
+pub fn append_labels_in_frame(view: &mut Value, registry: &Value, frame: &str) {
+    if registry["frame"] != frame {
         return;
     }
     let Some(poses) = registry["poses"].as_array() else {
@@ -122,7 +137,7 @@ pub async fn send(
         let entry = snapshot
             .components
             .iter()
-            .find(|c| c.manifest.component_id == COMPONENT)
+            .find(|c| c.manifest.component_id == home.scoped_component(COMPONENT))
             .ok_or_else(|| anyhow::anyhow!("Home phone presence unavailable"))?;
         client
             .invoke_exact::<_, bool>(

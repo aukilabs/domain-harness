@@ -1,0 +1,45 @@
+import {test,expect} from '@playwright/test';
+
+test('all saved local scenes are selectable and isolated',async({page,request})=>{
+ const errors=[];page.on('pageerror',error=>errors.push(error.message));
+ const sources=await (await request.get('/api/scene-sources')).json();
+ expect(sources.local).toEqual(expect.arrayContaining([expect.objectContaining({id:'demo',name:'Xmart'}),expect.objectContaining({id:'local:nacs',name:'NACS'})]));
+ await page.goto('/');
+ await page.getByRole('button',{name:'Maps',exact:true}).click();
+ await expect(page.locator('[data-map="demo"]')).toBeVisible();
+ await expect(page.locator('[data-map="local:nacs"]')).toBeVisible();
+ await expect(page.locator('[data-map="local:humanoid-hub-conference"]')).toBeVisible();
+ await page.locator('[data-map="local:humanoid-hub-conference"]').click();
+ await expect(page.locator('#scene-title')).toHaveText('Humanoid Hub Conference');
+ await expect(page.locator('#pairing-download')).toHaveAttribute('href','/api/local-scenes/humanoid-hub-conference/connection');
+ await page.getByRole('button',{name:'Anchor HNY3JGNLRAE',exact:true}).click();
+ await expect(page.locator('#selection')).toContainText('150 mm encoded square');
+ await expect(page.locator('#inspect-snapshot')).toHaveAttribute('href','/api/local-scenes/humanoid-hub-conference/snapshot');
+ await page.locator('[data-map="local:nacs"]').click();
+ await expect(page.locator('#scene-title')).toHaveText('NACS');
+ await expect(page.locator('#pairing-download')).toHaveAttribute('href','/api/local-scenes/nacs/connection');
+ await expect(page.locator('#anchor-count')).toHaveText('1');
+ await expect(page.locator('#landmark-count')).toHaveText('4');
+ await page.getByRole('button',{name:'Anchor RG3E3LUITXC',exact:true}).click();
+ await expect(page.locator('#selection')).toContainText('150 mm encoded square');
+ await expect(page.locator('#inspect-snapshot')).toHaveAttribute('href','/api/local-scenes/nacs/snapshot');
+ const nacs=await (await request.get('/api/local-scenes/nacs/snapshot')).json();
+ expect(nacs.scenegraph.anchors.RG3E3LUITXC.side_length_m).toBe(.15);
+ expect(nacs.scenegraph.anchors.RG3E3LUITXC.pose_in_map.translation).toEqual([0,0,0]);
+ expect(nacs.scenegraph.anchors.RG3E3LUITXC.pose_in_map.rotation_wxyz).toEqual([Math.SQRT1_2,-Math.SQRT1_2,0,0]);
+ expect(Object.keys(nacs.scenegraph.anchors)).toHaveLength(1);
+ await page.getByRole('button',{name:'Notes',exact:true}).click();
+ await expect(page.getByRole('button',{name:'+ New note',exact:true})).toHaveCount(0);
+ await page.getByRole('button',{name:'Maps',exact:true}).click();
+ await page.locator('[data-map="demo"]').click();
+ await expect(page.locator('#anchor-count')).toHaveText('13');
+ await expect(page.locator('#inspect-snapshot')).toHaveAttribute('href','/api/snapshots');
+ // A periodic discovery refresh must not override the user's choice.
+ await expect.poll(async()=>{await page.waitForTimeout(5500);return page.locator('#map-select').inputValue();}).toBe('demo');
+ await page.locator('[data-map="local:nacs"]').click();
+ await expect(page.locator('#anchor-count')).toHaveText('1');
+ await expect(page.locator('#scene-title')).toHaveText('NACS');
+ await expect(page.locator('#runner-status')).toHaveText('No robot aligned to this scene');
+ await page.screenshot({path:'test-results/local-scenes.png'});
+ expect(errors).toEqual([]);
+});

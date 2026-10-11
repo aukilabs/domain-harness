@@ -22,6 +22,7 @@ struct RunnerView {
     state: tokio::sync::watch::Receiver<spatial_home::scene_mirror::RemoteScene>,
 }
 struct AppState {
+    local_scenes: Arc<spatial_home::local_scenes::LocalScenes>,
     simulation_disconnect: tokio_util::sync::CancellationToken,
     simulation:
         Option<tokio::sync::watch::Receiver<spatial_home::simulated_robot::SimulationState>>,
@@ -242,7 +243,11 @@ async fn home_live_status(State(s): State<Shared>) -> ApiResult {
 }
 async fn scene_sources(State(s): State<Shared>) -> ApiResult {
     let mut status = s.remote_scene.borrow().status_view();
-    let mut local = vec![json!({"id":"demo","name":"Home Server"})];
+    let mut local = vec![json!({"id":"demo","name":spatial_home::environments::reference_name()})];
+    local.extend(s.local_scenes.rows());
+    if !lock(&s)?.demo && let Some(preferred) = s.local_scenes.preferred_id() {
+        status["preferred"] = json!(preferred);
+    }
     if let Some(simulation) = &s.simulation {
         let simulation = simulation.borrow();
         if simulation.status == "running" && simulation.voxels.is_some() {
@@ -335,6 +340,7 @@ async fn simulation_scene(
 async fn scene(State(s): State<Shared>) -> ApiResult {
     let store = lock(&s)?;
     let mut view = serde_json::to_value(&store.built.view).map_err(anyhow::Error::from)?;
+    view["environment_name"] = json!(spatial_home::environments::reference_name());
     view["landmarks"] = store.built.registries["landmarks"].clone();
     view["notes"] = json!(
         spatial_home::notes::from_registries(&store.built.registries, spatial_home::model::FRAME)?
@@ -342,6 +348,21 @@ async fn scene(State(s): State<Shared>) -> ApiResult {
     );
     spatial_home::mobile_pose::append_labels(&mut view, &store.built.registries["mobile_presence"]);
     Ok(Json(view))
+}
+async fn local_scene(
+    State(s): State<Shared>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> ApiResult {
+    Ok(Json(s.local_scenes.view(&id)?))
+}
+async fn local_presence(State(s): State<Shared>, axum::extract::Path(id): axum::extract::Path<String>) -> ApiResult {
+    Ok(Json(s.local_scenes.presence(&id)?))
+}
+async fn local_snapshot(
+    State(s): State<Shared>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> ApiResult {
+    Ok(Json(serde_json::to_value(s.local_scenes.snapshot(&id)?).map_err(anyhow::Error::from)?))
 }
 async fn delete_note(
     State(s): State<Shared>,
@@ -575,6 +596,13 @@ async fn home_connection(State(s): State<Shared>) -> ApiResult {
         .ok_or_else(|| ApiError(anyhow::anyhow!("Home P2P peer is not ready")))?;
     Ok(Json(profile.clone()))
 }
+async fn local_scene_connection(State(s): State<Shared>, axum::extract::Path(id): axum::extract::Path<String>) -> ApiResult {
+    let state = s.peer.borrow();
+    let value = state.get("connection").filter(|_| state["status"] == "Ready")
+        .ok_or_else(|| anyhow::anyhow!("Home P2P peer is not ready"))?;
+    let home = serde_json::from_value(value.clone()).map_err(anyhow::Error::from)?;
+    Ok(Json(serde_json::to_value(s.local_scenes.connection(&id, home)?).map_err(anyhow::Error::from)?))
+}
 async fn snapshots(State(s): State<Shared>) -> ApiResult {
     let s = lock(&s)?;
     Ok(Json(
@@ -761,7 +789,7 @@ async fn main() -> anyhow::Result<()> {
         .truncate(false)
         .read(true)
         .write(true)
-        .open(lock_path)?;
+        .open(&lock_path)?;
     lock_file
         .try_lock()
         .map_err(|e| anyhow::anyhow!("another server owns this journal: {e}"))?;
@@ -770,6 +798,9 @@ async fn main() -> anyhow::Result<()> {
     } else {
         Store::open_canonical(data)?
     };
+    let local_scenes = Arc::new(spatial_home::local_scenes::LocalScenes::load(
+        &lock_path.with_extension("scenes"),
+    )?);
     spatial_home::notes::initialize(&mut store)?;
     store.built.registries["fiducials"] = {
         let fiducials = fiducials
@@ -855,6 +886,7 @@ async fn main() -> anyhow::Result<()> {
         Some(tokio::spawn(spatial_home::network::serve_scene(
             running,
             store.clone(),
+            local_scenes.clone(),
             runners
                 .iter()
                 .map(|(id, r)| (id.clone(), r.name.clone()))
@@ -881,6 +913,7 @@ async fn main() -> anyhow::Result<()> {
         None
     };
     let state = Arc::new(AppState {
+        local_scenes,
         simulation_disconnect,
         simulation,
         fiducials,
@@ -917,6 +950,10 @@ async fn main() -> anyhow::Result<()> {
             }),
         )
         .route(
+            "/phone-trails.js",
+            get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/phone-trails.js")) }),
+        )
+        .route(
             "/ar.js",
             get(|| async {
                 (
@@ -948,6 +985,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/runner-scene", get(remote_scene))
         .route("/api/runner-snapshot", get(remote_snapshot))
         .route("/api/scene-sources", get(scene_sources))
+        .route("/api/local-scenes/{id}", get(local_scene))
+        .route("/api/local-scenes/{id}/snapshot", get(local_snapshot))
+        .route("/api/local-scenes/{id}/presence", get(local_presence))
         .route("/api/phone-local-scene", get(phone_local_scene))
         .route("/api/domain-scene", get(domain_scene))
         .route("/api/domain-snapshot", get(domain_snapshot))
@@ -969,6 +1009,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/runner-pose", get(runner_pose))
         .route("/api/mapping", get(mapping_status))
         .route("/api/home-connection", get(home_connection))
+        .route("/api/local-scenes/{id}/connection", get(local_scene_connection))
         .route("/api/snapshots", get(snapshots))
         .route("/api/contributions", post(contribute))
         .route("/api/detections", post(detect))

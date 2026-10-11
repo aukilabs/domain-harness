@@ -1,4 +1,22 @@
 import { test,expect } from '@playwright/test';
+test('Home omits prototype footer and profile tagline',async({page})=>{
+ const errors=[];page.on('pageerror',e=>errors.push(e.message));
+ await page.goto('/');
+ await expect(page.locator('#connection')).toHaveText('Home Server online');
+ await expect(page.getByRole('heading',{name:'Home Server.'})).toBeVisible();
+ await expect(page.getByText('CANONICAL MAP',{exact:true})).toHaveCount(0);
+ await expect(page.getByText(/A shared understanding/)).toHaveCount(0);
+ await expect(page.locator('.main-footer')).toHaveCount(0);
+ await expect(page.locator('#updated')).toHaveCount(0);
+ await expect(page.locator('.viewport')).toBeVisible();
+ await page.getByRole('button',{name:'Maps',exact:true}).click();
+ await expect(page.locator('#mapping-card')).toBeHidden();
+ await expect(page.locator('#domain-info')).toBeHidden();
+ await expect(page.locator('#panel-maps .sidebar-footer')).toBeHidden();
+ await expect(page.locator('#scenegraph-list')).toBeVisible();
+ expect(errors).toEqual([]);
+});
+
 test('Home lists and inspects anchors and landmarks in Maps',async({page})=>{
  const errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.goto('/');await page.getByRole('button',{name:'Maps',exact:true}).click();

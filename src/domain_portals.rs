@@ -43,7 +43,7 @@ impl DomainPortals {
         );
         let mut scene = Scenegraph::new(MapDefinition {
             map_id: format!("domain:{}", self.domain_id),
-            name: Some("Stored domain portals".into()),
+            name: Some(crate::environments::reference_name().into()),
             domain_reference: Some(self.domain_id.clone()),
             frame: MapFrame::in_convention(
                 FRAME,

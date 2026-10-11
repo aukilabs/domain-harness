@@ -154,13 +154,22 @@ impl Notes {
                             Some(surface) =>
                                 n.anchor_portal.is_empty()
                                     && (surface.frame.starts_with("home-live:")
-                                        || surface.frame == FRAME)
+                                        || surface.frame == FRAME
+                                        || (surface.frame == frame
+                                            && crate::local_scenes::frame_scene_id(frame)
+                                                .is_some()))
                                     && surface.voxel_center.iter().all(|v| v.is_finite())
                                     && (surface.beam_diameter_m == 0.5
-                                        || (surface.frame == FRAME
+                                        || ((surface.frame == FRAME
+                                            || (surface.frame == frame
+                                                && crate::local_scenes::frame_scene_id(frame)
+                                                    .is_some()))
                                             && surface.beam_diameter_m == 0.))
                                     && (!surface.floor
-                                        || (surface.frame == FRAME
+                                        || ((surface.frame == FRAME
+                                            || (surface.frame == frame
+                                                && crate::local_scenes::frame_scene_id(frame)
+                                                    .is_some()))
                                             && surface.voxel_center[1] == 0.)),
                             None => n.anchor_portal.len() == 11,
                         },

@@ -10,7 +10,7 @@
 <header><a class="brand" href="/" aria-label="Spatial Harness home"><span class="brand-mark">⌘</span> spatial<span class="brand-light">harness</span></a><div class="breadcrumb">Workspace <span>/</span> Home Server</div><div class="connection"><i></i><span id="connection">Connecting</span></div></header>
 <div class="shell">
 <aside>
-<div class="eyebrow">CANONICAL MAP</div><h1>Home Server<span class="title-dot">.</span></h1><p class="intro">A shared understanding<br>of the space around us.</p>
+<h1>Home Server<span class="title-dot">.</span></h1>
 <label class="map-label" for="map-select">SCENEGRAPH</label><select id="map-select"><optgroup label="Local"><option value="demo">Home Server</option></optgroup></select>
 <label class="map-label" for="sensor-select">WATCH SENSOR</label><select id="sensor-select"><option value="">None</option></select><small id="sensor-catalog-status" role="status">Looking for camera feeds…</small>
 <div class="network-status"><strong id="p2p-status">P2P status</strong><small id="p2p-detail">Checking peer…</small><a id="pairing-download" href="/api/home-connection" download="home-connection.json" hidden>Download runner connection ↗</a></div>
@@ -52,7 +52,6 @@
 </section>
 <div class="stats"><div><span>OCCUPIED VOXELS</span><strong id="voxel-count">0</strong><small>10 cm resolution</small></div><div><span>OBSERVATIONS</span><strong id="observation-count">0</strong><small>Integrated across peers</small></div><div><span>SEMANTIC OBJECTS</span><strong id="object-count">0</strong><small>Positioned by raycast</small></div><div><span>MAP AUTHORITY</span><strong class="authority"><span id="map-authority">Home Server</span> <i>●</i></strong><small>Persisted by map owner</small></div></div>
 <section class="flow"><div class="flow-heading"><span class="eyebrow">FROM PIXELS TO PLACE</span><span class="subtle">First working slice</span></div><div class="flow-steps"><div><span class="step">01</span><div><strong>Observe</strong><p>Shared measured observations</p></div></div><span class="arrow">→</span><div><span class="step">02</span><div><strong>Build</strong><p>Independent Home and runner maps</p></div></div><span class="arrow">→</span><div><span class="step">03</span><div><strong>Understand</strong><p>A screen detection gets a 3D position</p></div></div></div></section>
-<footer class="main-footer"><span>SPATIAL HARNESS · HOME PROTOTYPE</span><span id="updated">Waiting for scene</span></footer>
 </main>
 </div>
 <dialog id="label-dialog" aria-labelledby="label-dialog-title">

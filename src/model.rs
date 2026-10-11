@@ -409,7 +409,7 @@ fn insert(map: &MapComponent, anchor: QrAnchor) -> Result<()> {
 fn map_definition(id: &str, frame: &str) -> MapDefinition {
     MapDefinition {
         map_id: id.into(),
-        name: Some(id.into()),
+        name: Some(if id == "home" && frame == FRAME { crate::environments::reference_name().into() } else { id.into() }),
         domain_reference: (frame == FRAME).then(|| crate::domain_portals::DOMAIN.into()),
         frame: MapFrame::in_convention(
             frame,

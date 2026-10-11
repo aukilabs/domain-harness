@@ -1,5 +1,7 @@
 //! Manually supplied dimensions only. Codes are kept exactly as supplied; this
 //! registry does not invent UUIDs, placements, or contact portal infrastructure.
+//! The user confirmed that their supplied Portal sizes always refer to the
+//! encoded square itself, excluding the white border (Xmart and NACS).
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, path::Path};

@@ -19,8 +19,13 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 
 pub const FAMILY: &str = "galbot-local";
+pub const BRACKETBOT_FAMILY: &str = "bracketbot-local";
+pub fn is_local_family(id: &str) -> bool {
+    matches!(id, FAMILY | BRACKETBOT_FAMILY)
+}
 pub fn is_local_frame(id: &str) -> bool {
     id.strip_prefix("galbot-local:")
+        .or_else(|| id.strip_prefix("bracketbot-local:"))
         .or_else(|| id.strip_prefix("simulator-local:"))
         .or_else(|| id.strip_prefix("home-live:"))
         .and_then(|s| s.strip_suffix(":zup").or_else(|| s.strip_suffix(":opengl")))
@@ -54,6 +59,14 @@ pub struct CameraSample {
 pub enum SensorEvent {
     Odometry {
         timestamp_ns: u64,
+        pose: Pose,
+    },
+    TrackingLost {
+        timestamp_ns: u64,
+    },
+    MapCorrection {
+        timestamp_ns: u64,
+        pgo_count: i64,
         pose: Pose,
     },
     Camera {
@@ -169,6 +182,25 @@ pub fn canonical_origin(
         }),
     })
 }
+#[derive(Default)]
+struct CameraChannel {
+    scan_status: Value,
+    exported: bool,
+    component: Option<Component>,
+    output: Option<ConfiguredObservable<VideoFrame>>,
+    capture: Option<BufferProductCapture<VideoFrame>>,
+    calibration: Option<auki_qr_localizer::Calibration>,
+    key: Option<String>,
+}
+#[derive(Default, Serialize)]
+struct ScanDiagnostics {
+    received: u64,
+    pose_matched: u64,
+    expired_without_pose: u64,
+    pending_overflow: u64,
+    discarded_on_tracking_loss: u64,
+    latest_received_timestamp_ns: Option<u64>,
+}
 pub struct LocalMap {
     pub frame: String,
 
@@ -191,11 +223,11 @@ pub struct LocalMap {
     camera_source: ConfiguredObservable<SensorEvent>,
     lidar_capture: BufferProductCapture<SensorEvent>,
     camera_source_capture: BufferProductCapture<SensorEvent>,
-    camera_component: Option<Component>,
-    camera_output: Option<ConfiguredObservable<VideoFrame>>,
-    camera_capture: Option<BufferProductCapture<VideoFrame>>,
-    camera_calibration: Option<auki_qr_localizer::Calibration>,
-    camera_key: Option<String>,
+    right_source: Option<(
+        ConfiguredObservable<SensorEvent>,
+        BufferProductCapture<SensorEvent>,
+    )>,
+    cameras: BTreeMap<String, CameraChannel>,
     pub ar_frame: Option<crate::ar_preview::Frame>,
     detector: auki_qr_detector::QrDetector,
     processor: Component,
@@ -212,21 +244,53 @@ pub struct LocalMap {
     evidence: BTreeMap<String, Value>,
     pending: Vec<Observation<SensorEvent>>,
     pub latest_pose: Option<(u64, Pose)>,
+    correction: Option<(u64, i64)>,
+    scan_diagnostics: ScanDiagnostics,
+    last_integration: Option<std::time::Instant>,
     last_lidar_calibration: Option<Pose>,
 }
 impl LocalMap {
     pub fn new(runtime: &ComponentRuntime, owner: &str, session: &str) -> Result<Self> {
+        let camera_frame = std::env::var("SPATIAL_MAPPING_CAMERA_FRAME")
+            .unwrap_or_else(|_| crate::rgbd::FRAME.into());
+        Self::new_for_robot(
+            runtime,
+            owner,
+            session,
+            FAMILY,
+            &camera_frame,
+            serde_json::from_str(include_str!("../config/portals.json"))?,
+        )
+    }
+    pub fn new_for_robot(
+        runtime: &ComponentRuntime,
+        owner: &str,
+        session: &str,
+        family: &str,
+        camera_frame: &str,
+        sizes: crate::portal_sizes::PortalSizes,
+    ) -> Result<Self> {
+        ensure!(is_local_family(family), "unknown robot map family");
         let clock = crate::model::clock_ref(&crate::model::clock_entry(owner, session));
-        let frame = format!("galbot-local:{session}:zup");
+        let frame = format!("{family}:{session}:zup");
+        let body_frame = |id: &str| {
+            if family == BRACKETBOT_FAMILY {
+                FrameRegistryEntry::in_convention(
+                    owner,
+                    id,
+                    auki_registry::CoordinateConvention::ZUpRightForward,
+                )
+            } else {
+                FrameRegistryEntry::ros_body(owner, id)
+            }
+        };
         let contract = PoseContract {
-            from_frame: FrameRegistryEntry::ros_body(owner, "robot.base"),
-            to_frame: FrameRegistryEntry::ros_body(owner, format!("robot.odometry.{session}")),
+            from_frame: body_frame("robot.base"),
+            to_frame: body_frame(&format!("robot.odometry.{session}")),
             clock: clock.clone(),
             session_id: session.into(),
         };
-        let camera_frame = std::env::var("SPATIAL_MAPPING_CAMERA_FRAME")
-            .unwrap_or_else(|_| crate::rgbd::FRAME.into());
-        Self::with_contract(
+        let mut map = Self::with_contract(
             runtime,
             owner,
             session,
@@ -236,7 +300,18 @@ impl LocalMap {
             false,
             None,
             FrameRegistryEntry::ros_optical(owner, camera_frame),
-        )
+        )?;
+        map.set_portal_sizes(sizes)?;
+        Ok(map)
+    }
+    pub fn set_portal_sizes(&mut self, sizes: crate::portal_sizes::PortalSizes) -> Result<()> {
+        sizes.validate()?;
+        ensure!(
+            self.origin.is_none() && self.evidence.is_empty(),
+            "cannot replace sizes after mapping starts"
+        );
+        self.sizes = sizes;
+        Ok(())
     }
     /// Home computes its own map from original, authenticated sensor observations.
     pub fn from_runner(
@@ -327,11 +402,13 @@ impl LocalMap {
             access: vec![ObservationAccess::FollowNew],
             exposure: Exposure::Cluster,
         };
-        let source_component = runtime.component(
-            ComponentSpec::new("local-sensor-source")
-                .observable(contract_for("lidar"))
-                .observable(contract_for("camera")),
-        )?;
+        let mut source_spec = ComponentSpec::new("local-sensor-source")
+            .observable(contract_for("lidar"))
+            .observable(contract_for("camera"));
+        if camera_frame.frame_id == crate::rgbd::BRACKETBOT_FRAME {
+            source_spec = source_spec.observable(contract_for("camera_right"));
+        }
+        let source_component = runtime.component(source_spec)?;
         let output_for = |name: &str, frame: FrameRegistryEntry| -> Result<_> {
             Ok(source_component.configured_observable(
                 ConfiguredObservableSpec::new(
@@ -354,8 +431,27 @@ impl LocalMap {
             FrameRegistryEntry::ros_body(owner, "lidar_base_link"),
         )?;
         let camera_source = output_for("camera", camera_frame.clone())?;
-        source_component.expose()?;
         let size = |s: &SensorEvent| serde_json::to_vec(s).map_or(usize::MAX, |s| s.len());
+        let right_output = if camera_frame.frame_id == crate::rgbd::BRACKETBOT_FRAME {
+            Some(output_for(
+                "camera_right",
+                FrameRegistryEntry::ros_optical(owner, crate::rgbd::BRACKETBOT_RIGHT_FRAME),
+            )?)
+        } else {
+            None
+        };
+        source_component.expose()?;
+        let right_source = if let Some(output) = right_output {
+            let capture = runtime.capture_buffer(
+                "local-camera-right-observations",
+                &output,
+                BufferLimits::entries(3),
+                size,
+            )?;
+            Some((output, capture))
+        } else {
+            None
+        };
         let lidar_capture = runtime.capture_buffer(
             "local-lidar-history",
             &lidar_output,
@@ -381,7 +477,7 @@ impl LocalMap {
                         if portal_origin {
                             "Home observed portal map"
                         } else {
-                            "Galbot observed local map"
+                            "Robot observed local map"
                         }
                         .into(),
                     ),
@@ -455,11 +551,8 @@ impl LocalMap {
             camera_source,
             lidar_capture,
             camera_source_capture,
-            camera_component: None,
-            camera_output: None,
-            camera_capture: None,
-            camera_calibration: None,
-            camera_key: None,
+            right_source,
+            cameras: BTreeMap::new(),
             ar_frame: None,
             detector: auki_qr_detector::QrDetector::new(Default::default()),
             processor,
@@ -476,6 +569,9 @@ impl LocalMap {
             evidence: BTreeMap::new(),
             pending: vec![],
             latest_pose: None,
+            correction: None,
+            scan_diagnostics: Default::default(),
+            last_integration: None,
             last_lidar_calibration: None,
         })
     }
@@ -506,38 +602,55 @@ impl LocalMap {
         endpoint.export_product(&self.history.product())?;
         endpoint.export_product(&self.lidar_capture.product())?;
         endpoint.export_product(&self.camera_source_capture.product())?;
+        if let Some((_, capture)) = &self.right_source {
+            endpoint.export_product(&capture.product())?;
+        }
         endpoint.export_product(&self.map.product())?;
         endpoint.export_product(&self.landmark_capture.product())?;
         Ok(())
     }
     pub fn export_camera_preview(
-        &self,
+        &mut self,
         endpoint: &auki_component_protocol::ComponentProtocolEndpoint,
     ) -> Result<bool> {
-        if let Some(capture) = &self.camera_capture {
-            endpoint.export_product(&capture.product())?;
-            Ok(true)
-        } else {
-            Ok(false)
+        for channel in self.cameras.values_mut() {
+            if !channel.exported
+                && let Some(capture) = &channel.capture
+            {
+                endpoint.export_product(&capture.product())?;
+                channel.exported = true;
+            }
         }
+        Ok(!self.cameras.is_empty())
     }
     pub fn portals(&self) -> Result<MapSnapshot> {
-        Ok((*self
+        let mut snapshot = (*self
             .map
             .product()
             .latest_existing()?
             .ok_or_else(|| anyhow!("map snapshot missing"))?
             .payload)
-            .clone())
+            .clone();
+        // The SDK store retains historical observations. The published scene
+        // is the active mapping epoch, excluding invalidated placements until
+        // they are measured again in the corrected trajectory.
+        if self.correction.is_some() {
+            snapshot.scenegraph.anchors.retain(|id, _| self.evidence.contains_key(id));
+            snapshot = MapSnapshot::new(snapshot.scenegraph)?;
+        }
+        Ok(snapshot)
     }
     pub fn accept_home(&mut self, scene: crate::network::CanonicalScene) -> Result<()> {
+        self.accept_home_portals(scene.portals, scene.authority_peer_id)
+    }
+    pub fn accept_home_portals(&mut self, portals: MapSnapshot, peer_id: String) -> Result<()> {
         let observed = self.portals()?;
         let anchor = self
-            .latest_shared_portal(&scene.portals)
+            .latest_shared_portal(&portals)
             .ok_or_else(|| anyhow!("No observed portal is known to Home"))?;
         let home = crate::home_alignment::HomePortals {
-            portals: scene.portals,
-            peer_id: scene.authority_peer_id,
+            portals,
+            peer_id,
 
             anchor,
         };
@@ -554,12 +667,28 @@ impl LocalMap {
             .map(|(_, id)| id.clone())
     }
     pub fn metadata(&self) -> Value {
-        json!({"local_mapping":{"status":if self.origin.is_some(){"mapping"}else{"waiting_for_odometry"},"detail":self.detail,"origin":self.origin,
+        json!({"local_mapping":{"status":if self.latest_pose.is_some(){"mapping"}else{"waiting_for_odometry"},"detail":self.detail,"origin":self.origin,
+            "scan_progress":self.scan_progress(),
+            "map_correction":self.correction.map(|(t,n)|json!({"capture_timestamp_ns":t,"pgo_count":n,"policy":"invalidate_geometry_and_alignment_in_place"})),
             "voxel_policy":{"kind":"latest_observations_per_cell","window":3,"free_space":"SDK measured rays only","unseen_cells":"retained"},"alignment_to_home":null,"portal_poses":"observed","portal_color":"blue","portal_axes":"+X printed right; +Y printed top; +Z out of marker",
-            "observed_portals":self.evidence,"robot_pose":self.latest_pose.as_ref().map(|(t,p)|json!({"capture_timestamp_ns":t,"clock":self.clock,"pose":p,"frame":self.frame}))},
+            "observed_portals":self.evidence,
+            "camera_scans":self.cameras.iter().map(|(frame,c)| (frame.clone(), c.scan_status.clone())).collect::<BTreeMap<_,_>>(),
+            "robot_pose":self.latest_pose.as_ref().map(|(t,p)|json!({"capture_timestamp_ns":t,"clock":self.clock,"pose":p,"from_frame":self.contract.from_frame,"frame":self.frame}))},
             "landmark_components":[crate::landmarks::ComponentCapabilities { component: self.processor.reference().clone(), landmark_types: Some(vec![crate::landmarks::PORTAL.into()]) }],
             "landmark_observations":self.landmark_capture.product().reference(),
             "frames":[self.contract.from_frame,self.contract.to_frame],"clocks":[crate::model::clock_entry(&self.sensor_owner,&self.contract.session_id)]})
+    }
+    pub fn scan_progress(&self) -> Value {
+        let age = self.last_integration.map(|t| t.elapsed().as_millis() as u64);
+        json!({
+            "status": if self.latest_pose.is_none() { "tracking_unavailable" }
+                else if age.is_none() { "waiting_for_first_scan" }
+                else if age.is_some_and(|ms| ms > 3000) { "stalled" } else { "integrating" },
+            "integrated_observations": self.voxels.as_ref().map_or(0, |v| v.integrated_observations),
+            "last_integrated_timestamp_ns": self.voxels.as_ref().and_then(|v| v.latest_observation.as_ref()).map(|o| o.timestamp_ns),
+            "last_integration_age_ms": age,
+            "pending": self.pending.len(), "diagnostics": self.scan_diagnostics
+        })
     }
     pub fn landmarks(&self, portals: &MapSnapshot) -> Result<crate::landmarks::Landmarks> {
         crate::landmarks::portal_map(
@@ -573,7 +702,42 @@ impl LocalMap {
     }
     pub fn accept(&mut self, event: SensorEvent) -> Result<()> {
         match event {
+            SensorEvent::MapCorrection { timestamp_ns, pgo_count, pose } => {
+                pose.validate()?;
+                ensure!(timestamp_ns > 0 && self.correction.is_none_or(|(t,_)| timestamp_ns > t), "out-of-order map correction");
+                self.pending.clear();
+                self.localized_scans.clear();
+                self.evidence.clear();
+                self.home_portals = None;
+                self.ar_frame = None;
+                self.recent_voxels = Default::default();
+                self.last_integration = None;
+                self.correction = Some((timestamp_ns, pgo_count));
+                for channel in self.cameras.values_mut() { channel.scan_status = json!({"status":"awaiting_corrected_scan"}); }
+                if let Some(saved) = &mut self.voxels {
+                    saved.checkpoint = auki_datatypes::map::MapUpdate {
+                        voxel_chunks: vec![],
+                        checkpoint: Some(Default::default()),
+                    }.encode_to_vec();
+                    saved.integrated_observations = 0;
+                    saved.latest_observation = None;
+                }
+                // Explicit lost bracket prevents interpolation across the jump.
+                self.odometry.publish(timestamp_ns-1, Tracking::Lost)?;
+                self.accept(SensorEvent::Odometry { timestamp_ns, pose })?;
+                self.detail = format!("SLAM correction {pgo_count} · local geometry invalidated; connection retained");
+            }
+            SensorEvent::TrackingLost { timestamp_ns } => {
+                self.odometry.publish(timestamp_ns, Tracking::Lost)?;
+                self.latest_pose = None;
+                self.scan_diagnostics.discarded_on_tracking_loss += self.pending.len() as u64;
+                self.pending.clear();
+                self.detail = "Tracking lost · mapping paused".into();
+            }
             SensorEvent::Odometry { timestamp_ns, pose } => {
+                if self.correction.is_some_and(|(boundary, _)| timestamp_ns < boundary) {
+                    return Ok(());
+                }
                 pose.validate()?;
                 self.odometry
                     .publish(timestamp_ns, Tracking::Valid { pose: pose.clone() })?;
@@ -594,7 +758,19 @@ impl LocalMap {
                     SensorEvent::Lidar { timestamp_ns, .. } => *timestamp_ns,
                     _ => unreachable!(),
                 };
-                let output = if matches!(&event, SensorEvent::Camera { .. }) {
+                if self.correction.is_some_and(|(boundary, _)| t < boundary) {
+                    return Ok(());
+                }
+                self.scan_diagnostics.received += 1;
+                self.scan_diagnostics.latest_received_timestamp_ns = Some(t);
+                let right = matches!(&event, SensorEvent::Camera { sample } if sample.calibration.sensor_frame == crate::rgbd::BRACKETBOT_RIGHT_FRAME);
+                let output = if right {
+                    &self
+                        .right_source
+                        .as_ref()
+                        .ok_or_else(|| anyhow!("right camera not configured"))?
+                        .0
+                } else if matches!(&event, SensorEvent::Camera { .. }) {
                     &self.camera_source
                 } else {
                     &self.lidar_output
@@ -605,7 +781,14 @@ impl LocalMap {
                         && self.camera_source_capture.errors().is_empty(),
                     "sensor retention failed"
                 );
+                ensure!(
+                    self.right_source
+                        .as_ref()
+                        .is_none_or(|(_, c)| c.errors().is_empty()),
+                    "right camera retention failed"
+                );
                 if self.pending.len() >= 8 {
+                    self.scan_diagnostics.pending_overflow += 1;
                     self.pending.remove(0);
                 }
                 self.pending.push(o);
@@ -669,6 +852,9 @@ impl LocalMap {
         }
     }
     fn at(&self, t: u64) -> Result<Option<Pose>> {
+        if self.correction.is_some_and(|(boundary, _)| t < boundary) {
+            return Ok(None);
+        }
         match pose_at(
             &self.history.product(),
             &PoseQuery {
@@ -702,9 +888,12 @@ impl LocalMap {
                     .is_none_or(|last| last.timestamp_ns < t + 2_000_000_000)
                 {
                     self.pending.push(o);
+                } else {
+                    self.scan_diagnostics.expired_without_pose += 1;
                 }
                 continue;
             };
+            self.scan_diagnostics.pose_matched += 1;
             match &*o.payload {
                 SensorEvent::Camera { sample } => self.camera(sample, &base, o.sequence)?,
                 SensorEvent::Lidar {
@@ -775,6 +964,25 @@ impl LocalMap {
     }
     fn camera(&mut self, s: &CameraSample, base: &Pose, sequence: u64) -> Result<()> {
         ensure!(
+            s.calibration.sensor_frame == self.camera_frame
+                || (self.camera_frame == crate::rgbd::BRACKETBOT_FRAME
+                    && s.calibration.sensor_frame == crate::rgbd::BRACKETBOT_RIGHT_FRAME),
+            "unexpected camera frame"
+        );
+        let frame = s.calibration.sensor_frame.clone();
+        let mut channel = self.cameras.remove(&frame).unwrap_or_default();
+        let result = self.camera_in_channel(s, base, sequence, &mut channel);
+        self.cameras.insert(frame, channel);
+        result
+    }
+    fn camera_in_channel(
+        &mut self,
+        s: &CameraSample,
+        base: &Pose,
+        sequence: u64,
+        channel: &mut CameraChannel,
+    ) -> Result<()> {
+        ensure!(
             s.timestamp_ns == s.rgb_timestamp_ns && s.timestamp_ns == s.transform_timestamp_ns,
             "camera timestamp mismatch"
         );
@@ -790,9 +998,7 @@ impl LocalMap {
         }
         s.calibration.validate()?;
         ensure!(
-            s.calibration.sensor_frame == self.camera_frame
-                && (64..=4096).contains(&s.width)
-                && (64..=4096).contains(&s.height),
+            (64..=4096).contains(&s.width) && (64..=4096).contains(&s.height),
             "unexpected camera frame/shape"
         );
         let key = serde_json::to_string(&(
@@ -804,7 +1010,7 @@ impl LocalMap {
             s.cy,
             &s.calibration.calibration_source,
         ))?;
-        if let Some(previous) = &self.camera_key {
+        if let Some(previous) = &channel.key {
             ensure!(
                 previous == &key,
                 "camera intrinsics changed; new local session required"
@@ -815,18 +1021,21 @@ impl LocalMap {
             bytes.len() == s.width as usize * s.height as usize,
             "camera buffer size mismatch"
         );
-        if self.camera_output.is_none() {
-            let c = self
-                .runtime
-                .component(
-                    ComponentSpec::new("local-camera").observable(ObservableContract {
-                        name: "frames".into(),
-                        datatype: VideoFrame::DATATYPE.into(),
-                        schema: "auki.video-frame/v1".into(),
-                        access: vec![ObservationAccess::FollowNew],
-                        exposure: Exposure::Cluster,
-                    }),
-                )?;
+        if channel.output.is_none() {
+            let name = if s.calibration.sensor_frame == self.camera_frame {
+                "local-camera"
+            } else {
+                "local-camera-right"
+            };
+            let c = self.runtime.component(ComponentSpec::new(name).observable(
+                ObservableContract {
+                    name: "frames".into(),
+                    datatype: VideoFrame::DATATYPE.into(),
+                    schema: "auki.video-frame/v1".into(),
+                    access: vec![ObservationAccess::FollowNew],
+                    exposure: Exposure::Cluster,
+                },
+            ))?;
             let output = c.configured_observable(
                 ConfiguredObservableSpec::new(
                     "frames",
@@ -839,23 +1048,23 @@ impl LocalMap {
                         width: s.width,
                         height: s.height,
                         nominal_frame_rate_hz: Some(1),
-                        observes: format!("rectified {}", self.camera_frame),
+                        observes: format!("rectified {}", s.calibration.sensor_frame),
                     }),
                 )
                 .in_registered_frame(FrameRegistryEntry::ros_optical(
                     &self.owner,
-                    &self.camera_frame,
+                    &s.calibration.sensor_frame,
                 )),
             )?;
             c.expose()?;
             let capture = self.runtime.capture_buffer(
-                "local-camera-history",
+                &format!("{name}-history"),
                 &output,
                 BufferLimits::entries(2),
                 |f: &VideoFrame| f.bytes.len(),
             )?;
-            self.camera_calibration = Some(auki_qr_localizer::Calibration::for_product(
-                "wrist-rectified",
+            channel.calibration = Some(auki_qr_localizer::Calibration::for_product(
+                &s.calibration.sensor_frame,
                 &capture.product(),
                 auki_qr_localizer::Intrinsics {
                     fx: s.fx,
@@ -865,12 +1074,13 @@ impl LocalMap {
                     distortion: auki_qr_localizer::Distortion::None,
                 },
             )?);
-            self.camera_component = Some(c);
-            self.camera_output = Some(output);
-            self.camera_capture = Some(capture);
-            self.camera_key = Some(key);
+            channel.component = Some(c);
+            channel.output = Some(output);
+            channel.capture = Some(capture);
+            channel.key = Some(key);
         }
-        let (camera_observation, _) = self.camera_output.as_ref().unwrap().publish(
+        let camera_product = channel.capture.as_ref().unwrap().product().reference();
+        let (camera_observation, _) = channel.output.as_ref().unwrap().publish(
             s.timestamp_ns,
             Arc::new(VideoFrame {
                 width: s.width,
@@ -938,14 +1148,20 @@ impl LocalMap {
         };
         let camera_odom = compose(base, &s.calibration.sensor_to_base)?;
         let mut accepted = 0;
+        let decoded = detections.codes.len();
+        channel.scan_status = json!({"timestamp_ns":s.timestamp_ns,"decoded_qrs":decoded,
+            "mapped_portals":0,"rejections":[]});
         for code in detections.codes {
             if code.mirrored {
+                channel.scan_status["rejections"].as_array_mut().unwrap().push(json!("mirrored QR"));
                 continue;
             }
             let Some(short) = portal_code(&code.payload) else {
+                channel.scan_status["rejections"].as_array_mut().unwrap().push(json!("not a Portal payload"));
                 continue;
             };
             let Some(size) = self.sizes.encoded_size_m(short)? else {
+                channel.scan_status["rejections"].as_array_mut().unwrap().push(json!({"portal":short,"reason":"printed size unknown"}));
                 continue;
             };
             let snapshot = self.portals()?;
@@ -964,11 +1180,14 @@ impl LocalMap {
                 &snapshot.scenegraph.map,
                 &template,
                 corners,
-                self.camera_calibration.as_ref().unwrap(),
+                channel.calibration.as_ref().unwrap(),
                 Default::default(),
             ) {
                 Ok(e) => e,
-                Err(_) => continue,
+                Err(e) => {
+                    channel.scan_status["rejections"].as_array_mut().unwrap().push(json!({"portal":short,"reason":format!("localization: {e}")}));
+                    continue;
+                },
             };
             let marker_camera = inverse(&from_rigid(&estimate.camera_pose_in_map))?;
             if let Some(reference) = &self.canonical_reference
@@ -998,11 +1217,13 @@ impl LocalMap {
                     .as_ref()
                     .is_some_and(|required| required != short)
                 {
+                    channel.scan_status["rejections"].as_array_mut().unwrap().push(json!({"portal":short,"reason":"not the required origin Portal"}));
                     continue;
                 }
                 let measured_marker = compose(&camera_odom, &marker_camera)?;
                 self.origin = Some(if let Some(reference) = &self.canonical_reference {
                     let Some(anchor) = reference.scenegraph.anchors.get(short) else {
+                        channel.scan_status["rejections"].as_array_mut().unwrap().push(json!({"portal":short,"reason":"not in canonical reference"}));
                         continue;
                     };
                     ensure!(
@@ -1053,8 +1274,9 @@ impl LocalMap {
                 .and_then(|v| v["observations"].as_u64())
                 .unwrap_or(0)
                 + 1;
-            self.evidence.insert(short.into(),json!({"observations":n,"capture_timestamp_ns":s.timestamp_ns,"clock":self.clock,"camera_product":self.camera_reference(),"reprojection_rms_px":estimate.reprojection_rms_px,"latest_measured_pose":measured,"provenance":provenance}));
+            self.evidence.insert(short.into(),json!({"observations":n,"capture_timestamp_ns":s.timestamp_ns,"clock":self.clock,"camera_product":camera_product,"reprojection_rms_px":estimate.reprojection_rms_px,"latest_measured_pose":measured,"provenance":provenance}));
             accepted += 1;
+            channel.scan_status["mapped_portals"] = json!(accepted);
         }
         if let Some(home) = &self.home_portals
             && let Some(anchor) = self.latest_shared_portal(&home.portals)
@@ -1063,7 +1285,7 @@ impl LocalMap {
         }
         self.detail = if let Some(origin) = &self.origin {
             format!(
-                "{} · {accepted} portals observed in latest image",
+                "{} · {decoded} QRs decoded; {accepted} portals mapped in latest image",
                 origin.kind
             )
         } else {
@@ -1082,7 +1304,7 @@ impl LocalMap {
                     .is_some_and(|o| o.kind == "canonical_portals")
             {
                 self.ar_frame = Some(crate::ar_preview::Frame {
-                    source: self.camera_reference(),
+                    source: camera_product.clone(),
                     clock: self.clock.clone(),
                     timestamp_ns: s.timestamp_ns,
                     sequence,
@@ -1107,13 +1329,16 @@ impl LocalMap {
                     hit_colors_srgb: s.hit_colors_srgb.clone(),
                     calibration: s.calibration.clone(),
                 };
-                sample.validate_in_frame(&self.camera_frame)?;
+                sample.validate_in_frame(&s.calibration.sensor_frame)?;
                 self.integrate(
                     s.timestamp_ns,
                     sequence,
                     base,
                     &s.calibration.sensor_to_base,
-                    FrameRegistryEntry::ros_optical(&self.sensor_owner, &self.camera_frame),
+                    FrameRegistryEntry::ros_optical(
+                        &self.sensor_owner,
+                        &s.calibration.sensor_frame,
+                    ),
                     s.hit_points_m.clone(),
                     s.hit_colors_srgb.iter().copied().map(Some).collect(),
                 )?;
@@ -1170,7 +1395,11 @@ impl LocalMap {
             return Ok(());
         }
         let sensor_local = compose(&origin.odometry_to_local, &compose(base, sensor_base)?)?;
-        let source = if sensor_frame.frame_id == self.camera_frame {
+        let source = if sensor_frame.frame_id == crate::rgbd::BRACKETBOT_RIGHT_FRAME
+            && self.right_source.is_some()
+        {
+            self.right_source.as_ref().unwrap().1.product().reference()
+        } else if sensor_frame.frame_id == self.camera_frame {
             self.camera_reference()
         } else {
             self.lidar_reference()
@@ -1247,6 +1476,7 @@ impl LocalMap {
         saved.accumulator()?;
         self.voxels = Some(saved);
         self.recent_voxels = recent;
+        self.last_integration = Some(std::time::Instant::now());
 
         Ok(())
     }

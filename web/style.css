@@ -173,6 +173,8 @@ aside{display:block;padding:0;min-width:0;max-height:none;overflow:hidden;backgr
 .panel-body{padding:10px}
 .panel-body .intro,.panel-body .sidebar-footer,.panel-body .layer,.panel-body .section-label,.panel-body .peer{display:flex}
 .panel-body .sidebar-footer{display:block}
+/* Keep scene metadata available to the view logic without the reference-info block. */
+#panel-maps #mapping-card,#panel-maps #domain-info,#panel-maps .sidebar-footer{display:none}
 .panel-body .network-status,.portal-row{background:var(--panel-3)}
 .panel-row{display:block;width:100%;padding:9px 6px;border:0;border-bottom:1px solid var(--line-soft);background:transparent;color:var(--text-2);font-size:11px;text-align:left;overflow-wrap:anywhere}
 .panel-row:hover,.panel-row[aria-pressed="true"]{background:var(--accent-dim);color:var(--accent)}
@@ -220,7 +222,7 @@ aside{display:block;padding:0;min-width:0;max-height:none;overflow:hidden;backgr
 #label-dialog-text{height:auto;cursor:text}
 .panel-hint{white-space:pre-wrap}
 .layer input[type="range"]{width:75px}
-main{min-height:0;background:var(--app);grid-template-rows:minmax(0,1fr) auto}
+main{min-height:0;background:var(--app);grid-template-rows:minmax(0,1fr)}
 .page-heading,.stats{display:none}
 .viewport{background:var(--app)}
 .main-footer,.viewport-footer,.view-controls button,.empty,.selection{background:var(--panel);color:var(--muted)}
