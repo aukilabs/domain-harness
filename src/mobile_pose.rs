@@ -13,17 +13,22 @@ pub const COMPONENT: &str = "home-phone-presence";
 /// `SPATIAL_PHONE_NAMES` (default `data/phone-names.json`, `{"<peer id>": "<name>"}`).
 /// The entry `"*"` names every unlisted phone; otherwise a short peer suffix is used.
 static NAMES: std::sync::LazyLock<BTreeMap<String, String>> = std::sync::LazyLock::new(|| {
-    let path = std::env::var("SPATIAL_PHONE_NAMES").unwrap_or_else(|_| "data/phone-names.json".into());
+    let path =
+        std::env::var("SPATIAL_PHONE_NAMES").unwrap_or_else(|_| "data/phone-names.json".into());
     std::fs::read(path)
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default()
 });
 pub fn display_name(peer: &str) -> String {
-    NAMES.get(peer).or_else(|| NAMES.get("*")).cloned().unwrap_or_else(|| {
-        let tail = &peer[peer.len().saturating_sub(4)..];
-        format!("phone {tail}")
-    })
+    NAMES
+        .get(peer)
+        .or_else(|| NAMES.get("*"))
+        .cloned()
+        .unwrap_or_else(|| {
+            let tail = &peer[peer.len().saturating_sub(4)..];
+            format!("phone {tail}")
+        })
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -36,13 +41,25 @@ pub struct Sample {
 #[serde(deny_unknown_fields)]
 pub struct Update {
     pub sample: Option<Sample>,
+    /// `Some("asleep")` with no sample: the phone paused its camera and keeps
+    /// its last pose. Omitted otherwise, so live updates are unchanged on the wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+/// How long a sleeping phone stays listed without a fresh heartbeat.
+pub const ASLEEP_TTL: Duration = Duration::from_secs(15 * 60);
+#[derive(Clone, Copy, PartialEq)]
+enum State {
+    Live,
+    Asleep,
+    Withdrawn,
 }
 impl auki_components::ContractType for Update {
     const DATATYPE: &'static str = "spatial.phone-presence/v1";
 }
 #[derive(Default)]
 pub struct Presence {
-    entries: BTreeMap<String, (Sample, Instant, bool)>,
+    entries: BTreeMap<String, (Sample, Instant, State)>,
 }
 impl Presence {
     pub fn accept(&mut self, peer: &str, update: Update, now: Instant) -> Result<()> {
@@ -56,12 +73,23 @@ impl Presence {
         frame: &str,
     ) -> Result<()> {
         ensure!(!peer.is_empty(), "Missing phone identity");
+        ensure!(
+            matches!(update.status.as_deref(), None | Some("asleep")),
+            "Unknown phone status"
+        );
         let Some(sample) = update.sample else {
             if let Some(entry) = self.entries.get_mut(peer) {
-                entry.2 = false;
+                if update.status.is_some() {
+                    // Sleep keeps the last pose; each heartbeat refreshes it.
+                    entry.1 = now;
+                    entry.2 = State::Asleep;
+                } else {
+                    entry.2 = State::Withdrawn;
+                }
             }
             return Ok(());
         };
+        ensure!(update.status.is_none(), "A posed phone cannot be asleep");
         uuid::Uuid::parse_str(&sample.session)?;
         ensure!(
             sample.pose.to_frame_id == frame
@@ -89,17 +117,17 @@ impl Presence {
             self.entries.contains_key(peer) || self.entries.len() < 64,
             "Phone presence capacity reached"
         );
-        self.entries.insert(peer.into(), (sample, now, true));
+        self.entries.insert(peer.into(), (sample, now, State::Live));
         Ok(())
     }
     pub fn snapshot(&self, now: Instant) -> Value {
         self.snapshot_in_frame(now, FRAME)
     }
     pub fn snapshot_in_frame(&self, now: Instant, frame: &str) -> Value {
-        let poses: Vec<_> = self.entries.iter().filter(|(_, (_,received,active))| *active && now.duration_since(*received) < Duration::from_secs(3)).map(|(peer,(s,received,_))| {
+        let poses: Vec<_> = self.entries.iter().filter(|(_, (_,received,state))| now.duration_since(*received) < match state { State::Live => Duration::from_secs(3), State::Asleep => ASLEEP_TTL, State::Withdrawn => Duration::ZERO }).map(|(peer,(s,received,state))| {
             let mut clock = crate::model::clock_entry(peer, &s.session);
             clock.clock_id = "arkit-capture".into();
-            json!({"peer_id":peer,"name":display_name(peer),"pose":s.pose,"capture_timestamp_ns":s.timestamp_ns,"clock":clock,"received_age_ms":now.duration_since(*received).as_millis()})
+            json!({"peer_id":peer,"name":display_name(peer),"state":if *state == State::Asleep { "asleep" } else { "live" },"pose":s.pose,"capture_timestamp_ns":s.timestamp_ns,"clock":clock,"received_age_ms":now.duration_since(*received).as_millis()})
         }).collect();
         json!({"frame":frame,"poses":poses})
     }
@@ -126,7 +154,7 @@ pub fn append_labels_in_frame(view: &mut Value, registry: &Value, frame: &str) {
     for pose in poses {
         view["notes"].as_array_mut().unwrap().push(json!({
             "id":format!("phone-name:{}",pose["peer_id"].as_str().unwrap_or("")),
-            "text":pose["name"].as_str().unwrap_or("phone"), "position":pose["pose"]["translation"], "height_m":0,
+            "text":format!("{}{}", pose["name"].as_str().unwrap_or("phone"), if pose["state"] == "asleep" { " · asleep" } else { "" }), "position":pose["pose"]["translation"], "height_m":0,
             "phone_pose":pose
         }));
     }

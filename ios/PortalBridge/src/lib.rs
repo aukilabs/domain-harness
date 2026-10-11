@@ -262,6 +262,14 @@ pub unsafe extern "C" fn spatial_mobile_pose(value: *const c_char) {
     });
 }
 
+/// Report that the phone paused (1) or resumed (0) its camera.
+#[unsafe(no_mangle)]
+pub extern "C" fn spatial_mobile_sleep(asleep: i32) {
+    if let Some(client) = CLIENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        client.set_asleep(asleep != 0);
+    }
+}
+
 /// Replace the latest raw phone-local depth capture; null pauses sharing.
 /// # Safety
 /// A non-null pointer must be NUL-terminated UTF-8 valid for this call.

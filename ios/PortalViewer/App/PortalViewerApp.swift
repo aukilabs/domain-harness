@@ -2,6 +2,7 @@ import SwiftUI
 import ARKit
 import SceneKit
 import Vision
+import CoreMotion
 import UniformTypeIdentifiers
 
 @main
@@ -22,6 +23,18 @@ struct ViewerScreen: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             CameraView(controller: controller).ignoresSafeArea()
+            if controller.snoozed {
+                ZStack {
+                    Color.black.opacity(0.88)
+                    VStack(spacing: 10) {
+                        Image(systemName: "moon.zzz.fill").font(.system(size: 54))
+                        Text("Asleep").font(.title.bold())
+                        Text("Camera off. Pick up the phone or tap to wake.").font(.subheadline)
+                    }.foregroundStyle(.white)
+                }
+                .ignoresSafeArea()
+                .onTapGesture { controller.wake() }
+            }
             VStack(alignment: .leading, spacing: 12) {
                 Text(peer.profile?.sceneLabel ?? "Home Scene").font(.title2.bold())
                 Text(peer.detail).font(.subheadline.bold())
@@ -48,6 +61,7 @@ struct ViewerScreen: View {
             controller.onPose = { peer.publishPose($0) }
             controller.onDepth = { peer.publishDepth($0) }
             peer.onDisconnect = { controller.clear() }
+            controller.onSleep = { peer.setAsleep($0) }
             // A Portal seen before Home's map has arrived offers sign-in once.
             controller.onPortalSeen = { _ in
                 guard !peer.running, !connecting, !promptedForLogin else { return }
@@ -136,6 +150,13 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private var depthAlignment: DepthAlignment?
     var onPose: ((PhonePoseSample?) -> Void)?
     var onPortalSeen: ((String) -> Void)?
+    // A phone left lying flat and still pauses its camera and reports itself asleep.
+    static let sleepAfter: TimeInterval = 30
+    @Published private(set) var snoozed = false
+    var onSleep: ((Bool) -> Void)?
+    private var restReference: simd_quatf?
+    private var restSince: TimeInterval = 0
+    private let motion = CMMotionManager()
     private let poseSession = UUID().uuidString
     private var lastPosePublication: TimeInterval = 0
     @Published var placement: NotePlacement?
@@ -166,6 +187,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     func start() {
+        guard !snoozed else { return }
         guard ARWorldTrackingConfiguration.isSupported else {
             status = "AR requires a supported physical iPhone"; return
         }
@@ -432,6 +454,48 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         }
     }
 
+    /// Flat (screen up or down) and rotated less than about two degrees.
+    private func checkRest(_ frame: ARFrame) {
+        let transform = frame.camera.transform
+        let flat = abs(transform.columns.2.y) > 0.9
+        let orientation = simd_quatf(transform)
+        guard flat, let reference = restReference,
+              abs(simd_dot(reference.vector, orientation.vector)) > 0.99985 else {
+            restReference = flat ? orientation : nil
+            restSince = frame.timestamp
+            return
+        }
+        if frame.timestamp - restSince >= Self.sleepAfter { snooze() }
+    }
+
+    private func snooze() {
+        guard !snoozed else { return }
+        snoozed = true
+        // Report sleep before withdrawing the pose so Home keeps the last one.
+        onSleep?(true)
+        view.session.pause()
+        invalidate()
+        restReference = nil
+        status = "Asleep · camera off. Pick up the phone or tap to wake."
+        guard motion.isDeviceMotionAvailable else { return }
+        motion.deviceMotionUpdateInterval = 0.2
+        motion.startDeviceMotionUpdates(to: .main) { [weak self] sample, _ in
+            guard let sample else { return }
+            let a = sample.userAcceleration
+            let moved = (a.x * a.x + a.y * a.y + a.z * a.z).squareRoot() > 0.12
+            if abs(sample.gravity.z) < 0.8 || moved { self?.wake() }
+        }
+    }
+
+    func wake() {
+        guard snoozed else { return }
+        motion.stopDeviceMotionUpdates()
+        snoozed = false
+        onSleep?(false)
+        status = map == nil ? "Connect to Home to receive its scene" : "Awake. Scan a known Portal."
+        start()
+    }
+
     /// Before Home's map arrives: read Portal QR codes anyway so the user gets
     /// feedback and sign-in can start. No alignment is attempted here.
     private func scanBeforeMap(_ frame: ARFrame) {
@@ -455,6 +519,9 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
+        if snoozed { return }
+        checkRest(frame)
+        if snoozed { return }
         if map == nil { scanBeforeMap(frame); return }
         guard case .normal = frame.camera.trackingState else {
             if map != nil {
@@ -570,14 +637,16 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     func session(_ session: ARSession, cameraDidChangeTrackingState camera: ARCamera) {
+        if snoozed { return }
         if case .normal = camera.trackingState { return }
         invalidate()
         status = "Tracking limited. Move slowly, then scan a known Portal again."
     }
     func sessionWasInterrupted(_ session: ARSession) {
+        if snoozed { return }
         invalidate(); status = "AR interrupted. Rescan a Portal when the camera returns."
     }
-    func sessionInterruptionEnded(_ session: ARSession) { realign(); start() }
+    func sessionInterruptionEnded(_ session: ARSession) { if snoozed { return }; realign(); start() }
     func session(_ session: ARSession, didFailWithError error: Error) {
         invalidate(); status = error.localizedDescription
     }
