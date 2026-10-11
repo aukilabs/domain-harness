@@ -361,7 +361,7 @@ into a `drive.ctrl` twist and reports to `state/phone-drive.json`.
 Speeds are teleop's: 0.20 m/s forward and a 0.15 m/s wheel difference for turns,
 never above 0.28 m/s on a wheel, all halved unless `--drive-fast`. The robot stops
 when the stick is released (the phone sends explicit stops), when Home withholds a
-command older than one second, when the summed input age exceeds 400 ms, when Home
+command older than one second, when the summed input age exceeds one second, when Home
 is unreachable, on low battery, and finally by the base daemon's own 100 ms
 `drive.ctrl` timeout. The controller holds `drive.ctrl` only while a command is
 fresh and does not start if another program is driving, so manual teleop is not

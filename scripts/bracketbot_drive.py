@@ -12,9 +12,12 @@ import math
 MAX_FORWARD_MPS = 0.20
 MAX_TURN_WHEEL_MPS = 0.15
 MAX_WHEEL_MPS = 0.28
-# Total age budget: phone send interval, Home dwell, request round trip, the
-# runner's cache interval and this controller's own loop.
-MAX_INPUT_AGE_MS = 400
+# Total age budget: Home dwell, request round trip, the runner's cache interval
+# and this controller's own loop. Measured on robot 0184, one read from Home
+# takes 130-390 ms, so 400 ms discarded nearly every command. This bound only
+# governs a lost link: a released stick stops through explicit zero commands,
+# and at half speed one second is about 10 cm.
+MAX_INPUT_AGE_MS = 1000
 DEADZONE = 0.08
 STOP = (0.0, 0.0)
 
