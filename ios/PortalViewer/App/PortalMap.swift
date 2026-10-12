@@ -291,6 +291,8 @@ struct PortalReport: Encodable {
     let side_length_m: Float
     let portal_to_session: Portal.Pose
     let alignment: DepthAlignment
+    /// True moves a Portal the scene already has; left out, the Portal is new.
+    var replace: Bool? = nil
 }
 struct PhoneDepthSample: Encodable {
     let session: String

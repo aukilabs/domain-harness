@@ -419,6 +419,7 @@ impl MobileClient {
                 let portal_work = async {
                     while let Some(report) = portal_reports.recv().await {
                         let code = report.code.clone();
+                        let (done, doing) = if report.replace { ("moved in", "moved") } else { ("added to", "added") };
                         let result = tokio::time::timeout(
                             Duration::from_secs(4),
                             operations.invoke::<_, bool>(
@@ -429,10 +430,10 @@ impl MobileClient {
                         )
                         .await;
                         self.local_status(match result {
-                            Ok(Ok(true)) => format!("Portal {code} added to Home's scene"),
-                            Ok(Ok(false)) => format!("Home did not add Portal {code}"),
-                            Ok(Err(error)) => format!("Portal {code} not added: {error}"),
-                            Err(_) => format!("Portal {code} not added: Home did not answer"),
+                            Ok(Ok(true)) => format!("Portal {code} {done} Home's scene"),
+                            Ok(Ok(false)) => format!("Home refused Portal {code}"),
+                            Ok(Err(error)) => format!("Portal {code} not {doing}: {error}"),
+                            Err(_) => format!("Portal {code} not {doing}: Home did not answer"),
                         });
                     }
                 };

@@ -1112,6 +1112,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     /// A Portal missing from the scene, measured while aligned, is offered to Home.
     var onNewPortal: ((PortalReport) -> Bool)?
     private var portalCandidates = [String: (position: SIMD3<Float>, time: TimeInterval)]()
+    /// The alignment as it stood when each target was last read, to measure a moved target from another one.
+    private var alignedThrough = [String: (homeInAR: simd_float4x4, time: TimeInterval)]()
     private var portalReported = [String: TimeInterval]()
     @Published private(set) var miniMap = MiniMapData()
     @Published private(set) var miniPhone: MiniMapPhone?
@@ -1525,6 +1527,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         onPose?(nil)
         onDepth?(nil)
         depthAlignment = nil
+        alignedThrough = [:]
         depthStatus = shareDepth ? "Scan a Portal to share depth" : "Depth sharing off"
         generation += 1; aligned = false; cooldown.reset(); root.isHidden = true
         alignment.reset()
@@ -1595,7 +1598,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             request.symbologies = [.qr]
             try? VNImageRequestHandler(cvPixelBuffer: image, orientation: .up).perform([request])
             let imageWidth = Float(CVPixelBufferGetWidth(image)), imageHeight = Float(CVPixelBufferGetHeight(image))
-            let codes = (request.results ?? []).map { code -> (String?, [CGPoint], simd_float4x4?) in
+            let codes = (request.results ?? []).map { code -> (String?, [CGPoint], simd_float4x4?, [SIMD2<Float>]) in
                 let raw = [code.topLeft, code.topRight, code.bottomRight, code.bottomLeft]
                 let corners = raw.map { p -> CGPoint in
                     // Vision: origin bottom-left. ARKit image space: origin top-left.
@@ -1605,10 +1608,10 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 // Pose at the assumed size, in case this is a Portal the scene lacks.
                 let pixels = raw.map { SIMD2(Float($0.x) * imageWidth, (1 - Float($0.y)) * imageHeight) }
                 let pose = PortalPose.estimate(corners: pixels, side: PortalReport.assumedSide, intrinsics: frame.camera.intrinsics)
-                return (code.payloadStringValue, corners, pose.map { frame.camera.transform * $0 })
+                return (code.payloadStringValue, corners, pose.map { frame.camera.transform * $0 }, pixels)
             }
             DispatchQueue.main.async {
-                guard let (payload, corners, portalInAR) = codes.first(where: { $0.0.flatMap(PortalMap.portalCode) != nil }) ?? codes.first else {
+                guard let (payload, corners, portalInAR, pixels) = codes.first(where: { $0.0.flatMap(PortalMap.portalCode) != nil }) ?? codes.first else {
                     UINotificationFeedbackGenerator().notificationOccurred(.warning)
                     self.showToast("No QR code in view. Get the whole code in frame and hold still.", good: false)
                     return
@@ -1645,20 +1648,66 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 }
                 self.showOutline(corners, good: true)
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
-                self.showToast("Portal \(code) found. Aligning…", good: true)
-                // Scan again on the very next frame, ignoring the cooldown.
-                self.cooldown.reset(); self.lastAttempt = 0
+                // A target the scene knows: trust Home's record of it, or correct that record.
+                let sheet = UIAlertController(title: "Target \(code)", message: nil, preferredStyle: .actionSheet)
+                sheet.addAction(UIAlertAction(title: "Align to this target", style: .default) { _ in
+                    self.showToast("Portal \(code) found. Aligning…", good: true)
+                    // Scan again on the very next frame, ignoring the cooldown.
+                    self.cooldown.reset(); self.lastAttempt = 0
+                })
+                sheet.addAction(UIAlertAction(title: "Edit target: it has moved to here", style: .destructive) { _ in
+                    self.moveTarget(code, pixels: pixels, frame: frame)
+                })
+                sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+                self.view.window?.rootViewController?.present(sheet, animated: true)
             }
+        }
+    }
+
+    /// Someone moved a printed target. Tell Home where it is now, measured from this
+    /// phone's alignment through a different target, which must not have moved.
+    private func moveTarget(_ code: String, pixels: [SIMD2<Float>], frame: ARFrame) {
+        guard let map, let anchor = map.scenegraph.anchors[code] else { return }
+        let home = map.scenegraph.map.frame.id
+        guard !home.hasSuffix(":portal-" + code) else {
+            showToast("Target \(code) is this scene's origin, so it stays put. Move the other targets to match it.", good: false)
+            return
+        }
+        guard let (via, reference) = alignedThrough.filter({ $0.key != code }).max(by: { $0.value.time < $1.value.time }),
+              let known = map.scenegraph.anchors[via] else {
+            showToast("Scan a target that has not moved first, then long-press \(code) again.", good: false)
+            return
+        }
+        guard let seen = PortalPose.estimate(corners: pixels, side: anchor.side_length_m, intrinsics: frame.camera.intrinsics) else {
+            showToast("Can't measure target \(code) from here. Face it more directly.", good: false)
+            return
+        }
+        let portalInAR = frame.camera.transform * seen
+        let session = "phone-ar:\(poseSession)"
+        let alignment = DepthAlignment(timestamp_ns: UInt64(reference.time * 1_000_000_000), portal_id: via,
+            portal_to_session: .transform(reference.homeInAR * known.pose_in_map.matrix, from: known.pose_in_map.from_frame_id, to: session),
+            session_to_home: .transform(reference.homeInAR.inverse, from: session, to: home))
+        let report = PortalReport(session: poseSession, timestamp_ns: UInt64(max(frame.timestamp, reference.time) * 1_000_000_000),
+            code: code, side_length_m: anchor.side_length_m,
+            portal_to_session: .transform(portalInAR, from: anchor.pose_in_map.from_frame_id, to: session),
+            alignment: alignment, replace: true)
+        let now = reference.homeInAR.inverse * portalInAR
+        let distance = simd_distance(now.columns.3, anchor.pose_in_map.matrix.columns.3)
+        if onNewPortal?(report) == true {
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            showToast(String(format: "Moving target \(code) %.2f m, measured from \(via)…", distance), good: true)
+        } else {
+            showToast("Home is not connected, so target \(code) was not moved.", good: false)
         }
     }
 
     /// Report an unknown Portal once two measurements a moment apart agree, so
     /// one noisy read cannot place it. Needs an alignment from a known Portal.
     func showPortalResult(_ text: String) {
-        let good = text.contains("added to Home")
+        let good = text.contains("added to Home") || text.contains("moved in Home")
         UINotificationFeedbackGenerator().notificationOccurred(good ? .success : .error)
         // An older Home has no such operation; say so plainly.
-        showToast(good ? text : text + ". This Home may not support adding Portals yet.", good: good)
+        showToast(good || !text.contains("did not answer") ? text : text + ". This Home may not support this yet.", good: good)
     }
 
     private func offerNewPortal(_ code: String, portalInAR: simd_float4x4, at time: TimeInterval, confirmed: Bool = false) {
@@ -1871,6 +1920,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 // Portal's pose in the session, so report the Portal where the fused
                 // alignment places it, not where this single read did.
                 let sessionFrame = "phone-ar:\(self.poseSession)"
+                self.alignedThrough[id] = (transform, frame.timestamp)
                 self.depthAlignment = DepthAlignment(timestamp_ns: UInt64(frame.timestamp * 1_000_000_000), portal_id: id,
                     portal_to_session: .transform(transform * portal.pose_in_map.matrix, from: portal.pose_in_map.from_frame_id, to: sessionFrame),
                     session_to_home: .transform(transform.inverse, from: sessionFrame, to: map.scenegraph.map.frame.id))
