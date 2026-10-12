@@ -234,6 +234,8 @@ aside{display:block;padding:0;min-width:0;max-height:none;overflow:hidden;backgr
 #photo-dialog::backdrop{background:#000a}
 #photo-dialog>img{display:block;max-width:80vw;max-height:72dvh;object-fit:contain}
 .note-form input[type="file"]{font-size:10px;max-width:100%}
+#fleet-sensors form{display:flex;gap:6px;align-items:center;margin:6px 0}
+#fleet-sensors form input{flex:1;min-width:0;width:auto;height:auto;padding:5px 7px;border:1px solid var(--line);border-radius:3px;color:var(--text);background:var(--panel-3);font:inherit;cursor:text}
 .fiducial-form{padding-bottom:12px;border-bottom:1px solid var(--line)}
 .fiducial-form .primary{justify-content:center;margin-top:4px}
 .fiducial-basis{margin:-4px 0 10px}

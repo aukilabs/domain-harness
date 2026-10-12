@@ -87,6 +87,13 @@ pub async fn fetch(peer: &AukiPeer, id: PeerId, configured: &[String]) -> Value 
     }
 }
 
+/// A Domain can hold peers that are not part of this system at all. One that
+/// does not advertise the Catalog protocol has nothing Devices could show, so
+/// it is listed only if it actually connects.
+pub fn serves_catalog(protocols: &[String]) -> bool {
+    protocols.iter().any(|p| p == CATALOG_PROTOCOL_ID)
+}
+
 pub fn device_rows(peer: &AukiPeer, catalogs: &Catalogs) -> Vec<Value> {
     let mut rows: BTreeMap<_, _> = peer
         .known_peers()
@@ -133,7 +140,7 @@ pub async fn monitor(
         };
         if let Ok(Ok(discovered)) = discovery {
             for p in discovered {
-                if p.peer_id() != peer.peer_id() {
+                if p.peer_id() != peer.peer_id() && serves_catalog(p.served_protocols()) {
                     candidates.insert(
                         p.peer_id(),
                         (p.routes().iter().map(ToString::to_string).collect(), true),
@@ -220,6 +227,19 @@ mod tests {
             failure
         );
         assert_eq!(refreshed(None, failure.clone(), None), failure);
+    }
+    #[test]
+    fn only_peers_advertising_a_catalog_are_listed_from_discovery() {
+        assert!(serves_catalog(&[
+            "/other/1.0.0".into(),
+            CATALOG_PROTOCOL_ID.into()
+        ]));
+        // What a peer running Auki's older protocol family advertises.
+        assert!(!serves_catalog(&[
+            "/auki/auth/1/message/0.1.0".into(),
+            "/auki/auth/1/stream/0.2.0".into()
+        ]));
+        assert!(!serves_catalog(&[]));
     }
     #[test]
     fn successful_refresh_immediately_replaces_or_removes_old_products() {
