@@ -4,63 +4,6 @@
 <dict>
 	<key>passes</key>
 	<dict>
-		<key>pass_draw_masks</key>
-		<dict>
-			<key>draw</key>
-			<string>DRAW_SCENE</string>
-			<key>program</key>
-			<string>doesntexist</string>
-			<key>metalVertexShader</key>
-			<string>mask_vertex</string>
-			<key>metalFragmentShader</key>
-			<string>mask_fragment</string>
-			<key>includeCategoryMask</key>
-			<integer>2</integer>
-			<key>inputs</key>
-			<dict>
-				<key>colorSampler</key>
-				<string>COLOR</string>
-				<key>aPos</key>
-				<string>vertexSymbol</string>
-			</dict>
-			<key>outputs</key>
-			<dict>
-				<key>color</key>
-				<string>MASK</string>
-			</dict>
-		</dict>
-		<key>pass_combine</key>
-		<dict>
-			<key>colorStates</key>
-			<dict>
-				<key>clear</key>
-				<false/>
-			</dict>
-			<key>inputs</key>
-			<dict>
-				<key>aPos</key>
-				<string>vertexSymbol</string>
-				<key>colorSampler</key>
-				<string>COLOR</string>
-				<key>maskSampler</key>
-				<string>MASK</string>
-				<key>glowColor</key>
-				<string>glowColorSymbol</string>
-			</dict>
-			<key>outputs</key>
-			<dict>
-				<key>color</key>
-				<string>COLOR</string>
-			</dict>
-			<key>metalFragmentShader</key>
-			<string>combine_fragment</string>
-			<key>metalVertexShader</key>
-			<string>combine_vertex</string>
-			<key>program</key>
-			<string>doesntexist</string>
-			<key>draw</key>
-			<string>DRAW_QUAD</string>
-		</dict>
 		<key>pass_blur_h</key>
 		<dict>
 			<key>colorStates</key>
@@ -68,6 +11,8 @@
 				<key>clear</key>
 				<false/>
 			</dict>
+			<key>draw</key>
+			<string>DRAW_QUAD</string>
 			<key>inputs</key>
 			<dict>
 				<key>aPos</key>
@@ -75,19 +20,17 @@
 				<key>maskSampler</key>
 				<string>MASK</string>
 			</dict>
+			<key>metalFragmentShader</key>
+			<string>blur_fragment_h</string>
+			<key>metalVertexShader</key>
+			<string>blur_vertex</string>
 			<key>outputs</key>
 			<dict>
 				<key>color</key>
 				<string>MASK</string>
 			</dict>
-			<key>metalFragmentShader</key>
-			<string>blur_fragment_h</string>
-			<key>metalVertexShader</key>
-			<string>blur_vertex</string>
 			<key>program</key>
 			<string>doesntexist</string>
-			<key>draw</key>
-			<string>DRAW_QUAD</string>
 		</dict>
 		<key>pass_blur_v</key>
 		<dict>
@@ -96,6 +39,8 @@
 				<key>clear</key>
 				<false/>
 			</dict>
+			<key>draw</key>
+			<string>DRAW_QUAD</string>
 			<key>inputs</key>
 			<dict>
 				<key>aPos</key>
@@ -103,19 +48,81 @@
 				<key>maskSampler</key>
 				<string>MASK</string>
 			</dict>
+			<key>metalFragmentShader</key>
+			<string>blur_fragment_v</string>
+			<key>metalVertexShader</key>
+			<string>blur_vertex</string>
 			<key>outputs</key>
 			<dict>
 				<key>color</key>
 				<string>MASK</string>
 			</dict>
-			<key>metalFragmentShader</key>
-			<string>blur_fragment_v</string>
-			<key>metalVertexShader</key>
-			<string>blur_vertex</string>
 			<key>program</key>
 			<string>doesntexist</string>
+		</dict>
+		<key>pass_combine</key>
+		<dict>
+			<key>colorStates</key>
+			<dict>
+				<key>clear</key>
+				<false/>
+			</dict>
 			<key>draw</key>
 			<string>DRAW_QUAD</string>
+			<key>inputs</key>
+			<dict>
+				<key>aPos</key>
+				<string>vertexSymbol</string>
+				<key>colorSampler</key>
+				<string>COLOR</string>
+				<key>glowColor</key>
+				<string>glowColorSymbol</string>
+				<key>maskSampler</key>
+				<string>MASK</string>
+			</dict>
+			<key>metalFragmentShader</key>
+			<string>combine_fragment</string>
+			<key>metalVertexShader</key>
+			<string>combine_vertex</string>
+			<key>outputs</key>
+			<dict>
+				<key>color</key>
+				<string>COLOR</string>
+			</dict>
+			<key>program</key>
+			<string>doesntexist</string>
+		</dict>
+		<key>pass_draw_masks</key>
+		<dict>
+			<key>colorStates</key>
+			<dict>
+				<key>clear</key>
+				<true/>
+				<key>clearColor</key>
+				<string>0.0 0.0 0.0 0.0</string>
+			</dict>
+			<key>draw</key>
+			<string>DRAW_SCENE</string>
+			<key>includeCategoryMask</key>
+			<integer>2</integer>
+			<key>inputs</key>
+			<dict>
+				<key>aPos</key>
+				<string>vertexSymbol</string>
+				<key>colorSampler</key>
+				<string>COLOR</string>
+			</dict>
+			<key>metalFragmentShader</key>
+			<string>mask_fragment</string>
+			<key>metalVertexShader</key>
+			<string>mask_vertex</string>
+			<key>outputs</key>
+			<dict>
+				<key>color</key>
+				<string>MASK</string>
+			</dict>
+			<key>program</key>
+			<string>doesntexist</string>
 		</dict>
 	</dict>
 	<key>sequence</key>
@@ -144,14 +151,12 @@
 	<dict>
 		<key>MASK</key>
 		<dict>
+			<key>format</key>
+			<string>rgba</string>
+			<key>scaleFactor</key>
+			<real>1.0</real>
 			<key>type</key>
 			<string>color</string>
-			<key>format</key>
-			<string>rgb</string>
-			<key>size</key>
-			<string>512x512</string>
-			<key>scaleFactor</key>
-			<integer>1</integer>
 		</dict>
 	</dict>
 </dict>

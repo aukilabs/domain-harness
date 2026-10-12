@@ -76,7 +76,8 @@ fragment half4 combine_fragment(out_vertex_t vert [[stage_in]],
 
     float3 glowColor = inputs.glowColor;
     
-    float alpha = maskColor.r;
+    // A solid rim next to the silhouette, fading out: an outline, not a haze.
+    float alpha = clamp(maskColor.r * 4.0, 0.0, 1.0);
     float3 out = FragmentColor.rgb * ( 1.0 - alpha ) + alpha * glowColor;
     return half4( float4(out.rgb, 1.0) );
     
@@ -95,7 +96,8 @@ vertex out_vertex_t blur_vertex(custom_vertex_t in [[stage_in]])
 // http://rastergrid.com/blog/2010/09/efficient-gaussian-blur-with-linear-sampling/
 constant float offset[] = { 0.0, 1.0, 2.0, 3.0, 4.0 };
 constant float weight[] = { 0.2270270270, 0.1945945946, 0.1216216216, 0.0540540541, 0.0162162162 };
-constant float bufferSize = 512.0;
+// Blur steps are in mask pixels, scaled so the rim is a similar width on any screen.
+constant float spread = 2.0;
 
 fragment half4 blur_fragment_h(out_vertex_t vert [[stage_in]],
                                           texture2d<float, access::sample> maskSampler [[texture(0)]])
@@ -106,8 +108,9 @@ fragment half4 blur_fragment_h(out_vertex_t vert [[stage_in]],
     
     
     for (int i=1; i<5; i++) {
-        FragmentR += maskSampler.sample( s, ( vert.uv + float2(offset[i], 0.0)/bufferSize ) ).r * weight[i];
-        FragmentR += maskSampler.sample( s, ( vert.uv - float2(offset[i], 0.0)/bufferSize ) ).r * weight[i];
+        float step = spread * offset[i] / float(maskSampler.get_width());
+        FragmentR += maskSampler.sample( s, vert.uv + float2(step, 0.0) ).r * weight[i];
+        FragmentR += maskSampler.sample( s, vert.uv - float2(step, 0.0) ).r * weight[i];
     }
     return half4(FragmentR, FragmentColor.g, FragmentColor.b, 1.0);
 }
@@ -120,8 +123,9 @@ fragment half4 blur_fragment_v(out_vertex_t vert [[stage_in]],
     float FragmentR = FragmentColor.r * weight[0];
     
     for (int i=1; i<5; i++) {
-        FragmentR += maskSampler.sample( s, ( vert.uv + float2(0.0, offset[i])/bufferSize ) ).r * weight[i];
-        FragmentR += maskSampler.sample( s, ( vert.uv - float2(0.0, offset[i])/bufferSize ) ).r * weight[i];
+        float step = spread * offset[i] / float(maskSampler.get_height());
+        FragmentR += maskSampler.sample( s, vert.uv + float2(0.0, step) ).r * weight[i];
+        FragmentR += maskSampler.sample( s, vert.uv - float2(0.0, step) ).r * weight[i];
     }
     
     return half4(FragmentR, FragmentColor.g, FragmentColor.b, 1.0);
