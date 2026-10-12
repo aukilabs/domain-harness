@@ -581,23 +581,42 @@ struct MiniMapGestures: UIViewRepresentable {
     }
 }
 
-/// A glowing outline around chosen nodes, so a robot reads against any background.
-/// The technique and its shader are SCNTechniqueGlow's (see THIRD_PARTY.md).
+/// An outline for a model in AR: an enlarged shell in the accent colour drawn over
+/// everything, then the model itself on top. Where something hides the model, the
+/// shell still shows, so the robot can be found behind the map or a wall.
+///
+/// A full-screen SCNTechnique cannot do this here: ARKit's person occlusion owns
+/// the AR view's technique.
 enum RobotGlow {
-    /// Nodes carrying this bit are drawn into the outline mask.
-    static let mask = 2
-    static func technique() -> SCNTechnique? {
-        guard let url = Bundle.main.url(forResource: "RobotGlow", withExtension: "plist"),
-              let passes = NSDictionary(contentsOf: url) as? [String: Any],
-              let technique = SCNTechnique(dictionary: passes) else { return nil }
-        let c = Theme.uiAccent.cgColor.components ?? [1, 0.6, 0]
-        technique.setValue(NSValue(scnVector3: SCNVector3(Float(c[0]), Float(c[1]), Float(c[2]))), forKeyPath: "glowColorSymbol")
-        return technique
-    }
-    /// Keep the default bit so cameras and lights still see the node.
-    static func outlined(_ node: SCNNode) -> SCNNode {
-        node.enumerateHierarchy { child, _ in child.categoryBitMask |= mask }
-        return node
+    private static let shell: SCNMaterial = {
+        let material = SCNMaterial()
+        material.lightingModel = .constant
+        material.diffuse.contents = Theme.uiAccent
+        material.cullMode = .front
+        material.readsFromDepthBuffer = false
+        material.writesToDepthBuffer = false
+        // Push each vertex out along its normal by a fraction of its distance from the
+        // camera, so the rim is about the same width on screen near or far.
+        material.shaderModifiers = [.geometry: """
+            float4 viewPosition = scn_node.modelViewTransform * _geometry.position;
+            float3 viewNormal = normalize((scn_node.modelViewTransform * float4(_geometry.normal, 0.0)).xyz);
+            viewPosition.xyz += viewNormal * (0.012 * -viewPosition.z);
+            _geometry.position = scn_node.inverseModelViewTransform * viewPosition;
+            """]
+        return material
+    }()
+    static func outlined(_ model: SCNNode) -> SCNNode {
+        let rim = model.clone()
+        rim.enumerateHierarchy { node, _ in
+            guard let geometry = node.geometry?.copy() as? SCNGeometry else { return }
+            geometry.materials = Array(repeating: shell, count: max(1, geometry.materials.count))
+            node.geometry = geometry
+            node.renderingOrder = 100
+        }
+        model.enumerateHierarchy { node, _ in node.renderingOrder = 101 }
+        let holder = SCNNode()
+        holder.addChildNode(rim); holder.addChildNode(model)
+        return holder
     }
 }
 
@@ -656,7 +675,7 @@ struct RobotMapLayer: UIViewRepresentable {
                     let upright = SCNNode()
                     // The model is Z up. A Y-up pose needs it stood up; a Z-up base pose already is.
                     if !robot.zUp { upright.simdOrientation = simd_quatf(angle: -.pi / 2, axis: SIMD3(1, 0, 0)) }
-                    upright.addChildNode(RobotGlow.outlined(template.clone()))
+                    upright.addChildNode(template.clone())
                     holder.addChildNode(upright)
                     scene.rootNode.addChildNode(holder)
                     nodes[robot.name] = holder
@@ -1147,7 +1166,6 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         view.session.delegate = self
         // The robot model is physically shaded; without a light it renders black.
         view.autoenablesDefaultLighting = true
-        view.technique = RobotGlow.technique()
         view.session.delegateQueue = .main
         root.isHidden = true
         volumes.attach(view, root: root) { [weak self] in
@@ -1390,7 +1408,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             box.geometry?.firstMaterial?.diffuse.contents = UIColor.white
             box.geometry?.firstMaterial?.lightingModel = .constant
             box.simdPosition = SIMD3(0, 0, 0.1)
-            holder.addChildNode(box)
+            holder.addChildNode(RobotGlow.outlined(box))
         }
         return holder
     }
