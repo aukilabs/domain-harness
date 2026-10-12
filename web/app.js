@@ -3,6 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createArOverlay } from './ar.js';
 import { createPhoneTrails } from './phone-trails.js';
 import { createSemanticVolumes } from './semantic-volumes.js';
+import { createMap2D } from './map-2d.js';
 const $=id=>document.getElementById(id);
 // Organize existing live controls into the mockup's rail and exclusive panels.
 const sidebar=document.querySelector('aside'),shell=document.querySelector('.shell');
@@ -48,6 +49,7 @@ let activeMap='demo',current=null,busy=false,refreshing=false,lastScene=null,sel
 let homeOffline=false,catalogInitialized=false;
 function isLocalScene(map=activeMap){return map.startsWith('local:');}
 function localSceneUrl(map=activeMap){return '/api/local-scenes/'+encodeURIComponent(map.slice(6));}
+function noteUrl(id,map=activeMap){return '/api/notes/'+encodeURIComponent(id)+(isLocalScene(map)?'?scene='+encodeURIComponent(map.slice(6)):'');}
 const availability=document.createElement('div');availability.id='scene-availability';availability.setAttribute('role','status');availability.style.cssText='position:absolute;top:48px;left:12px;right:12px;z-index:90;padding:10px;background:#432b20;color:#fff;font:12px system-ui;pointer-events:none';availability.hidden=true;$('canvas').append(availability);
 function markOffline(){homeOffline=true;availability.hidden=false;availability.textContent='Home offline · showing a cached browser view, not a live or saved map';renderMapRows();}
 function isRunner(map=activeMap){return map==='runner'||map.startsWith('runner:');}
@@ -105,7 +107,9 @@ async function runnerCatalog(){
 
 function domainCenter(){return new THREE.Box3().setFromPoints((current?.portals||[]).map(p=>new THREE.Vector3(...p.pose_in_map.translation))).getCenter(new THREE.Vector3());}
 function fit(){if(current?.simulation){const d=Math.max(12,11/Math.max(camera.aspect,.2));camera.position.set(0,d,d*.4);controls.target.set(0,0,0);}else if(current?.portals.length){const c=domainCenter();const box=new THREE.Box3().setFromPoints(current.portals.map(p=>new THREE.Vector3(...p.pose_in_map.translation)));const size=box.getSize(new THREE.Vector3());const distance=Math.max(size.x/Math.max(camera.aspect,.2),size.z)*1.65+3;camera.position.copy(c).add(new THREE.Vector3(0,distance,distance*.25));controls.target.copy(c);}else{camera.position.set(3.6,3.5,4.6);controls.target.set(0,.5,0);}controls.update();}
-fit();$('demo-view').onclick=()=>{camera.position.set(-.5,4.5,5.5);controls.target.set(-3.7,.5,2.1);controls.update();};$('fit').onclick=fit;$('top').onclick=()=>{fit();const c=controls.target.clone();const height=camera.position.distanceTo(c);camera.position.copy(c).add(new THREE.Vector3(0,height,.001));controls.update();};
+fit();
+const map2D=createMap2D($('canvas'),active=>{controls.enabled=!active;$('top').textContent=active?'3D':'2D';$('top').setAttribute('aria-pressed',String(active));$('top').title=active?'Switch to 3D mode':'Switch to 2D mode';$('top').setAttribute('aria-label',$('top').title);$('canvas').dataset.viewMode=active?'2d':'3d';});
+$('demo-view').onclick=()=>{camera.position.set(-.5,4.5,5.5);controls.target.set(-3.7,.5,2.1);controls.update();};$('fit').onclick=()=>map2D.isActive()?map2D.fit():fit();$('top').onclick=()=>map2D.toggle();
 scene.add(new THREE.HemisphereLight(0xffffff,0x1a2438,1.7));
 const sun=new THREE.DirectionalLight(0xffffff,2.4);sun.position.set(-3,7,4);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);Object.assign(sun.shadow.camera,{left:-5,right:5,top:5,bottom:-5,near:.1,far:20});sun.shadow.bias=-.0005;scene.add(sun);
 const ground=new THREE.Mesh(new THREE.PlaneGeometry(200,200),new THREE.MeshStandardMaterial({color:'#101014',roughness:1}));ground.rotation.x=-Math.PI/2;ground.position.y=-.15;ground.receiveShadow=true;scene.add(ground);
@@ -131,6 +135,7 @@ async function refreshPhonePresence(){
 }
 setInterval(refreshPhonePresence,200);
 function build(data){
+ map2D.update(data);
  semanticVolumes.update(activeMap,data);
  const first=current===null||current?.frame!==data.frame;data.receivedAt=performance.now();current=data;selectable=[];Object.values(groups).forEach(clear);
  const voxels=new THREE.InstancedMesh(boxGeometry,cubeMaterial,data.voxels.length);voxels.castShadow=true;voxels.receiveShadow=true;
@@ -191,7 +196,7 @@ function showNoteSelection(note){
  const status=document.createElement('div');status.setAttribute('role','status');
  button.onclick=async()=>{
   if(deletingNoteId)return;deletingNoteId=note.id;button.disabled=true;status.textContent='Deleting…';
-  try{await api('/api/notes/'+encodeURIComponent(note.id),undefined,'DELETE');
+  try{await api(noteUrl(note.id),undefined,'DELETE');
    if(selectedNoteId===note.id){selectedNoteId=null;$('selection').hidden=true;}
    hideAr();lastScene=null;await refresh();
   }catch(e){status.textContent=e.message;button.disabled=false;}
@@ -743,7 +748,6 @@ function noteFields(container,note){
  return {read:async title=>{await pending;if(photoError)throw photoError;return {title,description:description.value,photo};}};
 }
 function renderNotes(){
- if(isLocalScene()){notesBody.replaceChildren();noteMessage('Notes are not yet enabled for this independent scenegraph.');return;}
  if(noteView==='edit')return;
  notesBody.replaceChildren();const notes=current?.notes||[];const selected=notes.find(n=>n.id===sidebarNoteId);
  if(noteView==='detail'&&selected){
@@ -753,16 +757,17 @@ function renderNotes(){
   if(selected.details?.photo)notesBody.append(notePhoto(selected));
   notesBody.append(uiButton('Focus in scene',()=>focusNote(selected)));
   if(!selected.anchor_robot&&!selected.phone_pose&&!selected.robot_pose&&!isRunner()&&activeMap!=='domain'){
-   notesBody.append(uiButton('Edit',()=>editSidebarNote(selected)),uiButton('Delete',async()=>{const error=noteMessage('Deleting…');try{await api('/api/notes/'+encodeURIComponent(selected.id),undefined,'DELETE');noteView='list';lastScene=null;await refresh();renderNotes();}catch(e){error.textContent=e.message;}}));
+   notesBody.append(uiButton('Edit',()=>editSidebarNote(selected)),uiButton('Delete',async()=>{const error=noteMessage('Deleting…');try{await api(noteUrl(selected.id),undefined,'DELETE');noteView='list';lastScene=null;await refresh();renderNotes();}catch(e){error.textContent=e.message;}}));
   }
   return;
  }
- notesBody.append(uiButton('+ New note',()=>editSidebarNote(null),'primary'));
+ if(!isLocalScene())notesBody.append(uiButton('+ New note',()=>editSidebarNote(null),'primary'));
  if(!notes.length)noteMessage('No notes in this scenegraph.');
  for(const note of notes){const row=uiButton(noteTitle(note),()=>{sidebarNoteId=note.id;noteView='detail';focusNote(note);renderNotes();});if(note.details?.thumbnail){const image=document.createElement('img');image.src=note.details.thumbnail;image.alt='';image.className='note-list-thumbnail';row.prepend(image);}notesBody.append(row);}
 }
 async function editSidebarNote(note){
- if(isLocalScene())return;
+ if(isLocalScene()&&!note)return;
+ const editingMap=activeMap;
  noteView='edit';notesBody.replaceChildren();const form=document.createElement('form');form.className='note-form';
  const textLabel=document.createElement('label');textLabel.textContent='Title';const input=document.createElement('input');input.name='text';input.required=true;input.maxLength=120;input.value=noteTitle(note);textLabel.append(input);form.append(textLabel);
  const fields=noteFields(form,note);
@@ -776,7 +781,7 @@ async function editSidebarNote(note){
  if(!note){save.disabled=true;try{const canonical=await api('/api/scene');for(const p of canonical.portals||[])portal.add(new Option(p.anchor_id,p.anchor_id));save.disabled=!portal.options.length;}catch(e){error.textContent=e.message;}}
  form.onsubmit=async event=>{event.preventDefault();save.disabled=true;try{
   const details=await fields.read(input.value);
-  const result=note?await api('/api/notes/'+encodeURIComponent(note.id),{text:input.value,details},'PATCH'):await api('/api/notes',{text:input.value,details,portal:portal.value,height_m:Number(height.value)});
+  const result=note?await api(noteUrl(note.id,editingMap),{text:input.value,details},'PATCH'):await api('/api/notes',{text:input.value,details,portal:portal.value,height_m:Number(height.value)});
   sidebarNoteId=result.id;noteView='detail';
   if(isRunner()||activeMap==='domain'){$('map-select').value='demo';await $('map-select').onchange();}
   lastScene=null;await refresh();renderNotes();

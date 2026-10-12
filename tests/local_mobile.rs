@@ -191,6 +191,15 @@ async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated(
         let deleted = removed.note.unwrap();
         assert_eq!(send_change(&pair.b,&home,&delete).await?.note,Some(deleted.clone()),"Operation retries return the original result for Undo");
         send_change(&pair.b,&home,&request(NoteAction::Restore { note: deleted })).await?;
+        let editor=scenes.note_editors.lock().unwrap()["humanoid-hub-conference"].clone();
+        let details=spatial_home::notes::NoteDetails {description:"Browser description".into(),..Default::default()};
+        let edited=editor.change(&id,Some(("Browser edit".into(),Some(details))))?.unwrap();
+        assert_eq!(edited.text,"Browser edit");
+        assert_eq!(edited.details.description,"Browser description");
+        assert!(scenes.note_editors.lock().unwrap()["nacs"].change(&id,Some(("Wrong scene".into(),None))).is_err());
+        assert_eq!(editor.change(&id,None)?.unwrap().text,"Browser edit");
+        let persisted:spatial_home::notes::Notes=serde_json::from_slice(&std::fs::read(dir.path().join("mobile-notes/humanoid-hub-conference.json"))?)?;
+        assert!(!persisted.items.iter().any(|n|n.id==id));
         send_change(&pair.b,&home,&request(NoteAction::Delete { id })).await?;
         let pose = spatial_home::mobile_pose::Update {
             sample: Some(spatial_home::mobile_pose::Sample {

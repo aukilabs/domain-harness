@@ -422,8 +422,15 @@ async fn delete_note(
     State(s): State<Shared>,
     headers: HeaderMap,
     axum::extract::Path(id): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String,String>>,
 ) -> ApiResult {
     local_write(&headers)?;
+    if let Some(scene)=query.get("scene") {
+        let editor=s.local_scenes.note_editors.lock().map_err(|_|anyhow::anyhow!("Scene annotations unavailable"))?
+            .get(scene).cloned().ok_or_else(||anyhow::anyhow!("Scene annotations unavailable"))?;
+        editor.change(&id,None)?;
+        return Ok(Json(json!({"deleted":id})));
+    }
     let mut store = lock(&s)?;
     spatial_home::notes::remove(&mut store, &id)?;
     s.changes.send_replace(());
@@ -433,16 +440,22 @@ async fn rename_note(
     State(s): State<Shared>,
     headers: HeaderMap,
     axum::extract::Path(id): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String,String>>,
     Json(request): Json<serde_json::Value>,
 ) -> ApiResult {
     local_write(&headers)?;
-    let mut store = lock(&s)?;
     let text = request["text"].as_str().unwrap_or_default().to_owned();
     let details = request
         .get("details")
         .map(|v| serde_json::from_value(v.clone()))
         .transpose()
         .map_err(anyhow::Error::from)?;
+    if let Some(scene)=query.get("scene") {
+        let editor=s.local_scenes.note_editors.lock().map_err(|_|anyhow::anyhow!("Scene annotations unavailable"))?
+            .get(scene).cloned().ok_or_else(||anyhow::anyhow!("Scene annotations unavailable"))?;
+        return Ok(Json(json!(editor.change(&id,Some((text,details)))?)));
+    }
+    let mut store = lock(&s)?;
     let note = spatial_home::notes::update(&mut store, &id, text, details)?;
     s.changes.send_replace(());
     Ok(Json(json!(note)))
@@ -1049,6 +1062,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/semantic-volumes", get(get_volumes).post(create_volume))
         .route("/api/semantic-volumes/{id}", axum::routing::patch(update_volume).delete(delete_volume))
         .route("/semantic-volumes.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/semantic-volumes.js")) }))
+        .route("/map-2d.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/map-2d.js")) }))
         .route("/api/notes", post(add_note))
         .route("/api/notes/{id}", delete(delete_note).patch(rename_note))
         .route("/api/label-pick", post(label_pick))

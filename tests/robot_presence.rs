@@ -31,12 +31,14 @@ fn fresh_authenticated_robot_pose_is_transformed_and_expires() -> Result<()> {
     assert_eq!(snapshot["poses"][0]["pose"]["translation"],serde_json::json!([11.,2.,3.]));
     assert_eq!(s.native_pose.translation,[1.,2.,3.]);
     assert!(presence.snapshot(now+Duration::from_secs(3),frame)["poses"].as_array().unwrap().is_empty());
+    assert_eq!(presence.snapshot(now+Duration::from_secs(30),frame)["transforms"].as_array().unwrap().len(),1,"pose expires but frame relationship remains");
     for owner in ["other",""] { assert!(presence.accept(owner,"home",frame,Update {sample:Some(s.clone())},now).is_err()); }
     let mut stale=s.clone(); stale.alignment.validity=Validity::Stale;
     assert!(presence.accept("robot","home",frame,Update {sample:Some(stale)},now).is_err());
     assert!(presence.accept("robot","other",frame,Update {sample:Some(s)},now).is_err());
     presence.accept("robot","home",frame,Update {sample:None},now)?;
     assert!(presence.snapshot(now,frame)["poses"].as_array().unwrap().is_empty());
+    assert_eq!(presence.snapshot(now,frame)["transforms"].as_array().unwrap().len(),1);
     Ok(())
 }
 

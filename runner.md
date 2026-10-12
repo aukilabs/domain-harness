@@ -361,37 +361,31 @@ transport replacement/expiry and viewer behavior passed their checks.
 
 ### Bracketbot pose-graph correction handling
 
-Known limitations from the 2026-10-12 live investigation: correction-history
-waiting still suppresses live odometry, and retained-depth replay is synchronous.
-BBOS can report healthy tracking while the runner reports waiting for odometry.
-A stationary 60-second runner-off comparison reduced median total CPU usage
-from 97.8% to 66.0%; restoring the runner raised it to 94.5%. No sampled BBOS
-tracking loss occurred in any window, so causation of actual SLAM loss is not
-established. Background correction and generation-triggered history reads remain
-follow-up work. Older deployed SDK volume decoders also reject the new optional
-`description` field; this wire compatibility issue remains unresolved.
+Bracket uses capture-time geometry: ordinary BBOS pose-graph updates are accepted
+as live poses in the same robot frame. Capture never reads optimized trajectory
+history, suppresses odometry for PGO, or back-propagates corrections into old
+points or portal measurements. Geometry may drift or have discontinuities; this
+is intentional. No raw depth is retained for correction replay on Bracket.
 
-Routine BBOS PGO updates are not map resets. Capture reads the atomic optimized
-`slam.poses` history and interpolates the base pose at each saved portal's
-original detector timestamp (bounded gaps, no extrapolation). The mapper
-reprojects the saved marker pose using that correction, keeps the observation's
-clock/provenance, and recomputes its native-to-Home relationship. Pre-correction
-queued scans are dropped, but local geometry is rebuilt from retained raw depth
-using corrected capture-time poses. Retention follows the last three votes per
-voxel and is capped at 2,048 captures. Capture pauses mapping admission while
-the matching optimized history catches up; existing geometry remains available
-during that wait. Corrected calibration does not require the marker to be visible
-again. The native frame and boot origin remain unchanged.
+Portal localization produces a separate robot-to-Home relationship. Home retains
+the last validated relationship per authenticated producer, native frame and
+capture clock/session, and applies it to new native observations. Neither mapper
+revisits old samples. Robot presence always carries a native base pose; Home
+composes it for labels. Expired pose samples do not expire the relationship.
 
-Corrected depth timestamps are JSON object keys and therefore strings on the
-wire. The tagged sensor-event decoder explicitly parses these into `u64`; the
-wire-format regression test uses full nanosecond timestamps. Without this adapter,
-the first trajectory correction terminated the runner and the supervisor started
-a new map session instead of replaying the retained scans.
+Incoming notes, phone poses and volume collections declare their coordinate
+frame. Consumers convert between the named robot and Home frames using the last
+known relationship, or reject unknown frames. Missing/stale live poses still
+pause actions; this is separate from the validity of a saved frame relationship.
 
-Invalid/missing history fails closed. Producer restart, clock regression and a
-decreasing PGO counter require a new capture session and fresh calibration.
-After an ordinary runner restart, show a known portal once before driving away.
+Producer restart, clock regression and a decreasing PGO counter require a new
+capture session and fresh calibration. After an ordinary runner restart, show a
+known portal once before driving away.
+
+The previous history-replay implementation caused mapping pauses despite healthy
+BBOS tracking. A stationary 60-second runner-off comparison reduced median total
+CPU usage from 97.8% to 66.0%; restoring the runner raised it to 94.5%. This
+establishes overhead, not causation of actual SLAM tracking loss.
 
 The 2026-10-12 fix was built on the laptop with cached Linux ARM64 Docker:
 `build-bracketbot-correction.py`, then transferred/compatibility-checked with

@@ -31,7 +31,7 @@ pub struct Scene {
     pub portals: MapSnapshot,
     pub geometry: Option<CanonicalScene>,
     pub notes: Notes,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", serialize_with="legacy_volume_layer")]
     pub semantic_volumes: Option<crate::semantic_volumes::Volumes>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub volumes: Vec<crate::semantic_volumes::SemanticVolume>,
@@ -41,6 +41,11 @@ pub struct Scene {
 }
 impl ContractType for Scene {
     const DATATYPE: &'static str = SCHEMA;
+}
+fn legacy_volume_layer<S:serde::Serializer>(volumes:&Option<crate::semantic_volumes::Volumes>,s:S)->std::result::Result<S::Ok,S::Error> {
+    let mut value=serde_json::to_value(volumes).map_err(serde::ser::Error::custom)?;
+    if let Some(items)=value["items"].as_array_mut() { for item in items { item.as_object_mut().unwrap().remove("semantic_type"); } }
+    value.serialize(s)
 }
 fn size(s: &Scene) -> usize {
     serde_json::to_vec(s).map_or(usize::MAX, |v| v.len())
@@ -105,11 +110,15 @@ impl Scene {
         };
         view["notes"] = json!(self.notes.items);
         view["volumes"] = json!(self.volumes);
-        view["semantic_volumes"] = serde_json::to_value(self.semantic_volumes.clone().unwrap_or_else(|| {
+        let mut collection=self.semantic_volumes.clone().unwrap_or_else(|| {
             let mut collection=crate::semantic_volumes::Volumes::empty(&self.portals.scenegraph.map.frame.id);
             collection.items=self.volumes.iter().map(|v|crate::semantic_volumes::Volume::from_mobile(v,None)).collect();
             collection
-        }))?;
+        });
+        for volume in &mut collection.items {
+            if let Some(mobile)=self.volumes.iter().find(|v|v.id==volume.id) { volume.semantic_type=mobile.semantic_type.clone(); }
+        }
+        view["semantic_volumes"] = serde_json::to_value(collection)?;
         crate::mobile_pose::append_labels_in_frame(&mut view, &self.presence, &map.frame.id);
         crate::robot_presence::append_labels(&mut view, &self.robot_presence, &map.frame.id);
         view["environment_name"] = json!(map.name);
@@ -134,6 +143,30 @@ struct State {
     notes: Notes,
     presence: Arc<Mutex<crate::mobile_pose::Presence>>,
     robot_presence: Arc<Mutex<crate::robot_presence::Presence>>,
+}
+/// Browser writes share the exact live state and persistence path used by SDK peers.
+#[derive(Clone)]
+pub struct NoteEditor {
+    state: Arc<Mutex<State>>,
+    frame: String,
+    path: std::path::PathBuf,
+}
+impl NoteEditor {
+    pub fn change(&self, id: &str, edit: Option<(String, Option<crate::notes::NoteDetails>)>) -> Result<Option<crate::notes::TextNote>> {
+        let mut state=self.state.lock().map_err(|_|anyhow!("Scene annotations unavailable"))?;
+        let action=match &edit { Some((text,_))=>crate::mobile_notes::NoteAction::Edit{id:id.into(),text:text.clone()}, None=>crate::mobile_notes::NoteAction::Delete{id:id.into()} };
+        let request=crate::mobile_notes::ChangeNote{request_id:uuid::Uuid::new_v4().to_string(),frame:self.frame.clone(),action};
+        let (mut notes,mut result)=crate::mobile_notes::apply_change(&state.notes,&request,&self.frame)?;
+        if let Some((_,Some(details)))=edit {
+            let note=notes.items.iter_mut().find(|n|n.id==id).ok_or_else(||anyhow!("Annotation not found"))?;
+            note.details=details;note.details.prepare_thumbnail()?;
+            result.note=Some(note.clone());
+        }
+        notes.validate(&self.frame)?;
+        persist_notes(&notes,&self.path)?;
+        state.notes=notes;
+        Ok(result.note)
+    }
 }
 pub struct Publisher {
     id: String,
@@ -220,6 +253,8 @@ impl Publisher {
             robot_presence: robot_presence.clone(),
         }));
         let inbox = Arc::new(Mutex::new(crate::mobile_depth::Inbox::default()));
+        scenes.note_editors.lock().map_err(|_|anyhow!("Scene annotations unavailable"))?
+            .insert(id.into(),NoteEditor{state:state.clone(),frame:frame.clone(),path:notes_path.clone()});
         let component = runtime.component(
             ComponentSpec::new(format!("mobile-scene:{id}")).observable(ObservableContract {
                 name: "scene".into(),

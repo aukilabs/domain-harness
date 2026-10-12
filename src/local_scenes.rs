@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, io::Write, path::Path, time::Instant};
 
 pub struct LocalScenes {
+    pub note_editors: std::sync::Mutex<BTreeMap<String, crate::local_mobile::NoteEditor>>,
     pub volumes: crate::semantic_volumes::Storage,
     pub snapshots: BTreeMap<String, MapSnapshot>,
     pub(crate) directory: std::path::PathBuf,
@@ -121,6 +122,7 @@ impl LocalScenes {
             );
         }
         Ok(Self {
+            note_editors: Default::default(),
             volumes: crate::semantic_volumes::Storage::new(directory.join("semantic-volumes")),
             snapshots,
             directory: directory.into(),

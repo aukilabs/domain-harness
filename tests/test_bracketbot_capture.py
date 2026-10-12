@@ -81,10 +81,10 @@ class BracketbotCaptureTests(unittest.TestCase):
         box.image('camera.head',t,b'old'); box.points(t,[],[])
         self.assertTrue(box.scan_is_current(t,t))
         box.update_pose(gate,gate.accept(valid_pose(t+100,2),health(t+100),t+100),health(t+100))
-        self.assertFalse(box.scan_is_current(t,t+100))
-        self.assertIsNone(box.take_scan(0,t+100))
+        self.assertTrue(box.scan_is_current(t,t+100))
+        self.assertEqual(box.take_scan(0,t+100)[0],t)
         box.image('camera.head',t,b'late old'); box.points(t,[],[])
-        self.assertIsNone(box.take_scan(0,t+100))
+        self.assertIsNone(box.take_scan(t,t+100))
         box.image('camera.head',t+100,b'new'); box.points(t+100,[],[])
         self.assertEqual(box.take_scan(0,t+100)[0],t+100)
         self.assertFalse(box.scan_is_current(t+100,t+900_000_000))
@@ -206,8 +206,8 @@ class BracketbotCaptureTests(unittest.TestCase):
         for n in [2, 3]:
             t += 100_000_000
             result = gate.accept(valid_pose(t, n), health(t), t)
-            self.assertEqual(gate.correction, dict(kind='map_correction', timestamp_ns=t,
-                             pgo_count=n, pose=result[1]))
+            self.assertIsNone(gate.correction)
+            self.assertIsNotNone(result)
             self.assertTrue(gate.tracking)
             self.assertIsNone(gate.accept(valid_pose(t, n), health(t), t))
             self.assertIsNone(gate.correction)
@@ -254,7 +254,7 @@ class BracketbotCaptureTests(unittest.TestCase):
         self.assertIsNone(gate.accept(valid_pose(t+10, 2), health(t+10, vo_lost=True), t+10))
         self.assertIsNone(gate.correction)
         self.assertIsNotNone(gate.accept(valid_pose(t+20, 2), health(t+20), t+20))
-        self.assertEqual(gate.correction['pgo_count'], 2)
+        self.assertIsNone(gate.correction)
 
     def test_recovery_and_duplicate_capture_do_not_republish_old_pose(self):
         gate = PoseGate(); t = 1_000_000_000

@@ -78,7 +78,7 @@ async fn portal_transform_is_separate_catalog_product_and_never_rebases_robot() 
         assert!((dot.abs()-1.).abs()<1e-8);
         assert_eq!(serde_json::to_value(&scene)?, before, "display never mutates native snapshot");
         map.accept(SensorEvent::TrackingLost {timestamp_ns:t+1})?;
-        assert_eq!(FrameTransform::from_local(&map,&owner)?.validity, Validity::Stale);
+        assert_eq!(FrameTransform::from_local(&map,&owner)?.validity, Validity::Valid);
         map.accept(SensorEvent::Odometry {timestamp_ns:t*2,pose:identity()})?;
         assert_eq!(FrameTransform::from_local(&map,&owner)?.validity, Validity::Valid,
                    "BBOS tracking recovery in the same map does not require another portal");
@@ -86,11 +86,11 @@ async fn portal_transform_is_separate_catalog_product_and_never_rebases_robot() 
         map.accept(SensorEvent::Camera {sample:sample("HRIPLL40GL6",t*2)})?;
         assert_eq!(FrameTransform::from_local(&map,&owner)?.validity, Validity::Valid);
         map.accept(SensorEvent::MapCorrection {timestamp_ns:t*3,pgo_count:1,pose:identity()})?;
-        assert_eq!(FrameTransform::from_local(&map,&owner)?.validity, Validity::Unavailable);
+        assert_eq!(FrameTransform::from_local(&map,&owner)?.validity, Validity::Valid);
         let corrected=publisher.publish_local(&map)?.unwrap();
         assert_eq!(corrected.frame,scene.frame);
         assert_eq!(corrected.registries["frame_transform_product"],scene.registries["frame_transform_product"]);
-        assert!(!received.usable(&corrected));
+        assert!(!received.usable(&corrected),"a new portal observation supersedes the old exact Product reference, not the frame relationship");
         subscription.close().await?;
         publisher.close().await?;
         Ok::<_,anyhow::Error>(())
@@ -210,7 +210,7 @@ fn delayed_correction_after_tracking_loss_replays_depth() -> Result<()> {
 }
 
 #[test]
-fn corrected_trajectory_retains_calibration_without_marker_reobservation() -> Result<()> {
+fn bracketbot_pgo_keeps_capture_time_geometry_and_alignment() -> Result<()> {
     use spatial_home::frame_transform::{FrameTransform,Validity};
     let runtime=ComponentRuntime::new("robot");
     let mut map=LocalMap::new_for_robot(&runtime,"robot",&uuid::Uuid::new_v4().to_string(),BRACKETBOT_FAMILY,
@@ -221,46 +221,27 @@ fn corrected_trajectory_retains_calibration_without_marker_reobservation() -> Re
     map.accept(SensorEvent::Camera{sample:sample("HRIPLL40GL6",t)})?;
     map.take_localized_scans();
     map.accept_home_portals(map.portals()?,"home".into())?;
-    let frame=map.frame.clone();
-    let origin=map.origin.as_ref().unwrap().odometry_to_local.clone();
-    let corrected_capture=Pose{translation:[2.,0.,0.],..identity()};
-    let current=Pose{translation:[3.,0.,0.],..identity()};
     let before=map.voxels.as_ref().unwrap().checkpoint.clone();
-    map.accept(SensorEvent::CorrectionPending{timestamp_ns:t*2,pgo_count:2})?;
-    assert_eq!(map.voxels.as_ref().unwrap().checkpoint,before,"waiting for asynchronous history must preserve the map");
-    assert!(map.latest_pose.is_none(),"uncorrected poses must not be published while history is pending");
-    map.accept(SensorEvent::TrajectoryCorrection{timestamp_ns:t*2,pgo_count:2,pose:current.clone(),
-        corrected_depth:std::collections::BTreeMap::from([(t,corrected_capture.clone())]),
-        corrected_portals:std::collections::BTreeMap::from([("HRIPLL40GL6".into(),HistoricalPose{timestamp_ns:t,pose:corrected_capture})])})?;
-    let transform=FrameTransform::from_local(&map,"robot")?;
-    assert_eq!(transform.validity,Validity::Valid);
-    let alignment=transform.transform.unwrap();
-    let [w,x,y,z]=alignment.rotation_wxyz;
-    let in_home=compose(&Pose{translation:alignment.translation,rotation_xyzw:[x,y,z,w]},&current)?;
-    assert!((in_home.translation[0]-1.).abs()<1e-8,"corrected calibration cancels the map correction, not actual driving");
-    assert_eq!(map.frame,frame);
-    assert_eq!(map.origin.as_ref().unwrap().odometry_to_local,origin);
-    assert_eq!(map.metadata()["local_mapping"]["observed_portals"]["HRIPLL40GL6"]["capture_timestamp_ns"],t);
-    assert_eq!(map.metadata()["local_mapping"]["map_correction"]["alignment_reprojected"],true);
-    assert!(map.voxels.as_ref().unwrap().integrated_observations>0,"correction must not empty local geometry");
-    assert!(!map.voxels.as_ref().unwrap().accumulator()?.viewer_snapshot(0.)?.chunks.is_empty());
-    map.accept(SensorEvent::Odometry{timestamp_ns:t*3,pose:current})?;
-    map.accept(SensorEvent::Camera{sample:sample("not-a-portal",t*3)})?;
-    assert!(!map.take_localized_scans().is_empty(),"depth contributions continue without visible portal");
-    assert_eq!(FrameTransform::from_local(&map,"robot")?.validity,Validity::Valid);
-    let count=map.voxels.as_ref().unwrap().integrated_observations;
-    for (n,pgo) in [(4,3),(5,4)] {
-        map.accept(SensorEvent::CorrectionPending{timestamp_ns:t*n,pgo_count:pgo})?;
-        let shift=n as f64/10.;
-        map.accept(SensorEvent::TrajectoryCorrection{timestamp_ns:t*n,pgo_count:pgo,pose:identity(),
-            corrected_portals:std::collections::BTreeMap::from([("HRIPLL40GL6".into(),HistoricalPose{timestamp_ns:t,pose:Pose{translation:[2.+shift,0.,0.],..identity()}})]),
-            corrected_depth:std::collections::BTreeMap::from([(t,Pose{translation:[2.+shift,0.,0.],..identity()}),(t*3,Pose{translation:[3.+shift,0.,0.],..identity()})])})?;
-        assert_eq!(map.voxels.as_ref().unwrap().integrated_observations,count,"replayed data must not reset or increment the measured scan counter");
-        assert!(!map.voxels.as_ref().unwrap().accumulator()?.viewer_snapshot(0.)?.chunks.is_empty(),"repeated PGO must retain geometry");
-        assert_eq!(FrameTransform::from_local(&map,"robot")?.validity,Validity::Valid);
+    let alignment=FrameTransform::from_local(&map,"robot")?.transform.unwrap();
+    let frame=map.frame.clone();
+    for n in 2..6 {
+        map.accept(SensorEvent::CorrectionPending{timestamp_ns:t*n,pgo_count:n as i64})?;
+        assert!(map.latest_pose.is_some());
+        map.accept(SensorEvent::MapCorrection{timestamp_ns:t*n,pgo_count:n as i64,
+            pose:Pose{translation:[n as f64,0.,0.],..identity()}})?;
+        assert_eq!(map.voxels.as_ref().unwrap().checkpoint,before);
+        assert_eq!(map.voxels.as_ref().unwrap().integrated_observations,1);
+        assert_eq!(map.frame,frame);
+        let transform=FrameTransform::from_local(&map,"robot")?;
+        assert_eq!(transform.validity,Validity::Valid);
+        assert_eq!(transform.transform.unwrap(),alignment);
+        assert_eq!(map.metadata()["local_mapping"]["retained_depth_timestamps"],serde_json::json!([]));
     }
-    map.accept(SensorEvent::TrajectoryCorrection{timestamp_ns:t*6,pgo_count:5,pose:identity(),corrected_portals:Default::default(),corrected_depth:Default::default()})?;
-    assert!(map.home_portals.is_none(),"missing optimized history must never silently reuse an uncorrected calibration");
+    map.accept(SensorEvent::TrackingLost{timestamp_ns:t*6})?;
+    assert_eq!(FrameTransform::from_local(&map,"robot")?.validity,Validity::Valid,"relationship is independent of live tracking");
+    map.accept(SensorEvent::Odometry{timestamp_ns:t*7,pose:identity()})?;
+    map.accept(SensorEvent::Camera{sample:sample("not-a-portal",t*7)})?;
+    assert!(!map.take_localized_scans().is_empty());
     Ok(())
 }
 
