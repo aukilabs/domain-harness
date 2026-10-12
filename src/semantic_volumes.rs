@@ -88,6 +88,8 @@ pub struct SemanticVolume {
 }
 impl SemanticVolume {
     pub fn validate(&self) -> Result<()> {
+        ensure!(self.dimensions.iter().all(|x|x.is_finite() && (0.05..=40.).contains(x)),"Volume dimensions must be 0.05–40 metres");
+        ensure!(self.yaw.is_finite() && self.yaw.abs()<=std::f64::consts::PI+1e-6,"Invalid volume yaw");
         let v = Volume::from_mobile(self, None);
         let mut collection = Volumes::empty("validation");
         collection.items.push(v);

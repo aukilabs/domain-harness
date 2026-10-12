@@ -350,6 +350,7 @@ async fn scene(State(s): State<Shared>) -> ApiResult {
     let store = lock(&s)?;
     let mut view = serde_json::to_value(&store.built.view).map_err(anyhow::Error::from)?;
     view["environment_name"] = json!(spatial_home::environments::reference_name());
+    view["volumes"] = json!(spatial_home::notes::from_registries(&store.built.registries, spatial_home::model::FRAME)?.volumes);
     view["landmarks"] = store.built.registries["landmarks"].clone();
     view["semantic_volumes"] = serde_json::to_value(s.local_scenes.volumes.get("canonical", spatial_home::model::FRAME)?).map_err(anyhow::Error::from)?;
     view["volumes"] = json!(s.local_scenes.volumes.mobile("canonical",spatial_home::model::FRAME)?);
@@ -676,8 +677,33 @@ async fn snapshots(State(s): State<Shared>) -> ApiResult {
         json!({"domain_portals":s.built.domain_portals,"portals":s.built.portals,"voxels":s.built.voxels,"objects":s.built.view.objects,"registries":s.built.registries}),
     ))
 }
-// Local test control boundary: JSON only, no CORS, and reject foreign browser
-// origins. This is intentionally not remote peer authentication or an SDK P2P API.
+// LAN UI control boundary: explicit hosts and same-origin writes; no CORS.
+#[cfg(test)]
+mod lan_ui_tests {
+    use super::*;
+
+    #[test]
+    fn default_listener_accepts_lan() {
+        assert_eq!(ui_bind_address(None).unwrap().to_string(), "0.0.0.0");
+        assert_eq!(ui_bind_address(Some("127.0.0.1")).unwrap().to_string(), "127.0.0.1");
+        assert!(ui_bind_address(Some("invalid")).is_err());
+    }
+
+    #[test]
+    fn lan_writes_require_allowed_host_and_matching_origin() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, "192.168.1.26:4329".parse().unwrap());
+        headers.insert(header::ORIGIN, "http://192.168.1.26:4329".parse().unwrap());
+        assert!(ui_write(&headers, "192.168.1.26:4329").is_ok());
+        assert!(ui_write(&headers, "").is_err());
+        headers.insert(header::ORIGIN, "http://foreign.example".parse().unwrap());
+        assert!(ui_write(&headers, "192.168.1.26:4329").is_err());
+        headers.remove(header::ORIGIN);
+        headers.insert(header::HOST, "localhost:4329".parse().unwrap());
+        assert!(ui_write(&headers, "").is_ok());
+    }
+}
+
 fn ui_bind_address(configured: Option<&str>) -> Result<std::net::IpAddr, std::net::AddrParseError> {
     configured.unwrap_or("0.0.0.0").parse()
 }

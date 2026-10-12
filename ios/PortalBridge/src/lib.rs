@@ -277,6 +277,22 @@ pub unsafe extern "C" fn spatial_mobile_pose(value: *const c_char) {
     });
 }
 
+/// Set the name Home shows for this phone. Null or empty leaves it unchanged.
+/// # Safety
+/// A non-null `name` must be a NUL-terminated UTF-8 string for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spatial_mobile_name(name: *const c_char) {
+    let _ = std::panic::catch_unwind(|| {
+        if name.is_null() { return; }
+        let bytes = unsafe { CStr::from_ptr(name) }.to_bytes();
+        let Ok(name) = std::str::from_utf8(bytes) else { return };
+        if name.len() > 256 { return; }
+        if let Some(client) = CLIENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            client.set_name(name.to_owned());
+        }
+    });
+}
+
 /// Hold the joystick for `target` (a robot peer ID) at `forward`/`turn` in
 /// -1...1. A null target releases it, which sends stops.
 /// # Safety

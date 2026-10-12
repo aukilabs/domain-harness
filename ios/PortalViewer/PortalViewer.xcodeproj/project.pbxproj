@@ -8,16 +8,20 @@
 
 /* Begin PBXBuildFile section */
 		2F00069261E099226C9BD6C9 /* PortalMap.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF63C94F0E06FB864456F332 /* PortalMap.swift */; };
+		76AEBF1C9FA1B8D4D8E320D7 /* SemanticVolume.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1F90986E59A331AC5AF0962 /* SemanticVolume.swift */; };
 		7F41A3FEC846F6B3880A9B3A /* HomePeer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 923BCD5A09BD097EE8206E8E /* HomePeer.swift */; };
 		B5FC91E8E14B70B258CF83E0 /* PortalViewerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B33697AF632544986693964C /* PortalViewerApp.swift */; };
 		BBD894698F7A607B9DBD5CF9 /* SpatialPortalBridge.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D6933E6306AC040ABFB74C78 /* SpatialPortalBridge.xcframework */; };
+		BD58CFC0B92E999985C2400D /* SemanticVolumeModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4400D81FC657522891C44E1A /* SemanticVolumeModel.swift */; };
 		EEE08B86D5CC19868B4DBB4B /* PortalPose.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FF47757AD099392D75B3200 /* PortalPose.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		79389B6ADD96902B6B08CFCB /* PortalViewer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PortalViewer.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		4400D81FC657522891C44E1A /* SemanticVolumeModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SemanticVolumeModel.swift; sourceTree = "<group>"; };
+		79389B6ADD96902B6B08CFCB /* PortalViewer.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = PortalViewer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		8FF47757AD099392D75B3200 /* PortalPose.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortalPose.swift; sourceTree = "<group>"; };
 		923BCD5A09BD097EE8206E8E /* HomePeer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomePeer.swift; sourceTree = "<group>"; };
+		A1F90986E59A331AC5AF0962 /* SemanticVolume.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SemanticVolume.swift; sourceTree = "<group>"; };
 		B33697AF632544986693964C /* PortalViewerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortalViewerApp.swift; sourceTree = "<group>"; };
 		CF63C94F0E06FB864456F332 /* PortalMap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortalMap.swift; sourceTree = "<group>"; };
 		D6933E6306AC040ABFB74C78 /* SpatialPortalBridge.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = SpatialPortalBridge.xcframework; path = ../PortalBridge/build/SpatialPortalBridge.xcframework; sourceTree = "<group>"; };
@@ -51,6 +55,8 @@
 				CF63C94F0E06FB864456F332 /* PortalMap.swift */,
 				8FF47757AD099392D75B3200 /* PortalPose.swift */,
 				B33697AF632544986693964C /* PortalViewerApp.swift */,
+				A1F90986E59A331AC5AF0962 /* SemanticVolume.swift */,
+				4400D81FC657522891C44E1A /* SemanticVolumeModel.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -134,6 +140,8 @@
 				2F00069261E099226C9BD6C9 /* PortalMap.swift in Sources */,
 				EEE08B86D5CC19868B4DBB4B /* PortalPose.swift in Sources */,
 				B5FC91E8E14B70B258CF83E0 /* PortalViewerApp.swift in Sources */,
+				76AEBF1C9FA1B8D4D8E320D7 /* SemanticVolume.swift in Sources */,
+				BD58CFC0B92E999985C2400D /* SemanticVolumeModel.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

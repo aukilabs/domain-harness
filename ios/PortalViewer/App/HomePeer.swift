@@ -20,11 +20,22 @@ final class HomePeer: ObservableObject {
         annotationResult = nil
         return json.withCString { spatial_mobile_annotate($0) == 1 }
     }
+    func changeAnnotation(_ json: String) -> Bool {
+        guard state == "live" else { return false }
+        annotationResult = nil
+        return json.withCString { spatial_mobile_change_note($0) == 1 }
+    }
     func publishPose(_ sample: PhonePoseSample?) {
         guard let sample else { spatial_mobile_pose(nil); return }
         guard running, state == "live", let data = try? JSONEncoder().encode(sample),
               let json = String(data: data, encoding: .utf8) else { return }
         json.withCString { spatial_mobile_pose($0) }
+    }
+    /// The name Home shows for this phone. Sent on connect and when edited.
+    func setName(_ name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        trimmed.withCString { spatial_mobile_name($0) }
     }
     /// Hold the joystick for one robot, or release it with a nil target. The
     /// bridge repeats the held value and sends explicit stops on release.
@@ -116,6 +127,7 @@ final class HomePeer: ObservableObject {
             password = ""
             guard accepted == 1 else { throw ViewerError("Previous connection is still closing. Try again shortly.") }
             running = true; state = "connecting"; lastVersion = 0
+            setName(UserDefaults.standard.string(forKey: "phoneName") ?? "")
             detail = "Signing in to Auki development services"
             onDisconnect?()
             timer?.invalidate()

@@ -73,6 +73,30 @@ async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated(
         };
         scenes.volumes.change("humanoid-hub-conference", &home.frame, None, Some(semantic_volume.clone()), &home.frame)?;
         home.validate(&pair.b)?;
+        // Volume creation uses the same authenticated scene-scoped operation as notes.
+        let volume = spatial_home::semantic_volumes::SemanticVolume {
+            id: uuid::Uuid::new_v4().to_string(), name: "Kitchen".into(),
+            semantic_type: "room".into(), position: [1., 0., 2.],
+            dimensions: [2., 2.5, 3.], yaw: 0.5, description:None,
+        };
+        let request = spatial_home::mobile_notes::ChangeNote {
+            request_id: uuid::Uuid::new_v4().to_string(), frame: home.frame.clone(),
+            action: spatial_home::mobile_notes::NoteAction::PutVolume { volume: volume.clone() },
+        };
+        spatial_home::mobile_notes::send_change(&pair.b, &home, &request).await?;
+        spatial_home::mobile_notes::send_change(&pair.b, &home, &request).await?;
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        for publisher in &mut publishers { publisher.tick()?; }
+        let volume_view = read(&pair.b, &home).await?;
+        assert_eq!(volume_view["render"]["volumes"].as_array().unwrap().len(), 2);
+        assert!(volume_view["render"]["volumes"].as_array().unwrap().iter().any(|v|v["id"]==volume.id));
+        assert!(read(&pair.b, &nacs).await?["render"]["volumes"].as_array().unwrap().is_empty());
+        let saved=scenes.volumes.get("humanoid-hub-conference",&home.frame)?;
+        assert!(saved.items.iter().any(|v|v.id==volume.id));
+        spatial_home::mobile_notes::send_change(&pair.b,&home,&spatial_home::mobile_notes::ChangeNote{
+            request_id:uuid::Uuid::new_v4().to_string(),frame:home.frame.clone(),
+            action:spatial_home::mobile_notes::NoteAction::DeleteVolume{id:volume.id},
+        }).await?;
         let runner_reference = spatial_home::network::fetch_home_portals(&pair.b, &home).await?;
         assert_eq!(runner_reference.scenegraph.map.frame.id, home.frame);
         assert_eq!(runner_reference.scenegraph.anchors.len(), 1);

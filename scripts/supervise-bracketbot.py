@@ -65,7 +65,9 @@ def main():
                     '--state', str(args.state)], stdin=subprocess.DEVNULL)
             if args.execute_phone_drive and args.drive_peer:
                 # Like the arm controller, a failed drive controller is never restarted.
-                drive = subprocess.Popen([sys.executable, str(Path(__file__).with_name('drive-bracketbot.py')),
+                # BBOS and numpy live in the daemons' own environment, not the system Python.
+                drive = subprocess.Popen([sys.executable, str(Path(__file__).with_name('bracketbot-python.py')),
+                    '--daemon', 'arm_left', str(Path(__file__).with_name('drive-bracketbot.py')),
                     '--state', str(args.state), '--driver-peer', args.drive_peer, '--execute'] +
                     (['--fast'] if args.drive_fast else []),
                     stdin=subprocess.DEVNULL)
