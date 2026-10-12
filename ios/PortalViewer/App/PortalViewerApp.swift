@@ -720,6 +720,7 @@ struct MiniMapView: View {
                                   pitch: view.pitch, size: size)
                         .allowsHitTesting(false)
                 }
+                Canvas { context, _ in drawMarkers(&context, view: view) }.allowsHitTesting(false)
                 MiniMapGestures(
                     onOrbit: { d in
                         // Orbit about the pivot, which stays at the center of the view.
@@ -819,6 +820,71 @@ struct MiniMapView: View {
                           scale: max(1, fit * zoom), yaw: yaw, pitch: pitch, size: size)
     }
 
+    /// Drawn above everything else on the map: each device's trail, then a badge
+    /// for every phone and robot at its last known place.
+    private func drawMarkers(_ context: inout GraphicsContext, view: Projection) {
+        if showTrails.wrappedValue {
+            // Pale blue where the device started, yellow where it is now, cased in black to read on any map.
+            for device in tracked where !device.trail.isEmpty {
+                let points = device.trail.map { view.place($0).point } + [view.place(device.position).point]
+                guard points.count > 1 else { continue }
+                var whole = Path(); whole.addLines(points)
+                context.stroke(whole, with: .color(.black.opacity(0.75)), style: StrokeStyle(lineWidth: 8, lineCap: .round, lineJoin: .round))
+                for i in 1..<points.count {
+                    var segment = Path(); segment.move(to: points[i - 1]); segment.addLine(to: points[i])
+                    let c = DeviceTrails.color(age: Float(i) / Float(points.count - 1))
+                    context.stroke(segment, with: .color(Color(red: Double(c.x), green: Double(c.y), blue: Double(c.z))),
+                                   style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                }
+            }
+        }
+        func badge(at: CGPoint, symbol: String?, fill: Color, name: String, resting: Bool, chosen: Bool) {
+            let strength = resting ? 0.55 : 1.0
+            let disc = CGRect(x: at.x - 17, y: at.y - 17, width: 34, height: 34)
+            context.fill(Path(ellipseIn: disc), with: .color(fill.opacity(strength)))
+            context.stroke(Path(ellipseIn: disc), with: .color(.white.opacity(strength)), lineWidth: 2.5)
+            context.stroke(Path(ellipseIn: disc.insetBy(dx: -1.5, dy: -1.5)), with: .color(.black.opacity(0.8 * strength)), lineWidth: 1)
+            if let symbol {
+                var icon = context.resolve(Image(systemName: symbol).symbolRenderingMode(.monochrome))
+                icon.shading = .color(.white)
+                context.draw(icon, in: CGRect(x: at.x - 9, y: at.y - 11, width: 18, height: 22))
+            } else {
+                // Robot face: a head with two eyes and an antenna.
+                let head = CGRect(x: at.x - 9, y: at.y - 5, width: 18, height: 13)
+                context.fill(Path(roundedRect: head, cornerRadius: 3), with: .color(.white))
+                for dx in [-4.0, 4.0] {
+                    context.fill(Path(ellipseIn: CGRect(x: at.x + dx - 2, y: at.y - 1, width: 4, height: 4)), with: .color(fill))
+                }
+                var antenna = Path(); antenna.move(to: CGPoint(x: at.x, y: at.y - 5)); antenna.addLine(to: CGPoint(x: at.x, y: at.y - 10))
+                context.stroke(antenna, with: .color(.white), lineWidth: 2)
+                context.fill(Path(ellipseIn: CGRect(x: at.x - 2.5, y: at.y - 13.5, width: 5, height: 5)), with: .color(.white))
+            }
+            let label = context.resolve(Text(name.uppercased()).font(Theme.mono(11, .bold)).foregroundColor(.white))
+            let measured = label.measure(in: CGSize(width: 200, height: 30))
+            let plate = CGRect(x: at.x - measured.width / 2 - 4, y: disc.maxY + 3, width: measured.width + 8, height: measured.height + 2)
+            context.fill(Path(plate), with: .color(.black.opacity(0.8)))
+            context.draw(label, at: CGPoint(x: plate.midX, y: plate.midY))
+            if resting {
+                let zzz = context.resolve(Text("zzz").font(Theme.mono(14, .bold)).foregroundColor(.white))
+                let size = zzz.measure(in: CGSize(width: 60, height: 30))
+                let bubble = CGRect(x: disc.maxX - 6, y: disc.minY - size.height + 4, width: size.width + 8, height: size.height + 2)
+                context.fill(Path(roundedRect: bubble, cornerRadius: 4), with: .color(Theme.accent))
+                context.draw(zzz, at: CGPoint(x: bubble.midX, y: bubble.midY))
+            }
+            if chosen {
+                context.stroke(Path(ellipseIn: disc.insetBy(dx: -6, dy: -6)), with: .color(Theme.accent), lineWidth: 2.5)
+            }
+        }
+        for device in tracked {
+            badge(at: view.place(device.position).point, symbol: device.kind == .phone ? "iphone" : nil,
+                  fill: device.kind == .phone ? Color(red: 0.1, green: 0.45, blue: 0.95) : Color(red: 0.05, green: 0.6, blue: 0.3),
+                  name: device.name, resting: device.state != .live, chosen: device.id == queried)
+        }
+        if let phone {
+            badge(at: view.place(phone.position).point, symbol: "iphone", fill: Theme.accent, name: "You", resting: false, chosen: false)
+        }
+    }
+
     private func draw(_ context: inout GraphicsContext, size: CGSize, view: Projection) {
         // Registration marks in the corners of the viewport.
         for corner in [CGPoint(x: 12, y: 12), CGPoint(x: 12, y: size.height - 12), CGPoint(x: size.width - 12, y: size.height - 12)] {
@@ -898,18 +964,6 @@ struct MiniMapView: View {
             let square = Path(CGRect(x: at.x - 5, y: at.y - 5, width: 10, height: 10))
             context.fill(square, with: .color(Theme.ink)); context.stroke(square, with: .color(Theme.paper), lineWidth: 1)
         }
-        if showTrails.wrappedValue {
-            // Each device's path: pale blue where it started, yellow where it is now.
-            for device in tracked where !device.trail.isEmpty {
-                let points = device.trail.map { view.place($0).point } + [view.place(device.position).point]
-                for i in 1..<points.count {
-                    var segment = Path(); segment.move(to: points[i - 1]); segment.addLine(to: points[i])
-                    let c = DeviceTrails.color(age: Float(i) / Float(points.count - 1))
-                    context.stroke(segment, with: .color(Color(red: Double(c.x), green: Double(c.y), blue: Double(c.z))),
-                                   style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-                }
-            }
-        }
         // A robot Home no longer reports stays where it was last seen, faded.
         let ghosts = tracked.filter { $0.kind == .robot && $0.state == .lost }
             .map { MiniMapRobot(name: $0.name, transform: $0.pose, zUp: true) }
@@ -928,41 +982,6 @@ struct MiniMapView: View {
             context.stroke(Brackets(arm: 6).path(in: reticle), with: .color(Theme.ink.opacity(strength)), lineWidth: 1)
             context.draw(Text(robot.name.uppercased()).font(Theme.mono(9, .semibold)).foregroundColor(Theme.ink.opacity(strength)),
                          at: CGPoint(x: reticle.midX, y: reticle.minY - 3), anchor: .bottom)
-        }
-        for device in tracked {
-            // Last known place: a phone or robot icon, faded with "zzz" when asleep or lost.
-            let resting = device.state != .live
-            let strength = resting ? 0.4 : 1.0
-            let at = view.place(device.position).point
-            var anchor = at
-            if device.kind == .phone {
-                var icon = context.resolve(Image(systemName: "iphone"))
-                icon.shading = .color(Theme.ink.opacity(strength))
-                context.draw(icon, at: at)
-                context.draw(Text(device.name.uppercased()).font(Theme.mono(9, .semibold)).foregroundColor(Theme.ink.opacity(strength)),
-                             at: CGPoint(x: at.x, y: at.y + 12), anchor: .top)
-            } else if !showRobotModel || resting {
-                // Robot glyph: a head with two eyes and an antenna, above the footprint.
-                anchor = CGPoint(x: at.x, y: at.y - 2)
-                let head = CGRect(x: anchor.x - 7, y: anchor.y - 5, width: 14, height: 10)
-                context.fill(Path(roundedRect: head, cornerRadius: 2), with: .color(Theme.paper.opacity(strength)))
-                context.stroke(Path(roundedRect: head, cornerRadius: 2), with: .color(Theme.ink.opacity(strength)), lineWidth: 1.2)
-                for dx in [-3.0, 3.0] {
-                    context.fill(Path(ellipseIn: CGRect(x: anchor.x + dx - 1.2, y: anchor.y - 1.2, width: 2.4, height: 2.4)),
-                                 with: .color(Theme.ink.opacity(strength)))
-                }
-                var antenna = Path(); antenna.move(to: CGPoint(x: anchor.x, y: anchor.y - 5)); antenna.addLine(to: CGPoint(x: anchor.x, y: anchor.y - 9))
-                context.stroke(antenna, with: .color(Theme.ink.opacity(strength)), lineWidth: 1.2)
-                context.fill(Path(ellipseIn: CGRect(x: anchor.x - 1.5, y: anchor.y - 11.5, width: 3, height: 3)), with: .color(Theme.ink.opacity(strength)))
-            }
-            if resting {
-                context.draw(Text("zzz").font(Theme.mono(10, .bold)).foregroundColor(Theme.accent),
-                             at: CGPoint(x: anchor.x + 9, y: anchor.y - 9), anchor: .bottomLeading)
-            }
-            if device.id == queried {
-                context.stroke(Path(ellipseIn: CGRect(x: at.x - 17, y: at.y - 17, width: 34, height: 34)),
-                               with: .color(Theme.accent), lineWidth: 1.5)
-            }
         }
         if let phone {
             let at = view.place(phone.position).point
