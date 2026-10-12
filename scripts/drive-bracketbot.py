@@ -7,7 +7,7 @@ while a fresh command exists, so manual teleop is never locked out while the
 phone is idle, and it refuses to start if another program is driving.
 
 Stops come from several independent places: the phone sends stops on release,
-Home withholds stale commands, this controller ignores input older than 400 ms,
+Home withholds stale commands, this controller ignores input older than one second,
 and the base daemon itself halts 100 ms after the last `drive.ctrl` write.
 """
 import argparse

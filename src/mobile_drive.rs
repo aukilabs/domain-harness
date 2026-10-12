@@ -119,6 +119,151 @@ impl Board {
     }
 }
 
+/// What Home pushes to robots the moment a phone's command is accepted.
+/// Polling `snapshot` costs a full request round trip per read, which on a
+/// loaded robot measured 130-390 ms; a pushed message is one hop.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Pushed {
+    pub driver_peer_id: String,
+    pub target_peer_id: String,
+    pub session: String,
+    pub sequence: u64,
+    pub forward: f32,
+    pub turn: f32,
+}
+impl ContractType for Pushed {
+    const DATATYPE: &'static str = STREAM_SCHEMA;
+}
+pub const STREAM_SCHEMA: &str = "spatial.phone-drive-stream/v1";
+pub fn stream_product(scene_id: &str) -> String {
+    format!("local-scene:{scene_id}:drive")
+}
+fn stream_limits() -> auki_components::BufferLimits {
+    auki_components::BufferLimits {
+        max_entries: Some(4),
+        max_bytes: Some(16 * 1024),
+        target_duration: None,
+    }
+}
+fn pushed_size(value: &Pushed) -> usize {
+    serde_json::to_vec(value).map_or(usize::MAX, |v| v.len())
+}
+
+/// Home's side of the push stream for one scene.
+pub struct Stream {
+    _component: auki_components::Component,
+    output: auki_components::ConfiguredObservable<Pushed>,
+    capture: auki_components::BufferProductCapture<Pushed>,
+    started: Instant,
+}
+impl Stream {
+    pub fn mount(
+        runtime: &auki_components::ComponentRuntime,
+        endpoint: &auki_component_protocol::ComponentProtocolEndpoint,
+        scene_id: &str,
+        clock: auki_components::ClockReference,
+        started: Instant,
+    ) -> Result<Self> {
+        use auki_components::*;
+        let component = runtime.component(
+            ComponentSpec::new(format!("{COMPONENT}-stream:{scene_id}")).observable(
+                ObservableContract {
+                    name: "commands".into(),
+                    datatype: STREAM_SCHEMA.into(),
+                    schema: STREAM_SCHEMA.into(),
+                    access: vec![ObservationAccess::FollowNew],
+                    exposure: Exposure::Cluster,
+                },
+            ),
+        )?;
+        let output = component.configured_observable(ConfiguredObservableSpec::new(
+            "commands",
+            uuid::Uuid::new_v4().to_string(),
+            clock,
+            PayloadContract::Structured(StructuredPayloadContract {
+                modality: "drive_command".into(),
+                datatype: STREAM_SCHEMA.into(),
+                schema: STREAM_SCHEMA.into(),
+                observes: "phone joystick commands for robots in this scene".into(),
+                unit: None,
+            }),
+        ))?;
+        component.expose()?;
+        let capture = runtime.capture_buffer(
+            stream_product(scene_id),
+            &output,
+            stream_limits(),
+            pushed_size,
+        )?;
+        endpoint.export_product(&capture.product())?;
+        Ok(Self {
+            _component: component,
+            output,
+            capture,
+            started,
+        })
+    }
+    pub fn publish(&self, value: Pushed) -> Result<()> {
+        self.output
+            .publish(self.started.elapsed().as_nanos() as u64, std::sync::Arc::new(value))?;
+        ensure!(self.capture.errors().is_empty(), "Drive stream retention failed");
+        Ok(())
+    }
+}
+
+/// Robot side: follow Home's pushed commands for the paired scene.
+pub async fn subscribe(
+    peer: &auki_sdk::AukiPeer,
+    home: &crate::network::HomeConnection,
+) -> Result<auki_component_protocol::RemoteProductSubscription<Pushed>> {
+    use auki_component_protocol::{CatalogResponse, ComponentProtocolClient, ObservationStart};
+    let scene = home
+        .local_scene_id()
+        .ok_or_else(|| anyhow!("Drive stream needs a scene-scoped Home profile"))?;
+    let product = stream_product(scene);
+    let expected = home.validate(peer)?;
+    let client = ComponentProtocolClient::new(peer.protocols());
+    for route in &home.routes {
+        let route: auki_sdk::Multiaddr = route.parse()?;
+        let attempt = async {
+            let CatalogResponse::Snapshot { snapshot } =
+                client.catalog_exact(expected, route.clone(), None).await?
+            else {
+                anyhow::bail!("Missing catalog")
+            };
+            let entry = snapshot
+                .products
+                .iter()
+                .find(|p| p.manifest.product_id == product)
+                .ok_or_else(|| anyhow!("Home has no drive stream"))?;
+            ensure!(
+                entry.manifest.peer_id == home.peer_id,
+                "Drive stream owner mismatch"
+            );
+            let subscription = client
+                .subscribe_product_exact(
+                    expected,
+                    route,
+                    auki_components::ProductReference {
+                        peer_id: home.peer_id.clone(),
+                        product_id: product.clone(),
+                        manifest_hash: entry.manifest_hash.clone(),
+                    },
+                    // Never replay an old stick position to a robot.
+                    ObservationStart::NewOnly,
+                    stream_limits(),
+                    pushed_size,
+                )
+                .await?;
+            Ok::<_, anyhow::Error>(subscription)
+        };
+        if let Ok(Ok(subscription)) = tokio::time::timeout(Duration::from_secs(3), attempt).await {
+            return Ok(subscription);
+        }
+    }
+    anyhow::bail!("Home drive stream unavailable")
+}
+
 async fn target(
     peer: &auki_sdk::AukiPeer,
     home: &crate::network::HomeConnection,
@@ -218,7 +363,7 @@ impl Reader {
                 "snapshot",
                 "robot-drive",
                 uuid::Uuid::new_v4().to_string(),
-                Some(Duration::from_millis(300)),
+                Some(Duration::from_millis(750)),
                 &ReadDrive {
                     frame: home.frame.clone(),
                 },

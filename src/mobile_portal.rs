@@ -1,6 +1,10 @@
 //! A phone reports a Portal the scene does not know yet. Home validates the
 //! phone's alignment evidence exactly as it does for depth, composes the new
 //! Portal's pose itself, and adds it to the selected scene.
+//!
+//! The same report with `replace` moves a Portal the scene already knows, for
+//! when someone has moved the printed target. The phone must be aligned through
+//! a different Portal, and the scene's origin Portal stays where it is.
 use crate::local_mapper::{compose, from_rigid, inverse, rigid};
 use anyhow::{Result, anyhow, ensure};
 use auki_components::ContractType;
@@ -24,6 +28,9 @@ pub struct Report {
     pub portal_to_session: RigidTransform,
     /// The known-Portal observation that ties that session to the scene.
     pub alignment: crate::mobile_depth::Alignment,
+    /// Move a Portal the scene already has, instead of adding a new one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub replace: bool,
 }
 impl ContractType for Report {
     const DATATYPE: &'static str = "spatial.phone-portal-report/v1";
@@ -41,7 +48,7 @@ pub fn local_frame(code: &str) -> String {
     format!("portal:{code}:local")
 }
 
-/// Validate a report against the scene and return the anchor to add.
+/// Validate a report against the scene and return the anchor to add or move.
 pub fn anchor(report: &Report, scene: &MapSnapshot) -> Result<QrAnchor> {
     uuid::Uuid::parse_str(&report.session)?;
     let session = format!("phone-ar:{}", report.session);
@@ -54,14 +61,25 @@ pub fn anchor(report: &Report, scene: &MapSnapshot) -> Result<QrAnchor> {
                 .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()),
         "Invalid Portal code"
     );
-    ensure!(
-        !scene.scenegraph.anchors.contains_key(&report.code),
-        "Portal is already in this scene"
-    );
-    ensure!(
-        scene.scenegraph.anchors.len() < MAX_PORTALS,
-        "Scene Portal capacity reached"
-    );
+    let existing = scene.scenegraph.anchors.get(&report.code);
+    if report.replace {
+        ensure!(existing.is_some(), "Portal is not in this scene, so it cannot be moved");
+        // The scene's frame is named after its origin Portal; everything else is placed from it.
+        ensure!(
+            !frame.ends_with(&format!(":portal-{}", report.code)),
+            "This Portal is the scene's origin and cannot be moved"
+        );
+        ensure!(
+            report.alignment.portal_id != report.code,
+            "A Portal cannot be moved using itself as the reference"
+        );
+    } else {
+        ensure!(existing.is_none(), "Portal is already in this scene");
+        ensure!(
+            scene.scenegraph.anchors.len() < MAX_PORTALS,
+            "Scene Portal capacity reached"
+        );
+    }
     ensure!(
         report.side_length_m.is_finite() && (0.02..=2.).contains(&report.side_length_m),
         "Invalid Portal size"
@@ -111,11 +129,16 @@ pub fn anchor(report: &Report, scene: &MapSnapshot) -> Result<QrAnchor> {
         pose.translation.iter().map(|v| v * v).sum::<f64>() <= 100. * 100.,
         "Portal is implausibly far from the scene origin"
     );
+    // A moved Portal keeps its identity and printed size; only its place changes.
+    let (payload, side_length_m, local) = match existing {
+        Some(known) => (known.payload.clone(), known.side_length_m, known.pose_in_map.from_frame_id.clone()),
+        None => (report.code.clone(), report.side_length_m, local_frame(&report.code)),
+    };
     Ok(QrAnchor {
         anchor_id: report.code.clone(),
-        payload: report.code.clone(),
-        side_length_m: report.side_length_m,
-        pose_in_map: rigid(&pose, &local_frame(&report.code), frame),
+        payload,
+        side_length_m,
+        pose_in_map: rigid(&pose, &local, frame),
     })
 }
 

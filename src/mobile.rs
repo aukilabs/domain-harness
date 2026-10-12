@@ -419,6 +419,7 @@ impl MobileClient {
                 let portal_work = async {
                     while let Some(report) = portal_reports.recv().await {
                         let code = report.code.clone();
+                        let (done, doing) = if report.replace { ("moved in", "moved") } else { ("added to", "added") };
                         let result = tokio::time::timeout(
                             Duration::from_secs(4),
                             operations.invoke::<_, bool>(
@@ -429,10 +430,10 @@ impl MobileClient {
                         )
                         .await;
                         self.local_status(match result {
-                            Ok(Ok(true)) => format!("Portal {code} added to Home's scene"),
-                            Ok(Ok(false)) => format!("Home did not add Portal {code}"),
-                            Ok(Err(error)) => format!("Portal {code} not added: {error}"),
-                            Err(_) => format!("Portal {code} not added: Home did not answer"),
+                            Ok(Ok(true)) => format!("Portal {code} {done} Home's scene"),
+                            Ok(Ok(false)) => format!("Home refused Portal {code}"),
+                            Ok(Err(error)) => format!("Portal {code} not {doing}: {error}"),
+                            Err(_) => format!("Portal {code} not {doing}: Home did not answer"),
                         });
                     }
                 };
@@ -470,23 +471,32 @@ impl MobileClient {
                 };
                 let mut drive_input = self.drive.subscribe();
                 let drive_work = async {
+                    use futures::StreamExt;
                     let session = uuid::Uuid::new_v4().to_string();
                     let mut sequence = 0u64;
                     let mut held: Option<String> = None;
                     let mut stops_left = 0u8;
                     let mut tick = tokio::time::interval(Duration::from_millis(100));
                     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    // Home can take a few hundred milliseconds to answer. Sends
+                    // overlap instead of queueing behind each reply, so the stick
+                    // still reaches Home ten times a second; Home orders them by
+                    // sequence and ignores any that arrive late.
+                    let mut in_flight = futures::stream::FuturesUnordered::new();
                     loop {
-                        // Send on every change and at 10 Hz while the stick is held.
-                        tokio::select! { _ = tick.tick() => {}, changed = drive_input.changed() => if changed.is_err() { break } }
+                        tokio::select! {
+                            _ = tick.tick() => {},
+                            changed = drive_input.changed() => if changed.is_err() { break },
+                            Some(_) = in_flight.next(), if !in_flight.is_empty() => continue,
+                        }
                         let input = drive_input.borrow_and_update().clone();
                         let (target, forward, turn) = match input {
                             Some((target, forward, turn)) => {
                                 held = Some(target.clone());
-                                stops_left = 3;
+                                stops_left = 5;
                                 (target, forward, turn)
                             }
-                            // On release, say "stop" a few times so one lost
+                            // On release, say "stop" several times so a lost
                             // message cannot leave the robot on its last command.
                             None => match (&held, stops_left) {
                                 (Some(target), 1..) => {
@@ -499,6 +509,9 @@ impl MobileClient {
                                 }
                             },
                         };
+                        if in_flight.len() >= 16 {
+                            continue; // Home is not answering; do not pile up requests.
+                        }
                         sequence += 1;
                         let command = crate::mobile_drive::Command {
                             session: session.clone(),
@@ -507,15 +520,19 @@ impl MobileClient {
                             forward: forward.clamp(-1., 1.),
                             turn: turn.clamp(-1., 1.),
                         };
-                        let _ = tokio::time::timeout(
-                            Duration::from_millis(250),
-                            operations.invoke::<_, bool>(
-                                &home.scoped_component(crate::mobile_drive::COMPONENT),
-                                "update", "phone-drive", &uuid::Uuid::new_v4().to_string(),
-                                Duration::from_millis(200), &command,
-                            ),
-                        )
-                        .await;
+                        let component = home.scoped_component(crate::mobile_drive::COMPONENT);
+                        let operations = &operations;
+                        in_flight.push(async move {
+                            let _ = tokio::time::timeout(
+                                Duration::from_millis(1000),
+                                operations.invoke::<_, bool>(
+                                    &component, "update", "phone-drive",
+                                    &uuid::Uuid::new_v4().to_string(),
+                                    Duration::from_millis(900), &command,
+                                ),
+                            )
+                            .await;
+                        });
                     }
                 };
                 let pose_work = async {
@@ -771,7 +788,13 @@ impl MobileClient {
             if self.stop.is_cancelled() {
                 return Ok(());
             }
-            if result.is_err() {
+            if let Err(error) = &result {
+                // Say why, bounded and on one line; "Home unavailable" alone hid
+                // format mismatches between a phone build and Home.
+                let mut reason = format!("{error:#}").replace('\n', " ");
+                reason.truncate(220);
+                eprintln!("[peer] Home follow failed: {reason}");
+                self.local_status(format!("Home follow failed: {reason}"));
                 failures += 1;
                 ensure!(
                     failures < 3,

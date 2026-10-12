@@ -6,7 +6,7 @@ targets:
   PortalViewer:
     type: application
     platform: iOS
-    sources: [App]
+    sources: [App, Resources]
     dependencies:
       - framework: ../PortalBridge/build/SpatialPortalBridge.xcframework
         embed: false

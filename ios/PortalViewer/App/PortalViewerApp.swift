@@ -25,12 +25,23 @@ struct ViewerScreen: View {
     @AppStorage("panelOpen") private var panelOpen = true
     @State private var promptedForLogin = false
     @Environment(\.scenePhase) private var phase
-    /// Whether voxels are reaching Home right now: green sending, red failing, grey idle.
+    /// Whether voxels are reaching Home right now: ink sending, orange failing, grey idle.
     private var sending: Bool { peer.state == "live" && peer.depthDetail.hasPrefix("Depth sent") }
     private var sendFailed: Bool {
         peer.state == "live" && (peer.depthDetail.hasPrefix("Depth not sent") || peer.depthDetail.hasPrefix("Color paused"))
     }
-    private var sendColor: Color { sending ? .green : sendFailed ? .red : .gray }
+    private var sendColor: Color { sending ? Theme.ink : sendFailed ? Theme.accent : Theme.dim }
+    private var sendTag: String { sending ? "TX" : sendFailed ? "TX fault" : "Idle" }
+    /// Robots that have a pose in this scene, for the mini map.
+    private var mapRobots: [MiniMapRobot] {
+        controller.devices.compactMap { device in
+            device.chassis.map { MiniMapRobot(name: device.name, transform: $0, zUp: device.chassisZUp) }
+        }
+    }
+    /// Asleep, the camera is off, so the panel grows from the bottom and the map takes the screen.
+    private var tab: String { controller.snoozed ? "map" : panelTab }
+    private var open: Bool { controller.snoozed || panelOpen }
+    private var mapHeight: CGFloat { controller.snoozed ? max(260, UIScreen.main.bounds.height - 350) : 260 }
     private var sendSummary: String {
         if controller.snoozed { return "Not sending · phone asleep" }
         if peer.state != "live" { return "Not sending · not connected to Home" }
@@ -42,77 +53,114 @@ struct ViewerScreen: View {
         ZStack(alignment: .bottom) {
             CameraView(controller: controller).ignoresSafeArea()
             VStack {
-                VolumeControls(editor: controller.volumes, peer: peer, begin: { controller.beginVolume() })
+                VolumeControls(editor: controller.volumes, peer: peer)
                 Spacer()
             }
             if controller.snoozed {
                 ZStack {
-                    Color.black.opacity(0.88)
-                    VStack(spacing: 10) {
-                        Image(systemName: "moon.zzz.fill").font(.system(size: 54))
-                        Text("Asleep").font(.title.bold())
-                        Text("Camera off. Pick up the phone or tap to wake.").font(.subheadline)
-                    }.foregroundStyle(.white)
+                    Theme.paper.opacity(0.95).ignoresSafeArea()
+                    HStack(spacing: 14) {
+                        HStack(alignment: .top, spacing: 2) {
+                            Image(systemName: "iphone").font(.system(size: 34, weight: .light))
+                            Image(systemName: "moon.zzz").font(.system(size: 16, weight: .regular)).foregroundStyle(Theme.accent)
+                        }
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("[Asleep]").themeLabel(17, .medium)
+                            Text("Camera off. Pick up the phone or tap here to wake.").themeText(11).foregroundStyle(Theme.dim)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(16).overlay(Brackets(arm: 12).stroke(Theme.ink, lineWidth: 1))
+                    .foregroundStyle(Theme.ink)
+                    // Top of the screen; the map panel fills the rest.
+                    .frame(maxHeight: .infinity, alignment: .top).padding(.top, 8).padding(.horizontal, 16)
                 }
-                .ignoresSafeArea()
                 .onTapGesture { controller.wake() }
             }
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 10) {
-                    Circle().fill(sendColor).frame(width: 12, height: 12)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 9) {
+                    CheckBox(on: sending || sendFailed, color: sendColor, size: 9)
                         .accessibilityLabel(sendSummary)
-                    Text(peer.profile?.sceneLabel ?? "Home Scene").font(.headline).lineLimit(1)
+                    Text("[\(peer.profile?.sceneLabel ?? "Home Scene")]").themeLabel(15, .medium).lineLimit(1)
                     Spacer()
-                    Picker("Panel", selection: $panelTab) {
-                        Text("Map").tag("map")
-                        Text("POV").tag("pov")
-                        Text("Drive").tag("drive")
-                        Text("Status").tag("status")
-                    }.pickerStyle(.segmented).frame(width: 240)
+                    Text(sendTag).themeLabel(10, .semibold).foregroundStyle(sendColor).accessibilityHidden(true)
                     Button { withAnimation { panelOpen.toggle() } } label: {
-                        Image(systemName: panelOpen ? "chevron.down" : "chevron.up").frame(width: 30, height: 30)
+                        Image(systemName: panelOpen ? "chevron.down" : "chevron.up")
+                            .font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.ink)
+                            .frame(width: 30, height: 30).overlay(Rectangle().stroke(Theme.rule, lineWidth: 0.5))
                     }.accessibilityLabel(panelOpen ? "Fold panel" : "Unfold panel")
+                        .opacity(controller.snoozed ? 0 : 1).disabled(controller.snoozed)
                 }
-                if !panelOpen {
-                    Text(sendSummary).font(.caption).lineLimit(1)
-                } else if panelTab == "map" {
-                    MiniMapView(map: controller.miniMap, phone: controller.miniPhone)
-                        .frame(height: 260)
-                    Text(sendSummary).font(.caption.bold()).foregroundStyle(sendColor).lineLimit(2)
-                    Text(controller.status).font(.caption).lineLimit(2)
-                } else if panelTab == "drive" {
+                if open && !controller.snoozed {
+                    TabStrip(tabs: [("map", "Map"), ("pov", "POV"), ("drive", "Drive"), ("status", "Status")],
+                             selection: $panelTab)
+                }
+                if !open {
+                    Text(sendSummary).themeText(11).foregroundStyle(Theme.dim).lineLimit(1)
+                } else if tab == "map" {
+                    MiniMapView(map: controller.miniMap, phone: controller.miniPhone, robots: mapRobots,
+                                tracked: controller.trackedDevices, showTrails: $controller.showTrails,
+                                clearTrails: controller.clearTrails)
+                        .frame(height: mapHeight)
+                    Text(sendSummary).themeLabel(10, .semibold).foregroundStyle(sendColor).lineLimit(2)
+                    Text(controller.status).themeText(11).foregroundStyle(Theme.dim).lineLimit(2)
+                } else if tab == "drive" {
                     DrivePanel(controller: controller, peer: peer, selection: $driveSelection).frame(height: 260)
-                } else if panelTab == "pov" {
+                } else if tab == "pov" {
                     PovPanel(controller: controller, selection: $povSelection).frame(height: 260)
-                    Text(sendSummary).font(.caption.bold()).foregroundStyle(sendColor).lineLimit(1)
+                    Text(sendSummary).themeLabel(10, .semibold).foregroundStyle(sendColor).lineLimit(1)
                 } else {
-                    Text(peer.detail).font(.subheadline.bold())
-                    Text(controller.status).font(.subheadline)
-                    HStack {
-                        Text("Name").font(.subheadline)
+                    Text(peer.detail).themeText(12, .semibold)
+                    Text(controller.status).themeText(11).foregroundStyle(Theme.dim)
+                    HStack(spacing: 10) {
+                        Text("Name").themeLabel().foregroundStyle(Theme.dim)
                         TextField("How Home labels this phone", text: $phoneName)
-                            .textFieldStyle(.roundedBorder).autocorrectionDisabled()
+                            .textFieldStyle(RuleFieldStyle()).autocorrectionDisabled()
                             .textInputAutocapitalization(.never).submitLabel(.done)
                             .onSubmit { peer.setName(phoneName) }
                     }
+                    Hatch()
+                    Text("Layers").themeLabel().foregroundStyle(Theme.dim)
+                    Toggle("Semantic volumes in AR", isOn: $controller.showVolumesInAR)
                     Toggle("Share LiDAR depth", isOn: $controller.shareDepth)
-                    Text(controller.depthStatus).font(.caption)
-                    if controller.shareDepth && peer.state == "live" { Text(peer.depthDetail).font(.caption) }
+                    Text(controller.depthStatus).themeText(10).foregroundStyle(Theme.dim)
+                    if controller.shareDepth && peer.state == "live" {
+                        Text(peer.depthDetail).themeText(10).foregroundStyle(Theme.dim)
+                    }
+                    Hatch()
                     HStack {
                         Button(peer.running ? "Disconnect" : "Connect to Home") {
                             if peer.running { peer.disconnect() } else { connecting = true }
-                        }
+                        }.buttonStyle(PlateButtonStyle(filled: !peer.running))
                         Spacer()
                         Button("Realign") { controller.realign() }
                             .disabled(controller.map == nil)
-                    }.buttonStyle(.bordered)
+                    }.buttonStyle(PlateButtonStyle())
                     Text(peer.state == "live" ? "Live P2P · double-tap a surface to add a note" : "Waiting for Home · any visible map is cached")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .themeText(10).foregroundStyle(Theme.dim)
                 }
             }
-            .padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+            .toggleStyle(CheckToggleStyle())
+            .themePanel()
+            .overlay(alignment: .topTrailing) {
+                HStack(spacing: 8) {
+                    VolumeCreateTag(editor: controller.volumes, peer: peer, begin: { controller.beginVolume() })
+                    // Always in view, so it is obvious whether volumes are on in AR.
+                    Button { controller.showVolumesInAR.toggle() } label: {
+                        HStack(spacing: 7) {
+                            CheckBox(on: controller.showVolumesInAR, size: 12)
+                            Text("Volumes").themeLabel(10, .semibold)
+                        }
+                        .themeTag()
+                    }
+                    .accessibilityLabel(controller.showVolumesInAR ? "Hide semantic volumes in AR" : "Show semantic volumes in AR")
+                }
+                .offset(y: -36)
+                .opacity(controller.snoozed ? 0 : 1).disabled(controller.snoozed)
+            }
             .padding()
         }
+        .animation(.easeInOut(duration: 0.3), value: controller.snoozed)
         .onAppear {
             peer.onMap = { controller.load($0) }
             controller.onPose = { peer.publishPose($0) }
@@ -145,7 +193,7 @@ struct ViewerScreen: View {
                         }
                         Text("Select your scene in Home, download its phone connection, then save it to Files on this iPhone.")
                             .font(.caption)
-                        if let pairingError { Text(pairingError).foregroundStyle(.red) }
+                        if let pairingError { Text(pairingError).foregroundStyle(Theme.accent) }
                     }
                     Section("Auki User · development environment") {
                         TextField("Email", text: $peer.email)
@@ -165,6 +213,7 @@ struct ViewerScreen: View {
                     }
                     Text(peer.detail)
                 }
+                .themeForm()
                 .navigationTitle("Connect to Home")
                 .toolbar { Button("Done") { connecting = false } }
             }
@@ -224,29 +273,34 @@ struct DrivePanel: View {
                             Button { release(); selection = robot.id } label: {
                                 HStack(spacing: 6) {
                                     Image(systemName: "car.side").frame(width: 18)
-                                    Text(robot.name).font(.caption).lineLimit(2)
+                                    Text(robot.name).themeLabel(10).lineLimit(2)
                                     Spacer(minLength: 0)
                                 }
-                                .padding(.vertical, 7).padding(.horizontal, 8)
-                                .background(robot.id == chosen?.id ? Color.accentColor.opacity(0.3) : Color.clear,
-                                            in: RoundedRectangle(cornerRadius: 8))
+                                .themeRow(selected: robot.id == chosen?.id)
                             }.buttonStyle(.plain)
                         }
                         if robots.isEmpty {
-                            Text("No robot in this scene yet.").font(.caption).foregroundStyle(.secondary)
+                            Text("No robot in this scene yet.").themeText(10).foregroundStyle(Theme.dim)
                         }
                     }
                 }
-                Toggle("Arm", isOn: $armed).font(.caption.bold())
+                Toggle("Arm", isOn: $armed)
                     .disabled(chosen == nil || peer.state != "live")
             }.frame(width: 118)
             VStack(spacing: 6) {
                 ZStack {
-                    Circle().fill(Color.black.opacity(0.55))
-                    Circle().stroke(armed ? Color.green : Color.gray, lineWidth: 2)
-                    Circle().fill(armed ? Color.green : Color.gray).frame(width: 54, height: 54).offset(stick)
+                    Circle().fill(Theme.well)
+                    // Crosshair through the rest position.
+                    Rectangle().fill(Theme.rule).frame(width: 0.5)
+                    Rectangle().fill(Theme.rule).frame(height: 0.5)
+                    Circle().stroke(Theme.rule, style: StrokeStyle(lineWidth: 0.5, dash: [3, 3])).frame(width: radius, height: radius)
+                    Circle().stroke(armed ? Theme.accent : Theme.dim, lineWidth: armed ? 1.5 : 1)
+                    Circle().fill(armed ? Theme.accent : Theme.dim).frame(width: 54, height: 54).offset(stick)
+                    Circle().stroke(Theme.paper, lineWidth: 1).frame(width: 54, height: 54).offset(stick)
                 }
+                .clipShape(Circle())
                 .frame(width: radius * 2, height: radius * 2)
+                .padding(4).overlay(Brackets(arm: 12).stroke(armed ? Theme.ink : Theme.rule, lineWidth: 1))
                 .contentShape(Circle())
                 .gesture(DragGesture(minimumDistance: 0)
                     .onChanged { value in
@@ -259,8 +313,8 @@ struct DrivePanel: View {
                         peer.drive(target: chosen.id, forward: Float(-dy / radius), turn: Float(-dx / radius))
                     }
                     .onEnded { _ in release() })
-                Text(caption(chosen?.name)).font(.caption).multilineTextAlignment(.center).lineLimit(3)
-                    .foregroundStyle(stick == .zero ? Color.secondary : Color.green)
+                Text(caption(chosen?.name)).themeText(10).multilineTextAlignment(.center).lineLimit(3)
+                    .foregroundStyle(stick == .zero ? Theme.dim : Theme.accent)
             }.frame(maxWidth: .infinity)
         }
         .onChange(of: armed) { _, on in if !on { release() } }
@@ -295,6 +349,10 @@ struct PovDevice: Identifiable, Equatable {
     var detail: String? = nil
     /// Home's own, slightly delayed, record of this phone.
     var isSelf = false
+    /// For a robot: its base pose in Home's frame, and whether that base is Z up
+    /// with +X forward (Home's robot labels) or Y up with -Z forward (runner poses).
+    var chassis: simd_float4x4? = nil
+    var chassisZUp = false
 
     /// Phone camera poses use the sensor's landscape axes. Turn the view a
     /// quarter about the optical axis so a phone held upright looks upright.
@@ -317,8 +375,9 @@ struct PovSceneView: UIViewRepresentable {
     }
     func makeUIView(context: Context) -> SCNView {
         let view = SCNView()
+        view.autoenablesDefaultLighting = true
         view.scene = scene
-        view.backgroundColor = UIColor(white: 0.06, alpha: 1)
+        view.backgroundColor = Theme.uiWell
         view.antialiasingMode = .multisampling2X
         view.rendersContinuously = false
         scene.rootNode.addChildNode(context.coordinator)
@@ -349,35 +408,33 @@ struct PovPanel: View {
                             HStack(spacing: 6) {
                                 Image(systemName: device.asleep ? "moon.zzz.fill" : device.symbol).frame(width: 18)
                                 VStack(alignment: .leading, spacing: 1) {
-                                    Text(device.name + (device.asleep ? " · asleep" : "")).font(.caption).lineLimit(2)
+                                    Text(device.name + (device.asleep ? " · asleep" : "")).themeLabel(10).lineLimit(2)
                                     if !device.located {
-                                        Text(device.detail ?? "no position yet").font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                                        Text(device.detail ?? "no position yet").themeText(9).foregroundStyle(Theme.dim).lineLimit(2)
                                     }
                                 }
                                 Spacer(minLength: 0)
                             }
                             .opacity(device.located ? 1 : 0.55)
-                            .padding(.vertical, 7).padding(.horizontal, 8)
-                            .background(device.id == chosen?.id ? Color.accentColor.opacity(0.3) : Color.clear,
-                                        in: RoundedRectangle(cornerRadius: 8))
+                            .themeRow(selected: device.id == chosen?.id)
                         }.buttonStyle(.plain).disabled(!device.located)
                     }
                     if devices.isEmpty {
-                        Text("No devices yet. Align this phone or wait for others.").font(.caption).foregroundStyle(.secondary)
+                        Text("No devices yet. Align this phone or wait for others.").themeText(10).foregroundStyle(Theme.dim)
                     }
                 }
             }.frame(width: 118)
             ZStack(alignment: .bottomLeading) {
                 if let chosen {
                     PovSceneView(scene: controller.povScene, transform: chosen.transform)
-                    Text(chosen.name + (chosen.asleep ? " · asleep, last view" : "")).font(.caption2.bold())
-                        .padding(5).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 6)).padding(6)
+                    Brackets(arm: 14).stroke(Theme.ink.opacity(0.7), lineWidth: 1).padding(10).allowsHitTesting(false)
+                    Text(chosen.name + (chosen.asleep ? " · asleep, last view" : "")).themeLabel(9, .semibold)
+                        .themeTag().padding(6)
                 } else {
-                    Color.black.opacity(0.55)
-                    Text("Pick a device").font(.caption).foregroundStyle(.secondary)
+                    Text("Pick a device").themeLabel(10).foregroundStyle(Theme.dim)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-            }.clipShape(RoundedRectangle(cornerRadius: 12))
+            }.themeWell()
         }
     }
 }
@@ -390,6 +447,8 @@ struct MiniMapData: Equatable {
     var cellSize: Float = 0.1
     var portals = [SIMD3<Float>]()
     var notes = [SIMD3<Float>]()
+    /// Semantic volumes: upright boxes with a bottom-centred position and a yaw about +Y.
+    var volumes = [SemanticVolume]()
     /// Height of the ground grid: the underside of the lowest voxel.
     var groundY: Float = 0
 
@@ -409,10 +468,72 @@ struct MiniMapData: Equatable {
         notes = (map.render?.notes ?? []).compactMap {
             $0.position.count == 3 ? SIMD3($0.position[0], $0.position[1], $0.position[2]) : nil
         }
+        volumes = (map.render?.volumes ?? []).filter(\.valid)
         groundY = cells.map(\.p.y).min().map { $0 - cellSize / 2 } ?? portals.map(\.y).min() ?? 0
     }
 }
 struct MiniMapPhone: Equatable { let position: SIMD3<Float>; let heading: SIMD2<Float> }
+/// A robot on the mini map: its chassis pose in Home's frame.
+struct MiniMapRobot: Equatable {
+    let name: String
+    let transform: simd_float4x4
+    /// True when the base is Z up and drives along +X; otherwise Y up, driving along -Z.
+    var zUp = false
+    /// The chassis is drawn as its 0.35 m by 0.5 m footprint.
+    static let halfWidth: Float = 0.175, halfLength: Float = 0.25
+    var position: SIMD3<Float> { SIMD3(transform.columns.3.x, transform.columns.3.y, transform.columns.3.z) }
+    /// Footprint corners, front pair first, then the nose point used for the heading tick.
+    var outline: [SIMD3<Float>] {
+        [(-Self.halfWidth, -Self.halfLength), (Self.halfWidth, -Self.halfLength),
+         (Self.halfWidth, Self.halfLength), (-Self.halfWidth, Self.halfLength), (0, -Self.halfLength * 2.2)].map { x, z in
+            // (x, z) is across and behind the nose in the Y-up convention.
+            let p = transform * (zUp ? SIMD4(-z, -x, 0, 1) : SIMD4(x, 0, z, 1))
+            return SIMD3(p.x, p.y, p.z)
+        }
+    }
+}
+
+/// What this phone knows about a tapped device: who it is, how it is, and where it was last seen.
+struct DeviceCard: View {
+    let device: TrackedDevice
+    /// This phone's position, for the distance line.
+    let from: SIMD3<Float>?
+
+    static func age(_ seconds: TimeInterval) -> String {
+        let s = max(0, Int(seconds))
+        return s < 60 ? "\(s) s" : s < 3600 ? "\(s / 60) min" : "\(s / 3600) h \(s % 3600 / 60) min"
+    }
+    private func state(_ now: Date) -> String {
+        switch device.state {
+        case .live: return "Live"
+        case .asleep: return "Asleep zzz"
+        case .lost: return "Lost zzz · last seen " + Self.age(now.timeIntervalSince(device.lastSeen)) + " ago"
+        }
+    }
+    var body: some View {
+        // The "last seen" line counts up on its own.
+        TimelineView(.periodic(from: .now, by: 1)) { timeline in
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 5) {
+                    Image(systemName: device.kind == .phone ? "iphone" : "car.side").font(.system(size: 11))
+                    Text(device.name.uppercased()).font(Theme.mono(11, .semibold))
+                }.foregroundStyle(Theme.ink)
+                Text(state(timeline.date)).font(Theme.mono(10))
+                    .foregroundStyle(device.state == .live ? Theme.ink : Theme.accent)
+                let p = device.position
+                Text(String(format: "x %.2f  y %.2f  z %.2f m", p.x, p.y, p.z)).font(Theme.mono(10)).foregroundStyle(Theme.dim)
+                if let from {
+                    Text(String(format: "%.1f m from this phone", simd_distance(from, p))).font(Theme.mono(10)).foregroundStyle(Theme.dim)
+                }
+                Text(String(format: "Trail %.1f m · ", device.travelled) + String(device.id.suffix(6)))
+                    .font(Theme.mono(10)).foregroundStyle(Theme.dim)
+            }
+            .padding(7).background(Theme.paper.opacity(0.94))
+            .overlay(Rectangle().stroke(Theme.rule, lineWidth: 0.5))
+            .accessibilityElement(children: .combine)
+        }
+    }
+}
 
 /// Standard viewport controls: one finger orbits, two fingers truck, pinch
 /// dollies, double-tap resets.
@@ -421,6 +542,7 @@ struct MiniMapGestures: UIViewRepresentable {
     var onTruck: (CGSize) -> Void
     var onZoom: (CGFloat) -> Void
     var onReset: () -> Void
+    var onTap: (CGPoint) -> Void = { _ in }
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> UIView {
         let view = UIView()
@@ -432,8 +554,11 @@ struct MiniMapGestures: UIViewRepresentable {
         let pinch = UIPinchGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.pinch(_:)))
         let reset = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.reset))
         reset.numberOfTapsRequired = 2
+        // One tap asks about whatever is under the finger; it waits for a second tap not to come.
+        let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.tap(_:)))
+        tap.require(toFail: reset)
         truck.delegate = context.coordinator; pinch.delegate = context.coordinator
-        [orbit, truck, pinch, reset].forEach(view.addGestureRecognizer)
+        [orbit, truck, pinch, reset, tap].forEach(view.addGestureRecognizer)
         return view
     }
     func updateUIView(_ view: UIView, context: Context) { context.coordinator.parent = self }
@@ -450,20 +575,183 @@ struct MiniMapGestures: UIViewRepresentable {
         }
         @objc func pinch(_ g: UIPinchGestureRecognizer) { parent.onZoom(g.scale); g.scale = 1 }
         @objc func reset() { parent.onReset() }
+        @objc func tap(_ g: UITapGestureRecognizer) { parent.onTap(g.location(in: g.view)) }
         // Two fingers may truck and dolly in the same motion.
         func gestureRecognizer(_ a: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith b: UIGestureRecognizer) -> Bool { true }
+    }
+}
+
+/// An outline for a model in AR: an enlarged shell in the accent colour drawn over
+/// everything, then the model itself on top. Where something hides the model, the
+/// shell still shows, so the robot can be found behind the map or a wall.
+///
+/// A full-screen SCNTechnique cannot do this here: ARKit's person occlusion owns
+/// the AR view's technique.
+enum RobotGlow {
+    private static let shell: SCNMaterial = {
+        let material = SCNMaterial()
+        material.lightingModel = .constant
+        material.diffuse.contents = Theme.uiAccent
+        material.cullMode = .front
+        material.readsFromDepthBuffer = false
+        material.writesToDepthBuffer = false
+        // Push each vertex out along its normal by a fraction of its distance from the
+        // camera, so the rim is about the same width on screen near or far.
+        material.shaderModifiers = [.geometry: """
+            float4 viewPosition = scn_node.modelViewTransform * _geometry.position;
+            float3 viewNormal = normalize((scn_node.modelViewTransform * float4(_geometry.normal, 0.0)).xyz);
+            viewPosition.xyz += viewNormal * (0.012 * -viewPosition.z);
+            _geometry.position = scn_node.inverseModelViewTransform * viewPosition;
+            """]
+        return material
+    }()
+    static func outlined(_ model: SCNNode) -> SCNNode {
+        let rim = model.clone()
+        rim.enumerateHierarchy { node, _ in
+            guard let geometry = node.geometry?.copy() as? SCNGeometry else { return }
+            geometry.materials = Array(repeating: shell, count: max(1, geometry.materials.count))
+            node.geometry = geometry
+            node.renderingOrder = 100
+        }
+        model.enumerateHierarchy { node, _ in node.renderingOrder = 101 }
+        let holder = SCNNode()
+        holder.addChildNode(rim); holder.addChildNode(model)
+        return holder
+    }
+}
+
+/// The robot's 3D model drawn over the mini map. Its camera is orthographic and
+/// copies the map's own projection, so the model orbits, trucks and zooms with it.
+struct RobotMapLayer: UIViewRepresentable {
+    let robots: [MiniMapRobot]
+    let center: SIMD3<Float>
+    /// Points per metre.
+    let scale: Float
+    let yaw: Float
+    let pitch: Float
+    let size: CGSize
+
+    /// The rigged Bracketbot, loaded once off the main thread. Authored Z up in metres.
+    private(set) static var template: SCNNode?
+    private static var waiting = [() -> Void]()
+    private static var loading = false
+    static func whenLoaded(_ ready: @escaping () -> Void) {
+        if template != nil { ready(); return }
+        waiting.append(ready)
+        guard !loading else { return }
+        loading = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            var model: SCNNode?
+            if let url = Bundle.main.url(forResource: "bracketbot_0184_rigged", withExtension: "usdz"),
+               let scene = try? SCNScene(url: url, options: [.checkConsistency: false]) {
+                let loaded = scene.rootNode.childNodes.first
+                loaded?.childNode(withName: "env_light", recursively: true)?.removeFromParentNode()
+                // The model faces a quarter turn off the base's heading: turn it about the vertical.
+                let turned = SCNNode()
+                turned.simdOrientation = simd_quatf(angle: .pi / 2, axis: SIMD3(0, 0, 1))
+                if let loaded { turned.addChildNode(loaded); model = turned }
+            }
+            DispatchQueue.main.async {
+                template = model
+                let pending = waiting; waiting = []
+                if model != nil { pending.forEach { $0() } }
+            }
+        }
+    }
+
+    final class Coordinator {
+        let scene = SCNScene()
+        let camera = SCNNode()
+        var nodes = [String: SCNNode]()
+        var robots = [MiniMapRobot]()
+        func sync() {
+            guard let template = RobotMapLayer.template else { return }
+            for (name, node) in nodes where !robots.contains(where: { $0.name == name }) {
+                node.removeFromParentNode(); nodes[name] = nil
+            }
+            for robot in robots {
+                let node = nodes[robot.name] ?? {
+                    let holder = SCNNode()
+                    let upright = SCNNode()
+                    // The model is Z up. A Y-up pose needs it stood up; a Z-up base pose already is.
+                    if !robot.zUp { upright.simdOrientation = simd_quatf(angle: -.pi / 2, axis: SIMD3(1, 0, 0)) }
+                    upright.addChildNode(template.clone())
+                    holder.addChildNode(upright)
+                    scene.rootNode.addChildNode(holder)
+                    nodes[robot.name] = holder
+                    return holder
+                }()
+                node.simdTransform = robot.transform
+            }
+        }
+    }
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeUIView(context: Context) -> SCNView {
+        let view = SCNView()
+        view.scene = context.coordinator.scene
+        view.backgroundColor = .clear
+        view.isOpaque = false
+        view.isUserInteractionEnabled = false
+        view.autoenablesDefaultLighting = true
+        view.antialiasingMode = .multisampling4X
+        view.rendersContinuously = false
+        let camera = SCNCamera()
+        camera.usesOrthographicProjection = true
+        camera.zNear = 0.1; camera.zFar = 400
+        context.coordinator.camera.camera = camera
+        context.coordinator.scene.rootNode.addChildNode(context.coordinator.camera)
+        view.pointOfView = context.coordinator.camera
+        let coordinator = context.coordinator
+        RobotMapLayer.whenLoaded { [weak coordinator] in coordinator?.sync() }
+        return view
+    }
+    func updateUIView(_ view: SCNView, context: Context) {
+        context.coordinator.robots = robots
+        context.coordinator.sync()
+        // The map's projection as a camera: screen right, screen up, and the axis toward the viewer.
+        let right = SIMD3(cos(yaw), 0, -sin(yaw))
+        let up = SIMD3(-sin(yaw) * sin(pitch), cos(pitch), -cos(yaw) * sin(pitch))
+        let toward = SIMD3(sin(yaw) * cos(pitch), sin(pitch), cos(yaw) * cos(pitch))
+        let eye = center + toward * 200
+        context.coordinator.camera.simdTransform = simd_float4x4(
+            SIMD4(right, 0), SIMD4(up, 0), SIMD4(toward, 0), SIMD4(eye, 1))
+        // Half the visible height in metres.
+        context.coordinator.camera.camera?.orthographicScale = Double(size.height) / 2 / Double(max(scale, 0.001))
     }
 }
 
 struct MiniMapView: View {
     let map: MiniMapData
     let phone: MiniMapPhone?
+    var robots = [MiniMapRobot]()
+    /// Every other phone and robot seen in this scene, at its last known place, with its trail.
+    var tracked = [TrackedDevice]()
+    /// The device last tapped, described in a card until the map is tapped elsewhere.
+    @State private var queried: String?
+    /// One switch for the robot trails here and in AR.
+    var showTrails: Binding<Bool> = .constant(true)
+    var clearTrails: () -> Void = {}
     /// Offset of the orbit pivot from the scene's center, in Home metres.
     @State private var pan = SIMD3<Float>(0, 0, 0)
     @State private var yaw: Float = 0
     /// 90 degrees looks straight down; lower values tilt toward the horizon.
     @State private var pitch: Float = .pi / 2
     @State private var zoom: Float = 1
+    @AppStorage("showVolumesOnMap") private var showVolumes = true
+    /// Robots as the 3D model, or as a flat footprint icon.
+    @AppStorage("showRobotModelOnMap") private var showRobotModel = true
+
+    /// The eight corners of a volume in Home metres: base ring, then top ring.
+    static func corners(_ volume: SemanticVolume) -> [SIMD3<Float>] {
+        let base = SIMD3(volume.position[0], volume.position[1], volume.position[2])
+        let (w, h, d) = (volume.dimensions[0] / 2, volume.dimensions[1], volume.dimensions[2] / 2)
+        let (cosine, sine) = (cos(volume.yaw), sin(volume.yaw))
+        let ring = [(-w, -d), (w, -d), (w, d), (-w, d)].map { x, z in
+            // Yaw about +Y, the same turn SceneKit applies to the AR box.
+            base + SIMD3(x * cosine + z * sine, 0, -x * sine + z * cosine)
+        }
+        return ring + ring.map { $0 + SIMD3(0, h, 0) }
+    }
 
     var body: some View {
         GeometryReader { geometry in
@@ -471,6 +759,12 @@ struct MiniMapView: View {
             let view = projection(size)
             ZStack(alignment: .topTrailing) {
                 Canvas { context, _ in draw(&context, size: size, view: view) }
+                if !robots.isEmpty && showRobotModel {
+                    RobotMapLayer(robots: robots, center: view.center, scale: view.scale, yaw: view.yaw,
+                                  pitch: view.pitch, size: size)
+                        .allowsHitTesting(false)
+                }
+                Canvas { context, _ in drawMarkers(&context, view: view) }.allowsHitTesting(false)
                 MiniMapGestures(
                     onOrbit: { d in
                         // Orbit about the pivot, which stays at the center of the view.
@@ -484,16 +778,54 @@ struct MiniMapView: View {
                         pan -= SIMD3(turnedX * cos(yaw) + turnedZ * sin(yaw), up, -turnedX * sin(yaw) + turnedZ * cos(yaw))
                     },
                     onZoom: { zoom = max(0.4, min(12, zoom * Float($0))) },
-                    onReset: { withAnimation { pan = .zero; yaw = 0; pitch = .pi / 2; zoom = 1 } })
-                if pan != SIMD3<Float>(0, 0, 0) || yaw != 0 || pitch != .pi / 2 || zoom != 1 {
-                    Button { pan = .zero; yaw = 0; pitch = .pi / 2; zoom = 1 } label: {
-                        Image(systemName: "scope").padding(7).background(.thinMaterial, in: Circle())
-                    }.padding(6).accessibilityLabel("Reset map view")
+                    onReset: { withAnimation { pan = .zero; yaw = 0; pitch = .pi / 2; zoom = 1 } },
+                    onTap: { point in
+                        let near = tracked.map { ($0.id, view.place($0.position).point) }
+                            .map { ($0.0, hypot($0.1.x - point.x, $0.1.y - point.y)) }
+                            .filter { $0.1 < 28 }.min { $0.1 < $1.1 }
+                        queried = near?.0
+                    })
+                VStack(spacing: 0) {
+                    Button { showVolumes.toggle() } label: {
+                        Image(systemName: showVolumes ? "cube.fill" : "cube").font(.system(size: 13))
+                            .foregroundStyle(showVolumes ? Theme.accent : Theme.dim)
+                            .frame(width: 30, height: 30).background(Theme.paper.opacity(0.94))
+                            .overlay(Rectangle().stroke(Theme.rule, lineWidth: 0.5))
+                    }.padding(6).accessibilityLabel(showVolumes ? "Hide semantic volumes on the map" : "Show semantic volumes on the map")
+                    Button { showRobotModel.toggle() } label: {
+                        Image(systemName: showRobotModel ? "view.3d" : "view.2d").font(.system(size: 13))
+                            .foregroundStyle(showRobotModel ? Theme.accent : Theme.dim)
+                            .frame(width: 30, height: 30).background(Theme.paper.opacity(0.94))
+                            .overlay(Rectangle().stroke(Theme.rule, lineWidth: 0.5))
+                    }.padding(.horizontal, 6).padding(.bottom, 6)
+                        .accessibilityLabel(showRobotModel ? "Show robots as icons" : "Show robots as 3D models")
+                    // Tap shows or hides robot trails; a long press starts them again from here.
+                    Image(systemName: "point.topleft.down.to.point.bottomright.curvepath").font(.system(size: 13))
+                        .foregroundStyle(showTrails.wrappedValue ? Theme.accent : Theme.dim)
+                        .frame(width: 30, height: 30).background(Theme.paper.opacity(0.94))
+                        .overlay(Rectangle().stroke(Theme.rule, lineWidth: 0.5))
+                        .padding(.horizontal, 6).padding(.bottom, 6)
+                        .onTapGesture { showTrails.wrappedValue.toggle() }
+                        .onLongPressGesture { clearTrails(); UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
+                        .accessibilityLabel(showTrails.wrappedValue ? "Hide robot trails" : "Show robot trails")
+                        .accessibilityHint("Long press to clear the trails")
+                        .accessibilityAddTraits(.isButton)
+                    if pan != SIMD3<Float>(0, 0, 0) || yaw != 0 || pitch != .pi / 2 || zoom != 1 {
+                        Button { pan = .zero; yaw = 0; pitch = .pi / 2; zoom = 1 } label: {
+                            Image(systemName: "scope").font(.system(size: 13)).foregroundStyle(Theme.ink)
+                                .frame(width: 30, height: 30).background(Theme.paper.opacity(0.94))
+                                .overlay(Rectangle().stroke(Theme.rule, lineWidth: 0.5))
+                        }.padding(.horizontal, 6).accessibilityLabel("Reset map view")
+                    }
                 }
             }
         }
-        .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 12))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .themeWell()
+        .overlay(alignment: .bottomLeading) {
+            if let device = tracked.first(where: { $0.id == queried }) {
+                DeviceCard(device: device, from: phone?.position).padding(6)
+            }
+        }
         .accessibilityLabel("Mini map")
     }
 
@@ -511,7 +843,11 @@ struct MiniMapView: View {
 
     private func bounds() -> (low: SIMD3<Float>, high: SIMD3<Float>)? {
         var points = map.cells.map(\.p) + map.portals + map.notes
+        if showVolumes { points += map.volumes.flatMap { Self.corners($0) } }
         if let phone { points.append(phone.position) }
+        points += robots.map(\.position)
+        points += tracked.filter { $0.kind == .phone || $0.state == .lost }.map(\.position)
+        if showTrails.wrappedValue { points += tracked.flatMap(\.trail) }
         guard var low = points.first else { return nil }
         var high = low
         for p in points { low = simd_min(low, p); high = simd_max(high, p) }
@@ -528,19 +864,102 @@ struct MiniMapView: View {
                           scale: max(1, fit * zoom), yaw: yaw, pitch: pitch, size: size)
     }
 
+    /// Drawn above everything else on the map: each device's trail, then a badge
+    /// for every phone and robot at its last known place.
+    private func drawMarkers(_ context: inout GraphicsContext, view: Projection) {
+        if showTrails.wrappedValue {
+            // Pale blue where the device started, yellow where it is now, cased in black to read on any map.
+            for device in tracked where !device.trail.isEmpty {
+                let points = device.trail.map { view.place($0).point } + [view.place(device.position).point]
+                guard points.count > 1 else { continue }
+                var whole = Path(); whole.addLines(points)
+                context.stroke(whole, with: .color(.black.opacity(0.75)), style: StrokeStyle(lineWidth: 8, lineCap: .round, lineJoin: .round))
+                for i in 1..<points.count {
+                    var segment = Path(); segment.move(to: points[i - 1]); segment.addLine(to: points[i])
+                    let c = DeviceTrails.color(age: Float(i) / Float(points.count - 1))
+                    context.stroke(segment, with: .color(Color(red: Double(c.x), green: Double(c.y), blue: Double(c.z))),
+                                   style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                }
+            }
+        }
+        func badge(at point: CGPoint, lift: CGFloat = 0, symbol: String?, fill: Color, name: String, resting: Bool, chosen: Bool) {
+            let strength = resting ? 0.55 : 1.0
+            // A lifted badge is a pin: it stands clear of what it marks, on a stalk.
+            let at = CGPoint(x: point.x, y: point.y - lift)
+            if lift > 0 {
+                var stalk = Path(); stalk.move(to: point); stalk.addLine(to: at)
+                context.stroke(stalk, with: .color(.black.opacity(0.8)), lineWidth: 4)
+                context.stroke(stalk, with: .color(.white.opacity(strength)), lineWidth: 2)
+            }
+            let disc = CGRect(x: at.x - 17, y: at.y - 17, width: 34, height: 34)
+            context.fill(Path(ellipseIn: disc), with: .color(fill.opacity(strength)))
+            context.stroke(Path(ellipseIn: disc), with: .color(.white.opacity(strength)), lineWidth: 2.5)
+            context.stroke(Path(ellipseIn: disc.insetBy(dx: -1.5, dy: -1.5)), with: .color(.black.opacity(0.8 * strength)), lineWidth: 1)
+            if let symbol {
+                var icon = context.resolve(Image(systemName: symbol).symbolRenderingMode(.monochrome))
+                icon.shading = .color(.white)
+                context.draw(icon, in: CGRect(x: at.x - 9, y: at.y - 11, width: 18, height: 22))
+            } else {
+                // Robot face: a head with two eyes and an antenna.
+                let head = CGRect(x: at.x - 9, y: at.y - 5, width: 18, height: 13)
+                context.fill(Path(roundedRect: head, cornerRadius: 3), with: .color(.white))
+                for dx in [-4.0, 4.0] {
+                    context.fill(Path(ellipseIn: CGRect(x: at.x + dx - 2, y: at.y - 1, width: 4, height: 4)), with: .color(fill))
+                }
+                var antenna = Path(); antenna.move(to: CGPoint(x: at.x, y: at.y - 5)); antenna.addLine(to: CGPoint(x: at.x, y: at.y - 10))
+                context.stroke(antenna, with: .color(.white), lineWidth: 2)
+                context.fill(Path(ellipseIn: CGRect(x: at.x - 2.5, y: at.y - 13.5, width: 5, height: 5)), with: .color(.white))
+            }
+            let label = context.resolve(Text(name.uppercased()).font(Theme.mono(11, .bold)).foregroundColor(.white))
+            let measured = label.measure(in: CGSize(width: 200, height: 30))
+            let plate = CGRect(x: at.x - measured.width / 2 - 4, y: disc.maxY + 3, width: measured.width + 8, height: measured.height + 2)
+            context.fill(Path(plate), with: .color(.black.opacity(0.8)))
+            context.draw(label, at: CGPoint(x: plate.midX, y: plate.midY))
+            if resting {
+                let zzz = context.resolve(Text("zzz").font(Theme.mono(14, .bold)).foregroundColor(.white))
+                let size = zzz.measure(in: CGSize(width: 60, height: 30))
+                let bubble = CGRect(x: disc.maxX - 6, y: disc.minY - size.height + 4, width: size.width + 8, height: size.height + 2)
+                context.fill(Path(roundedRect: bubble, cornerRadius: 4), with: .color(Theme.accent))
+                context.draw(zzz, at: CGPoint(x: bubble.midX, y: bubble.midY))
+            }
+            if chosen {
+                context.stroke(Path(ellipseIn: disc.insetBy(dx: -6, dy: -6)), with: .color(Theme.accent), lineWidth: 2.5)
+            }
+        }
+        if let phone {
+            badge(at: view.place(phone.position).point, symbol: "iphone", fill: Theme.accent, name: "You", resting: false, chosen: false)
+        }
+        for device in tracked {
+            // A robot's badge is a pin, so it stands clear of its model and of a phone beside it.
+            badge(at: view.place(device.position).point, lift: device.kind == .robot ? 52 : 0,
+                  symbol: device.kind == .phone ? "iphone" : nil,
+                  fill: device.kind == .phone ? Color(red: 0.1, green: 0.45, blue: 0.95) : Color(red: 0.05, green: 0.6, blue: 0.3),
+                  name: device.name, resting: device.state != .live, chosen: device.id == queried)
+        }
+    }
+
     private func draw(_ context: inout GraphicsContext, size: CGSize, view: Projection) {
+        // Registration marks in the corners of the viewport.
+        for corner in [CGPoint(x: 12, y: 12), CGPoint(x: 12, y: size.height - 12), CGPoint(x: size.width - 12, y: size.height - 12)] {
+            var mark = Path()
+            mark.move(to: CGPoint(x: corner.x - 4, y: corner.y)); mark.addLine(to: CGPoint(x: corner.x + 4, y: corner.y))
+            mark.move(to: CGPoint(x: corner.x, y: corner.y - 4)); mark.addLine(to: CGPoint(x: corner.x, y: corner.y + 4))
+            context.stroke(mark, with: .color(Theme.dim), lineWidth: 0.6)
+        }
         guard let (low, high) = bounds() else {
-            context.draw(Text("No map yet. Connect and scan a Portal.").font(.caption).foregroundColor(.secondary),
+            context.draw(Text("NO MAP YET · CONNECT AND SCAN A PORTAL").font(Theme.mono(10)).foregroundColor(Theme.dim),
                          at: CGPoint(x: size.width / 2, y: size.height / 2))
             return
         }
+        context.draw(Text("GRID 1 M").font(Theme.mono(9)).foregroundColor(Theme.dim),
+                     at: CGPoint(x: 22, y: size.height - 12), anchor: .leading)
         // Ground grid at the lowest level: 1 m lines, bolder every 5 m.
         let x0 = (low.x - 1).rounded(.down), x1 = (high.x + 1).rounded(.up)
         let z0 = (low.z - 1).rounded(.down), z1 = (high.z + 1).rounded(.up)
         if x1 - x0 <= 200, z1 - z0 <= 200 {
             func line(_ a: SIMD3<Float>, _ b: SIMD3<Float>, bold: Bool) {
                 var path = Path(); path.move(to: view.place(a).point); path.addLine(to: view.place(b).point)
-                context.stroke(path, with: .color(.white.opacity(bold ? 0.38 : 0.16)), lineWidth: bold ? 1.2 : 0.6)
+                context.stroke(path, with: .color(Theme.ink.opacity(bold ? 0.3 : 0.12)), lineWidth: bold ? 0.8 : 0.5)
             }
             var x = x0
             while x <= x1 { line(SIMD3(x, map.groundY, z0), SIMD3(x, map.groundY, z1), bold: Int(x) % 5 == 0); x += 1 }
@@ -549,35 +968,93 @@ struct MiniMapView: View {
         }
         // Painter's order: farthest first, so nearer and higher voxels cover them.
         let placed = map.cells.map { (view.place($0.p), $0) }.sorted { $0.0.depth < $1.0.depth }
-        let side = CGFloat(map.cellSize * view.scale) + 0.5
+        // Voxels are drawn as separate dots on the grey well.
+        let cell = CGFloat(map.cellSize * view.scale)
+        let side = cell > 3 ? cell * 0.8 : cell + 0.5
         let heightRange = max(0.5, high.y - map.groundY)
         for (at, cell) in placed {
+            // Uncolored voxels are a pale relief, lighter with height.
+            let shade = 0.56 + 0.42 * Double(max(0, min(1, (cell.p.y - map.groundY) / heightRange)))
             let color: Color
             if let rgb = cell.rgb {
-                color = Color(.sRGBLinear, red: Double(rgb[0]), green: Double(rgb[1]), blue: Double(rgb[2]))
+                // A voxel's own color, softened a little toward the relief tone.
+                let grey = pow(shade, 2.2)
+                func mix(_ c: Float) -> Double { 0.8 * Double(c) + 0.2 * grey }
+                color = Color(.sRGBLinear, red: mix(rgb[0]), green: mix(rgb[1]), blue: mix(rgb[2]))
             } else {
-                // Uncolored voxels are shaded by height so structure still reads.
-                let t = Double(max(0, min(1, (cell.p.y - map.groundY) / heightRange)))
-                color = Color(red: 0.16 + 0.3 * t, green: 0.45 + 0.35 * t, blue: 0.7 + 0.25 * t)
+                color = Color(white: shade)
             }
             context.fill(Path(CGRect(x: at.point.x - side / 2, y: at.point.y - side / 2, width: side, height: side)), with: .color(color))
+        }
+        if showVolumes {
+            // Semantic volumes: a tinted footprint, the box edges, and its name.
+            let tint = Theme.accent
+            for volume in map.volumes {
+                let c = Self.corners(volume).map { view.place($0).point }
+                func ring(_ i: [Int]) -> Path {
+                    var path = Path(); path.move(to: c[i[0]])
+                    i.dropFirst().forEach { path.addLine(to: c[$0]) }; path.closeSubpath()
+                    return path
+                }
+                context.fill(ring([0, 1, 2, 3]), with: .color(tint.opacity(0.18)))
+                context.stroke(ring([0, 1, 2, 3]), with: .color(tint), lineWidth: 1)
+                context.stroke(ring([4, 5, 6, 7]), with: .color(tint), lineWidth: 1)
+                for i in 0..<4 {
+                    var edge = Path(); edge.move(to: c[i]); edge.addLine(to: c[i + 4])
+                    context.stroke(edge, with: .color(tint.opacity(0.8)), lineWidth: 0.6)
+                }
+                let top = CGPoint(x: (c[4].x + c[6].x) / 2, y: (c[4].y + c[6].y) / 2)
+                context.draw(Text((volume.name + " · " + volume.semantic_type).uppercased()).font(Theme.mono(9, .semibold)).foregroundColor(Theme.ink), at: top)
+            }
         }
         for note in map.notes {
             let at = view.place(note).point
             let dot = Path(ellipseIn: CGRect(x: at.x - 4, y: at.y - 4, width: 8, height: 8))
-            context.fill(dot, with: .color(.white)); context.stroke(dot, with: .color(.black), lineWidth: 1)
+            context.fill(dot, with: .color(Theme.paper)); context.stroke(dot, with: .color(Theme.ink), lineWidth: 1)
         }
         for portal in map.portals {
             let at = view.place(portal).point
             let square = Path(CGRect(x: at.x - 5, y: at.y - 5, width: 10, height: 10))
-            context.fill(square, with: .color(.red)); context.stroke(square, with: .color(.white), lineWidth: 1.5)
+            context.fill(square, with: .color(Theme.ink)); context.stroke(square, with: .color(Theme.paper), lineWidth: 1)
+        }
+        // A robot Home no longer reports stays where it was last seen, faded.
+        let ghosts = tracked.filter { $0.kind == .robot && $0.state == .lost }
+            .map { MiniMapRobot(name: $0.name, transform: $0.pose, zUp: true) }
+        for (robot, strength) in robots.map({ ($0, 1.0) }) + ghosts.map({ ($0, 0.3) }) {
+            // Under the 3D model: the chassis footprint, a tick out of its nose, and its name.
+            let c = robot.outline.map { view.place($0).point }
+            var body = Path(); body.move(to: c[0]); c[1...3].forEach { body.addLine(to: $0) }; body.closeSubpath()
+            if !showRobotModel || strength < 1 { context.fill(body, with: .color(Theme.accent.opacity(0.35 * strength))) }
+            context.stroke(body, with: .color(Theme.accent.opacity(strength)), lineWidth: showRobotModel ? 1 : 1.5)
+            var nose = Path()
+            nose.move(to: CGPoint(x: (c[0].x + c[1].x) / 2, y: (c[0].y + c[1].y) / 2)); nose.addLine(to: c[4])
+            context.stroke(nose, with: .color(Theme.accent.opacity(strength)), lineWidth: 1.5)
+            let at = view.place(robot.position).point
+            let reach = max(14, c[0..<4].map { hypot($0.x - at.x, $0.y - at.y) }.max() ?? 14) + 5
+            let reticle = CGRect(x: at.x - reach, y: at.y - reach, width: reach * 2, height: reach * 2)
+            context.stroke(Brackets(arm: 6).path(in: reticle), with: .color(Theme.ink.opacity(strength)), lineWidth: 1)
+            context.draw(Text(robot.name.uppercased()).font(Theme.mono(9, .semibold)).foregroundColor(Theme.ink.opacity(strength)),
+                         at: CGPoint(x: reticle.midX, y: reticle.minY - 3), anchor: .bottom)
         }
         if let phone {
             let at = view.place(phone.position).point
             // A drop line shows the phone's height once the view is tilted.
             let foot = view.place(SIMD3(phone.position.x, map.groundY, phone.position.z)).point
             var drop = Path(); drop.move(to: at); drop.addLine(to: foot)
-            context.stroke(drop, with: .color(.cyan.opacity(0.7)), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            context.stroke(drop, with: .color(Theme.ink.opacity(0.6)), style: StrokeStyle(lineWidth: 0.8, dash: [3, 3]))
+            // Crosshair and reticle on this phone, with its heading from Home's -Z.
+            var cross = Path()
+            cross.move(to: CGPoint(x: 0, y: at.y)); cross.addLine(to: CGPoint(x: size.width, y: at.y))
+            cross.move(to: CGPoint(x: at.x, y: 0)); cross.addLine(to: CGPoint(x: at.x, y: size.height))
+            context.stroke(cross, with: .color(Theme.ink.opacity(0.22)), lineWidth: 0.5)
+            let reticle = CGRect(x: at.x - 24, y: at.y - 24, width: 48, height: 48)
+            context.stroke(Brackets(arm: 9).path(in: reticle), with: .color(Theme.ink), lineWidth: 1)
+            var bearing = atan2(phone.heading.x, -phone.heading.y) * 180 / .pi
+            if bearing < 0 { bearing += 360 }
+            if bearing.isFinite {
+                context.draw(Text(String(format: "%03.0f°", bearing)).font(Theme.mono(9, .semibold)).foregroundColor(Theme.ink),
+                             at: CGPoint(x: reticle.maxX + 4, y: reticle.maxY), anchor: .bottomLeading)
+            }
             let ahead = view.place(phone.position + SIMD3(phone.heading.x, 0, phone.heading.y)).point
             var forward = CGVector(dx: ahead.x - at.x, dy: ahead.y - at.y)
             let length = max(0.001, hypot(forward.dx, forward.dy))
@@ -588,7 +1065,7 @@ struct MiniMapView: View {
             arrow.addLine(to: CGPoint(x: at.x - forward.dx * 8 + right.dx * 8, y: at.y - forward.dy * 8 + right.dy * 8))
             arrow.addLine(to: CGPoint(x: at.x - forward.dx * 8 - right.dx * 8, y: at.y - forward.dy * 8 - right.dy * 8))
             arrow.closeSubpath()
-            context.fill(arrow, with: .color(.cyan)); context.stroke(arrow, with: .color(.white), lineWidth: 1.5)
+            context.fill(arrow, with: .color(Theme.accent)); context.stroke(arrow, with: .color(Theme.paper), lineWidth: 1)
         }
     }
 }
@@ -601,6 +1078,20 @@ struct CameraView: UIViewRepresentable {
 
 final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     let volumes = VolumeAuthoring()
+    /// Saved semantic volumes in the AR view and the POV tab. A draft being
+    /// authored always stays visible.
+    @Published var showVolumesInAR = UserDefaults.standard.object(forKey: "arVolumesVisible") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(showVolumesInAR, forKey: "arVolumesVisible"); applyVolumeVisibility() }
+    }
+    private func applyVolumeVisibility() {
+        // The authoring controller owns the AR nodes and re-shows them on every
+        // redraw, so it carries the flag; the POV copy is plain nodes.
+        volumes.hideSaved = !showVolumesInAR
+        volumes.redraw()
+        for node in povRoot.childNodes where node.name?.hasPrefix("semantic-volume:") == true {
+            node.isHidden = !showVolumesInAR
+        }
+    }
     func beginVolume() {
         guard let map else { volumes.message = "Connect to Home first."; return }
         volumes.begin(frame: map.scenegraph.map.frame.id)
@@ -617,12 +1108,31 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private var depthAlignment: DepthAlignment?
     var onPose: ((PhonePoseSample?) -> Void)?
     var onPortalSeen: ((String) -> Void)?
+    private var alignment = AlignmentFilter()
     /// A Portal missing from the scene, measured while aligned, is offered to Home.
     var onNewPortal: ((PortalReport) -> Bool)?
     private var portalCandidates = [String: (position: SIMD3<Float>, time: TimeInterval)]()
+    /// The alignment as it stood when each target was last read, to measure a moved target from another one.
+    private var alignedThrough = [String: (homeInAR: simd_float4x4, time: TimeInterval)]()
     private var portalReported = [String: TimeInterval]()
     @Published private(set) var miniMap = MiniMapData()
     @Published private(set) var miniPhone: MiniMapPhone?
+    /// Every other phone and robot seen in this scene, each at its last known place with its path.
+    @Published private(set) var trackedDevices = [TrackedDevice]()
+    private var trails = DeviceTrails()
+    @Published var showTrails = UserDefaults.standard.object(forKey: "robotTrailsVisible") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(showTrails, forKey: "robotTrailsVisible")
+            for node in root.childNodes + povRoot.childNodes where node.name == "robot-trail" { node.isHidden = !showTrails }
+        }
+    }
+    func clearTrails() {
+        trails.clear()
+        trackedDevices = trackedDevices.map {
+            TrackedDevice(id: $0.id, kind: $0.kind, name: $0.name, pose: $0.pose, trail: [], state: $0.state, lastSeen: $0.lastSeen)
+        }
+        for node in root.childNodes + povRoot.childNodes where node.name == "robot-trail" { node.removeFromParentNode() }
+    }
     /// Devices for the POV tab. This phone's entry follows its live pose.
     @Published private(set) var devices = [PovDevice]()
     private var remoteDevices = [PovDevice]()
@@ -656,6 +1166,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         view.scene.rootNode.addChildNode(root)
         povScene.rootNode.addChildNode(povRoot)
         view.session.delegate = self
+        // The robot model is physically shaded; without a light it renders black.
+        view.autoenablesDefaultLighting = true
         view.session.delegateQueue = .main
         root.isHidden = true
         volumes.attach(view, root: root) { [weak self] in
@@ -712,6 +1224,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         }
         self.map = map
         miniMap = MiniMapData(map)
+        trackedDevices = trails.record(map.render?.notes ?? [], frame: map.scenegraph.map.frame.id,
+                                       ownFrame: "phone-camera:" + poseSession)
         root.childNodes.forEach { $0.removeFromParentNode() }
         for portal in map.scenegraph.anchors.values.sorted(by: { $0.anchor_id < $1.anchor_id }) {
             let node = SCNNode()
@@ -721,14 +1235,14 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             for (w, h, px, py) in [(size, 0.004, 0.0, size/2), (size, 0.004, 0.0, -size/2),
                                    (0.004, size, size/2, 0.0), (0.004, size, -size/2, 0.0)] {
                 let line = SCNNode(geometry: SCNPlane(width: w, height: h))
-                line.geometry?.firstMaterial?.diffuse.contents = UIColor.systemRed
+                line.geometry?.firstMaterial?.diffuse.contents = Theme.uiAccent
                 line.geometry?.firstMaterial?.lightingModel = .constant
                 line.geometry?.firstMaterial?.isDoubleSided = true
                 line.position = SCNVector3(Float(px), Float(py), 0.002)
                 node.addChildNode(line)
             }
             let text = SCNText(string: portal.anchor_id, extrusionDepth: 0)
-            text.font = .systemFont(ofSize: 1, weight: .semibold)
+            text.font = Theme.uiMono(1, .semibold)
             text.firstMaterial?.diffuse.contents = UIColor.white
             text.firstMaterial?.lightingModel = .constant
             let label = SCNNode(geometry: text)
@@ -740,12 +1254,14 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             root.addChildNode(node)
         }
         renderScene(map.render)
+        trackedDevices.filter { $0.kind == .robot }.forEach(addTrail)
         for volume in map.render?.volumes ?? [] where volume.valid {
             root.addChildNode(volume.node())
         }
         volumes.redraw()
         povRoot.childNodes.forEach { $0.removeFromParentNode() }
         root.childNodes.forEach { povRoot.addChildNode($0.clone()) }
+        applyVolumeVisibility()
         remoteDevices = Self.remoteDevices(map, ownSession: poseSession)
         refreshDevices()
         if referenceChanged { resetAlignment() }
@@ -762,14 +1278,27 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                                    asleep: phone.state == "asleep", transform: PovDevice.upright(phone.pose.matrix),
                                    isSelf: phone.pose.from_frame_id == "phone-camera:" + ownSession))
         }
-        let located = Set(found.map(\.id))
+        var located = Set(found.map(\.id))
+        // Robots that Home labels in the scene, each with its base pose.
+        for note in map.render?.notes ?? [] {
+            guard let robot = note.robot_pose, robot.pose.translation.count == 3, robot.pose.rotation_wxyz.count == 4,
+                  robot.pose.translation.allSatisfy(\.isFinite), robot.pose.rotation_wxyz.allSatisfy(\.isFinite) else { continue }
+            let base = robot.pose.matrix
+            // A camera looks along its -Z with +Y up; the base drives along +X with +Z up.
+            var eye = base * simd_float4x4(SIMD4(0, -1, 0, 0), SIMD4(0, 0, 1, 0), SIMD4(-1, 0, 0, 0), SIMD4(0, 0, 0, 1))
+            eye.columns.3.y += 0.35
+            found.append(PovDevice(id: "robot:" + robot.peer_id, name: robot.name ?? note.text, symbol: "car.side",
+                                   asleep: false, transform: eye, chassis: base, chassisZUp: true))
+            located.insert("phone:" + robot.peer_id)   // already placed; not also an unplaced peer
+        }
         func robot(_ sample: RenderScene.RobotPose?, id: String, name: String) {
             guard let pose = sample?.pose, pose.translation.count == 3, pose.rotation_xyzw.count == 4,
                   sample?.frame == map.scenegraph.map.frame.id else { return }
             // Raise the eye above the chassis so the view is not inside the robot.
             var eye = pose.matrix
             eye.columns.3.y += 0.35
-            found.append(PovDevice(id: "robot:" + id, name: name, symbol: "car.side", asleep: false, transform: eye))
+            found.append(PovDevice(id: "robot:" + id, name: name, symbol: "car.side", asleep: false, transform: eye,
+                                   chassis: pose.matrix))
         }
         if let runners = map.render?.local_mapping?.runners, !runners.isEmpty {
             for (id, runner) in runners.sorted(by: { $0.key < $1.key }) {
@@ -777,7 +1306,12 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                     robot(runner.robot_pose, id: id, name: "Robot " + String(id.suffix(4)))
                 } else if !located.contains("phone:" + id) {
                     // Known to Home but not placed in this scene, so there is no view to show.
-                    found.append(PovDevice(id: "peer:" + id, name: "Device " + String(id.suffix(4)), symbol: "questionmark.circle",
+                    // Home describes phone contributors as "Phone LiDAR …"; anything else
+                    // contributing to a scene is a robot. Only robots are drivable.
+                    let isPhone = runner.detail?.hasPrefix("Phone") == true
+                    found.append(PovDevice(id: (isPhone ? "peerphone:" : "peer:") + id,
+                                           name: (isPhone ? "Phone " : "Robot ") + String(id.suffix(4)),
+                                           symbol: isPhone ? "iphone" : "car.side",
                                            asleep: false, transform: matrix_identity_float4x4, located: false,
                                            detail: "no position" + (runner.status.map { " · " + $0 } ?? "")))
                 }
@@ -834,8 +1368,12 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 root.addChildNode(SCNNode(geometry: geometry))
             }
         }
-        for object in scene.objects { addLabel(object.label, at: object.position, color: .systemYellow) }
+        for object in scene.objects { addLabel(object.label, at: object.position, color: Theme.uiAccent) }
         for note in scene.notes { addLabel(note.text, at: note.position, color: .white) }
+        for note in scene.notes {
+            guard let pose = note.robot_pose?.pose, pose.translation.count == 3, pose.rotation_wxyz.count == 4 else { continue }
+            root.addChildNode(robotBody(at: pose.matrix))
+        }
         if let runners = scene.local_mapping?.runners, !runners.isEmpty {
             for (id, runner) in runners { addRobot(runner.robot_pose, name: String(id.suffix(8))) }
         } else { addRobot(scene.local_mapping?.robot_pose, name: "Runner") }
@@ -844,7 +1382,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private func addLabel(_ title: String, at position: [Float], color: UIColor) {
         guard position.count == 3, position.allSatisfy(\.isFinite) else { return }
         let text = SCNText(string: title, extrusionDepth: 0)
-        text.font = .systemFont(ofSize: 1, weight: .semibold)
+        text.font = Theme.uiMono(1, .semibold)
         text.flatness = 0.2
         text.firstMaterial?.diffuse.contents = color
         text.firstMaterial?.lightingModel = .constant
@@ -855,16 +1393,81 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         root.addChildNode(label)
     }
 
+    /// A robot's path as a ribbon just above the floor. A robot Home no longer
+    /// reports also keeps a faint body and label where it was last seen.
+    /// The robot's 3D model standing on its base pose. Until the model has loaded,
+    /// a box the size of the chassis stands in for it.
+    private func robotBody(at base: simd_float4x4) -> SCNNode {
+        let holder = SCNNode()
+        holder.simdTransform = base
+        if let template = RobotMapLayer.template {
+            // The model and the base frame are both Z up, in metres.
+            holder.addChildNode(RobotGlow.outlined(template.clone()))
+        } else {
+            RobotMapLayer.whenLoaded {}
+            // Base frame is Z up, +X forward: 0.5 m long, 0.35 m wide, 0.2 m tall, sitting on its origin.
+            let box = SCNNode(geometry: SCNBox(width: 0.5, height: 0.35, length: 0.2, chamferRadius: 0.03))
+            box.geometry?.firstMaterial?.diffuse.contents = UIColor.white
+            box.geometry?.firstMaterial?.lightingModel = .constant
+            box.simdPosition = SIMD3(0, 0, 0.1)
+            holder.addChildNode(RobotGlow.outlined(box))
+        }
+        return holder
+    }
+
+    private func addTrail(_ robot: TrackedDevice) {
+        if robot.state == .lost {
+            let body = robotBody(at: robot.pose)
+            body.opacity = 0.3
+            root.addChildNode(body)
+            let p = robot.position
+            addLabel(robot.name + " zzz", at: [p.x, p.y, p.z], color: UIColor.white.withAlphaComponent(0.3))
+        }
+        let path = robot.trail + [robot.position]
+        var vertices = [SCNVector3](), colors = [Float](), indices = [UInt32]()
+        for i in 1..<path.count {
+            let a = path[i - 1], b = path[i]
+            let along = SIMD3(b.x - a.x, 0, b.z - a.z)
+            guard simd_length(along) > 1e-4 else { continue }
+            let side = simd_normalize(simd_cross(SIMD3(0, 1, 0), along)) * 0.03, lift = SIMD3<Float>(0, 0.03, 0)
+            let base = UInt32(vertices.count)
+            // Oldest is pale blue, newest is yellow.
+            let older = DeviceTrails.color(age: Float(i - 1) / Float(path.count - 1))
+            let newer = DeviceTrails.color(age: Float(i) / Float(path.count - 1))
+            let low = a + lift, high = b + lift
+            let corners: [(SIMD3<Float>, SIMD3<Float>)] = [(low - side, older), (low + side, older), (high + side, newer), (high - side, newer)]
+            for (p, c) in corners {
+                vertices.append(SCNVector3(p.x, p.y, p.z))
+                colors += [c.x, c.y, c.z, 1]
+            }
+            indices += [base, base + 1, base + 2, base, base + 2, base + 3]
+        }
+        guard !indices.isEmpty else { return }
+        let colorSource = SCNGeometrySource(data: colors.withUnsafeBytes { Data($0) }, semantic: .color,
+            vectorCount: vertices.count, usesFloatComponents: true, componentsPerVector: 4,
+            bytesPerComponent: 4, dataOffset: 0, dataStride: 16)
+        let ribbon = SCNGeometry(sources: [SCNGeometrySource(vertices: vertices), colorSource],
+                                 elements: [SCNGeometryElement(indices: indices, primitiveType: .triangles)])
+        let material = SCNMaterial()
+        material.lightingModel = .constant
+        material.isDoubleSided = true
+        ribbon.materials = [material]
+        let trail = SCNNode(geometry: ribbon)
+        trail.name = "robot-trail"
+        trail.isHidden = !showTrails
+        root.addChildNode(trail)
+    }
+
     private func addRobot(_ sample: RenderScene.RobotPose?, name: String) {
         guard let pose = sample?.pose, pose.translation.count == 3, pose.rotation_xyzw.count == 4,
               sample?.frame == map?.scenegraph.map.frame.id else { return }
         let robot = SCNNode(geometry: SCNBox(width: 0.35, height: 0.2, length: 0.5, chamferRadius: 0.03))
-        robot.geometry?.firstMaterial?.diffuse.contents = UIColor.systemGreen
+        robot.geometry?.firstMaterial?.diffuse.contents = UIColor.white
         robot.geometry?.firstMaterial?.lightingModel = .constant
         robot.simdTransform = pose.matrix
         root.addChildNode(robot)
         var position = pose.translation; position[1] += 0.3
-        addLabel(name, at: position, color: .systemGreen)
+        addLabel(name, at: position, color: .white)
     }
 
     func clearPlacement() {
@@ -900,7 +1503,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         let marker = SCNNode(geometry: SCNSphere(radius: 0.025))
         marker.name = "annotation-preview"
         marker.position = SCNVector3(hit.x, hit.y, hit.z)
-        marker.geometry?.firstMaterial?.diffuse.contents = UIColor.systemCyan
+        marker.geometry?.firstMaterial?.diffuse.contents = Theme.uiAccent
         marker.geometry?.firstMaterial?.lightingModel = .constant
         root.addChildNode(marker)
         placement = NotePlacement(id: UUID().uuidString, frame: map.scenegraph.map.frame.id,
@@ -911,6 +1514,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         clearPlacement()
         map = nil
         miniMap = MiniMapData()
+        trails = DeviceTrails(); trackedDevices = []
         povRoot.childNodes.forEach { $0.removeFromParentNode() }
         remoteDevices = []; refreshDevices()
         root.childNodes.forEach { $0.removeFromParentNode() }
@@ -923,8 +1527,10 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         onPose?(nil)
         onDepth?(nil)
         depthAlignment = nil
+        alignedThrough = [:]
         depthStatus = shareDepth ? "Scan a Portal to share depth" : "Depth sharing off"
         generation += 1; aligned = false; cooldown.reset(); root.isHidden = true
+        alignment.reset()
         miniPhone = nil
         if selfInHome != nil { selfInHome = nil; refreshDevices() }
     }
@@ -944,9 +1550,11 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         toast?.removeFromSuperview()
         let label = UILabel()
         label.text = text; label.numberOfLines = 0; label.textAlignment = .center
-        label.font = .systemFont(ofSize: 17, weight: .semibold); label.textColor = .white
-        label.backgroundColor = (good ? UIColor.systemGreen : UIColor.systemOrange).withAlphaComponent(0.92)
-        label.layer.cornerRadius = 14; label.layer.masksToBounds = true
+        label.font = Theme.uiMono(14, .semibold)
+        label.textColor = good ? Theme.uiInk : UIColor(white: 0.1, alpha: 1)
+        label.backgroundColor = (good ? Theme.uiPaper : Theme.uiAccent).withAlphaComponent(0.94)
+        label.layer.borderWidth = 1
+        label.layer.borderColor = Theme.uiInk.resolvedColor(with: view.traitCollection).cgColor
         let width = view.bounds.width - 40
         let height = label.sizeThatFits(CGSize(width: width - 24, height: 400)).height + 24
         label.frame = CGRect(x: 20, y: view.safeAreaInsets.top + 12, width: width, height: height)
@@ -960,8 +1568,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         let path = UIBezierPath(); path.move(to: points[0])
         points.dropFirst().forEach { path.addLine(to: $0) }; path.close()
         let layer = CAShapeLayer()
-        layer.path = path.cgPath; layer.fillColor = UIColor.clear.cgColor; layer.lineWidth = 5
-        layer.strokeColor = (good ? UIColor.systemGreen : UIColor.systemOrange).cgColor
+        layer.path = path.cgPath; layer.fillColor = UIColor.clear.cgColor; layer.lineWidth = 3
+        layer.strokeColor = (good ? UIColor.white : Theme.uiAccent).cgColor
         view.layer.addSublayer(layer)
         let fade = CABasicAnimation(keyPath: "opacity")
         fade.fromValue = 1; fade.toValue = 0; fade.beginTime = CACurrentMediaTime() + 1.2; fade.duration = 0.6
@@ -990,7 +1598,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             request.symbologies = [.qr]
             try? VNImageRequestHandler(cvPixelBuffer: image, orientation: .up).perform([request])
             let imageWidth = Float(CVPixelBufferGetWidth(image)), imageHeight = Float(CVPixelBufferGetHeight(image))
-            let codes = (request.results ?? []).map { code -> (String?, [CGPoint], simd_float4x4?) in
+            let codes = (request.results ?? []).map { code -> (String?, [CGPoint], simd_float4x4?, [SIMD2<Float>]) in
                 let raw = [code.topLeft, code.topRight, code.bottomRight, code.bottomLeft]
                 let corners = raw.map { p -> CGPoint in
                     // Vision: origin bottom-left. ARKit image space: origin top-left.
@@ -1000,10 +1608,10 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 // Pose at the assumed size, in case this is a Portal the scene lacks.
                 let pixels = raw.map { SIMD2(Float($0.x) * imageWidth, (1 - Float($0.y)) * imageHeight) }
                 let pose = PortalPose.estimate(corners: pixels, side: PortalReport.assumedSide, intrinsics: frame.camera.intrinsics)
-                return (code.payloadStringValue, corners, pose.map { frame.camera.transform * $0 })
+                return (code.payloadStringValue, corners, pose.map { frame.camera.transform * $0 }, pixels)
             }
             DispatchQueue.main.async {
-                guard let (payload, corners, portalInAR) = codes.first(where: { $0.0.flatMap(PortalMap.portalCode) != nil }) ?? codes.first else {
+                guard let (payload, corners, portalInAR, pixels) = codes.first(where: { $0.0.flatMap(PortalMap.portalCode) != nil }) ?? codes.first else {
                     UINotificationFeedbackGenerator().notificationOccurred(.warning)
                     self.showToast("No QR code in view. Get the whole code in frame and hold still.", good: false)
                     return
@@ -1040,20 +1648,66 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 }
                 self.showOutline(corners, good: true)
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
-                self.showToast("Portal \(code) found. Aligning…", good: true)
-                // Scan again on the very next frame, ignoring the cooldown.
-                self.cooldown.reset(); self.lastAttempt = 0
+                // A target the scene knows: trust Home's record of it, or correct that record.
+                let sheet = UIAlertController(title: "Target \(code)", message: nil, preferredStyle: .actionSheet)
+                sheet.addAction(UIAlertAction(title: "Align to this target", style: .default) { _ in
+                    self.showToast("Portal \(code) found. Aligning…", good: true)
+                    // Scan again on the very next frame, ignoring the cooldown.
+                    self.cooldown.reset(); self.lastAttempt = 0
+                })
+                sheet.addAction(UIAlertAction(title: "Edit target: it has moved to here", style: .destructive) { _ in
+                    self.moveTarget(code, pixels: pixels, frame: frame)
+                })
+                sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+                self.view.window?.rootViewController?.present(sheet, animated: true)
             }
+        }
+    }
+
+    /// Someone moved a printed target. Tell Home where it is now, measured from this
+    /// phone's alignment through a different target, which must not have moved.
+    private func moveTarget(_ code: String, pixels: [SIMD2<Float>], frame: ARFrame) {
+        guard let map, let anchor = map.scenegraph.anchors[code] else { return }
+        let home = map.scenegraph.map.frame.id
+        guard !home.hasSuffix(":portal-" + code) else {
+            showToast("Target \(code) is this scene's origin, so it stays put. Move the other targets to match it.", good: false)
+            return
+        }
+        guard let (via, reference) = alignedThrough.filter({ $0.key != code }).max(by: { $0.value.time < $1.value.time }),
+              let known = map.scenegraph.anchors[via] else {
+            showToast("Scan a target that has not moved first, then long-press \(code) again.", good: false)
+            return
+        }
+        guard let seen = PortalPose.estimate(corners: pixels, side: anchor.side_length_m, intrinsics: frame.camera.intrinsics) else {
+            showToast("Can't measure target \(code) from here. Face it more directly.", good: false)
+            return
+        }
+        let portalInAR = frame.camera.transform * seen
+        let session = "phone-ar:\(poseSession)"
+        let alignment = DepthAlignment(timestamp_ns: UInt64(reference.time * 1_000_000_000), portal_id: via,
+            portal_to_session: .transform(reference.homeInAR * known.pose_in_map.matrix, from: known.pose_in_map.from_frame_id, to: session),
+            session_to_home: .transform(reference.homeInAR.inverse, from: session, to: home))
+        let report = PortalReport(session: poseSession, timestamp_ns: UInt64(max(frame.timestamp, reference.time) * 1_000_000_000),
+            code: code, side_length_m: anchor.side_length_m,
+            portal_to_session: .transform(portalInAR, from: anchor.pose_in_map.from_frame_id, to: session),
+            alignment: alignment, replace: true)
+        let now = reference.homeInAR.inverse * portalInAR
+        let distance = simd_distance(now.columns.3, anchor.pose_in_map.matrix.columns.3)
+        if onNewPortal?(report) == true {
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            showToast(String(format: "Moving target \(code) %.2f m, measured from \(via)…", distance), good: true)
+        } else {
+            showToast("Home is not connected, so target \(code) was not moved.", good: false)
         }
     }
 
     /// Report an unknown Portal once two measurements a moment apart agree, so
     /// one noisy read cannot place it. Needs an alignment from a known Portal.
     func showPortalResult(_ text: String) {
-        let good = text.contains("added to Home")
+        let good = text.contains("added to Home") || text.contains("moved in Home")
         UINotificationFeedbackGenerator().notificationOccurred(good ? .success : .error)
         // An older Home has no such operation; say so plainly.
-        showToast(good ? text : text + ". This Home may not support adding Portals yet.", good: good)
+        showToast(good || !text.contains("did not answer") ? text : text + ". This Home may not support this yet.", good: good)
     }
 
     private func offerNewPortal(_ code: String, portalInAR: simd_float4x4, at time: TimeInterval, confirmed: Bool = false) {
@@ -1165,7 +1819,9 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 case .limited(.relocalizing): message = "Recovering camera tracking. Look around slowly."
                 default: message = "Camera tracking unavailable. Tap Realign to try again."
                 }
-                if status != message { status = message }
+                // While aligned, a dip in tracking only pauses mapping.
+                let shown = aligned ? "Tracking limited · mapping paused until it recovers" : message
+                if status != shown { status = shown }
             }
             return
         }
@@ -1205,7 +1861,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             }
             let width = Float(CVPixelBufferGetWidth(frame.capturedImage))
             let height = Float(CVPixelBufferGetHeight(frame.capturedImage))
-            var found: (String, simd_float4x4, simd_float4x4)?
+            var found: (String, simd_float4x4, simd_float4x4, Float)?
             var unknown: (String, simd_float4x4)?
             for code in request.results ?? [] {
                 guard let payload = code.payloadStringValue else {
@@ -1233,7 +1889,9 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 guard let pose = PortalPose.estimate(corners: corners, side: portal.side_length_m,
                                                      intrinsics: frame.camera.intrinsics) else { continue }
                 let portalInAR = frame.camera.transform * pose
-                found = (portal.anchor_id, portalInAR * portal.pose_in_map.matrix.inverse, portalInAR)
+                var edge: Float = 0
+                for i in 0..<4 { edge += simd_length(corners[i] - corners[(i + 1) % 4]) }
+                found = (portal.anchor_id, portalInAR * portal.pose_in_map.matrix.inverse, portalInAR, edge / 4)
                 break
             }
             let result = found
@@ -1244,23 +1902,38 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 guard self.generation == capturedGeneration, self.placement == nil else { return }
                 guard case .normal = self.view.session.currentFrame?.camera.trackingState else { return }
                 if let (code, portalInAR) = candidate { self.offerNewPortal(code, portalInAR: portalInAR, at: frame.timestamp) }
-                guard let (id, transform, portalInAR) = result else {
+                guard let (id, measured, portalInAR, edgePixels) = result, let portal = map.scenegraph.anchors[id] else {
                     if !self.aligned { self.status = scanFeedback }
                     return
                 }
+                // One sighting is one vote. The fused alignment only turns about
+                // gravity, so a tilted or hand-held Portal cannot tip the world.
+                let stored = portal.pose_in_map.matrix.columns.3
+                let outcome = self.alignment.add(measured: measured,
+                    portalInAR: SIMD3(portalInAR.columns.3.x, portalInAR.columns.3.y, portalInAR.columns.3.z),
+                    portalInHome: SIMD3(stored.x, stored.y, stored.z), edgePixels: edgePixels)
+                let transform = self.alignment.transform
                 self.root.simdTransform = transform
                 self.root.isHidden = false
                 self.aligned = true
-                if let portal = map.scenegraph.anchors[id] {
-                    let sessionFrame = "phone-ar:\(self.poseSession)"
-                    self.depthAlignment = DepthAlignment(timestamp_ns: UInt64(frame.timestamp * 1_000_000_000), portal_id: id,
-                        portal_to_session: .transform(portalInAR, from: portal.pose_in_map.from_frame_id, to: sessionFrame),
-                        session_to_home: .transform(transform.inverse, from: sessionFrame, to: map.scenegraph.map.frame.id))
-                }
+                // Home checks that the session-to-scene transform follows from the
+                // Portal's pose in the session, so report the Portal where the fused
+                // alignment places it, not where this single read did.
+                let sessionFrame = "phone-ar:\(self.poseSession)"
+                self.alignedThrough[id] = (transform, frame.timestamp)
+                self.depthAlignment = DepthAlignment(timestamp_ns: UInt64(frame.timestamp * 1_000_000_000), portal_id: id,
+                    portal_to_session: .transform(transform * portal.pose_in_map.matrix, from: portal.pose_in_map.from_frame_id, to: sessionFrame),
+                    session_to_home: .transform(transform.inverse, from: sessionFrame, to: map.scenegraph.map.frame.id))
                 // Start the one-second pause when calibration is applied, not
                 // when Vision began processing the captured frame.
                 self.cooldown.accept(at: self.view.session.currentFrame?.timestamp ?? frame.timestamp)
-                self.status = "Aligned with \(id) · \(self.map?.render?.voxels.count ?? 0) voxels"
+                let voxels = self.map?.render?.voxels.count ?? 0
+                switch outcome {
+                case .locked, .relocked: self.status = "Aligned with \(id) · \(voxels) voxels"
+                case .averaged: self.status = "Aligned · refined with \(id) (\(self.alignment.sightings) reads) · \(voxels) voxels"
+                case .ignoredTilted: self.status = "Aligned · \(id) looks tilted or hand-held, so it was not used"
+                case .ignoredOutlier: self.status = "Aligned · ignored one read of \(id) that disagreed"
+                }
 
             }
         }
@@ -1290,9 +1963,19 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
 
     func session(_ session: ARSession, cameraDidChangeTrackingState camera: ARCamera) {
         if snoozed { return }
-        if case .normal = camera.trackingState { return }
-        invalidate()
-        status = "Tracking limited. Move slowly, then scan a known Portal again."
+        switch camera.trackingState {
+        case .normal:
+            if aligned { status = "Tracking recovered · mapping resumed" }
+        case .limited(.excessiveMotion), .limited(.insufficientFeatures), .limited(.initializing):
+            // ARKit keeps its world origin through these, so the alignment still
+            // holds. Frames are simply not used until tracking is normal again;
+            // dropping the alignment here meant mapping only ran with a Portal in view.
+            if aligned { status = "Tracking limited · mapping paused until it recovers" }
+        default:
+            // Relocalizing or unavailable: the world may have moved under us.
+            invalidate()
+            status = "Tracking lost. Scan a known Portal again."
+        }
     }
     func sessionWasInterrupted(_ session: ARSession) {
         if snoozed { return }
@@ -1323,6 +2006,7 @@ struct AnnotationEditor: View {
                     message = saving ? "" : "Connect to Home before saving."
                 }.disabled(saving || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || text.count > 120)
             }
+            .themeForm()
             .navigationTitle("Add annotation")
             .toolbar { Button("Cancel") { dismiss() }.disabled(saving) }
             .interactiveDismissDisabled(saving)

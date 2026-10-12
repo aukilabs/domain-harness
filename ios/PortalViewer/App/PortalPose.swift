@@ -64,3 +64,86 @@ enum PortalPose {
         return answer.allSatisfy(\.isFinite) ? answer : nil
     }
 }
+
+/// Fuses Portal sightings into one Home-to-AR alignment.
+///
+/// ARKit's world and Home's frame are both gravity-aligned with Y up, so the
+/// alignment is only a turn about Y plus a translation. A Portal is treated as
+/// something that may be tilted or held in the hand: its tilt never tips or
+/// rolls the world, and the more its measured tilt disagrees with gravity, the
+/// less its heading is trusted. Sightings are averaged by quality instead of
+/// each one replacing the last.
+struct AlignmentFilter {
+    private(set) var yaw: Float = 0
+    private(set) var translation = SIMD3<Float>(repeating: 0)
+    private(set) var weight: Float = 0
+    private(set) var sightings = 0
+    private var outliers = 0
+
+    /// Beyond this tilt from its stored pose a Portal is not where the scene says.
+    static let handHeldTilt: Float = 35 * .pi / 180
+    static let maxWeight: Float = 6
+
+    var isLocked: Bool { weight > 0 }
+    var transform: simd_float4x4 { Self.matrix(yaw: yaw, translation: translation) }
+
+    mutating func reset() { self = AlignmentFilter() }
+
+    static func matrix(yaw: Float, translation: SIMD3<Float>) -> simd_float4x4 {
+        var m = simd_float4x4(simd_quatf(angle: yaw, axis: SIMD3(0, 1, 0)))
+        m.columns.3 = SIMD4(translation, 1)
+        return m
+    }
+    private static func wrap(_ angle: Float) -> Float { atan2(sin(angle), cos(angle)) }
+
+    enum Outcome: Equatable { case locked, averaged, ignoredTilted, ignoredOutlier, relocked }
+
+    /// - Parameters:
+    ///   - measured: AR-from-Home implied by this one sighting, tilt included.
+    ///   - portalInAR: where the Portal's center was measured in AR.
+    ///   - portalInHome: where the scene says its center is.
+    ///   - edgePixels: mean edge length of the code in the image.
+    mutating func add(measured: simd_float4x4, portalInAR: SIMD3<Float>, portalInHome: SIMD3<Float>,
+                      edgePixels: Float) -> Outcome {
+        // Swing-twist about Y: the twist is the heading, the swing is how far
+        // this sighting's idea of "up" is from gravity.
+        let q = simd_quatf(measured)
+        let measuredYaw = Self.wrap(2 * atan2(q.imag.y, q.real))
+        let tilt = acos(max(-1, min(1, measured.columns.1.y)))
+        let size = max(0.2, min(2, edgePixels / 150))
+        let tiltTrust = exp(-pow(tilt / (12 * .pi / 180), 2))
+        let w = size * size * max(0.02, tiltTrust)
+        let handHeld = tilt > Self.handHeldTilt
+
+        func pinned(_ heading: Float) -> SIMD3<Float> {
+            // Keep the Portal's center where it was seen.
+            let turned = simd_quatf(angle: heading, axis: SIMD3(0, 1, 0)).act(portalInHome)
+            return portalInAR - turned
+        }
+        guard isLocked else {
+            // Anything is better than nothing for a first lock; a tilted
+            // Portal locks weakly so the next good sighting dominates.
+            yaw = measuredYaw; translation = pinned(measuredYaw)
+            weight = handHeld ? 0.05 : w; sightings = 1; outliers = 0
+            return .locked
+        }
+        if handHeld { return .ignoredTilted }
+        let headingError = Self.wrap(measuredYaw - yaw)
+        let predicted = simd_quatf(angle: yaw, axis: SIMD3(0, 1, 0)).act(portalInHome) + translation
+        if abs(headingError) > 20 * .pi / 180 || simd_distance(predicted, portalInAR) > 0.35 {
+            // One wild read is noise. Three in a row means the world really is elsewhere.
+            outliers += 1
+            guard outliers >= 3 else { return .ignoredOutlier }
+            yaw = measuredYaw; translation = pinned(measuredYaw)
+            weight = w; sightings = 1; outliers = 0
+            return .relocked
+        }
+        outliers = 0
+        let gain = w / (weight + w)
+        yaw = Self.wrap(yaw + gain * headingError)
+        translation += gain * (pinned(yaw) - translation)
+        weight = min(Self.maxWeight, weight + w)
+        sightings += 1
+        return .averaged
+    }
+}

@@ -164,3 +164,45 @@ for invalid: Float in [0, -1, 6, .nan, .infinity] {
           "invalid and out-of-range depth rejected")
 }
 print("Phone depth projection checks passed")
+
+func deviceNote(_ x: Float, frame: String = "home", phone: String? = nil, state: String? = nil, peer: String = "p1") -> RenderScene.Note {
+    let key = phone == nil ? "robot_pose" : "phone_pose"
+    let from = phone.map { "phone-camera:" + $0 } ?? "robot.base"
+    let extra = state.map { ",\"state\":\"\($0)\"" } ?? ""
+    let json = "{\"id\":\"n\",\"text\":\"Bracketbot 182\",\"position\":[\(x),0,0],\"\(key)\":{\"peer_id\":\"\(peer)\",\"name\":\"Bracketbot 182\"\(extra),\"pose\":{\"from_frame_id\":\"\(from)\",\"to_frame_id\":\"\(frame)\",\"translation\":[\(x),0,0],\"rotation_wxyz\":[1,0,0,0]}}}"
+    return try! JSONDecoder().decode(RenderScene.Note.self, from: Data(json.utf8))
+}
+var trails = DeviceTrails()
+let first = trails.record([deviceNote(0)], frame: "home")
+check(first.first?.trail.count == 1 && first.first?.id == "robot:p1" && first.first?.kind == .robot, "a robot's first position starts its trail")
+check(trails.record([deviceNote(0.02)], frame: "home").first?.trail.count == 1, "a parked robot adds nothing to its trail")
+let moved = trails.record([deviceNote(0.5)], frame: "home")
+check(moved.first?.trail.count == 2 && moved.first?.name == "Bracketbot 182" && moved.first?.position.x == 0.5
+      && abs((moved.first?.travelled ?? 0) - 0.5) < 1e-5, "a robot that moved extends its trail and keeps Home's name")
+let seenAt = Date(timeIntervalSince1970: 100)
+_ = trails.record([deviceNote(0.5)], frame: "home", now: seenAt)
+check(trails.record([], frame: "home", now: Date(timeIntervalSince1970: 103)).first?.state == .live,
+      "one skipped report does not make a robot lost")
+let gone = trails.record([], frame: "home", now: Date(timeIntervalSince1970: 160))
+check(gone.count == 1 && gone[0].state == .lost && gone[0].position.x == 0.5 && gone[0].trail.count == 2 && gone[0].lastSeen == seenAt,
+      "a robot Home stops reporting stays at its last position, lost, with the time it was last seen")
+check(trails.record([deviceNote(0.5)], frame: "home").first?.state == .live, "a robot that comes back is live again")
+check(trails.record([deviceNote(1, frame: "other")], frame: "home", now: Date(timeIntervalSinceNow: 60)).allSatisfy { $0.state == .lost },
+      "a pose in another frame is not placed")
+check(trails.record([deviceNote(1, frame: "other")], frame: "other").first?.trail.count == 1, "a new frame starts a new trail")
+var phones = DeviceTrails()
+let phone = phones.record([deviceNote(1, phone: "s1"), deviceNote(2, phone: "mine", peer: "me")], frame: "home", ownFrame: "phone-camera:mine")
+check(phone.count == 1 && phone[0].id == "phone:p1" && phone[0].kind == .phone && phone[0].state == .live,
+      "other phones are tracked; this phone is not")
+check(phones.record([deviceNote(1, phone: "s1", state: "asleep")], frame: "home").first?.state == .asleep, "a phone that says it is asleep is asleep")
+var relaunched = DeviceTrails()
+check(relaunched.record([deviceNote(1, phone: "old")], frame: "home", ownFrame: "phone-camera:new").count == 1,
+      "before Home lists the new session, the old one looks like another phone")
+check(relaunched.record([deviceNote(1, phone: "new")], frame: "home", ownFrame: "phone-camera:new").isEmpty
+      && relaunched.record([deviceNote(1, phone: "old")], frame: "home", ownFrame: "phone-camera:new").isEmpty,
+      "once Home lists this phone, its earlier session is not shown as a lost phone")
+check(DeviceTrails.color(age: 0).z > DeviceTrails.color(age: 0).x && DeviceTrails.color(age: 1).x > DeviceTrails.color(age: 1).z,
+      "old trail is blue, new trail is yellow")
+let oldNote = try JSONDecoder().decode(RenderScene.Note.self, from: Data("{\"id\":\"n\",\"text\":\"t\",\"position\":[0,0,0]}".utf8))
+check(oldNote.robot_pose == nil && oldNote.phone_pose == nil, "notes without a pose still decode")
+print("Device trail checks passed")

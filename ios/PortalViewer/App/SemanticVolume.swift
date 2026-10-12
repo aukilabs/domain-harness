@@ -14,7 +14,7 @@ extension SemanticVolume {
         let box = SCNBox(width: CGFloat(dimensions[0]), height: CGFloat(dimensions[1]),
                          length: CGFloat(dimensions[2]), chamferRadius: 0)
         let material = SCNMaterial()
-        material.diffuse.contents = preview ? UIColor.systemYellow : UIColor.systemCyan
+        material.diffuse.contents = preview ? UIColor.white : Theme.uiAccent
         material.lightingModel = .constant
         material.transparency = 0.25
         material.isDoubleSided = true
@@ -24,13 +24,36 @@ extension SemanticVolume {
         body.position.y = dimensions[1] / 2
         body.name = node.name
         node.addChildNode(body)
-        let edges = SCNNode(geometry: box.copy() as? SCNGeometry)
-        let wire = material.copy() as! SCNMaterial
-        wire.fillMode = .lines; wire.transparency = 0.9
-        edges.geometry?.materials = [wire]; edges.position = body.position
-        node.addChildNode(edges)
+        // Solid tube edges. Hairline wireframe over a 25% tint was almost
+        // invisible in AR, and from inside a room-sized volume there was
+        // nothing to see at all.
+        let edgeMaterial = SCNMaterial()
+        edgeMaterial.diffuse.contents = preview ? UIColor.white : Theme.uiAccent
+        edgeMaterial.lightingModel = .constant
+        let (w, h, d) = (dimensions[0], dimensions[1], dimensions[2])
+        let radius = CGFloat(max(0.008, min(0.02, min(w, h, d) * 0.04)))
+        func tube(length: Float, at position: SIMD3<Float>, axis: SIMD3<Float>) {
+            let cylinder = SCNCylinder(radius: radius, height: CGFloat(length))
+            cylinder.radialSegmentCount = 8
+            cylinder.materials = [edgeMaterial]
+            let edge = SCNNode(geometry: cylinder)
+            edge.name = node.name
+            edge.simdPosition = position
+            // SCNCylinder runs along +Y; turn it onto the edge's axis.
+            edge.simdOrientation = simd_quatf(from: SIMD3(0, 1, 0), to: axis)
+            node.addChildNode(edge)
+        }
+        for sx: Float in [-1, 1] {
+            for sz: Float in [-1, 1] {
+                tube(length: h, at: SIMD3(sx * w / 2, h / 2, sz * d / 2), axis: SIMD3(0, 1, 0))
+            }
+            for y: Float in [0, h] {
+                tube(length: d, at: SIMD3(sx * w / 2, y, 0), axis: SIMD3(0, 0, 1))
+                tube(length: w, at: SIMD3(0, y, sx * d / 2), axis: SIMD3(1, 0, 0))
+            }
+        }
         let text = SCNText(string: name + " · " + semantic_type, extrusionDepth: 0)
-        text.font = UIFont.systemFont(ofSize: 0.12)
+        text.font = Theme.uiMono(0.18, .semibold)
         text.flatness = 0.01
         text.firstMaterial?.diffuse.contents = UIColor.white
         text.firstMaterial?.lightingModel = .constant
@@ -92,10 +115,12 @@ final class VolumeAuthoring: NSObject, ObservableObject, UIGestureRecognizerDele
         self.frame = frame; requestID = UUID().uuidString; pendingJSON = nil
         message = "Drag to move · pinch footprint · two-finger rotate"
     }
+    /// Saved volumes can be hidden from the AR view; a draft preview is always shown.
+    var hideSaved = false
     func redraw() {
         preview?.removeFromParentNode()
         root?.childNodes.filter { $0.name?.hasPrefix("semantic-volume:") == true }
-            .forEach { $0.isHidden = false }
+            .forEach { $0.isHidden = hideSaved }
         guard let draft, let root else { preview = nil; return }
         root.childNode(withName: "semantic-volume:" + draft.id, recursively: false)?.isHidden = true
         preview = draft.node(preview: true); root.addChildNode(preview!)
@@ -156,22 +181,42 @@ private extension SIMD4 where Scalar == Float {
     var xyz: SIMD3<Float> { SIMD3(x, y, z) }
 }
 
-struct VolumeControls: View {
+/// The small "Create volume" tag that sits beside the volumes checkbox.
+struct VolumeCreateTag: View {
     @ObservedObject var editor: VolumeAuthoring
     @ObservedObject var peer: HomePeer
     let begin: () -> Void
+    var body: some View {
+        if editor.draft == nil {
+            Button(action: begin) {
+                HStack(spacing: 7) {
+                    Image(systemName: "plus").font(.system(size: 10, weight: .bold)).frame(width: 12, height: 12)
+                    Text("Create volume").themeLabel(10, .semibold)
+                }
+                .themeTag()
+            }
+            .disabled(peer.state != "live")
+            .opacity(peer.state == "live" ? 1 : 0.45)
+        }
+    }
+}
+
+struct VolumeControls: View {
+    @ObservedObject var editor: VolumeAuthoring
+    @ObservedObject var peer: HomePeer
     @State private var confirmDelete = false
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if editor.draft != nil {
+                Text("[Volume]").themeLabel(13, .medium)
                 TextField("Name", text: text(\.name))
                 TextField("Semantic type", text: text(\.semantic_type))
                 ForEach(Array(["Width", "Height", "Depth"].enumerated()), id: \.offset) { i, title in
                     HStack {
-                        Text(title)
+                        Text(title).themeLabel().foregroundStyle(Theme.dim).frame(width: 60, alignment: .leading)
                         TextField("metres", value: dimension(i), format: .number)
                             .keyboardType(.decimalPad).frame(width: 65)
-                        Text("m")
+                        Text("m").themeLabel().foregroundStyle(Theme.dim)
                     }
                 }
                 .disabled(!editor.editable)
@@ -179,13 +224,16 @@ struct VolumeControls: View {
                     Button("Cancel") { editor.cancel() }.disabled(editor.saving)
                     Button("Delete", role: .destructive) { confirmDelete = true }.disabled(!editor.editable)
                     Button(editor.saving ? "Saving…" : "Save / Retry") { save() }.disabled(editor.saving || peer.state != "live")
+                        .buttonStyle(PlateButtonStyle(filled: true))
                 }
-            } else {
-                Button("Create volume", action: begin).disabled(peer.state != "live")
             }
-            if !editor.message.isEmpty { Text(editor.message).font(.caption) }
+            if !editor.message.isEmpty { Text(editor.message).themeText(10).foregroundStyle(Theme.dim) }
         }
-        .padding(12).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .textFieldStyle(RuleFieldStyle())
+        .buttonStyle(PlateButtonStyle())
+        .themePanel(padding: 12)
+        // Nothing to show until a volume is being edited or there is a result to report.
+        .opacity(editor.draft == nil && editor.message.isEmpty ? 0 : 1)
         .padding().frame(maxWidth: 340)
         .confirmationDialog("Delete this volume from Home?", isPresented: $confirmDelete) {
             Button("Delete volume", role: .destructive) { save(delete: true) }
