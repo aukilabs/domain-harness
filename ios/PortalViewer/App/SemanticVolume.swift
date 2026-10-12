@@ -14,7 +14,7 @@ extension SemanticVolume {
         let box = SCNBox(width: CGFloat(dimensions[0]), height: CGFloat(dimensions[1]),
                          length: CGFloat(dimensions[2]), chamferRadius: 0)
         let material = SCNMaterial()
-        material.diffuse.contents = preview ? UIColor.systemYellow : UIColor.systemCyan
+        material.diffuse.contents = preview ? UIColor.white : Theme.uiAccent
         material.lightingModel = .constant
         material.transparency = 0.25
         material.isDoubleSided = true
@@ -28,7 +28,7 @@ extension SemanticVolume {
         // invisible in AR, and from inside a room-sized volume there was
         // nothing to see at all.
         let edgeMaterial = SCNMaterial()
-        edgeMaterial.diffuse.contents = preview ? UIColor.systemYellow : UIColor.systemCyan
+        edgeMaterial.diffuse.contents = preview ? UIColor.white : Theme.uiAccent
         edgeMaterial.lightingModel = .constant
         let (w, h, d) = (dimensions[0], dimensions[1], dimensions[2])
         let radius = CGFloat(max(0.008, min(0.02, min(w, h, d) * 0.04)))
@@ -53,7 +53,7 @@ extension SemanticVolume {
             }
         }
         let text = SCNText(string: name + " · " + semantic_type, extrusionDepth: 0)
-        text.font = UIFont.systemFont(ofSize: 0.18, weight: .semibold)
+        text.font = Theme.uiMono(0.18, .semibold)
         text.flatness = 0.01
         text.firstMaterial?.diffuse.contents = UIColor.white
         text.firstMaterial?.lightingModel = .constant
@@ -181,22 +181,42 @@ private extension SIMD4 where Scalar == Float {
     var xyz: SIMD3<Float> { SIMD3(x, y, z) }
 }
 
-struct VolumeControls: View {
+/// The small "Create volume" tag that sits beside the volumes checkbox.
+struct VolumeCreateTag: View {
     @ObservedObject var editor: VolumeAuthoring
     @ObservedObject var peer: HomePeer
     let begin: () -> Void
+    var body: some View {
+        if editor.draft == nil {
+            Button(action: begin) {
+                HStack(spacing: 7) {
+                    Image(systemName: "plus").font(.system(size: 10, weight: .bold)).frame(width: 12, height: 12)
+                    Text("Create volume").themeLabel(10, .semibold)
+                }
+                .themeTag()
+            }
+            .disabled(peer.state != "live")
+            .opacity(peer.state == "live" ? 1 : 0.45)
+        }
+    }
+}
+
+struct VolumeControls: View {
+    @ObservedObject var editor: VolumeAuthoring
+    @ObservedObject var peer: HomePeer
     @State private var confirmDelete = false
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if editor.draft != nil {
+                Text("[Volume]").themeLabel(13, .medium)
                 TextField("Name", text: text(\.name))
                 TextField("Semantic type", text: text(\.semantic_type))
                 ForEach(Array(["Width", "Height", "Depth"].enumerated()), id: \.offset) { i, title in
                     HStack {
-                        Text(title)
+                        Text(title).themeLabel().foregroundStyle(Theme.dim).frame(width: 60, alignment: .leading)
                         TextField("metres", value: dimension(i), format: .number)
                             .keyboardType(.decimalPad).frame(width: 65)
-                        Text("m")
+                        Text("m").themeLabel().foregroundStyle(Theme.dim)
                     }
                 }
                 .disabled(!editor.editable)
@@ -204,13 +224,16 @@ struct VolumeControls: View {
                     Button("Cancel") { editor.cancel() }.disabled(editor.saving)
                     Button("Delete", role: .destructive) { confirmDelete = true }.disabled(!editor.editable)
                     Button(editor.saving ? "Saving…" : "Save / Retry") { save() }.disabled(editor.saving || peer.state != "live")
+                        .buttonStyle(PlateButtonStyle(filled: true))
                 }
-            } else {
-                Button("Create volume", action: begin).disabled(peer.state != "live")
             }
-            if !editor.message.isEmpty { Text(editor.message).font(.caption) }
+            if !editor.message.isEmpty { Text(editor.message).themeText(10).foregroundStyle(Theme.dim) }
         }
-        .padding(12).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .textFieldStyle(RuleFieldStyle())
+        .buttonStyle(PlateButtonStyle())
+        .themePanel(padding: 12)
+        // Nothing to show until a volume is being edited or there is a result to report.
+        .opacity(editor.draft == nil && editor.message.isEmpty ? 0 : 1)
         .padding().frame(maxWidth: 340)
         .confirmationDialog("Delete this volume from Home?", isPresented: $confirmDelete) {
             Button("Delete volume", role: .destructive) { save(delete: true) }

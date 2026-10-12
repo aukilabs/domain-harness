@@ -167,6 +167,9 @@ struct RenderScene: Decodable, Equatable {
         let position: [Float]
         /// Present on Home's phone-presence labels: that phone's camera pose.
         let phone_pose: PhonePose?
+        /// Present on Home's robot labels: the robot's base pose. Unlike a phone's,
+        /// the base frame is Z up with +X forward.
+        var robot_pose: PhonePose? = nil
     }
     struct PhonePose: Decodable, Equatable {
         let peer_id: String

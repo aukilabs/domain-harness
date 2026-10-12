@@ -3,10 +3,12 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 77;
+	objectVersion = 54;
 	objects = {
 
 /* Begin PBXBuildFile section */
+		2481687917605ECCE2F2C22A /* bracketbot_0184_rigged.usdz in Resources */ = {isa = PBXBuildFile; fileRef = BA431FB9B359E3A0AF861867 /* bracketbot_0184_rigged.usdz */; };
+		2DC11F9A3C2824AFF300B427 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E4554C6754FD11EA49048B5 /* Theme.swift */; };
 		2F00069261E099226C9BD6C9 /* PortalMap.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF63C94F0E06FB864456F332 /* PortalMap.swift */; };
 		76AEBF1C9FA1B8D4D8E320D7 /* SemanticVolume.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1F90986E59A331AC5AF0962 /* SemanticVolume.swift */; };
 		7F41A3FEC846F6B3880A9B3A /* HomePeer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 923BCD5A09BD097EE8206E8E /* HomePeer.swift */; };
@@ -19,10 +21,12 @@
 /* Begin PBXFileReference section */
 		4400D81FC657522891C44E1A /* SemanticVolumeModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SemanticVolumeModel.swift; sourceTree = "<group>"; };
 		79389B6ADD96902B6B08CFCB /* PortalViewer.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = PortalViewer.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		8E4554C6754FD11EA49048B5 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		8FF47757AD099392D75B3200 /* PortalPose.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortalPose.swift; sourceTree = "<group>"; };
 		923BCD5A09BD097EE8206E8E /* HomePeer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomePeer.swift; sourceTree = "<group>"; };
 		A1F90986E59A331AC5AF0962 /* SemanticVolume.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SemanticVolume.swift; sourceTree = "<group>"; };
 		B33697AF632544986693964C /* PortalViewerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortalViewerApp.swift; sourceTree = "<group>"; };
+		BA431FB9B359E3A0AF861867 /* bracketbot_0184_rigged.usdz */ = {isa = PBXFileReference; lastKnownFileType = file.usdz; path = bracketbot_0184_rigged.usdz; sourceTree = "<group>"; };
 		CF63C94F0E06FB864456F332 /* PortalMap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortalMap.swift; sourceTree = "<group>"; };
 		D6933E6306AC040ABFB74C78 /* SpatialPortalBridge.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = SpatialPortalBridge.xcframework; path = ../PortalBridge/build/SpatialPortalBridge.xcframework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -43,9 +47,18 @@
 			isa = PBXGroup;
 			children = (
 				A7988369933F8FE8153DB769 /* App */,
+				72B20422B48B789027D9077B /* Resources */,
 				BC96395D20B07A0008672331 /* Frameworks */,
 				F41E3BF819CA5A1A5A8C8EDD /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		72B20422B48B789027D9077B /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				BA431FB9B359E3A0AF861867 /* bracketbot_0184_rigged.usdz */,
+			);
+			path = Resources;
 			sourceTree = "<group>";
 		};
 		A7988369933F8FE8153DB769 /* App */ = {
@@ -57,6 +70,7 @@
 				B33697AF632544986693964C /* PortalViewerApp.swift */,
 				A1F90986E59A331AC5AF0962 /* SemanticVolume.swift */,
 				4400D81FC657522891C44E1A /* SemanticVolumeModel.swift */,
+				8E4554C6754FD11EA49048B5 /* Theme.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -85,6 +99,7 @@
 			buildConfigurationList = 85B17104BB73DAADBC8ED08D /* Build configuration list for PBXNativeTarget "PortalViewer" */;
 			buildPhases = (
 				6110747040736F06C64AC795 /* Sources */,
+				6667097BB5C18FC7D02C1BEC /* Resources */,
 				A0F42966F4B1711B215DA8E3 /* Frameworks */,
 			);
 			buildRules = (
@@ -92,8 +107,6 @@
 			dependencies = (
 			);
 			name = PortalViewer;
-			packageProductDependencies = (
-			);
 			productName = PortalViewer;
 			productReference = 79389B6ADD96902B6B08CFCB /* PortalViewer.app */;
 			productType = "com.apple.product-type.application";
@@ -113,6 +126,7 @@
 				};
 			};
 			buildConfigurationList = 9FC907EBBE47081E0587CE97 /* Build configuration list for PBXProject "PortalViewer" */;
+			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -120,9 +134,6 @@
 				en,
 			);
 			mainGroup = 12A06FCD460996EB1D37F303;
-			minimizedProjectReferenceProxies = 1;
-			preferredProjectObjectVersion = 77;
-			productRefGroup = F41E3BF819CA5A1A5A8C8EDD /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -130,6 +141,17 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		6667097BB5C18FC7D02C1BEC /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2481687917605ECCE2F2C22A /* bracketbot_0184_rigged.usdz in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		6110747040736F06C64AC795 /* Sources */ = {
@@ -142,6 +164,7 @@
 				B5FC91E8E14B70B258CF83E0 /* PortalViewerApp.swift in Sources */,
 				76AEBF1C9FA1B8D4D8E320D7 /* SemanticVolume.swift in Sources */,
 				BD58CFC0B92E999985C2400D /* SemanticVolumeModel.swift in Sources */,
+				2DC11F9A3C2824AFF300B427 /* Theme.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
