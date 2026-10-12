@@ -10,11 +10,32 @@ final class HomePeer: ObservableObject {
     @Published private(set) var profile: HomeProfile?
     @Published private(set) var running = false
     @Published private(set) var detail = "Pair with Home to connect"
-    @Published private(set) var state = "stopped"
+    @Published private(set) var state = "stopped" {
+        didSet { if state == "live" && oldValue != "live" { sendUnsent() } }
+    }
+    /// Notes named while Home was out of reach. They are sent once it is live again.
+    private var unsent = [(placement: NotePlacement, text: String)]()
+    /// Save to Home now if it is live; otherwise keep the note and sync it when Home is back.
+    func saveOrQueue(_ placement: NotePlacement, text: String) {
+        if !saveAnnotation(placement, text: text) { unsent.append((placement, text)) }
+    }
+    private func sendUnsent() {
+        let waiting = unsent
+        unsent = []
+        for note in waiting { saveOrQueue(note.placement, text: note.text) }
+    }
     @Published var annotationResult: AnnotationResult?
     struct AnnotationResult: Decodable, Equatable { let id: String; let saved: Bool; let detail: String }
     func saveAnnotation(_ placement: NotePlacement, text: String) -> Bool {
         guard state == "live" else { return false }
+        if let at = placement.at {
+            // Home takes a ready-made position as a note change, answered under the same id.
+            let action: [String: Any] = ["kind": "place", "id": placement.id, "origin": placement.origin, "position": at, "text": text]
+            let body: [String: Any] = ["request_id": placement.id, "frame": placement.frame, "action": action]
+            guard let data = try? JSONSerialization.data(withJSONObject: body),
+                  let json = String(data: data, encoding: .utf8) else { return false }
+            return changeAnnotation(json)
+        }
         var request = placement; request.text = text
         guard let data = try? JSONEncoder().encode(request), let json = String(data: data, encoding: .utf8) else { return false }
         annotationResult = nil
