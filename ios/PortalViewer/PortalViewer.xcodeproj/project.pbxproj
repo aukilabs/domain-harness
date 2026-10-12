@@ -10,8 +10,10 @@
 		2481687917605ECCE2F2C22A /* bracketbot_0184_rigged.usdz in Resources */ = {isa = PBXBuildFile; fileRef = BA431FB9B359E3A0AF861867 /* bracketbot_0184_rigged.usdz */; };
 		2DC11F9A3C2824AFF300B427 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E4554C6754FD11EA49048B5 /* Theme.swift */; };
 		2F00069261E099226C9BD6C9 /* PortalMap.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF63C94F0E06FB864456F332 /* PortalMap.swift */; };
+		4A76470E4560732DE318F6E8 /* RobotGlow.plist in Resources */ = {isa = PBXBuildFile; fileRef = 9D500DB4509F67ABCA3D4882 /* RobotGlow.plist */; };
 		76AEBF1C9FA1B8D4D8E320D7 /* SemanticVolume.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1F90986E59A331AC5AF0962 /* SemanticVolume.swift */; };
 		7F41A3FEC846F6B3880A9B3A /* HomePeer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 923BCD5A09BD097EE8206E8E /* HomePeer.swift */; };
+		8036F663EF9250F72D94F4BC /* RobotGlow.metal in Sources */ = {isa = PBXBuildFile; fileRef = 6EEA584DBC952221F39D9FA9 /* RobotGlow.metal */; };
 		B5FC91E8E14B70B258CF83E0 /* PortalViewerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B33697AF632544986693964C /* PortalViewerApp.swift */; };
 		BBD894698F7A607B9DBD5CF9 /* SpatialPortalBridge.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D6933E6306AC040ABFB74C78 /* SpatialPortalBridge.xcframework */; };
 		BD58CFC0B92E999985C2400D /* SemanticVolumeModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4400D81FC657522891C44E1A /* SemanticVolumeModel.swift */; };
@@ -20,10 +22,12 @@
 
 /* Begin PBXFileReference section */
 		4400D81FC657522891C44E1A /* SemanticVolumeModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SemanticVolumeModel.swift; sourceTree = "<group>"; };
+		6EEA584DBC952221F39D9FA9 /* RobotGlow.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = RobotGlow.metal; sourceTree = "<group>"; };
 		79389B6ADD96902B6B08CFCB /* PortalViewer.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = PortalViewer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		8E4554C6754FD11EA49048B5 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		8FF47757AD099392D75B3200 /* PortalPose.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortalPose.swift; sourceTree = "<group>"; };
 		923BCD5A09BD097EE8206E8E /* HomePeer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomePeer.swift; sourceTree = "<group>"; };
+		9D500DB4509F67ABCA3D4882 /* RobotGlow.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = RobotGlow.plist; sourceTree = "<group>"; };
 		A1F90986E59A331AC5AF0962 /* SemanticVolume.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SemanticVolume.swift; sourceTree = "<group>"; };
 		B33697AF632544986693964C /* PortalViewerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortalViewerApp.swift; sourceTree = "<group>"; };
 		BA431FB9B359E3A0AF861867 /* bracketbot_0184_rigged.usdz */ = {isa = PBXFileReference; lastKnownFileType = file.usdz; path = bracketbot_0184_rigged.usdz; sourceTree = "<group>"; };
@@ -57,6 +61,7 @@
 			isa = PBXGroup;
 			children = (
 				BA431FB9B359E3A0AF861867 /* bracketbot_0184_rigged.usdz */,
+				9D500DB4509F67ABCA3D4882 /* RobotGlow.plist */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -68,6 +73,7 @@
 				CF63C94F0E06FB864456F332 /* PortalMap.swift */,
 				8FF47757AD099392D75B3200 /* PortalPose.swift */,
 				B33697AF632544986693964C /* PortalViewerApp.swift */,
+				6EEA584DBC952221F39D9FA9 /* RobotGlow.metal */,
 				A1F90986E59A331AC5AF0962 /* SemanticVolume.swift */,
 				4400D81FC657522891C44E1A /* SemanticVolumeModel.swift */,
 				8E4554C6754FD11EA49048B5 /* Theme.swift */,
@@ -147,6 +153,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4A76470E4560732DE318F6E8 /* RobotGlow.plist in Resources */,
 				2481687917605ECCE2F2C22A /* bracketbot_0184_rigged.usdz in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -162,6 +169,7 @@
 				2F00069261E099226C9BD6C9 /* PortalMap.swift in Sources */,
 				EEE08B86D5CC19868B4DBB4B /* PortalPose.swift in Sources */,
 				B5FC91E8E14B70B258CF83E0 /* PortalViewerApp.swift in Sources */,
+				8036F663EF9250F72D94F4BC /* RobotGlow.metal in Sources */,
 				76AEBF1C9FA1B8D4D8E320D7 /* SemanticVolume.swift in Sources */,
 				BD58CFC0B92E999985C2400D /* SemanticVolumeModel.swift in Sources */,
 				2DC11F9A3C2824AFF300B427 /* Theme.swift in Sources */,

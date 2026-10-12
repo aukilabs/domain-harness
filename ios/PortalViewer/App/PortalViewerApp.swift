@@ -581,6 +581,26 @@ struct MiniMapGestures: UIViewRepresentable {
     }
 }
 
+/// A glowing outline around chosen nodes, so a robot reads against any background.
+/// The technique and its shader are SCNTechniqueGlow's (see THIRD_PARTY.md).
+enum RobotGlow {
+    /// Nodes carrying this bit are drawn into the outline mask.
+    static let mask = 2
+    static func technique() -> SCNTechnique? {
+        guard let url = Bundle.main.url(forResource: "RobotGlow", withExtension: "plist"),
+              let passes = NSDictionary(contentsOf: url) as? [String: Any],
+              let technique = SCNTechnique(dictionary: passes) else { return nil }
+        let c = Theme.uiAccent.cgColor.components ?? [1, 0.6, 0]
+        technique.setValue(NSValue(scnVector3: SCNVector3(Float(c[0]), Float(c[1]), Float(c[2]))), forKeyPath: "glowColorSymbol")
+        return technique
+    }
+    /// Keep the default bit so cameras and lights still see the node.
+    static func outlined(_ node: SCNNode) -> SCNNode {
+        node.enumerateHierarchy { child, _ in child.categoryBitMask |= mask }
+        return node
+    }
+}
+
 /// The robot's 3D model drawn over the mini map. Its camera is orthographic and
 /// copies the map's own projection, so the model orbits, trucks and zooms with it.
 struct RobotMapLayer: UIViewRepresentable {
@@ -605,8 +625,12 @@ struct RobotMapLayer: UIViewRepresentable {
             var model: SCNNode?
             if let url = Bundle.main.url(forResource: "bracketbot_0184_rigged", withExtension: "usdz"),
                let scene = try? SCNScene(url: url, options: [.checkConsistency: false]) {
-                model = scene.rootNode.childNodes.first
-                model?.childNode(withName: "env_light", recursively: true)?.removeFromParentNode()
+                let loaded = scene.rootNode.childNodes.first
+                loaded?.childNode(withName: "env_light", recursively: true)?.removeFromParentNode()
+                // The model faces a quarter turn off the base's heading: turn it about the vertical.
+                let turned = SCNNode()
+                turned.simdOrientation = simd_quatf(angle: .pi / 2, axis: SIMD3(0, 0, 1))
+                if let loaded { turned.addChildNode(loaded); model = turned }
             }
             DispatchQueue.main.async {
                 template = model
@@ -632,7 +656,7 @@ struct RobotMapLayer: UIViewRepresentable {
                     let upright = SCNNode()
                     // The model is Z up. A Y-up pose needs it stood up; a Z-up base pose already is.
                     if !robot.zUp { upright.simdOrientation = simd_quatf(angle: -.pi / 2, axis: SIMD3(1, 0, 0)) }
-                    upright.addChildNode(template.clone())
+                    upright.addChildNode(RobotGlow.outlined(template.clone()))
                     holder.addChildNode(upright)
                     scene.rootNode.addChildNode(holder)
                     nodes[robot.name] = holder
@@ -650,6 +674,7 @@ struct RobotMapLayer: UIViewRepresentable {
         view.isOpaque = false
         view.isUserInteractionEnabled = false
         view.autoenablesDefaultLighting = true
+        view.technique = RobotGlow.technique()
         view.antialiasingMode = .multisampling4X
         view.rendersContinuously = false
         let camera = SCNCamera()
@@ -1123,6 +1148,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         view.session.delegate = self
         // The robot model is physically shaded; without a light it renders black.
         view.autoenablesDefaultLighting = true
+        view.technique = RobotGlow.technique()
         view.session.delegateQueue = .main
         root.isHidden = true
         volumes.attach(view, root: root) { [weak self] in
@@ -1357,7 +1383,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         holder.simdTransform = base
         if let template = RobotMapLayer.template {
             // The model and the base frame are both Z up, in metres.
-            holder.addChildNode(template.clone())
+            holder.addChildNode(RobotGlow.outlined(template.clone()))
         } else {
             RobotMapLayer.whenLoaded {}
             // Base frame is Z up, +X forward: 0.5 m long, 0.35 m wide, 0.2 m tall, sitting on its origin.
