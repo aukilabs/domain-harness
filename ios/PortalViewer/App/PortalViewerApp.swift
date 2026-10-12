@@ -926,15 +926,15 @@ struct MiniMapView: View {
                 context.stroke(Path(ellipseIn: disc.insetBy(dx: -6, dy: -6)), with: .color(Theme.accent), lineWidth: 2.5)
             }
         }
+        if let phone {
+            badge(at: view.place(phone.position).point, symbol: "iphone", fill: Theme.accent, name: "You", resting: false, chosen: false)
+        }
         for device in tracked {
-            // With the 3D model on, a robot's badge is a pin above the model.
-            badge(at: view.place(device.position).point, lift: device.kind == .robot && showRobotModel ? 46 : 0,
+            // A robot's badge is a pin, so it stands clear of its model and of a phone beside it.
+            badge(at: view.place(device.position).point, lift: device.kind == .robot ? 52 : 0,
                   symbol: device.kind == .phone ? "iphone" : nil,
                   fill: device.kind == .phone ? Color(red: 0.1, green: 0.45, blue: 0.95) : Color(red: 0.05, green: 0.6, blue: 0.3),
                   name: device.name, resting: device.state != .live, chosen: device.id == queried)
-        }
-        if let phone {
-            badge(at: view.place(phone.position).point, symbol: "iphone", fill: Theme.accent, name: "You", resting: false, chosen: false)
         }
     }
 

@@ -344,6 +344,9 @@ struct DeviceTrails {
     /// A new point is kept once the device has moved this far, so one at rest adds nothing.
     static let step: Float = 0.05
     static let limit = 3000
+    /// Home republishes about once a second and sometimes skips a device for a beat.
+    /// Only this long without a report makes it lost.
+    static let patience: TimeInterval = 8
     private(set) var frame: String?
     private(set) var paths = [String: [SIMD3<Float>]]()
     private var seen = [String: TrackedDevice]()
@@ -399,7 +402,9 @@ struct DeviceTrails {
                                      state: sample.state == "asleep" ? .asleep : .live, lastSeen: now)
             reported.insert(id)
         }
-        for id in seen.keys where !reported.contains(id) { seen[id]?.state = .lost }
+        for (id, device) in seen where !reported.contains(id) && now.timeIntervalSince(device.lastSeen) > Self.patience {
+            seen[id]?.state = .lost
+        }
         return seen.values.sorted { $0.id < $1.id }
     }
 }

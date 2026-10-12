@@ -181,11 +181,14 @@ check(moved.first?.trail.count == 2 && moved.first?.name == "Bracketbot 182" && 
       && abs((moved.first?.travelled ?? 0) - 0.5) < 1e-5, "a robot that moved extends its trail and keeps Home's name")
 let seenAt = Date(timeIntervalSince1970: 100)
 _ = trails.record([deviceNote(0.5)], frame: "home", now: seenAt)
+check(trails.record([], frame: "home", now: Date(timeIntervalSince1970: 103)).first?.state == .live,
+      "one skipped report does not make a robot lost")
 let gone = trails.record([], frame: "home", now: Date(timeIntervalSince1970: 160))
 check(gone.count == 1 && gone[0].state == .lost && gone[0].position.x == 0.5 && gone[0].trail.count == 2 && gone[0].lastSeen == seenAt,
       "a robot Home stops reporting stays at its last position, lost, with the time it was last seen")
 check(trails.record([deviceNote(0.5)], frame: "home").first?.state == .live, "a robot that comes back is live again")
-check(trails.record([deviceNote(1, frame: "other")], frame: "home").allSatisfy { $0.state == .lost }, "a pose in another frame is not placed")
+check(trails.record([deviceNote(1, frame: "other")], frame: "home", now: Date(timeIntervalSinceNow: 60)).allSatisfy { $0.state == .lost },
+      "a pose in another frame is not placed")
 check(trails.record([deviceNote(1, frame: "other")], frame: "other").first?.trail.count == 1, "a new frame starts a new trail")
 var phones = DeviceTrails()
 let phone = phones.record([deviceNote(1, phone: "s1"), deviceNote(2, phone: "mine", peer: "me")], frame: "home", ownFrame: "phone-camera:mine")
