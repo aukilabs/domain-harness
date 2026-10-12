@@ -148,6 +148,8 @@ pub struct MobileClient {
     asleep: AtomicBool,
     /// The name this phone asks Home to show for it. Empty means unset.
     name: tokio::sync::watch::Sender<String>,
+    /// Where this phone places the scene on the Earth. Sent on connect and when it improves.
+    geo: tokio::sync::watch::Sender<Option<crate::mobile_geo::Reference>>,
     /// Latest joystick input: (robot peer, forward, turn). None means released.
     drive: tokio::sync::watch::Sender<Option<(String, f32, f32)>>,
     stop: CancellationToken,
@@ -178,6 +180,7 @@ impl Default for MobileClient {
             asleep: AtomicBool::new(false),
             drive: tokio::sync::watch::channel(None).0,
             name: tokio::sync::watch::channel(String::new()).0,
+            geo: tokio::sync::watch::channel(None).0,
             depth: tokio::sync::watch::channel(None).0,
             commands,
             receiver: Mutex::new(Some(receiver)),
@@ -253,6 +256,10 @@ impl MobileClient {
     /// Name this phone on Home. Sent on connect and whenever it changes.
     pub fn set_name(&self, name: String) {
         self.name.send_replace(name);
+    }
+    /// Tell Home where the scene is on the Earth, as this phone measured it.
+    pub fn set_geo(&self, reference: crate::mobile_geo::Reference) {
+        self.geo.send_replace(Some(reference));
     }
     /// Set or release the joystick. Releasing sends explicit stops.
     pub fn set_drive(&self, input: Option<(String, f32, f32)>) {
@@ -469,6 +476,25 @@ impl MobileClient {
                         .await;
                     }
                 };
+                let mut geos = self.geo.subscribe();
+                geos.mark_changed();
+                let geo_work = async {
+                    while geos.changed().await.is_ok() {
+                        let Some(reference) = geos.borrow_and_update().clone() else {
+                            continue;
+                        };
+                        // An older Home has no such operation, and a reference for another scene is refused.
+                        let _ = tokio::time::timeout(
+                            Duration::from_secs(3),
+                            operations.invoke::<_, bool>(
+                                &home.scoped_component(crate::mobile_pose::COMPONENT),
+                                "geo", "phone-geo", &uuid::Uuid::new_v4().to_string(),
+                                Duration::from_secs(2), &reference,
+                            ),
+                        )
+                        .await;
+                    }
+                };
                 let mut drive_input = self.drive.subscribe();
                 let drive_work = async {
                     use futures::StreamExt;
@@ -667,6 +693,7 @@ impl MobileClient {
                     _ = portal_work => Ok(()),
                     _ = drive_work => Ok(()),
                     _ = name_work => Ok(()),
+                    _ = geo_work => Ok(()),
                     result = local_work => result,
                     _ = pose_work => Ok(()),
                     _ = depth_work => Ok(()),

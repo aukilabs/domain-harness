@@ -186,6 +186,7 @@ struct ViewerScreen: View {
             peer.onDisconnect = { controller.clear() }
             controller.onSleep = { peer.setAsleep($0) }
             controller.onNewPortal = { peer.reportPortal($0) }
+            controller.onGeo = { peer.setGeo($0) }
             peer.onPortalResult = { controller.showPortalResult($0) }
             // A Portal seen before Home's map has arrived offers sign-in once.
             controller.onPortalSeen = { _ in
@@ -1323,8 +1324,12 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     /// Pinned to the room where the heading-aligned session had its axes, so north survives the switch to gravity.
     private var northAnchor: UUID?
     private var geoAtNorth: GeoReference?
-    /// Home's frame on the Earth. It outlives the AR session, and gives the position back after a rescan.
-    private(set) var homeGeo: (frame: String, reference: GeoReference)?
+    private var northError = HeadingGate.worstError
+    /// Home's frame on the Earth as this phone measured it. It outlives the AR session.
+    private var homeGeo: HomeGeo?
+    /// Told to Home, which keeps the best it hears and shares it with every device.
+    var onGeo: ((HomeGeo) -> Void)?
+    private var sentGeo: HomeGeo?
     private var lastGeoUpdate: TimeInterval = 0
     private var geoInAR: GeoReference?
     private var lastCompassUpdate: TimeInterval = 0
@@ -1430,6 +1435,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             northAnchor = anchor.identifier
             let camera = frame.camera.transform.columns.3
             geoAtNorth = GeoReference(fix: fix, at: SIMD3(camera.x, camera.y, camera.z), north: SIMD2(0, -1))
+            northError = locator.headingError ?? HeadingGate.worstError
             print("[geo] north established, compass ±\(Int(locator.headingError ?? -1))°, fix ±\(Int(fix.accuracy)) m")
         case .gaveUp:
             geoStatus = "No reliable compass here, so the map has no GPS position."
@@ -1449,7 +1455,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         guard geoAtNorth != nil else { return }
         geoAtNorth = nil
         northAnchor = nil
-        geoStatus = homeGeo == nil ? "GPS position lost with camera tracking. Relaunch to find north again."
+        geoStatus = sharedGeo(map?.scenegraph.map.frame.id) == nil ? "GPS position lost with camera tracking. Relaunch to find north again."
                                    : "GPS position is kept with Home's map. Scan a Portal to restore it."
     }
 
@@ -1469,6 +1475,11 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         northTurn = previous + (target - previous).remainder(dividingBy: 360)
     }
 
+    /// The scene's place on the Earth: what Home shares, else what this phone last measured.
+    private func sharedGeo(_ homeFrame: String?) -> HomeGeo? {
+        [map?.render?.geo, homeGeo].compactMap { $0 }.first { $0.frame == homeFrame }
+    }
+
     private func updateGeo(_ frame: ARFrame) {
         guard frame.timestamp - lastGeoUpdate >= 1 else { return }
         lastGeoUpdate = frame.timestamp
@@ -1483,9 +1494,18 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 geoAtNorth = pinned
             }
             world = pinned.expressed(in: anchor.transform.inverse)
-            if aligned, let homeFrame { homeGeo = (homeFrame, world.expressed(in: root.simdTransform)) }
-        } else if aligned, let homeGeo, homeGeo.frame == homeFrame {
-            world = homeGeo.reference.expressed(in: root.simdTransform.inverse)
+            if aligned, let homeFrame {
+                let measured = HomeGeo(frame: homeFrame, reference: world.expressed(in: root.simdTransform), headingError: northError)
+                homeGeo = measured
+                // Each realignment nudges the numbers; Home only needs to hear of a new scene or a better fix.
+                if sentGeo?.frame != homeFrame || measured.accuracy_m < (sentGeo?.accuracy_m ?? .infinity) - 1 {
+                    sentGeo = measured
+                    onGeo?(measured)
+                }
+            }
+        } else if aligned, let shared = sharedGeo(homeFrame)?.reference {
+            // No north of this phone's own: take the scene's, from Home or from before tracking was lost.
+            world = shared.expressed(in: root.simdTransform.inverse)
         } else { geoInAR = nil; return }
         geoInAR = world
         let camera = frame.camera.transform
@@ -1493,10 +1513,9 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         let forward = SIMD2(-camera.columns.2.x, -camera.columns.2.z)
         var text = String(format: "GPS %.6f, %.6f ±%.0f m", here.latitude, here.longitude, here.accuracy)
         if simd_length(forward) > 0.3 { text += String(format: " · facing %.0f°", world.bearing(of: forward)) }
-        if let homeGeo, homeGeo.frame == homeFrame {
-            let origin = homeGeo.reference.origin
-            text += String(format: "\nHome origin %.6f, %.6f · its −Z bears %.0f°", origin.latitude, origin.longitude,
-                           homeGeo.reference.bearing(of: SIMD2(0, -1)))
+        if let scene = sharedGeo(homeFrame)?.reference {
+            text += String(format: "\nHome origin %.6f, %.6f · its −Z bears %.0f°", scene.origin.latitude, scene.origin.longitude,
+                           scene.bearing(of: SIMD2(0, -1)))
         }
         geoStatus = text
     }

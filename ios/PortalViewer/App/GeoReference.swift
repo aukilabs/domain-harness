@@ -57,6 +57,36 @@ struct GeoReference: Equatable {
     }
 }
 
+/// A scene's place on the Earth as Home keeps and shares it: `spatial.phone-geo/v1`.
+struct HomeGeo: Codable, Equatable {
+    var frame: String
+    var latitude: Double
+    var longitude: Double
+    var altitude_m: Double
+    var accuracy_m: Double
+    var north: [Double]
+    var heading_error_deg: Double
+
+    init(frame: String, reference: GeoReference, headingError: Double) {
+        self.frame = frame
+        latitude = reference.origin.latitude
+        longitude = reference.origin.longitude
+        altitude_m = reference.origin.altitude
+        accuracy_m = reference.origin.accuracy
+        north = [Double(reference.north.x), Double(reference.north.y)]
+        heading_error_deg = headingError
+    }
+
+    /// Nil if Home sent something that is not a direction.
+    var reference: GeoReference? {
+        guard north.count == 2 else { return nil }
+        let direction = SIMD2(Float(north[0]), Float(north[1]))
+        guard simd_length(direction) > 0.5 else { return nil }
+        return GeoReference(origin: GeoFix(latitude: latitude, longitude: longitude, altitude: altitude_m, accuracy: accuracy_m),
+                            north: simd_normalize(direction))
+    }
+}
+
 /// Decides when the compass has settled enough to take north from it, and when
 /// to stop waiting for a compass that never will.
 struct HeadingGate {

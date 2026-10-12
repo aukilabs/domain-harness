@@ -4,6 +4,7 @@ import { createArOverlay } from './ar.js';
 import { createPhoneTrails } from './phone-trails.js';
 import { createSemanticVolumes } from './semantic-volumes.js';
 import { createMap2D } from './map-2d.js';
+import { createCompass } from './compass.js';
 const $=id=>document.getElementById(id);
 // Organize existing live controls into the mockup's rail and exclusive panels.
 const sidebar=document.querySelector('aside'),shell=document.querySelector('.shell');
@@ -372,7 +373,10 @@ $('load').onclick=()=>action(async()=>{const f=await api('/api/fixtures');for(co
 $('project').onclick=()=>action(async()=>{const f=await api('/api/fixtures');const result=await api('/api/detections',f.detection);$('notice').textContent=result.applied?'Book placed at the first occupied voxel hit.':'This detection is already placed. No duplicate object created.';});
 $('replay').onclick=()=>action(async()=>{const f=await api('/api/fixtures');const r=await api('/api/contributions',f.contributions[0]);$('notice').textContent=r.applied?'Contribution accepted.':'Replay ignored. Voxel evidence and object count are unchanged.';});
 new ResizeObserver(()=>{const {width,height}=$('canvas').getBoundingClientRect();renderer.setSize(width,height);camera.aspect=width/height;camera.updateProjectionMatrix();}).observe($('canvas'));
-renderer.setAnimationLoop(()=>{controls.update();semanticVolumes.tick();if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);renderer.render(scene,camera);});
+const compass=createCompass(document.querySelector('.viewport'));
+// The 2D map is drawn with -Z up the screen; in 3D the floor direction up the screen follows the camera.
+function screenAxes(){if(map2D.isActive())return [[0,-1],[1,0]];const m=camera.matrixWorld.elements,up=[m[4]-m[8],m[6]-m[10]],length=Math.hypot(...up)||1;return [[up[0]/length,up[1]/length],[m[0],m[2]]];}
+renderer.setAnimationLoop(()=>{controls.update();compass.update(current?.geo,...screenAxes());semanticVolumes.tick();if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);renderer.render(scene,camera);});
 refresh().catch(e=>{$('notice').textContent=e.message;$('notice').classList.add('error');});setInterval(()=>{if(!busy)refresh().catch(()=>{});},500);
 
 function updatePairingDownload(){const link=$('pairing-download');link.href=isLocalScene()?localSceneUrl()+'/connection':'/api/home-connection';link.download=isLocalScene()?activeMap.slice(6)+'-connection.json':'home-connection.json';link.textContent=isLocalScene()?'Download phone connection for selected scene ↗':'Download Xmart connection ↗';}

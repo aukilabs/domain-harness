@@ -38,6 +38,9 @@ pub struct Scene {
     pub presence: Value,
     #[serde(default)]
     pub robot_presence: Value,
+    /// Where this scene sits on the Earth, once a phone has told Home.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geo: Option<crate::mobile_geo::Reference>,
 }
 impl ContractType for Scene {
     const DATATYPE: &'static str = SCHEMA;
@@ -121,6 +124,9 @@ impl Scene {
         view["semantic_volumes"] = serde_json::to_value(collection)?;
         crate::mobile_pose::append_labels_in_frame(&mut view, &self.presence, &map.frame.id);
         crate::robot_presence::append_labels(&mut view, &self.robot_presence, &map.frame.id);
+        if let Some(geo) = &self.geo {
+            view["geo"] = json!(geo);
+        }
         view["environment_name"] = json!(map.name);
         view["frame_description"] = json!(map.frame.origin_description);
         view["local_reference"] = json!(true);
@@ -143,6 +149,7 @@ struct State {
     notes: Notes,
     presence: Arc<Mutex<crate::mobile_pose::Presence>>,
     robot_presence: Arc<Mutex<crate::robot_presence::Presence>>,
+    geo: Option<crate::mobile_geo::Reference>,
 }
 /// Browser writes share the exact live state and persistence path used by SDK peers.
 #[derive(Clone)]
@@ -237,6 +244,7 @@ impl Publisher {
             Notes::empty(&frame)
         };
         notes.validate(&frame)?;
+        let geo_path = scenes.directory.join("mobile-geo").join(format!("{id}.json"));
         scenes.volumes.import_notes(id,&frame,&notes.volumes)?;
         let live_presence = Arc::new(Mutex::new(crate::mobile_pose::Presence::default()));
         let robot_presence = Arc::new(Mutex::new(crate::robot_presence::Presence::default()));
@@ -251,6 +259,7 @@ impl Publisher {
             notes,
             presence: live_presence.clone(),
             robot_presence: robot_presence.clone(),
+            geo: crate::mobile_geo::load(&geo_path, &frame),
         }));
         let inbox = Arc::new(Mutex::new(crate::mobile_depth::Inbox::default()));
         scenes.note_editors.lock().map_err(|_|anyhow!("Scene annotations unavailable"))?
@@ -407,6 +416,11 @@ impl Publisher {
                 instruction: crate::mobile_pose::SetName::DATATYPE.into(),
                 result: "bool".into(),
                 exposure: Exposure::Cluster,
+            }).operable(OperableContract {
+                name: "geo".into(),
+                instruction: crate::mobile_geo::Reference::DATATYPE.into(),
+                result: "bool".into(),
+                exposure: Exposure::Cluster,
             }),
         )?;
         // Joystick relay: a phone posts stick values for one robot, and that
@@ -535,6 +549,22 @@ impl Publisher {
                 Ok(true)
             },
         )?;
+        // A phone that found north tells Home where the scene is on the Earth.
+        let geo_state = state.clone();
+        let geo_frame = frame.clone();
+        let geo_op = presence.operable(
+            "geo",
+            |ctx| !ctx.caller_peer_id.is_empty(),
+            move |_, report: crate::mobile_geo::Reference| {
+                report.validate(&geo_frame).map_err(rejected)?;
+                let mut state = geo_state.lock().map_err(|_| InvocationError::TargetUnavailable)?;
+                if let Some(next) = crate::mobile_geo::merge(state.geo.as_ref(), &report) {
+                    crate::mobile_geo::save(&geo_path, &next).map_err(rejected)?;
+                    state.geo = Some(next);
+                }
+                Ok(true)
+            },
+        )?;
         let snapshot_state = live_presence.clone();
         let snapshot_frame = frame.clone();
         let snapshot_owner = owner.clone();
@@ -564,6 +594,7 @@ impl Publisher {
         endpoint.export_operable(&op)?;
         endpoint.export_operable(&snapshot_op)?;
         endpoint.export_operable(&name_op)?;
+        endpoint.export_operable(&geo_op)?;
         components.push(presence);
         let mut publisher = Self {
             id: id.into(),
@@ -631,6 +662,7 @@ impl Publisher {
                 .snapshot_in_frame(Instant::now(), &reference.scenegraph.map.frame.id),
             robot_presence: state.robot_presence.lock().map_err(|_|anyhow!("Robot presence unavailable"))?
                 .snapshot(Instant::now(), &reference.scenegraph.map.frame.id),
+            geo: state.geo.clone(),
         };
         scene.validate(&self.owner, &reference.scenegraph.map.frame.id)?;
         let content = serde_json::to_vec(&scene)?;

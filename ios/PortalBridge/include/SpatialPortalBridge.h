@@ -11,6 +11,7 @@ int32_t spatial_mobile_local_map(const char *sample);
 void spatial_mobile_pose(const char *sample);
 void spatial_mobile_sleep(int32_t asleep);
 void spatial_mobile_name(const char *name);
+void spatial_mobile_geo(const char *reference);
 void spatial_mobile_drive(const char *target, float forward, float turn);
 int32_t spatial_mobile_report_portal(const char *report);
 void spatial_mobile_depth(const char *sample);

@@ -293,6 +293,23 @@ pub unsafe extern "C" fn spatial_mobile_name(name: *const c_char) {
     });
 }
 
+/// Tell Home where the scene is on the Earth: a `spatial.phone-geo/v1` JSON reference.
+/// # Safety
+/// A non-null `reference` must be a NUL-terminated UTF-8 string for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spatial_mobile_geo(reference: *const c_char) {
+    let _ = std::panic::catch_unwind(|| {
+        if reference.is_null() { return; }
+        let bytes = unsafe { CStr::from_ptr(reference) }.to_bytes();
+        if bytes.len() > 4096 { return; }
+        let Ok(reference) = serde_json::from_slice::<spatial_home::mobile_geo::Reference>(bytes) else { return };
+        if reference.validate(&reference.frame).is_err() { return; }
+        if let Some(client) = CLIENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            client.set_geo(reference);
+        }
+    });
+}
+
 /// Hold the joystick for `target` (a robot peer ID) at `forward`/`turn` in
 /// -1...1. A null target releases it, which sends stops.
 /// # Safety

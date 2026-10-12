@@ -499,6 +499,27 @@ async fn phone_reports_a_new_portal_into_the_selected_scene() -> Result<()> {
         moved.timestamp_ns = 280;
         moved.portal_to_session = rigid(&new_in_session, &new_local, &session_frame);
         assert!(spatial_home::mobile_portal::send(&pair.b, &home, &moved).await?);
+        // A phone that found north places the scene on the Earth; Home keeps that with the scene.
+        let geo = spatial_home::mobile_geo::Reference {
+            frame: home.frame.clone(),
+            latitude: 37.,
+            longitude: -122.,
+            altitude_m: 10.,
+            accuracy_m: 8.,
+            north: [0., -1.],
+            heading_error_deg: 12.,
+        };
+        assert!(
+            spatial_home::mobile_geo::send(&pair.b, &nacs, &geo).await.is_err(),
+            "another scene's place on the Earth is refused"
+        );
+        assert!(spatial_home::mobile_geo::send(&pair.b, &home, &geo).await?);
+        let worse = spatial_home::mobile_geo::Reference { latitude: 38., accuracy_m: 30., ..geo.clone() };
+        assert!(spatial_home::mobile_geo::send(&pair.b, &home, &worse).await?);
+        let kept: spatial_home::mobile_geo::Reference = serde_json::from_slice(&std::fs::read(
+            dir.path().join("mobile-geo").join("humanoid-hub-conference.json"),
+        )?)?;
+        assert_eq!(kept, geo, "Home keeps the better fix");
         // Depth calibrated on the new Portal is accepted, and the scene still publishes.
         let products = spatial_home::mobile_products::MobileProducts::mount(&pair.b)?;
         let phone = spatial_home::mobile_depth::Publisher::new(&products, &session)?;

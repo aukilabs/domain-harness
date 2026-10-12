@@ -58,6 +58,11 @@ final class HomePeer: ObservableObject {
         guard !trimmed.isEmpty else { return }
         trimmed.withCString { spatial_mobile_name($0) }
     }
+    /// Where this phone places the scene on the Earth. The bridge sends it on connect and when it changes.
+    func setGeo(_ geo: HomeGeo) {
+        guard let data = try? JSONEncoder().encode(geo), let json = String(data: data, encoding: .utf8) else { return }
+        json.withCString { spatial_mobile_geo($0) }
+    }
     /// Hold the joystick for one robot, or release it with a nil target. The
     /// bridge repeats the held value and sends explicit stops on release.
     func drive(target: String?, forward: Float = 0, turn: Float = 0) {

@@ -151,6 +151,8 @@ struct RenderScene: Decodable, Equatable {
     let objects: [ObjectLabel]
     let notes: [Note]
     var volumes: [SemanticVolume]? = nil
+    /// Where Home places this scene on the Earth, once any phone has told it.
+    var geo: HomeGeo? = nil
     let local_mapping: Mapping?
     struct Voxel: Decodable, Equatable {
         let center: [Float]
