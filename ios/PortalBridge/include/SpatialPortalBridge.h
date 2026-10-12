@@ -17,6 +17,7 @@ int32_t spatial_mobile_report_portal(const char *report);
 void spatial_mobile_depth(const char *sample);
 int32_t spatial_mobile_camera_demand(int32_t active);
 void spatial_mobile_camera(uint64_t timestamp, const uint8_t *jpeg, size_t length);
+void spatial_mobile_camera_calibrated(uint64_t timestamp, const uint8_t *jpeg, size_t length, const char *session, double fx, double fy, double cx, double cy, int32_t rotation_deg);
 char *spatial_mobile_calibrate(const uint8_t *luma, size_t length, const char *capture);
 int32_t spatial_mobile_annotate(const char *request);
 int32_t spatial_mobile_change_note(const char *request);

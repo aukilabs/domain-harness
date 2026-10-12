@@ -5,6 +5,7 @@ import Vision
 import CoreMotion
 import UniformTypeIdentifiers
 import PhotosUI
+import SpatialPortalBridge
 
 @main
 struct PortalViewerApp: App {
@@ -1304,6 +1305,11 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private var restSince: TimeInterval = 0
     private let motion = CMMotionManager()
     private let poseSession = UUID().uuidString
+    // Home's camera feed. Frames are made only while a reader is asking for them.
+    private let cameraShareQueue = DispatchQueue(label: "camera-share", qos: .utility)
+    private let cameraShareContext = CIContext()
+    private var cameraShareBusy = false
+    private var cameraShareNext: TimeInterval = 0
     private var lastPosePublication: TimeInterval = 0
     @Published var placement: NotePlacement?
     private(set) var map: PortalMap?
@@ -2212,6 +2218,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private func snooze() {
         guard !snoozed else { return }
         snoozed = true
+        _ = spatial_mobile_camera_demand(0)   // a paused camera has no feed to offer
         // Report sleep before withdrawing the pose so Home keeps the last one.
         onSleep?(true)
         view.session.pause()
@@ -2260,10 +2267,67 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         }
     }
 
+    /// Send Home a camera frame if someone is watching. The sensor image is
+    /// landscape, so it is turned upright for how the phone is held before it
+    /// is sent, and the intrinsics are turned and scaled with it.
+    private func shareCamera(_ frame: ARFrame) {
+        guard spatial_mobile_camera_demand(1) != 0, !cameraShareBusy, frame.timestamp >= cameraShareNext else { return }
+        let buffer = frame.capturedImage
+        let width = Double(CVPixelBufferGetWidth(buffer)), height = Double(CVPixelBufferGetHeight(buffer))
+        guard width > 0, height > 0, abs(width / height - 640.0 / 480.0) < 0.01 else { return }
+        cameraShareBusy = true
+        cameraShareNext = frame.timestamp + 0.2
+        let timestamp = UInt64(frame.timestamp * 1_000_000_000)
+        let k = frame.camera.intrinsics
+        let fx = Double(k[0][0]), fy = Double(k[1][1]), cx = Double(k[2][0]), cy = Double(k[2][1])
+        // Clockwise turn that makes the image upright, and the same turn applied to the intrinsics.
+        let turn: Int32, orientation: CGImagePropertyOrientation
+        let turned: (fx: Double, fy: Double, cx: Double, cy: Double, width: Double, height: Double)
+        switch view.window?.windowScene?.interfaceOrientation ?? .portrait {
+        case .landscapeRight:
+            turn = 0; orientation = .up
+            turned = (fx, fy, cx, cy, width, height)
+        case .landscapeLeft:
+            turn = 180; orientation = .down
+            turned = (fx, fy, width - cx, height - cy, width, height)
+        case .portraitUpsideDown:
+            turn = 270; orientation = .left
+            turned = (fy, fx, cy, width - cx, height, width)
+        default:
+            turn = 90; orientation = .right
+            turned = (fy, fx, height - cy, cx, height, width)
+        }
+        let sideways = turn == 90 || turn == 270
+        let sentWidth = sideways ? 480.0 : 640.0, sentHeight = sideways ? 640.0 : 480.0
+        let sx = sentWidth / turned.width, sy = sentHeight / turned.height
+        let session = poseSession
+        let context = cameraShareContext
+        cameraShareQueue.async { [weak self] in
+            let upright = CIImage(cvPixelBuffer: buffer).oriented(orientation)
+            let image = upright
+                .transformed(by: CGAffineTransform(translationX: -upright.extent.minX, y: -upright.extent.minY))
+                .transformed(by: CGAffineTransform(scaleX: sx, y: sy))
+                .cropped(to: CGRect(x: 0, y: 0, width: sentWidth, height: sentHeight))
+            if let space = CGColorSpace(name: CGColorSpace.sRGB),
+               let jpeg = context.jpegRepresentation(of: image, colorSpace: space,
+                    options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.6]) {
+                jpeg.withUnsafeBytes { bytes in
+                    if let base = bytes.bindMemory(to: UInt8.self).baseAddress {
+                        session.withCString {
+                            spatial_mobile_camera_calibrated(timestamp, base, jpeg.count, $0,
+                                                             turned.fx * sx, turned.fy * sy, turned.cx * sx, turned.cy * sy, turn)
+                        }
+                    }
+                }
+            }
+            DispatchQueue.main.async { self?.cameraShareBusy = false }
+        }
+    }
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
         if snoozed { return }
         checkRest(frame)
         if snoozed { return }
+        shareCamera(frame)
         if north == .searching {
             searchNorth(frame)
             // This frame, and any already on their way, are still in the compass's axes.

@@ -73,6 +73,29 @@ pub unsafe extern "C" fn spatial_mobile_camera(timestamp: u64, jpeg: *const u8, 
         client.update_camera(timestamp, unsafe { std::slice::from_raw_parts(jpeg, length) }.to_vec());
     }
 }
+/// A camera frame with the AR session that took it and the pinhole intrinsics
+/// of the image as sent (pixels, origin top-left). `rotation_deg` is how far
+/// the image was already turned clockwise from the camera's own orientation:
+/// 640x480 for 0 or 180, 480x640 for 90 or 270.
+/// # Safety
+/// `jpeg` must point to `length` readable bytes and `session` must be
+/// NUL-terminated UTF-8, both for the duration of this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spatial_mobile_camera_calibrated(
+    timestamp: u64, jpeg: *const u8, length: usize, session: *const c_char,
+    fx: f64, fy: f64, cx: f64, cy: f64, rotation_deg: i32,
+) {
+    if jpeg.is_null() || session.is_null() || length == 0 || length > spatial_home::mobile_camera::MAX_JPEG || timestamp == 0 { return; }
+    let Ok(session) = unsafe { CStr::from_ptr(session) }.to_str() else { return };
+    if session.len() > 64 { return; }
+    if let Some(client) = CLIENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        client.update_camera_calibrated(
+            timestamp,
+            unsafe { std::slice::from_raw_parts(jpeg, length) }.to_vec(),
+            spatial_home::mobile_camera::Geometry { session: session.into(), fx, fy, cx, cy, rotation_deg: rotation_deg.rem_euclid(360) as u16 },
+        );
+    }
+}
 static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
 /// Pure local detection. Caller frees the result with spatial_mobile_string_free.

@@ -99,3 +99,117 @@ async fn phone_camera_shares_sdk_catalog_and_home_consumes_only_on_demand() -> R
     pair.shutdown().await?;
     result
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn phone_camera_joins_the_ar_session_and_declares_its_calibration() -> Result<()> {
+    use spatial_home::mobile_camera::Geometry;
+    let pair = support::LocalPair::start().await?;
+    let result = async {
+        let products = MobileProducts::mount(&pair.b)?;
+        let mut camera = Camera::new(&products)?;
+        let routes = pair
+            .b
+            .listen_addresses()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let frame_of = |catalog: &serde_json::Value| {
+            catalog["catalog"]["components"][0]["current_outputs"]["frames"]["manifest"].clone()
+        };
+        let before = fetch(&pair.a, pair.b.peer_id(), &routes).await;
+        assert_eq!(before["catalog_status"], "ready");
+        assert!(
+            frame_of(&before)["spatial_frame_id"]
+                .as_str()
+                .unwrap()
+                .starts_with("phone-rgb:")
+        );
+
+        // Knowing the AR session is enough to relate the camera to depth and pose.
+        let session = uuid::Uuid::new_v4().to_string();
+        camera.enter_session(&session, 50)?;
+        camera.enter_session(&session, 60)?;
+        let entered = fetch(&pair.a, pair.b.peer_id(), &routes).await;
+        assert_eq!(
+            frame_of(&entered)["spatial_frame_id"],
+            format!("phone-camera:{session}")
+        );
+        assert_eq!(frame_of(&entered)["clock"]["id"], "arkit-capture");
+        assert_eq!(entered["catalog"]["products"].as_array().unwrap().len(), 1);
+
+        let jpeg = |width, height| -> Result<Vec<u8>> {
+            let mut jpeg = Vec::new();
+            image::codecs::jpeg::JpegEncoder::new(&mut jpeg).encode_image(
+                &image::RgbImage::from_pixel(width, height, image::Rgb([50, 100, 150])),
+            )?;
+            Ok(jpeg)
+        };
+        let geometry = Geometry { session: session.clone(), fx: 480., fy: 481., cx: 320., cy: 240., rotation_deg: 0 };
+        camera.publish_calibrated(100, jpeg(640, 480)?, geometry.clone())?;
+        assert!(
+            camera
+                .publish_calibrated(101, jpeg(640, 480)?, Geometry { fx: f64::NAN, ..geometry.clone() })
+                .is_err()
+        );
+        assert!(
+            camera
+                .publish_calibrated(101, jpeg(640, 480)?, Geometry { rotation_deg: 45, ..geometry.clone() })
+                .is_err()
+        );
+        let sent = fetch(&pair.a, pair.b.peer_id(), &routes).await;
+        // An image that is not turned stays in the camera frame depth and pose use.
+        assert_eq!(
+            frame_of(&sent)["spatial_frame_id"],
+            format!("phone-camera:{session}")
+        );
+        let metadata = &sent["catalog"]["products"][0]["metadata"];
+        assert_eq!(metadata["schema"], "spatial.phone-camera/v1");
+        assert_eq!(metadata["value"]["calibration"]["K"][0], 480.);
+        assert_eq!(metadata["value"]["calibration"]["K"][4], 481.);
+        assert_eq!(metadata["value"]["calibration"]["width"], 640);
+        assert_eq!(metadata["value"]["rotation_from_camera_frame_deg"], 0);
+        // No pose Product is named, so Home does not offer its robot overlay.
+        assert!(metadata["value"].get("pose_product_id").is_none());
+        assert!(sensor_preview::camera_sensors(&Catalogs::from([(
+            pair.b.peer_id().to_string(),
+            sent.clone()
+        )]))
+        .len() == 1);
+
+        // Held upright, the phone sends the image turned: 480 wide, 640 tall,
+        // in a frame of its own that says which camera frame it was turned from.
+        let upright = Geometry { fx: 481., fy: 480., cx: 240., cy: 320., rotation_deg: 90, ..geometry.clone() };
+        assert!(camera.publish_calibrated(200, jpeg(640, 480)?, upright.clone()).is_err());
+        camera.publish_calibrated(201, jpeg(480, 640)?, upright.clone())?;
+        // Entering the same session again does not turn the camera back.
+        camera.enter_session(&session, 202)?;
+        camera.publish_calibrated(203, jpeg(480, 640)?, upright)?;
+        let turned = fetch(&pair.a, pair.b.peer_id(), &routes).await;
+        let output = frame_of(&turned);
+        assert_eq!(output["payload"]["width"], 480);
+        assert_eq!(output["payload"]["height"], 640);
+        assert_eq!(
+            output["spatial_frame_id"],
+            format!("phone-camera:{session}:turned-90")
+        );
+        let metadata = &turned["catalog"]["products"][0]["metadata"]["value"];
+        assert_eq!(metadata["calibration"]["width"], 480);
+        assert_eq!(metadata["calibration"]["height"], 640);
+        assert_eq!(metadata["rotation_from_camera_frame_deg"], 90);
+        assert_eq!(metadata["camera_frame"], format!("phone-camera:{session}"));
+
+        // A new AR session moves the camera again.
+        let next = uuid::Uuid::new_v4().to_string();
+        camera.publish_calibrated(5, jpeg(640, 480)?, Geometry { session: next.clone(), ..geometry })?;
+        let moved = fetch(&pair.a, pair.b.peer_id(), &routes).await;
+        assert_eq!(
+            frame_of(&moved)["spatial_frame_id"],
+            format!("phone-camera:{next}")
+        );
+        camera.close()?;
+        products.close().await?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    result.and(pair.shutdown().await)
+}
