@@ -64,20 +64,9 @@ struct ViewerScreen: View {
                             .frame(width: 44, height: 44).clipShape(Circle())
                             .overlay(Circle().stroke(showDetails ? Theme.accent : Theme.paper, lineWidth: 3))
                             .shadow(color: Theme.glow, radius: 6, y: 3)
-                            // North, circling the logo once it has been found.
-                            .overlay {
-                                if let turn = controller.northTurn {
-                                    Path { path in
-                                        path.move(to: CGPoint(x: 3, y: 0))
-                                        path.addLine(to: CGPoint(x: 6, y: 10))
-                                        path.addLine(to: CGPoint(x: 0, y: 10))
-                                        path.closeSubpath()
-                                    }
-                                        .fill(Color.red).frame(width: 6, height: 10)
-                                        .offset(y: -31).rotationEffect(.degrees(turn))
-                                        .animation(.linear(duration: 0.12), value: turn)
-                                        .accessibilityHidden(true)
-                                }
+                            // A compass wrapped round the logo once north has been found.
+                            .background {
+                                if let turn = controller.northTurn { CompassRing(turn: turn) }
                             }
                     }
                     .padding()
@@ -2655,5 +2644,30 @@ enum PhoneDepthCapture {
             camera_to_session: .transform(frame.camera.transform, from: "phone-camera:\(session)", to: "phone-ar:\(session)"),
             alignment: alignment, points: voxels.map { [$0.point.x, $0.point.y, $0.point.z] },
             colors: colors.count == voxels.count ? colors : nil)
+    }
+}
+
+/// A glass dial of ticks that turns with the phone, with a red triangle at north.
+struct CompassRing: View {
+    let turn: Double
+    var body: some View {
+        ZStack {
+            Circle().fill(.ultraThinMaterial)
+            ForEach(1..<24, id: \.self) { tick in
+                Capsule().fill(Color.white.opacity(tick % 6 == 0 ? 0.9 : 0.4))
+                    .frame(width: 2, height: 6).offset(y: -27).rotationEffect(.degrees(Double(tick) * 15))
+            }
+            Path { path in
+                path.move(to: CGPoint(x: 4.5, y: 0))
+                path.addLine(to: CGPoint(x: 9, y: 8))
+                path.addLine(to: CGPoint(x: 0, y: 8))
+                path.closeSubpath()
+            }
+            .fill(Color.red).frame(width: 9, height: 8).offset(y: -27)
+        }
+        .rotationEffect(.degrees(turn))
+        .animation(.linear(duration: 0.12), value: turn)
+        .frame(width: 68, height: 68)
+        .accessibilityHidden(true)
     }
 }
