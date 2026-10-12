@@ -438,6 +438,7 @@ async fn phone_reports_a_new_portal_into_the_selected_scene() -> Result<()> {
             side_length_m: spatial_home::mobile_portal::DEFAULT_SIDE_M,
             portal_to_session: rigid(&new_in_session, &new_local, &session_frame),
             alignment: alignment.clone(),
+            replace: false,
         };
         let mut forged = report.clone();
         forged.alignment.session_to_home.translation[0] += 1.;
@@ -468,6 +469,36 @@ async fn phone_reports_a_new_portal_into_the_selected_scene() -> Result<()> {
         for (got, want) in added.pose_in_map.translation.iter().zip([2., 0., 1.]) {
             assert!((got - want).abs() < 1e-9, "Home composed the new Portal pose");
         }
+        // Someone moved the printed target: the phone, aligned through another Portal, moves it in the scene.
+        let moved_in_home = auki_odometry::Pose { translation: [3., 0., 1.], ..identity() };
+        let mut moved = report.clone();
+        moved.replace = true;
+        moved.timestamp_ns = 270;
+        moved.side_length_m = 0.5;
+        moved.portal_to_session = rigid(&compose(&inverse(&home_from_session)?, &moved_in_home)?, &new_local, &session_frame);
+        assert!(spatial_home::mobile_portal::send(&pair.b, &home, &moved).await?);
+        let stored: auki_scenegraph::MapSnapshot = serde_json::from_slice(&std::fs::read(
+            dir.path().join("humanoid-hub-conference.json"),
+        )?)?;
+        let relocated = &stored.scenegraph.anchors[new_code];
+        assert!((relocated.pose_in_map.translation[0] - 3.).abs() < 1e-9, "the Portal is where the phone measured it");
+        assert_eq!(relocated.side_length_m, 0.15, "a moved Portal keeps its printed size");
+        let mut origin = moved.clone();
+        origin.code = "HNY3JGNLRAE".into();
+        origin.portal_to_session.from_frame_id = portal.pose_in_map.from_frame_id.clone();
+        let mut by_itself = moved.clone();
+        by_itself.alignment.portal_id = new_code.into();
+        let mut unknown = moved.clone();
+        unknown.code = "NOTINSCENE1".into();
+        unknown.portal_to_session.from_frame_id = spatial_home::mobile_portal::local_frame("NOTINSCENE1");
+        for (bad, why) in [(origin, "the origin Portal stays put"), (by_itself, "a Portal is not its own reference"),
+                           (unknown, "only a Portal in the scene can be moved")] {
+            assert!(spatial_home::mobile_portal::send(&pair.b, &home, &bad).await.is_err(), "{why}");
+        }
+        // Put it back so the rest of the test sees the scene it expects.
+        moved.timestamp_ns = 280;
+        moved.portal_to_session = rigid(&new_in_session, &new_local, &session_frame);
+        assert!(spatial_home::mobile_portal::send(&pair.b, &home, &moved).await?);
         // Depth calibrated on the new Portal is accepted, and the scene still publishes.
         let products = spatial_home::mobile_products::MobileProducts::mount(&pair.b)?;
         let phone = spatial_home::mobile_depth::Publisher::new(&products, &session)?;
