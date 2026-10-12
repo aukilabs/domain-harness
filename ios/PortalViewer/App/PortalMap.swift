@@ -217,6 +217,9 @@ struct NotePlacement: Identifiable, Encodable {
     let origin: [Float]
     let direction: [Float]
     var text = ""
+    /// Set when the note goes exactly here, with no surface for Home to find along the ray.
+    var at: [Float]? = nil
+    private enum CodingKeys: String, CodingKey { case id, frame, origin, direction, text }
 }
 
 enum SceneRay {

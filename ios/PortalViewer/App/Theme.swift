@@ -1,20 +1,23 @@
 import SwiftUI
 import UIKit
 
-/// Instrument-panel look: flat paper panels, ink monospace labels in capitals,
-/// hairline rules, square corners, and a single orange accent. Light and dark.
-/// Ink means working, orange means selected or needing attention, grey is idle.
+/// Bubble-gum look: soft pink-white cards, plum rounded text in ordinary case,
+/// big round corners, pill buttons and one candy-pink accent. Light and dark.
+/// Plum means working, pink means selected or needing attention, mauve is idle.
 enum Theme {
-    /// Greys follow the phone's appearance: paper is the panel, ink is the text on it.
-    private static func grey(_ light: CGFloat, _ dark: CGFloat) -> UIColor {
-        UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: dark, alpha: 1) : UIColor(white: light, alpha: 1) }
+    /// Colours follow the phone's appearance: paper is the card, ink is the text on it.
+    private static func shade(_ light: (CGFloat, CGFloat, CGFloat), _ dark: (CGFloat, CGFloat, CGFloat)) -> UIColor {
+        UIColor {
+            let c = $0.userInterfaceStyle == .dark ? dark : light
+            return UIColor(red: c.0, green: c.1, blue: c.2, alpha: 1)
+        }
     }
-    static let uiPaper = grey(0.965, 0.09)
-    static let uiWell = grey(0.84, 0.17)
-    static let uiInk = grey(0.12, 0.93)
-    static let uiDim = grey(0.44, 0.60)
-    static let uiRule = grey(0.72, 0.30)
-    static let uiAccent = UIColor(red: 0.93, green: 0.39, blue: 0.19, alpha: 1)
+    static let uiPaper = shade((1.00, 0.97, 0.99), (0.17, 0.11, 0.20))
+    static let uiWell = shade((0.95, 0.92, 1.00), (0.23, 0.16, 0.29))
+    static let uiInk = shade((0.28, 0.15, 0.32), (1.00, 0.94, 0.97))
+    static let uiDim = shade((0.56, 0.44, 0.60), (0.77, 0.66, 0.80))
+    static let uiRule = shade((0.96, 0.82, 0.90), (0.36, 0.25, 0.41))
+    static let uiAccent = UIColor(red: 1.00, green: 0.44, blue: 0.71, alpha: 1)
 
     static let paper = Color(uiColor: uiPaper)
     /// Viewport backgrounds: the mini map, the POV view, the joystick.
@@ -24,82 +27,95 @@ enum Theme {
     static let rule = Color(uiColor: uiRule)
     static let accent = Color(uiColor: uiAccent)
     /// Text and marks drawn on the accent, the same in both appearances.
-    static let onAccent = Color(white: 0.1)
+    static let onAccent = Color(red: 0.29, green: 0.07, blue: 0.22)
+    /// The soft glow under cards and floating controls.
+    static let glow = Color(red: 0.80, green: 0.30, blue: 0.60).opacity(0.22)
 
-    static func mono(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
-        .system(size: size, weight: weight, design: .monospaced)
+    /// Corner radius of cards; viewports and fields use a little less.
+    static let corner: CGFloat = 26
+
+    static func font(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
+        .system(size: size, weight: weight, design: .rounded)
     }
-    static func uiMono(_ size: CGFloat, _ weight: UIFont.Weight = .regular) -> UIFont {
-        .monospacedSystemFont(ofSize: size, weight: weight)
+    static func uiFont(_ size: CGFloat, _ weight: UIFont.Weight = .regular) -> UIFont {
+        let base = UIFont.systemFont(ofSize: size, weight: weight)
+        return base.fontDescriptor.withDesign(.rounded).map { UIFont(descriptor: $0, size: size) } ?? base
     }
 }
 
 extension View {
-    /// A short label in capitals: section titles, tags, button text.
+    /// A short label: section titles, tags, button text.
     func themeLabel(_ size: CGFloat = 11, _ weight: Font.Weight = .regular) -> some View {
-        font(Theme.mono(size, weight)).tracking(0.8).textCase(.uppercase)
+        font(Theme.font(size + 1.5, weight == .regular ? .medium : weight))
     }
     /// Running text: status sentences and captions.
     func themeText(_ size: CGFloat = 11, _ weight: Font.Weight = .regular) -> some View {
-        font(Theme.mono(size, weight))
+        font(Theme.font(size + 1, weight))
     }
-    /// A flat paper panel with a hairline edge.
-    func themePanel(padding: CGFloat = 14) -> some View {
+    /// A soft card with round corners and a pink glow.
+    func themePanel(padding: CGFloat = 18) -> some View {
         self.padding(padding)
             .foregroundStyle(Theme.ink)
             .tint(Theme.accent)
-            .background(Theme.paper)
-            .overlay(Rectangle().stroke(Theme.rule, lineWidth: 0.5))
+            .background(Theme.paper, in: RoundedRectangle(cornerRadius: Theme.corner, style: .continuous))
+            .shadow(color: Theme.glow, radius: 16, y: 6)
     }
-    /// A small paper tag floating over a viewport.
+    /// A small pill floating over a viewport.
     func themeTag() -> some View {
-        self.padding(.horizontal, 7).padding(.vertical, 5)
+        self.padding(.horizontal, 11).padding(.vertical, 6)
             .foregroundStyle(Theme.ink)
-            .background(Theme.paper.opacity(0.94))
-            .overlay(Rectangle().stroke(Theme.rule, lineWidth: 0.5))
+            .background(Theme.paper.opacity(0.94), in: Capsule())
+            .shadow(color: Theme.glow, radius: 5, y: 2)
     }
-    /// A viewport: grey well, hairline edge, square corners.
+    /// A small card floating over a viewport, for more than one line.
+    func themeBubble() -> some View {
+        self.padding(10)
+            .background(Theme.paper.opacity(0.94), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .shadow(color: Theme.glow, radius: 5, y: 2)
+    }
+    /// A round icon button floating over a viewport.
+    func themeDot() -> some View {
+        frame(width: 34, height: 34)
+            .background(Theme.paper.opacity(0.94), in: Circle())
+            .shadow(color: Theme.glow, radius: 4, y: 2)
+            .contentShape(Circle())
+    }
+    /// A viewport: lilac well with round corners.
     func themeWell() -> some View {
-        background(Theme.well).clipShape(Rectangle())
-            .overlay(Rectangle().stroke(Theme.rule, lineWidth: 0.5))
+        background(Theme.well).clipShape(RoundedRectangle(cornerRadius: Theme.corner - 6, style: .continuous))
     }
-    /// A list row that shows selection with a tint and an orange bar on its leading edge.
+    /// A list row that shows selection as a pink bubble.
     func themeRow(selected: Bool) -> some View {
-        self.padding(.vertical, 7).padding(.horizontal, 8)
-            .background(selected ? Theme.accent.opacity(0.16) : Color.clear)
-            .overlay(alignment: .leading) {
-                Rectangle().fill(selected ? Theme.accent : Color.clear).frame(width: 2)
-            }
+        self.padding(.vertical, 8).padding(.horizontal, 10)
+            .background(selected ? Theme.accent.opacity(0.22) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .contentShape(Rectangle())
     }
-    /// System forms in the same paper, monospace and accent.
+    /// System forms in the same paper, rounded type and accent.
     func themeForm() -> some View {
-        fontDesign(.monospaced)
+        fontDesign(.rounded)
             .tint(Theme.accent)
             .scrollContentBackground(.hidden)
             .background(Theme.paper)
     }
 }
 
-/// A band of diagonal hatching that separates groups in a panel.
-struct Hatch: View {
+/// A row of beads that separates groups in a card.
+struct Dots: View {
     var body: some View {
         Canvas { context, size in
-            var path = Path()
-            var x = -size.height
+            var x: CGFloat = 2
             while x < size.width {
-                path.move(to: CGPoint(x: x, y: size.height))
-                path.addLine(to: CGPoint(x: x + size.height, y: 0))
-                x += 4
+                context.fill(Path(ellipseIn: CGRect(x: x, y: size.height / 2 - 1.5, width: 3, height: 3)), with: .color(Theme.rule))
+                x += 9
             }
-            context.stroke(path, with: .color(Theme.rule), lineWidth: 0.6)
         }
         .frame(height: 7)
         .accessibilityHidden(true)
     }
 }
 
-/// Four corner brackets: the reticle drawn around a target.
+/// Four rounded corners: the frame drawn around a target.
 struct Brackets: Shape {
     var arm: CGFloat = 10
     func path(in r: CGRect) -> Path {
@@ -107,38 +123,38 @@ struct Brackets: Shape {
         for (x, y, dx, dy) in [(r.minX, r.minY, 1.0, 1.0), (r.maxX, r.minY, -1.0, 1.0),
                                (r.maxX, r.maxY, -1.0, -1.0), (r.minX, r.maxY, 1.0, -1.0)] {
             path.move(to: CGPoint(x: x + dx * arm, y: y))
-            path.addLine(to: CGPoint(x: x, y: y))
+            path.addArc(tangent1End: CGPoint(x: x, y: y), tangent2End: CGPoint(x: x, y: y + dy * arm), radius: arm * 0.8)
             path.addLine(to: CGPoint(x: x, y: y + dy * arm))
         }
         return path
     }
 }
 
-/// A square that is filled when on: the status light and the checkbox.
+/// A circle that is filled when on: the status light and the checkbox.
 struct CheckBox: View {
     let on: Bool
     var color = Theme.accent
-    var size: CGFloat = 14
+    var size: CGFloat = 20
     var body: some View {
         ZStack {
-            Rectangle().fill(on ? color : Color.clear)
-            Rectangle().stroke(on ? color : Theme.dim, lineWidth: 1)
+            Circle().fill(on ? color : Theme.well)
+            Circle().stroke(on ? color : Theme.rule, lineWidth: 1.5)
             if on && size >= 12 {
-                Image(systemName: "checkmark").font(.system(size: size * 0.6, weight: .bold)).foregroundStyle(Theme.onAccent)
+                Image(systemName: "checkmark").font(.system(size: size * 0.55, weight: .heavy)).foregroundStyle(Theme.onAccent)
             }
         }
         .frame(width: size, height: size)
     }
 }
 
-/// A toggle drawn as a checkbox with its label in capitals.
+/// A toggle drawn as a round checkbox with its label beside it.
 struct CheckToggleStyle: ToggleStyle {
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
-        Button { configuration.isOn.toggle() } label: {
+        Button { withAnimation(.spring(response: 0.25, dampingFraction: 0.6)) { configuration.isOn.toggle() } } label: {
             HStack(spacing: 10) {
                 CheckBox(on: configuration.isOn)
-                configuration.label.themeLabel().foregroundStyle(Theme.ink)
+                configuration.label.themeLabel(12).foregroundStyle(Theme.ink)
                 Spacer(minLength: 0)
             }
             .padding(.vertical, 4).contentShape(Rectangle())
@@ -149,42 +165,53 @@ struct CheckToggleStyle: ToggleStyle {
     }
 }
 
-/// A flat rectangular button. `filled` is the one primary action on a panel.
-struct PlateButtonStyle: ButtonStyle {
+/// A pill button that squishes when pressed. `filled` is the one primary action on a card.
+struct PillButtonStyle: ButtonStyle {
     var filled = false
-    func makeBody(configuration: Configuration) -> some View { Plate(configuration: configuration, filled: filled) }
+    func makeBody(configuration: Configuration) -> some View { Pill(configuration: configuration, filled: filled) }
 
-    private struct Plate: View {
+    private struct Pill: View {
         let configuration: Configuration
         let filled: Bool
         @Environment(\.isEnabled) private var enabled
         var body: some View {
             let destructive = configuration.role == .destructive
             configuration.label
-                .themeLabel(11, .semibold)
+                .themeLabel(12, .bold)
                 .lineLimit(1)
-                .padding(.horizontal, 12).padding(.vertical, 8)
-                .foregroundStyle(filled ? Theme.onAccent : destructive ? Theme.accent : Theme.ink)
-                .background(filled ? Theme.accent : Color.clear)
-                .overlay(Rectangle().stroke(filled || destructive ? Theme.accent : Theme.ink, lineWidth: 1))
-                .opacity(!enabled ? 0.35 : configuration.isPressed ? 0.6 : 1)
-                .contentShape(Rectangle())
+                .padding(.horizontal, 16).padding(.vertical, 10)
+                .foregroundStyle(filled ? Theme.onAccent : Theme.ink)
+                .background(filled ? Theme.accent : destructive ? Theme.accent.opacity(0.28) : Theme.well, in: Capsule())
+                .shadow(color: filled ? Theme.glow : .clear, radius: 6, y: 3)
+                .opacity(enabled ? 1 : 0.4)
+                .scaleEffect(configuration.isPressed ? 0.93 : 1)
+                .animation(.spring(response: 0.25, dampingFraction: 0.55), value: configuration.isPressed)
+                .contentShape(Capsule())
         }
     }
 }
 
-/// A text field on a hairline rule.
-struct RuleFieldStyle: TextFieldStyle {
-    func _body(configuration: TextField<Self._Label>) -> some View {
-        configuration
-            .font(Theme.mono(13))
-            .foregroundStyle(Theme.ink)
-            .padding(.vertical, 5)
-            .overlay(alignment: .bottom) { Rectangle().fill(Theme.rule).frame(height: 1) }
+/// Squishes whatever label it is given, for buttons that draw their own shape.
+struct SquishButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.93 : 1)
+            .animation(.spring(response: 0.25, dampingFraction: 0.55), value: configuration.isPressed)
     }
 }
 
-/// Tabs as capitals on a rule, the selected one underlined in orange.
+/// A text field in a soft rounded well.
+struct SoftFieldStyle: TextFieldStyle {
+    func _body(configuration: TextField<Self._Label>) -> some View {
+        configuration
+            .font(Theme.font(14))
+            .foregroundStyle(Theme.ink)
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .background(Theme.well, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+/// Tabs as pills in a lilac track, the selected one filled pink.
 struct TabStrip: View {
     let tabs: [(tag: String, title: String)]
     @Binding var selection: String
@@ -192,20 +219,18 @@ struct TabStrip: View {
         HStack(spacing: 0) {
             ForEach(tabs, id: \.tag) { tab in
                 let selected = selection == tab.tag
-                Button { selection = tab.tag } label: {
-                    VStack(spacing: 6) {
-                        Text(tab.title).themeLabel(11, selected ? .semibold : .regular)
-                            .foregroundStyle(selected ? Theme.ink : Theme.dim)
-                        ZStack(alignment: .bottom) {
-                            Rectangle().fill(Theme.rule).frame(height: 0.5)
-                            Rectangle().fill(selected ? Theme.accent : Color.clear).frame(height: 2)
-                        }
-                    }
-                    .padding(.top, 6).frame(maxWidth: .infinity).contentShape(Rectangle())
+                Button { withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) { selection = tab.tag } } label: {
+                    Text(tab.title).themeLabel(12, selected ? .bold : .medium)
+                        .foregroundStyle(selected ? Theme.onAccent : Theme.dim)
+                        .padding(.vertical, 8).frame(maxWidth: .infinity)
+                        .background(selected ? Theme.accent : Color.clear, in: Capsule())
+                        .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
                 .accessibilityAddTraits(selected ? .isSelected : [])
             }
         }
+        .padding(4)
+        .background(Theme.well, in: Capsule())
     }
 }
