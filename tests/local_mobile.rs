@@ -216,6 +216,15 @@ async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated(
         assert_eq!(send_change(&pair.b,&home,&delete).await?.note,Some(deleted.clone()),"Operation retries return the original result for Undo");
         send_change(&pair.b,&home,&request(NoteAction::Restore { note: deleted })).await?;
         let editor=scenes.note_editors.lock().unwrap()["humanoid-hub-conference"].clone();
+        let mut picks=spatial_home::picking::Picks::default();
+        let hit=editor.pick(&mut picks,[0.,2.,0.],[0.,-1.,0.])?;
+        let contact=picks.contact(hit["hit"]["token"].as_str().unwrap())?;
+        assert_eq!(contact.anchor.frame,home.frame);
+        let browser_note=spatial_home::notes::TextNote{id:uuid::Uuid::new_v4().to_string(),text:"Browser placed".into(),details:Default::default(),position:contact.position,anchor_portal:String::new(),anchor_robot:None,height_m:0.,anchor_surface:Some(contact.anchor)};
+        assert!(scenes.note_editors.lock().unwrap()["nacs"].create(browser_note.clone()).is_err());
+        let created=editor.create(browser_note)?;
+        assert_eq!(created.text,"Browser placed");
+        assert_eq!(editor.change(&created.id,None)?.unwrap().id,created.id);
         let details=spatial_home::notes::NoteDetails {description:"Browser description".into(),..Default::default()};
         let edited=editor.change(&id,Some(("Browser edit".into(),Some(details))))?.unwrap();
         assert_eq!(edited.text,"Browser edit");

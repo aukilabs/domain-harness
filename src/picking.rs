@@ -45,6 +45,9 @@ impl Picks {
         voxels: &[crate::raycast::Voxel],
         size: f64,
     ) -> Result<Value> {
+        self.pick_frame(origin,direction,voxels,size,crate::model::FRAME)
+    }
+    pub fn pick_frame(&mut self, origin:[f64;3], direction:[f64;3], voxels:&[crate::raycast::Voxel], size:f64, frame:&str) -> Result<Value> {
         let Some((hit, floor)) =
             crate::mobile_notes::intersection(voxels, size, origin, direction)?
         else {
@@ -54,7 +57,7 @@ impl Picks {
             position: hit.position,
             anchor: SurfaceAnchor {
                 floor,
-                frame: crate::model::FRAME.into(),
+                frame: frame.into(),
 
                 voxel_center: hit.center,
                 beam_diameter_m: 0.,
