@@ -317,3 +317,61 @@ enum DepthProjection {
         return [px, py, -depth]
     }
 }
+
+/// A robot placed in Home's frame, with the path it has taken while this phone watched.
+struct TrackedRobot: Equatable {
+    let id: String
+    let name: String
+    /// Base pose in Home's frame: Z up, +X forward.
+    let base: simd_float4x4
+    let trail: [SIMD3<Float>]
+    /// False once Home stops reporting the robot: it stays where it was last seen.
+    var live = true
+    var position: SIMD3<Float> { SIMD3(base.columns.3.x, base.columns.3.y, base.columns.3.z) }
+}
+
+/// Home sends where each robot is now, not where it has been. The phone keeps the path.
+struct RobotTrails {
+    /// A new point is kept once the robot has moved this far, so a parked robot adds nothing.
+    static let step: Float = 0.05
+    static let limit = 3000
+    private(set) var frame: String?
+    private(set) var paths = [String: [SIMD3<Float>]]()
+    private var seen = [String: TrackedRobot]()
+
+    /// Forget the paths, not the robots.
+    mutating func clear() {
+        paths = [:]
+        seen = seen.mapValues { TrackedRobot(id: $0.id, name: $0.name, base: $0.base, trail: [], live: $0.live) }
+    }
+
+    /// Trail colour as sRGB: pale blue where the robot was first, yellow where it is now.
+    static func color(age fraction: Float) -> SIMD3<Float> {
+        let t = max(0, min(1, fraction))
+        return simd_mix(SIMD3<Float>(0.62, 0.82, 1.0), SIMD3<Float>(1.0, 0.86, 0.25), SIMD3(repeating: t))
+    }
+
+    /// Record each robot Home places in `frame`, and return every robot seen with its trail.
+    mutating func record(_ notes: [RenderScene.Note], frame: String) -> [TrackedRobot] {
+        // Positions from another frame cannot share a path.
+        if self.frame != frame { paths = [:]; seen = [:]; self.frame = frame }
+        var reported = Set<String>()
+        for note in notes {
+            guard let robot = note.robot_pose, robot.pose.to_frame_id == frame,
+                  robot.pose.translation.count == 3, robot.pose.rotation_wxyz.count == 4,
+                  (robot.pose.translation + robot.pose.rotation_wxyz).allSatisfy(\.isFinite) else { continue }
+            let base = robot.pose.matrix
+            let at = SIMD3(base.columns.3.x, base.columns.3.y, base.columns.3.z)
+            var path = paths[robot.peer_id] ?? []
+            if path.last.map({ simd_distance($0, at) >= Self.step }) ?? true {
+                path.append(at)
+                if path.count > Self.limit { path.removeFirst(path.count - Self.limit) }
+                paths[robot.peer_id] = path
+            }
+            seen[robot.peer_id] = TrackedRobot(id: robot.peer_id, name: robot.name ?? note.text, base: base, trail: path)
+            reported.insert(robot.peer_id)
+        }
+        for id in seen.keys where !reported.contains(id) { seen[id]?.live = false }
+        return seen.values.sorted { $0.id < $1.id }
+    }
+}

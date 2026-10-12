@@ -164,3 +164,25 @@ for invalid: Float in [0, -1, 6, .nan, .infinity] {
           "invalid and out-of-range depth rejected")
 }
 print("Phone depth projection checks passed")
+
+func robotNote(_ x: Float, frame: String = "home") -> RenderScene.Note {
+    let json = "{\"id\":\"robot-name:r1\",\"text\":\"Bracketbot 182\",\"position\":[\(x),0,0],\"robot_pose\":{\"peer_id\":\"r1\",\"name\":\"Bracketbot 182\",\"pose\":{\"from_frame_id\":\"robot.base\",\"to_frame_id\":\"\(frame)\",\"translation\":[\(x),0,0],\"rotation_wxyz\":[0.7071068,-0.7071068,0,0]}}}"
+    return try! JSONDecoder().decode(RenderScene.Note.self, from: Data(json.utf8))
+}
+var trails = RobotTrails()
+check(trails.record([robotNote(0)], frame: "home").first?.trail.count == 1, "a robot's first position starts its trail")
+check(trails.record([robotNote(0.02)], frame: "home").first?.trail.count == 1, "a parked robot adds nothing to its trail")
+let moved = trails.record([robotNote(0.5)], frame: "home")
+check(moved.first?.trail.count == 2 && moved.first?.name == "Bracketbot 182" && moved.first?.position.x == 0.5,
+      "a robot that moved extends its trail and keeps Home's name")
+let gone = trails.record([], frame: "home")
+check(gone.count == 1 && gone[0].live == false && gone[0].position.x == 0.5 && gone[0].trail.count == 2,
+      "a robot Home stops reporting stays at its last position, marked not live")
+check(trails.record([robotNote(0.5)], frame: "home").first?.live == true, "a robot that comes back is live again")
+check(trails.record([robotNote(1, frame: "other")], frame: "home").allSatisfy { !$0.live }, "a pose in another frame is not placed")
+check(trails.record([robotNote(1, frame: "other")], frame: "other").first?.trail.count == 1, "a new frame starts a new trail")
+check(RobotTrails.color(age: 0).z > RobotTrails.color(age: 0).x && RobotTrails.color(age: 1).x > RobotTrails.color(age: 1).z,
+      "old trail is blue, new trail is yellow")
+let oldNote = try JSONDecoder().decode(RenderScene.Note.self, from: Data("{\"id\":\"n\",\"text\":\"t\",\"position\":[0,0,0]}".utf8))
+check(oldNote.robot_pose == nil && oldNote.phone_pose == nil, "notes without a pose still decode")
+print("Robot trail checks passed")

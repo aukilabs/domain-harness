@@ -98,7 +98,9 @@ struct ViewerScreen: View {
                 if !open {
                     Text(sendSummary).themeText(11).foregroundStyle(Theme.dim).lineLimit(1)
                 } else if tab == "map" {
-                    MiniMapView(map: controller.miniMap, phone: controller.miniPhone, robots: mapRobots)
+                    MiniMapView(map: controller.miniMap, phone: controller.miniPhone, robots: mapRobots,
+                                tracked: controller.trackedRobots, showTrails: $controller.showTrails,
+                                clearTrails: controller.clearTrails)
                         .frame(height: mapHeight)
                     Text(sendSummary).themeLabel(10, .semibold).foregroundStyle(sendColor).lineLimit(2)
                     Text(controller.status).themeText(11).foregroundStyle(Theme.dim).lineLimit(2)
@@ -631,6 +633,11 @@ struct MiniMapView: View {
     let map: MiniMapData
     let phone: MiniMapPhone?
     var robots = [MiniMapRobot]()
+    /// Every robot seen in this scene, with its trail; one Home no longer reports is not live.
+    var tracked = [TrackedRobot]()
+    /// One switch for the robot trails here and in AR.
+    var showTrails: Binding<Bool> = .constant(true)
+    var clearTrails: () -> Void = {}
     /// Offset of the orbit pivot from the scene's center, in Home metres.
     @State private var pan = SIMD3<Float>(0, 0, 0)
     @State private var yaw: Float = 0
@@ -692,6 +699,17 @@ struct MiniMapView: View {
                             .overlay(Rectangle().stroke(Theme.rule, lineWidth: 0.5))
                     }.padding(.horizontal, 6).padding(.bottom, 6)
                         .accessibilityLabel(showRobotModel ? "Show robots as icons" : "Show robots as 3D models")
+                    // Tap shows or hides robot trails; a long press starts them again from here.
+                    Image(systemName: "point.topleft.down.to.point.bottomright.curvepath").font(.system(size: 13))
+                        .foregroundStyle(showTrails.wrappedValue ? Theme.accent : Theme.dim)
+                        .frame(width: 30, height: 30).background(Theme.paper.opacity(0.94))
+                        .overlay(Rectangle().stroke(Theme.rule, lineWidth: 0.5))
+                        .padding(.horizontal, 6).padding(.bottom, 6)
+                        .onTapGesture { showTrails.wrappedValue.toggle() }
+                        .onLongPressGesture { clearTrails(); UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
+                        .accessibilityLabel(showTrails.wrappedValue ? "Hide robot trails" : "Show robot trails")
+                        .accessibilityHint("Long press to clear the trails")
+                        .accessibilityAddTraits(.isButton)
                     if pan != SIMD3<Float>(0, 0, 0) || yaw != 0 || pitch != .pi / 2 || zoom != 1 {
                         Button { pan = .zero; yaw = 0; pitch = .pi / 2; zoom = 1 } label: {
                             Image(systemName: "scope").font(.system(size: 13)).foregroundStyle(Theme.ink)
@@ -723,6 +741,8 @@ struct MiniMapView: View {
         if showVolumes { points += map.volumes.flatMap { Self.corners($0) } }
         if let phone { points.append(phone.position) }
         points += robots.map(\.position)
+        points += tracked.filter { !$0.live }.map(\.position)
+        if showTrails.wrappedValue { points += tracked.flatMap(\.trail) }
         guard var low = points.first else { return nil }
         var high = low
         for p in points { low = simd_min(low, p); high = simd_max(high, p) }
@@ -818,20 +838,34 @@ struct MiniMapView: View {
             let square = Path(CGRect(x: at.x - 5, y: at.y - 5, width: 10, height: 10))
             context.fill(square, with: .color(Theme.ink)); context.stroke(square, with: .color(Theme.paper), lineWidth: 1)
         }
-        for robot in robots {
+        if showTrails.wrappedValue {
+            // Each robot's path: pale blue where it started, yellow where it is now.
+            for robot in tracked where !robot.trail.isEmpty {
+                let points = robot.trail.map { view.place($0).point } + [view.place(robot.position).point]
+                for i in 1..<points.count {
+                    var segment = Path(); segment.move(to: points[i - 1]); segment.addLine(to: points[i])
+                    let c = RobotTrails.color(age: Float(i) / Float(points.count - 1))
+                    context.stroke(segment, with: .color(Color(red: Double(c.x), green: Double(c.y), blue: Double(c.z))),
+                                   style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                }
+            }
+        }
+        // A robot Home no longer reports stays where it was last seen, faded.
+        let ghosts = tracked.filter { !$0.live }.map { MiniMapRobot(name: $0.name, transform: $0.base, zUp: true) }
+        for (robot, strength) in robots.map({ ($0, 1.0) }) + ghosts.map({ ($0, 0.3) }) {
             // Under the 3D model: the chassis footprint, a tick out of its nose, and its name.
             let c = robot.outline.map { view.place($0).point }
             var body = Path(); body.move(to: c[0]); c[1...3].forEach { body.addLine(to: $0) }; body.closeSubpath()
-            if !showRobotModel { context.fill(body, with: .color(Theme.accent.opacity(0.35))) }
-            context.stroke(body, with: .color(Theme.accent), lineWidth: showRobotModel ? 1 : 1.5)
+            if !showRobotModel || strength < 1 { context.fill(body, with: .color(Theme.accent.opacity(0.35 * strength))) }
+            context.stroke(body, with: .color(Theme.accent.opacity(strength)), lineWidth: showRobotModel ? 1 : 1.5)
             var nose = Path()
             nose.move(to: CGPoint(x: (c[0].x + c[1].x) / 2, y: (c[0].y + c[1].y) / 2)); nose.addLine(to: c[4])
-            context.stroke(nose, with: .color(Theme.accent), lineWidth: 1.5)
+            context.stroke(nose, with: .color(Theme.accent.opacity(strength)), lineWidth: 1.5)
             let at = view.place(robot.position).point
             let reach = max(14, c[0..<4].map { hypot($0.x - at.x, $0.y - at.y) }.max() ?? 14) + 5
             let reticle = CGRect(x: at.x - reach, y: at.y - reach, width: reach * 2, height: reach * 2)
-            context.stroke(Brackets(arm: 6).path(in: reticle), with: .color(Theme.ink), lineWidth: 1)
-            context.draw(Text(robot.name.uppercased()).font(Theme.mono(9, .semibold)).foregroundColor(Theme.ink),
+            context.stroke(Brackets(arm: 6).path(in: reticle), with: .color(Theme.ink.opacity(strength)), lineWidth: 1)
+            context.draw(Text(robot.name.uppercased()).font(Theme.mono(9, .semibold)).foregroundColor(Theme.ink.opacity(strength)),
                          at: CGPoint(x: reticle.midX, y: reticle.minY - 3), anchor: .bottom)
         }
         if let phone {
@@ -913,6 +947,20 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private var portalReported = [String: TimeInterval]()
     @Published private(set) var miniMap = MiniMapData()
     @Published private(set) var miniPhone: MiniMapPhone?
+    /// Every robot seen in this scene, each with the path it has taken.
+    @Published private(set) var trackedRobots = [TrackedRobot]()
+    private var trails = RobotTrails()
+    @Published var showTrails = UserDefaults.standard.object(forKey: "robotTrailsVisible") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(showTrails, forKey: "robotTrailsVisible")
+            for node in root.childNodes + povRoot.childNodes where node.name == "robot-trail" { node.isHidden = !showTrails }
+        }
+    }
+    func clearTrails() {
+        trails.clear()
+        trackedRobots = trackedRobots.map { TrackedRobot(id: $0.id, name: $0.name, base: $0.base, trail: [], live: $0.live) }
+        for node in root.childNodes + povRoot.childNodes where node.name == "robot-trail" { node.removeFromParentNode() }
+    }
     /// Devices for the POV tab. This phone's entry follows its live pose.
     @Published private(set) var devices = [PovDevice]()
     private var remoteDevices = [PovDevice]()
@@ -1002,6 +1050,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         }
         self.map = map
         miniMap = MiniMapData(map)
+        trackedRobots = trails.record(map.render?.notes ?? [], frame: map.scenegraph.map.frame.id)
         root.childNodes.forEach { $0.removeFromParentNode() }
         for portal in map.scenegraph.anchors.values.sorted(by: { $0.anchor_id < $1.anchor_id }) {
             let node = SCNNode()
@@ -1030,6 +1079,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             root.addChildNode(node)
         }
         renderScene(map.render)
+        trackedRobots.forEach(addTrail)
         for volume in map.render?.volumes ?? [] where volume.valid {
             root.addChildNode(volume.node())
         }
@@ -1173,6 +1223,53 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         root.addChildNode(label)
     }
 
+    /// A robot's path as a ribbon just above the floor. A robot Home no longer
+    /// reports also keeps a faint body and label where it was last seen.
+    private func addTrail(_ robot: TrackedRobot) {
+        if !robot.live {
+            let body = SCNNode(geometry: SCNBox(width: 0.5, height: 0.35, length: 0.2, chamferRadius: 0.03))
+            body.geometry?.firstMaterial?.diffuse.contents = UIColor.white.withAlphaComponent(0.2)
+            body.geometry?.firstMaterial?.lightingModel = .constant
+            body.simdTransform = robot.base * simd_float4x4(SIMD4(1, 0, 0, 0), SIMD4(0, 1, 0, 0), SIMD4(0, 0, 1, 0), SIMD4(0, 0, 0.1, 1))
+            root.addChildNode(body)
+            let p = robot.position
+            addLabel(robot.name, at: [p.x, p.y, p.z], color: UIColor.white.withAlphaComponent(0.3))
+        }
+        let path = robot.trail + [robot.position]
+        var vertices = [SCNVector3](), colors = [Float](), indices = [UInt32]()
+        for i in 1..<path.count {
+            let a = path[i - 1], b = path[i]
+            let along = SIMD3(b.x - a.x, 0, b.z - a.z)
+            guard simd_length(along) > 1e-4 else { continue }
+            let side = simd_normalize(simd_cross(SIMD3(0, 1, 0), along)) * 0.03, lift = SIMD3<Float>(0, 0.03, 0)
+            let base = UInt32(vertices.count)
+            // Oldest is pale blue, newest is yellow.
+            let older = RobotTrails.color(age: Float(i - 1) / Float(path.count - 1))
+            let newer = RobotTrails.color(age: Float(i) / Float(path.count - 1))
+            let low = a + lift, high = b + lift
+            let corners: [(SIMD3<Float>, SIMD3<Float>)] = [(low - side, older), (low + side, older), (high + side, newer), (high - side, newer)]
+            for (p, c) in corners {
+                vertices.append(SCNVector3(p.x, p.y, p.z))
+                colors += [c.x, c.y, c.z, 1]
+            }
+            indices += [base, base + 1, base + 2, base, base + 2, base + 3]
+        }
+        guard !indices.isEmpty else { return }
+        let colorSource = SCNGeometrySource(data: colors.withUnsafeBytes { Data($0) }, semantic: .color,
+            vectorCount: vertices.count, usesFloatComponents: true, componentsPerVector: 4,
+            bytesPerComponent: 4, dataOffset: 0, dataStride: 16)
+        let ribbon = SCNGeometry(sources: [SCNGeometrySource(vertices: vertices), colorSource],
+                                 elements: [SCNGeometryElement(indices: indices, primitiveType: .triangles)])
+        let material = SCNMaterial()
+        material.lightingModel = .constant
+        material.isDoubleSided = true
+        ribbon.materials = [material]
+        let trail = SCNNode(geometry: ribbon)
+        trail.name = "robot-trail"
+        trail.isHidden = !showTrails
+        root.addChildNode(trail)
+    }
+
     private func addRobot(_ sample: RenderScene.RobotPose?, name: String) {
         guard let pose = sample?.pose, pose.translation.count == 3, pose.rotation_xyzw.count == 4,
               sample?.frame == map?.scenegraph.map.frame.id else { return }
@@ -1229,6 +1326,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         clearPlacement()
         map = nil
         miniMap = MiniMapData()
+        trails = RobotTrails(); trackedRobots = []
         povRoot.childNodes.forEach { $0.removeFromParentNode() }
         remoteDevices = []; refreshDevices()
         root.childNodes.forEach { $0.removeFromParentNode() }
