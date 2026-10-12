@@ -355,6 +355,12 @@ pub fn remove(store: &mut Store, id: &str) -> Result<()> {
 
     Ok(())
 }
+pub fn tool_edit(store:&mut Store,edit:crate::scene_tools::NoteEdit)->Result<serde_json::Value>{
+    let mut notes=from_registries(&store.built.registries,FRAME)?;
+    let receipt=crate::scene_tools::apply_note(&mut notes,edit,FRAME)?;
+    crate::model::persist(&store.path.with_extension("notes.json"),&notes)?;
+    store.built.registries["text_notes"]=json!(notes);Ok(receipt)
+}
 /// Home live is explicitly calibrated to the canonical origin, with Z-up axes.
 pub fn attach_home(scene: &mut crate::network::CanonicalScene, notes: &Notes) -> Result<()> {
     ensure!(

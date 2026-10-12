@@ -2,10 +2,8 @@
 use anyhow::{Result, ensure};
 use auki_component_protocol::ComponentProtocolEndpoint;
 use auki_components::*;
-use auki_datatypes::map::MapUpdate;
 use auki_registry::{AxisDirection, FrameRegistryEntry};
 use auki_voxel_map::VoxelSnapshot;
-use prost::Message;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -231,7 +229,7 @@ pub fn select_cells(scene: &OccupancyScene, request: ReadCells) -> Result<CellSe
 /// explicitly negative to call a column free. Zero evidence remains unknown.
 pub fn project(voxels: &VoxelSnapshot, floor_m: f64) -> Result<OccupancyGrid> {
     Config::new(floor_m).validate()?;
-    voxels.accumulator()?; // Validate checkpoint coordinates, evidence and provenance.
+    let layers = crate::voxel_layers::split(voxels)?;
     let d = &voxels.definition;
     ensure!(
         (d.grid().voxel_size_m.0 - 0.1).abs() < 1e-9,
@@ -249,16 +247,9 @@ pub fn project(voxels: &VoxelSnapshot, floor_m: f64) -> Result<OccupancyGrid> {
     ensure!(top - bottom + 1 == 10, "invalid vertical sampling band");
     // (occupied, bit mask of observed free heights). Dedup via bit mask.
     let mut columns = BTreeMap::<[i32; 2], (bool, u16)>::new();
-    let update = MapUpdate::decode(voxels.checkpoint.as_slice())?;
-    for chunk in update.checkpoint.unwrap().voxel_chunks {
-        for v in chunk.voxels {
-            let base = [chunk.chunk_x, chunk.chunk_y, chunk.chunk_z];
-            let local = [v.x, v.y, v.z];
-            let mut p = [0_i64; 3];
-            for i in 0..3 {
-                p[i] =
-                    i64::from(base[i]) * i64::from(d.grid().chunk_dimension) + i64::from(local[i]);
-            }
+    for layer in &layers {
+        for sample in layer.cells.iter().flat_map(|cell| &cell.voxels) {
+            let p = sample.index.map(i64::from);
             if p[up] < bottom || p[up] > top {
                 continue;
             }
@@ -267,9 +258,9 @@ pub fn project(voxels: &VoxelSnapshot, floor_m: f64) -> Result<OccupancyGrid> {
                 i32::try_from(p[horizontal[1]])?,
             ];
             let entry = columns.entry(key).or_default();
-            if v.occupancy_evidence > 0. {
+            if layer.kind == crate::voxel_layers::Kind::Occupied {
                 entry.0 = true;
-            } else if v.occupancy_evidence < 0. {
+            } else {
                 entry.1 |= 1 << (p[up] - bottom);
             }
         }
@@ -350,7 +341,21 @@ impl OccupancyMapper {
         clock: ClockReference,
         config: Config,
     ) -> Result<Self> {
-        Self::mount_inner(runtime, Some(endpoint), source, owner, clock, config)
+        Self::mount_inner(runtime, Some(endpoint), source, owner, clock, config, None)
+    }
+
+    /// Home runs one mapper per independent local scene; IDs must not collide.
+    pub fn mount_scoped(
+        runtime: &ComponentRuntime,
+        endpoint: &ComponentProtocolEndpoint,
+        source: &RetainedProduct<CanonicalScene>,
+        owner: &str,
+        clock: ClockReference,
+        config: Config,
+        scene_id: &str,
+    ) -> Result<Self> {
+        ensure!(!scene_id.is_empty() && scene_id.len() <= 128, "invalid occupancy scene ID");
+        Self::mount_inner(runtime, Some(endpoint), source, owner, clock, config, Some(scene_id))
     }
 
     /// Bind an SDK Product locally without mounting a network peer or endpoint.
@@ -361,7 +366,7 @@ impl OccupancyMapper {
         clock: ClockReference,
         config: Config,
     ) -> Result<Self> {
-        Self::mount_inner(runtime, None, source, owner, clock, config)
+        Self::mount_inner(runtime, None, source, owner, clock, config, None)
     }
 
     fn mount_inner(
@@ -371,10 +376,13 @@ impl OccupancyMapper {
         owner: &str,
         clock: ClockReference,
         config: Config,
+        scene_id: Option<&str>,
     ) -> Result<Self> {
         config.validate()?;
+        let component_id = scene_id.map_or_else(|| "voxel-to-occupancy-2d".into(), |id| format!("voxel-to-occupancy-2d:{id}"));
+        let product_id = scene_id.map_or_else(|| PRODUCT.into(), |id| format!("{PRODUCT}:{id}"));
         let component = runtime.component(
-            ComponentSpec::new("voxel-to-occupancy-2d")
+            ComponentSpec::new(component_id)
                 .product_input(ProductInputContract {
                     name: "source_scene".into(),
                     form: ProductForm::Buffer,
@@ -437,7 +445,7 @@ impl OccupancyMapper {
         )?;
         component.expose()?;
         let capture = runtime.capture_buffer(
-            PRODUCT,
+            product_id,
             &output,
             BufferLimits {
                 max_entries: Some(2),
@@ -461,7 +469,7 @@ impl OccupancyMapper {
             config,
             state: OccupancyScene {
                 schema: SCHEMA.into(),
-                scene_id: format!("{owner}:occupancy-2d"),
+                scene_id: scene_id.map_or_else(|| format!("{owner}:occupancy-2d"), str::to_owned),
                 authority_peer_id: owner.into(),
                 source_product: source.reference(),
                 status: "waiting".into(),
@@ -484,6 +492,11 @@ impl OccupancyMapper {
     }
     pub fn state(&self) -> &OccupancyScene {
         &self.state
+    }
+    /// Explicit operator clear, unlike unknown cells in ordinary observations.
+    pub fn clear_geometry(&mut self) {
+        self.state.layers.occupancy_2d = None;
+        self.last_cycle = None;
     }
 
     /// Call regularly; enforces rate limit and coalesces input. No history replay.

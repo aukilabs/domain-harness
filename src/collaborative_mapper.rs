@@ -46,6 +46,21 @@ pub struct CollaborativeMap {
     landmark_provenance: BTreeMap<String, crate::landmarks::Provenance>,
 }
 impl CollaborativeMap {
+    /// Clear geometry evidence only. Keep alignment, reference anchors and input
+    /// watermarks so old observations cannot be replayed after a clear.
+    pub fn clear_voxels(&mut self) -> Result<()> {
+        let recent = crate::recent_voxels::RecentVoxels::default();
+        if let Some(saved) = &mut self.voxels {
+            let mut accumulator = saved.accumulator()?;
+            accumulator.apply(&recent.checkpoint()?)?;
+            saved.checkpoint = accumulator.checkpoint_update().encode_to_vec();
+            saved.latest_observation = None;
+            saved.integrated_observations = 0;
+            saved.accumulator()?;
+        }
+        self.recent = recent;
+        Ok(())
+    }
     pub fn new(owner: &str, session: &str, canonical: &MapSnapshot) -> Result<Self> {
         let frame = format!("home-live:{session}:zup");
         let definition = MapDefinition {

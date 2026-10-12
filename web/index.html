@@ -48,6 +48,17 @@
 <div class="empty" id="empty"><span class="empty-icon">⌗</span><h3>Waiting for measured geometry</h3><p>Runner scans will build voxel geometry here.</p></div>
 <section id="sensor-pip" aria-label="Sensor picture-in-picture" hidden><div class="sensor-pip-heading"><strong id="sensor-title"></strong><label class="ar-toggle" title="Overlay Home live voxels and text notes on this camera"><input type="checkbox" id="sensor-ar">AR</label><button id="sensor-close" aria-label="Close sensor preview">×</button></div><div id="sensor-stage"><canvas id="sensor-image"></canvas><canvas id="sensor-ar-overlay" aria-label="Home voxel and text AR overlay" hidden></canvas></div><div id="sensor-ar-status" role="status" hidden></div><div id="sensor-feed-status" role="status">Waiting for a frame…</div></section>
 <div class="selection" id="selection" hidden></div>
+<section class="scene-chat" aria-label="Scene assistant">
+<div id="scene-chat-history" class="scene-chat-history" role="log" aria-label="Conversation" hidden></div>
+<div class="scene-chat-caption"><span class="scene-chat-dot"></span><span>Scene assistant</span><span class="scene-chat-local">On your laptop</span></div>
+<form id="scene-chat-form" class="scene-chat-form">
+<label class="scene-chat-label" for="scene-chat-input">Message your scene assistant</label>
+<input id="scene-chat-input" type="text" autocomplete="off" maxlength="4000" placeholder="Tell your space what matters…">
+<button type="submit" aria-label="Send message" title="Send message">↑</button>
+<button id="scene-chat-toggle" class="scene-chat-toggle" type="button" aria-label="Hide conversation" aria-controls="scene-chat-history" aria-expanded="true" title="Hide conversation">⌄</button>
+</form>
+<p id="scene-chat-status" role="status">Local Qwen · inspect scene and edit volume descriptions</p>
+</section>
 <div class="viewport-footer"><span>Drag to orbit <b>·</b> Scroll to zoom <b>·</b> Click to inspect</span><span><i class="axis x">X</i><i class="axis y">Y</i><i class="axis z">Z</i></span></div>
 </section>
 <div class="stats"><div><span>OCCUPIED VOXELS</span><strong id="voxel-count">0</strong><small>10 cm resolution</small></div><div><span>OBSERVATIONS</span><strong id="observation-count">0</strong><small>Integrated across peers</small></div><div><span>SEMANTIC OBJECTS</span><strong id="object-count">0</strong><small>Positioned by raycast</small></div><div><span>MAP AUTHORITY</span><strong class="authority"><span id="map-authority">Home Server</span> <i>●</i></strong><small>Persisted by map owner</small></div></div>

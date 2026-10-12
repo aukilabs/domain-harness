@@ -31,6 +31,7 @@ fn read_names(path: &str) -> BTreeMap<String, String> {
         .unwrap_or_default()
 }
 pub fn display_name(peer: &str) -> String {
+    if let Ok(aliases)=crate::peer_aliases::all(){if let Some(alias)=aliases.get(peer){return alias.clone();}}
     let names = NAMES.read().unwrap_or_else(|e| e.into_inner());
     names
         .get(peer)

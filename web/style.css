@@ -251,3 +251,22 @@ button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visi
 @media(max-width:720px){body{overflow:hidden}.shell{min-height:0}.viewport-heading small{display:none}.main-footer{letter-spacing:0;font-size:7px}.viewport-footer>span:first-child{max-width:75%;overflow:hidden;white-space:nowrap}.empty{min-width:0;width:90%;padding:10px}}
 @media(max-width:720px){.shell:not(.panel-collapsed) .selection[data-spatial-kind]{display:none}}
 @media(prefers-reduced-motion:reduce){.shell{transition:none}}
+.scene-chat{position:absolute;bottom:42px;left:50%;transform:translateX(-50%);width:min(560px,calc(100% - 32px));z-index:95;padding:12px 14px 9px;border:1px solid var(--line);border-radius:16px;background:var(--panel);box-shadow:0 8px 32px #0003;color:var(--text-2)}
+.scene-chat-caption{display:flex;align-items:center;gap:7px;font-size:10px;letter-spacing:.02em;margin-bottom:9px}
+.scene-chat-dot{width:6px;height:6px;border-radius:50%;background:var(--accent)}
+.scene-chat-local{margin-left:auto;color:var(--muted);font-size:9px}
+.scene-chat-form{display:flex;gap:10px;align-items:center}
+.scene-chat-label{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+.scene-chat-form input{flex:1;min-width:0;border:0;background:transparent;color:var(--text-2);font:14px system-ui;padding:7px 0;cursor:text}
+.scene-chat-form input::placeholder{color:var(--muted)}
+.scene-chat-form button{flex:none;width:32px;height:32px;border:0;border-radius:10px;background:var(--accent);color:white;font-size:21px;cursor:pointer}
+.scene-chat-form button:disabled{opacity:.35;cursor:default}
+#scene-chat-status{margin:8px 0 0;color:var(--muted);font-size:9px}
+.scene-chat-history{max-height:min(300px,35vh);overflow-y:auto;margin-bottom:12px;font:12px/1.5 system-ui}
+.scene-chat-message{padding:8px 10px;border-radius:8px;margin-bottom:6px;white-space:pre-wrap;overflow-wrap:anywhere}
+.scene-chat-message.user{background:var(--app)}
+.scene-chat-message strong{display:block;font-size:10px;color:var(--accent);margin-bottom:3px}
+.scene-chat.compact .scene-chat-history,.scene-chat.compact .scene-chat-caption,.scene-chat.compact #scene-chat-status{display:none}
+.scene-chat.compact{padding:8px 12px}
+.scene-chat-form .scene-chat-toggle{width:24px;background:transparent;color:var(--muted);font-size:18px;border-radius:6px}
+@media(max-width:720px){.scene-chat{bottom:38px;padding:10px;width:calc(100% - 20px)}.scene-chat-form input{font-size:13px}}

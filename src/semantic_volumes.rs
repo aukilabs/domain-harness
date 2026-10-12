@@ -198,6 +198,60 @@ impl Storage {
         Ok(value.clone())
     }
     /// Persist before exposing the change. IDs cannot be silently upserted.
+    pub fn update_description(&self,key:&str,frame:&str,id:&str,expected:&str,description:&str)->Result<serde_json::Value> {
+        let mut cache=self.cache.lock().map_err(|_|anyhow::anyhow!("Volume storage unavailable"))?;
+        let mut next=match cache.get(key){Some(v)=>v.clone(),None=>self.read(key,frame)?};
+        next.validate(frame)?;
+        let volume=next.items.iter_mut().find(|v|v.id==id).ok_or_else(||anyhow::anyhow!("Volume not found in selected scene"))?;
+        ensure!(volume.description==expected,"Description changed concurrently; reread the volume before editing");
+        let receipt=serde_json::json!({"id":id,"title":volume.title,"before":volume.description,"after":description});
+        volume.description=description.into();next.validate(frame)?;
+        crate::model::persist(&self.directory.join(format!("{key}.json")),&next)?;
+        cache.insert(key.into(),next);Ok(receipt)
+    }
+    pub fn delete_volume(&self,key:&str,frame:&str,id:&str,expected_name:&str)->Result<serde_json::Value>{
+        let mut cache=self.cache.lock().map_err(|_|anyhow::anyhow!("Volume storage unavailable"))?;
+        let mut next=match cache.get(key){Some(v)=>v.clone(),None=>self.read(key,frame)?};next.validate(frame)?;
+        let index=next.items.iter().position(|v|v.id==id).ok_or_else(||anyhow::anyhow!("Volume not found in selected scene"))?;
+        ensure!(next.items[index].title==expected_name,"Volume renamed concurrently; reread it before deleting");
+        let before=next.items.remove(index);next.validate(frame)?;
+        crate::model::persist(&self.directory.join(format!("{key}.json")),&next)?;
+        ensure!(self.read(key,frame)?==next,"Volume deletion readback did not match");
+        let receipt=serde_json::json!({"tool":"delete_volume","id":id,"title":before.title,"summary":format!("Deleted volume {}.",before.title),"before":before,"after":null});
+        cache.insert(key.into(),next);Ok(receipt)
+    }
+    pub fn create_volume(&self,key:&str,frame:&str,title:&str,description:&str,center:Option<[f64;3]>,size:Option<[f64;3]>,yaw:Option<f64>)->Result<serde_json::Value>{
+        let mut cache=self.cache.lock().map_err(|_|anyhow::anyhow!("Volume storage unavailable"))?;
+        let mut next=match cache.get(key){Some(v)=>v.clone(),None=>self.read(key,frame)?};next.validate(frame)?;
+        ensure!(!next.items.iter().any(|v|v.title.trim().eq_ignore_ascii_case(title.trim())),"A volume with this title already exists; edit it or choose a distinct name");
+        let volume=Volume{id:uuid::Uuid::new_v4().to_string(),title:title.trim().into(),description:description.into(),semantic_type:default_semantic_type(),center:center.unwrap_or([0.,0.5,0.]),size:size.unwrap_or([1.;3]),yaw:yaw.unwrap_or(0.)};
+        next.items.push(volume.clone());next.validate(frame)?;
+        crate::model::persist(&self.directory.join(format!("{key}.json")),&next)?;
+        ensure!(self.read(key,frame)?==next,"Volume creation readback did not match");
+        let receipt=serde_json::json!({"tool":"create_volume","id":volume.id,"title":volume.title,"before":null,"after":volume,"summary":format!("Created volume {}.",volume.title)});
+        cache.insert(key.into(),next);Ok(receipt)
+    }
+    pub fn delete_all_volumes(&self,key:&str,frame:&str,expected_ids:&[String])->Result<serde_json::Value>{
+        let mut cache=self.cache.lock().map_err(|_|anyhow::anyhow!("Volume storage unavailable"))?;
+        let mut next=match cache.get(key){Some(v)=>v.clone(),None=>self.read(key,frame)?};next.validate(frame)?;
+        let ids:std::collections::BTreeSet<_>=next.items.iter().map(|v|v.id.clone()).collect();
+        let expected:std::collections::BTreeSet<_>=expected_ids.iter().cloned().collect();
+        ensure!(expected.len()==expected_ids.len()&&ids==expected,"Scene volumes changed; inspect the scene again before deleting all");
+        let before=std::mem::take(&mut next.items);next.validate(frame)?;
+        crate::model::persist(&self.directory.join(format!("{key}.json")),&next)?;
+        ensure!(self.read(key,frame)?==next,"Bulk volume deletion readback did not match");
+        let receipt=serde_json::json!({"tool":"delete_all_volumes","deleted_count":before.len(),"before":before,"after":[],"summary":if before.is_empty(){"No volumes remain in the selected scene.".to_string()}else{format!("Deleted all {} volumes in the selected scene.",before.len())}});
+        cache.insert(key.into(),next);Ok(receipt)
+    }
+    pub fn tool_edit(&self,key:&str,frame:&str,edit:crate::scene_tools::VolumeEdit)->Result<serde_json::Value>{
+        let mut cache=self.cache.lock().map_err(|_|anyhow::anyhow!("Volume storage unavailable"))?;
+        let mut next=match cache.get(key){Some(v)=>v.clone(),None=>self.read(key,frame)?};next.validate(frame)?;
+        let volume=next.items.iter_mut().find(|v|v.id==edit.id()).ok_or_else(||anyhow::anyhow!("Volume not found in selected scene"))?;
+        let receipt=edit.apply(volume)?;next.validate(frame)?;crate::model::persist(&self.directory.join(format!("{key}.json")),&next)?;
+        ensure!(self.read(key,frame)?==next,"Volume write readback did not match the requested change");
+        eprintln!("AI volume edit persisted: scene={key} id={}",edit.id());
+        cache.insert(key.into(),next);Ok(receipt)
+    }
     pub fn change(
         &self,
         key: &str,
@@ -240,6 +294,7 @@ impl Storage {
         }
         next.validate(frame)?;
         crate::model::persist(&self.directory.join(format!("{key}.json")), &next)?;
+        eprintln!("UI/SDK volume edit persisted: scene={key} id={}",id.unwrap_or("new"));
         cache.insert(key.into(), next.clone());
         Ok(next)
     }

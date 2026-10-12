@@ -1,9 +1,9 @@
 import * as THREE from 'three';
 
 // Semantic boxes are independent of transient voxel and robot-occupancy layers.
-export function createSemanticVolumes({scene, camera, renderer, controls, panel, api, label, clear, openPanel}) {
+export function createSemanticVolumes({scene, camera, renderer, controls, panel, api, label, clear, openPanel, priorityPickObjects=()=>[]}) {
  const group=new THREE.Group(),preview=new THREE.Group();scene.add(group,preview);
- let context=null,items=[],draft=null,editing=null,drawing=false,start=null,press=null,pending=false,signature='',resize=null;
+ let context=null,items=[],draft=null,editing=null,drawing=false,start=null,press=null,pending=false,signature='',resize=null,conflicted=false;
  const handleLayer=document.createElement('div');handleLayer.className='volume-handles';renderer.domElement.parentElement.append(handleLayer);
  const leaders=document.createElementNS('http://www.w3.org/2000/svg','svg');leaders.classList.add('volume-handle-leaders');handleLayer.append(leaders);
  const toolbar=document.createElement('nav');toolbar.className='volume-tool-bar';toolbar.setAttribute('aria-label','Volume editing tools');toolbar.innerHTML='<button type="button" class="volume-select-tool" aria-pressed="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m4 3 7 18 2-8 8-2Z"/></svg>Select</button><button type="button" class="volume-create-tool" aria-pressed="false"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m3 6 9-4 9 4-9 4ZM3 6v12l9 4 9-4V6M12 10v12M18 2v6M15 5h6"/></svg>Create volume</button>';
@@ -109,10 +109,10 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
  function draw(){clear(group);for(const v of items)if(!(draft&&v.id===editing))mesh(v,group,v.id===editing);clear(preview);if(draft)mesh(draft,preview,true);renderer.domElement.dataset.semanticVolumeCount=String(items.length);}
  function focus(v){const distance=Math.max(3,Math.max(...v.size)*2.2);controls.target.fromArray(v.center);camera.position.copy(controls.target).add(new THREE.Vector3(distance*.7,distance*.65,distance*.7));controls.update();}
  function showList(){list.replaceChildren();for(const v of items){const b=document.createElement('button');b.className='panel-row';b.type='button';b.dataset.volumeId=v.id;b.setAttribute('aria-pressed',String(v.id===editing));const title=document.createElement('strong');title.textContent=v.title;const d=document.createElement('small');d.textContent=v.description;b.append(title,d);b.onclick=()=>select(v);list.append(b);}if(!items.length){const p=document.createElement('p');p.className='panel-hint';p.textContent='No semantic volumes in this scene.';list.append(p);}}
- function fill(v){form.elements.title.value=v.title;form.elements.description.value=v.description;const values={x:v.center[0],z:v.center[2],base:v.center[1]-v.size[1]/2,width:v.size[0],height:v.size[1],depth:v.size[2],yaw:v.yaw*180/Math.PI};for(const [name,n] of Object.entries(values))form.elements[name].value=String(Number(n.toFixed(4)));}
+ function fill(v){form.elements.title.value=v.title;form.elements.description.value=v.description;const values={x:v.center[0],z:v.center[2],base:v.center[1]-v.size[1]/2,width:v.size[0],height:v.size[1],depth:v.size[2],yaw:v.yaw*180/Math.PI};for(const [name,n] of Object.entries(values))form.elements[name].value=String(n);}
  function values(){const n=name=>Number(form.elements[name].value);return {id:editing||'',title:form.elements.title.value.trim(),description:form.elements.description.value,semantic_type:draft?.semantic_type||'region',center:[n('x'),n('base')+n('height')/2,n('z')],size:[n('width'),n('height'),n('depth')],yaw:n('yaw')*Math.PI/180};}
  function endDrawing(){stopResize();drawing=false;start=null;controls.enabled=true;renderer.domElement.style.cursor='';tick();buttons();}
- function cancel(){endDrawing();draft=null;editing=null;form.hidden=true;draw();showList();buttons();}
+ function cancel(){endDrawing();draft=null;editing=null;conflicted=false;form.hidden=true;draw();showList();buttons();}
  function select(v){if(pending)return;cancel();openPanel('volumes');editing=v.id;draft=context?.editable?structuredClone(v):null;fill(v);form.hidden=false;for(const input of form.querySelectorAll('input,textarea'))input.disabled=!context?.editable;form.querySelector('.volume-actions').hidden=!context?.editable;$('volume-delete').hidden=false;message(context?.editable?'Blue handles move, resize and rotate. Changes save when you release a handle.':'Published volume · read-only');draw();showList();focus(v);}
  function begin(){if(!editable())return;cancel();draft={id:'',title:'',description:'',center:[controls.target.x,1,controls.target.z],size:[1,2,.6],yaw:0};for(const input of form.querySelectorAll('input,textarea'))input.disabled=false;form.querySelector('.volume-actions').hidden=false;fill(draft);form.hidden=false;$('volume-delete').hidden=true;draw();message('Use the scene handles to position and size the volume, then save.');}
  $('volume-new').onclick=begin;
@@ -123,6 +123,7 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
  function url(id){return '/api/semantic-volumes'+(id?'/'+encodeURIComponent(id):'')+'?scene='+encodeURIComponent(context.map);}
  async function persist(remove=false,keepSelection=false){
   if(!editable()||!draft)return;
+  if(conflicted){message('This volume changed elsewhere while you were editing. Copy your edits, then reselect the volume to reload before saving.');return;}
   const selected=context,identifier=editing,body={frame:selected.frame,volume:remove?null:values()};
   pending=true;buttons();endDrawing();message('Saving…');
   try {const response=await api(url(identifier),body,remove?'DELETE':identifier?'PATCH':'POST');if(context!==selected)return;items=response.items;signature=JSON.stringify(response);if(keepSelection){draft=structuredClone(items.find(v=>v.id===identifier));fill(draft);draw();showList();}else cancel();message(remove?'Volume deleted.':'Volume saved in this scene.');}
@@ -142,9 +143,26 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
  canvas.addEventListener('pointermove',e=>{if(!drawing)return;e.stopImmediatePropagation();if(start){const p=groundPoint(e);if(p)footprint(p,e.shiftKey);}},true);
  canvas.addEventListener('pointerup',e=>{if(drawing){e.stopImmediatePropagation();e.preventDefault();if(start){const p=groundPoint(e);if(p)footprint(p,e.shiftKey);if(canvas.hasPointerCapture(e.pointerId))canvas.releasePointerCapture(e.pointerId);if(!p||p.distanceTo(start)<.3){start=null;message('Drag a front edge at least 30 cm long.');return;}endDrawing();message('Front edge ready. Add a title and use the handles to adjust the volume.');focus(draft);form.elements.title.focus();}return;}
   if(pending||e.button!==0||!press||Math.hypot(e.clientX-press[0],e.clientY-press[1])>4||!group.visible)return;
-  const r=canvas.getBoundingClientRect(),ray=new THREE.Raycaster();ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),camera);const hit=ray.intersectObjects(group.children).find(h=>h.object.userData.volume);if(hit){e.semanticVolume=true;select(hit.object.userData.volume);}
+  const r=canvas.getBoundingClientRect(),ray=new THREE.Raycaster();ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),camera);
+  // Notes are drawn through translucent volumes. Let the normal scene picker
+  // handle them before this capture-phase listener claims the click.
+  const priority=priorityPickObjects().filter(o=>{for(let p=o;p;p=p.parent){if(!p.visible)return false;}return true;});
+  if(ray.intersectObjects(priority).length)return;
+  const hit=ray.intersectObjects(group.children).find(h=>h.object.userData.volume);if(hit){e.semanticVolume=true;select(hit.object.userData.volume);}
  },true);
  canvas.addEventListener('pointercancel',()=>{if(drawing){cancel();message('Creation cancelled.');}});
  document.addEventListener('keydown',e=>{if(e.key==='Escape'&&resize){stopResize(true);message('Edit cancelled.');}else if(e.key==='Escape'&&drawing){cancel();message('Creation cancelled.');}});
- return {tick,update(map,data){const editable=map.startsWith('local:')||map==='demo';if(!context||context.map!==map||context.frame!==data?.frame){context={map,frame:data?.frame,editable};pending=false;items=[];cancel();signature='';message(editable?'Create a box or drag its footprint in the viewer.':'Select a local Home scene to create volumes.');}const collection=data?.semantic_volumes;const next=JSON.stringify(collection||null);if(next!==signature){signature=next;items=collection?.frame===data.frame?collection.items:[];draw();showList();}buttons();},reset(){context=null;items=[];pending=false;cancel();buttons();message('Loading selected scene…');}};
+ return {tick,update(map,data){const editable=map.startsWith('local:')||map==='demo';if(!context||context.map!==map||context.frame!==data?.frame){context={map,frame:data?.frame,editable};pending=false;items=[];cancel();signature='';message(editable?'Create a box or drag its footprint in the viewer.':'Select a local Home scene to create volumes.');}const collection=data?.semantic_volumes;const next=JSON.stringify(collection||null);if(next!==signature){signature=next;const previous=items.find(v=>v.id===editing);items=collection?.frame===data.frame?collection.items:[];const remote=items.find(v=>v.id===editing);if(editing&&!pending&&!resize){if(!remote){cancel();message('This volume was deleted elsewhere.');}else if(draft&&previous){const merged=mergeVolumeDraft(previous,values(),remote);draft=merged.draft;conflicted=conflicted||merged.conflicts.length>0;fill(draft);if(conflicted)message('Conflicting edits: '+merged.conflicts.join(', ')+'. Copy your edits and reselect the volume before saving.');}else if(!draft)fill(remote);}draw();showList();}buttons();},reset(){context=null;items=[];pending=false;cancel();buttons();message('Loading selected scene…');}};
 }
+
+// Refresh untouched fields while retaining unsaved edits; never silently overwrite a conflict.
+export function mergeVolumeDraft(previous,local,remote){
+ const draft=structuredClone(local),conflicts=[];
+ for(const key of Object.keys(remote)){
+  const equal=(a,b)=>typeof a==='number'&&typeof b==='number'?Math.abs(a-b)<1e-9:Array.isArray(a)&&Array.isArray(b)?a.length===b.length&&a.every((n,i)=>equal(n,b[i])):JSON.stringify(a)===JSON.stringify(b);
+  if(equal(local[key],previous[key]))draft[key]=structuredClone(remote[key]);
+  else if(!equal(remote[key],previous[key])&&!equal(remote[key],local[key]))conflicts.push(key);
+ }
+ return {draft,conflicts};
+}
+export function legacyVolumesForView(data){return data.semantic_volumes?.frame===data.frame?[]:(data.volumes||[]);}

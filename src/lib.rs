@@ -1,4 +1,6 @@
 pub mod conventions;
+pub mod scene_geometry;
+pub mod peer_aliases;
 pub mod domain_portals;
 pub mod local_mapper;
 pub mod mobile;
@@ -56,6 +58,7 @@ pub mod mobile_calibration;
 pub mod fiducials;
 pub mod landmarks;
 pub mod occupancy_mapper;
+pub mod voxel_layers;
 pub mod occupancy_fixture;
 pub mod simulated_robot;
 pub mod mobile_local;
@@ -70,3 +73,5 @@ pub mod local_mobile;
 pub mod semantic_volumes;
 
 pub mod robot_runner;
+pub mod chatbot;
+pub mod scene_tools;
