@@ -2652,21 +2652,28 @@ struct CompassRing: View {
     let turn: Double
     var body: some View {
         ZStack {
-            Circle().fill(.ultraThinMaterial)
-            ForEach(1..<24, id: \.self) { tick in
-                Capsule().fill(Color.white.opacity(tick % 6 == 0 ? 0.9 : 0.4))
-                    .frame(width: 2, height: 6).offset(y: -27).rotationEffect(.degrees(Double(tick) * 15))
+            // The glass stays put; only the markings turn.
+            if #available(iOS 26.0, *) {
+                Color.clear.glassEffect(.regular, in: Circle())
+            } else {
+                Circle().fill(.ultraThinMaterial)
             }
-            Path { path in
-                path.move(to: CGPoint(x: 4.5, y: 0))
-                path.addLine(to: CGPoint(x: 9, y: 8))
-                path.addLine(to: CGPoint(x: 0, y: 8))
-                path.closeSubpath()
+            ZStack {
+                ForEach(1..<24, id: \.self) { tick in
+                    Capsule().fill(Color.white.opacity(tick % 6 == 0 ? 0.9 : 0.4))
+                        .frame(width: 2, height: 6).offset(y: -27).rotationEffect(.degrees(Double(tick) * 15))
+                }
+                Path { path in
+                    path.move(to: CGPoint(x: 4.5, y: 0))
+                    path.addLine(to: CGPoint(x: 9, y: 8))
+                    path.addLine(to: CGPoint(x: 0, y: 8))
+                    path.closeSubpath()
+                }
+                .fill(Color.red).frame(width: 9, height: 8).offset(y: -27)
             }
-            .fill(Color.red).frame(width: 9, height: 8).offset(y: -27)
+            .rotationEffect(.degrees(turn))
+            .animation(.linear(duration: 0.12), value: turn)
         }
-        .rotationEffect(.degrees(turn))
-        .animation(.linear(duration: 0.12), value: turn)
         .frame(width: 68, height: 68)
         .accessibilityHidden(true)
     }
