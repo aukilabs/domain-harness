@@ -67,8 +67,13 @@ struct ViewerScreen: View {
                             // North, circling the logo once it has been found.
                             .overlay {
                                 if let turn = controller.northTurn {
-                                    Image(systemName: "triangle.fill").font(.system(size: 9, weight: .bold))
-                                        .foregroundStyle(Theme.accent).shadow(color: Theme.glow, radius: 2)
+                                    Path { path in
+                                        path.move(to: CGPoint(x: 3, y: 0))
+                                        path.addLine(to: CGPoint(x: 6, y: 10))
+                                        path.addLine(to: CGPoint(x: 0, y: 10))
+                                        path.closeSubpath()
+                                    }
+                                        .fill(Color.red).frame(width: 6, height: 10)
                                         .offset(y: -31).rotationEffect(.degrees(turn))
                                         .animation(.linear(duration: 0.12), value: turn)
                                         .accessibilityHidden(true)
