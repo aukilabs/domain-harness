@@ -19,6 +19,7 @@ targets:
         INFOPLIST_KEY_CFBundleDisplayName: Annotator
         INFOPLIST_KEY_NSCameraUsageDescription: Scan a Portal to display Home's scenegraph in augmented reality.
         INFOPLIST_KEY_NSLocalNetworkUsageDescription: Connect directly to Home to receive its live Portal scenegraph.
+        INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: Find north and this phone's GPS position once at launch, to place Home's map on the Earth.
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
         CODE_SIGN_STYLE: Automatic

@@ -16,12 +16,16 @@
 		BBD894698F7A607B9DBD5CF9 /* SpatialPortalBridge.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D6933E6306AC040ABFB74C78 /* SpatialPortalBridge.xcframework */; };
 		BD58CFC0B92E999985C2400D /* SemanticVolumeModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4400D81FC657522891C44E1A /* SemanticVolumeModel.swift */; };
 		CE88F9F57B642D17A46C0710 /* auki.png in Resources */ = {isa = PBXBuildFile; fileRef = 27973CF9A0CDCC6DEC974C85 /* auki.png */; };
+		D70486EFF8BDADCEE2E7E3B4 /* GeoLocator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BCEC81F73CF1D624DA0884F /* GeoLocator.swift */; };
+		D8B75E2AFC86238BBCF46EF0 /* GeoReference.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53473FD966BA04F1FC85EED6 /* GeoReference.swift */; };
 		EEE08B86D5CC19868B4DBB4B /* PortalPose.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FF47757AD099392D75B3200 /* PortalPose.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		27973CF9A0CDCC6DEC974C85 /* auki.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = auki.png; sourceTree = "<group>"; };
+		2BCEC81F73CF1D624DA0884F /* GeoLocator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeoLocator.swift; sourceTree = "<group>"; };
 		4400D81FC657522891C44E1A /* SemanticVolumeModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SemanticVolumeModel.swift; sourceTree = "<group>"; };
+		53473FD966BA04F1FC85EED6 /* GeoReference.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeoReference.swift; sourceTree = "<group>"; };
 		79389B6ADD96902B6B08CFCB /* PortalViewer.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = PortalViewer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		8E4554C6754FD11EA49048B5 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		8FF47757AD099392D75B3200 /* PortalPose.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortalPose.swift; sourceTree = "<group>"; };
@@ -67,6 +71,8 @@
 		A7988369933F8FE8153DB769 /* App */ = {
 			isa = PBXGroup;
 			children = (
+				2BCEC81F73CF1D624DA0884F /* GeoLocator.swift */,
+				53473FD966BA04F1FC85EED6 /* GeoReference.swift */,
 				923BCD5A09BD097EE8206E8E /* HomePeer.swift */,
 				CF63C94F0E06FB864456F332 /* PortalMap.swift */,
 				8FF47757AD099392D75B3200 /* PortalPose.swift */,
@@ -162,6 +168,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D70486EFF8BDADCEE2E7E3B4 /* GeoLocator.swift in Sources */,
+				D8B75E2AFC86238BBCF46EF0 /* GeoReference.swift in Sources */,
 				7F41A3FEC846F6B3880A9B3A /* HomePeer.swift in Sources */,
 				2F00069261E099226C9BD6C9 /* PortalMap.swift in Sources */,
 				EEE08B86D5CC19868B4DBB4B /* PortalPose.swift in Sources */,
@@ -189,6 +197,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = Annotator;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Scan a Portal to display Home's scenegraph in augmented reality.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connect directly to Home to receive its live Portal scenegraph.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Find north and this phone's GPS position once at launch, to place Home's map on the Earth.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -281,6 +290,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = Annotator;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Scan a Portal to display Home's scenegraph in augmented reality.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connect directly to Home to receive its live Portal scenegraph.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Find north and this phone's GPS position once at launch, to place Home's map on the Earth.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
 				LD_RUNPATH_SEARCH_PATHS = (

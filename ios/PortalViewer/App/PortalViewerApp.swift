@@ -137,6 +137,9 @@ struct ViewerScreen: View {
                         } else {
                             Text(peer.detail).themeText(12, .semibold)
                             Text(controller.status).themeText(11).foregroundStyle(Theme.dim)
+                            if !controller.geoStatus.isEmpty {
+                                Text(controller.geoStatus).themeText(10).foregroundStyle(Theme.dim)
+                            }
                             HStack(spacing: 10) {
                                 Text("Name").themeLabel().foregroundStyle(Theme.dim)
                                 TextField("How Home labels this phone", text: $phoneName)
@@ -1307,9 +1310,28 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private var generation = 0
     private var lastAttempt: TimeInterval = 0
     private var cooldown = CalibrationCooldown()
+    // North is found once per launch with a heading-aligned session. Tracking then
+    // drops back to gravity alone: a live compass keeps turning the world under the map.
+    private enum NorthSearch { case pending, asking, searching, done }
+    private var north = NorthSearch.pending
+    private var headingGate = HeadingGate()
+    private let locator = GeoLocator()
+    /// Pinned to the room where the heading-aligned session had its axes, so north survives the switch to gravity.
+    private var northAnchor: UUID?
+    private var geoAtNorth: GeoReference?
+    /// Home's frame on the Earth. It outlives the AR session, and gives the position back after a rescan.
+    private(set) var homeGeo: (frame: String, reference: GeoReference)?
+    private var lastGeoUpdate: TimeInterval = 0
+    @Published private(set) var geoStatus = ""
 
     override init() {
         super.init()
+        locator.onPermission = { [weak self] in
+            // The answer to the permission prompt; a refusal is handled by the next start.
+            guard let self, self.north == .asking, self.locator.permission != .undecided else { return }
+            self.north = .pending
+            if UIApplication.shared.applicationState != .background { self.start() }
+        }
         view.scene = SCNScene()
         view.scene.rootNode.addChildNode(root)
         // Soft light from everywhere and a key light from above, for the things in the scene that are lit.
@@ -1349,8 +1371,24 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         guard ARWorldTrackingConfiguration.isSupported else {
             status = "AR requires a supported physical iPhone"; return
         }
+        if north == .pending {
+            switch locator.permission {
+            case .granted:
+                north = .searching
+                headingGate = HeadingGate()
+                locator.start(heading: true)
+                // Turning on the compass turns the world, so nothing aligned before it holds.
+                if aligned { resetAlignment() }
+            case .refused:
+                north = .done
+                geoStatus = "Location is off for Annotator, so the map has no GPS position."
+            case .undecided:
+                north = .asking
+                locator.requestPermission()
+            }
+        }
         let config = ARWorldTrackingConfiguration()
-        config.worldAlignment = .gravity
+        config.worldAlignment = north == .searching ? .gravityAndHeading : .gravity
         // Surfaces are placed on detected floors, tables, walls and screens.
         config.planeDetection = [.horizontal, .vertical]
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
@@ -1366,6 +1404,74 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     func pause() {
         view.session.pause()
         invalidate()
+        worldLost()
+    }
+
+    /// Take north from the heading-aligned session once the compass has settled, then switch it off.
+    private func searchNorth(_ frame: ARFrame) {
+        var tracking = false
+        if case .normal = frame.camera.trackingState { tracking = true }
+        let fix = locator.fix
+        switch headingGate.step(at: frame.timestamp, tracking: tracking, headingError: locator.headingError, hasFix: fix != nil) {
+        case .waiting: return
+        case .established:
+            guard let fix else { return }
+            // The session's axes are east, up and south at this moment. Pin them to the room.
+            let anchor = ARAnchor(name: "north", transform: matrix_identity_float4x4)
+            view.session.add(anchor: anchor)
+            northAnchor = anchor.identifier
+            let camera = frame.camera.transform.columns.3
+            geoAtNorth = GeoReference(fix: fix, at: SIMD3(camera.x, camera.y, camera.z), north: SIMD2(0, -1))
+            print("[geo] north established, compass ±\(Int(locator.headingError ?? -1))°, fix ±\(Int(fix.accuracy)) m")
+        case .gaveUp:
+            geoStatus = "No reliable compass here, so the map has no GPS position."
+            print("[geo] \(geoStatus)")
+        }
+        north = .done
+        locator.stopHeading()
+        start()
+    }
+
+    /// The AR world can no longer be trusted, so neither can a north pinned to it.
+    private func worldLost() {
+        // An interrupted search is simply started again.
+        if north == .searching { headingGate = HeadingGate() }
+        guard geoAtNorth != nil else { return }
+        geoAtNorth = nil
+        northAnchor = nil
+        geoStatus = homeGeo == nil ? "GPS position lost with camera tracking. Relaunch to find north again."
+                                   : "GPS position is kept with Home's map. Scan a Portal to restore it."
+    }
+
+    private func updateGeo(_ frame: ARFrame) {
+        guard frame.timestamp - lastGeoUpdate >= 1 else { return }
+        lastGeoUpdate = frame.timestamp
+        let homeFrame = map?.scenegraph.map.frame.id
+        let world: GeoReference
+        if var pinned = geoAtNorth, let id = northAnchor,
+           let anchor = frame.anchors.first(where: { $0.identifier == id }) {
+            // A better fix than the one north was taken with re-places the reference.
+            if let fix = locator.fix, fix.accuracy < pinned.origin.accuracy - 1 {
+                let camera = anchor.transform.inverse * frame.camera.transform.columns.3
+                pinned = GeoReference(fix: fix, at: SIMD3(camera.x, camera.y, camera.z), north: pinned.north)
+                geoAtNorth = pinned
+            }
+            world = pinned.expressed(in: anchor.transform.inverse)
+            if aligned, let homeFrame { homeGeo = (homeFrame, world.expressed(in: root.simdTransform)) }
+        } else if aligned, let homeGeo, homeGeo.frame == homeFrame {
+            world = homeGeo.reference.expressed(in: root.simdTransform.inverse)
+        } else { return }
+        let camera = frame.camera.transform
+        let here = world.coordinate(of: SIMD3(camera.columns.3.x, camera.columns.3.y, camera.columns.3.z))
+        let forward = SIMD2(-camera.columns.2.x, -camera.columns.2.z)
+        var text = String(format: "GPS %.6f, %.6f ±%.0f m", here.latitude, here.longitude, here.accuracy)
+        if simd_length(forward) > 0.3 { text += String(format: " · facing %.0f°", world.bearing(of: forward)) }
+        if let homeGeo, homeGeo.frame == homeFrame {
+            let origin = homeGeo.reference.origin
+            text += String(format: "\nHome origin %.6f, %.6f · its −Z bears %.0f°", origin.latitude, origin.longitude,
+                           homeGeo.reference.bearing(of: SIMD2(0, -1)))
+        }
+        geoStatus = text
     }
 
     func load(_ map: PortalMap) {
@@ -2064,6 +2170,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         onSleep?(true)
         view.session.pause()
         invalidate()
+        worldLost()
         restReference = nil
         status = "Asleep · camera off. Pick up the phone or tap to wake."
         guard motion.isDeviceMotionAvailable else { return }
@@ -2111,6 +2218,11 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         if snoozed { return }
         checkRest(frame)
         if snoozed { return }
+        if north == .searching {
+            searchNorth(frame)
+            // This frame, and any already on their way, are still in the compass's axes.
+            if north != .searching { lastAttempt = frame.timestamp + 0.5; return }
+        }
         if map == nil { scanBeforeMap(frame); return }
         guard case .normal = frame.camera.trackingState else {
             volumes.invalidate()
@@ -2129,6 +2241,13 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             }
             return
         }
+        // The compass is still turning the world; an alignment made now would not hold.
+        if north == .searching {
+            let message = "Finding north. Hold the phone up and move it slowly."
+            if status != message { status = message }
+            return
+        }
+        updateGeo(frame)
         if aligned {
             root.isHidden = false
             captureDepth(frame)
@@ -2278,16 +2397,26 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         default:
             // Relocalizing or unavailable: the world may have moved under us.
             invalidate()
+            worldLost()
             status = "Tracking lost. Scan a known Portal again."
         }
     }
     func sessionWasInterrupted(_ session: ARSession) {
         if snoozed { return }
-        invalidate(); status = "AR interrupted. Rescan a Portal when the camera returns."
+        invalidate(); worldLost(); status = "AR interrupted. Rescan a Portal when the camera returns."
     }
     func sessionInterruptionEnded(_ session: ARSession) { if snoozed { return }; realign(); start() }
     func session(_ session: ARSession, didFailWithError error: Error) {
-        invalidate(); status = error.localizedDescription
+        invalidate(); worldLost()
+        // A heading-aligned session that cannot run must not cost the app its camera.
+        if north == .searching {
+            north = .done
+            locator.stopHeading()
+            geoStatus = "Could not find north (\(error.localizedDescription)), so the map has no GPS position."
+            start()
+            return
+        }
+        status = error.localizedDescription
     }
 }
 
