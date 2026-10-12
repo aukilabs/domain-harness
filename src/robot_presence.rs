@@ -68,7 +68,7 @@ impl Presence {
     pub fn snapshot(&self, now: Instant, frame: &str) -> Value {
         let poses: Vec<_> = self.entries.iter().filter(|(_,(_,_,received))|
             now.duration_since(*received) < Duration::from_secs(3)).map(|(peer,(s,pose,received))|
-            json!({"peer_id":peer,"name":s.name,"pose":pose,"native_pose":s.native_pose,
+            json!({"peer_id":peer,"name":crate::peer_aliases::name(peer,&s.name),"pose":pose,"native_pose":s.native_pose,
                 "clock":s.clock,"capture_timestamp_ns":s.timestamp_ns,
                 "received_age_ms":now.duration_since(*received).as_millis()})).collect();
         json!({"frame":frame,"poses":poses,"transforms":self.relationships.values().collect::<Vec<_>>()})

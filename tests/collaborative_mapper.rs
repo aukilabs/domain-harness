@@ -137,6 +137,24 @@ fn occupied_x(map: &CollaborativeMap) -> Vec<(i32, f64)> {
         .collect()
 }
 #[test]
+fn explicit_clear_preserves_reference_and_rejects_old_observations() -> Result<()> {
+    let canonical=canonical()?;
+    let mut map=CollaborativeMap::new("home", &uuid::Uuid::new_v4().to_string(), &canonical)?;
+    let input=scan(&canonical,"a","UCOF1J40N7O",1,100,0.55,[255,0,0])?;
+    assert!(map.integrate(input.clone())?);
+    assert!(!occupied_x(&map).is_empty());
+    let portals=serde_json::to_value(map.portals()?)?;
+    map.clear_voxels()?;
+    assert!(occupied_x(&map).is_empty());
+    let scene=map.scene()?.unwrap();
+    assert!(auki_datatypes::map::MapUpdate::decode(scene.voxels.checkpoint.as_slice())?.checkpoint.unwrap().voxel_chunks.is_empty());
+    assert_eq!(serde_json::to_value(map.portals()?)?,portals);
+    assert!(!map.integrate(input)?);
+    assert!(map.integrate(scan(&canonical,"a","UCOF1J40N7O",2,200,0.55,[255,0,0])?)?);
+    assert!(!occupied_x(&map).is_empty());
+    Ok(())
+}
+#[test]
 fn different_markers_and_unsynchronized_clocks_fuse_and_clear_the_same_cells() -> Result<()> {
     let canonical = canonical()?;
     let unchanged = serde_json::to_value(&canonical)?;
@@ -512,7 +530,7 @@ fn home_camera_localization_accepts_a_different_known_portal_without_seeing_ucof
         sequence: 7,
         timestamp_ns: 100,
         payload: std::sync::Arc::new(PoseUpdate {
-            contract: pose_contract,
+            contract: pose_contract.clone(),
             tracking: Tracking::Valid {
                 pose: sensor_to_base,
             },
@@ -545,6 +563,7 @@ fn home_camera_localization_accepts_a_different_known_portal_without_seeing_ucof
     // Body occupancy joins the same capture-time odometry without embedding a
     // robot pose. Transform the entire grid so its cubes retain their axes.
     let mut volume = spatial_home::robot_occupancy::Sample {
+        frame: pose_contract.from_frame.clone(),
         reference: ProductReference {
             peer_id: owner.into(),
             product_id: "robot.occupancy-history".into(),

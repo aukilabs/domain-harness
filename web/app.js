@@ -2,9 +2,23 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createArOverlay } from './ar.js';
 import { createPhoneTrails } from './phone-trails.js';
-import { createSemanticVolumes } from './semantic-volumes.js';
+import { createSemanticVolumes, legacyVolumesForView } from './semantic-volumes.js';
 import { createMap2D } from './map-2d.js';
+import { createGhostCamera } from './ghost-camera.js';
 const $=id=>document.getElementById(id);
+const chatForm=$('scene-chat-form'),chatInput=$('scene-chat-input'),chatStatus=$('scene-chat-status');
+chatForm.querySelector('button').disabled=true;
+const chatHistory=$('scene-chat-history'),chatConversations=new Map();let chatPending=false;
+let chatCompact=false;try{chatCompact=localStorage.getItem('home.chat.compact')==='true';}catch{}
+function syncChatCompact(){document.querySelector('.scene-chat').classList.toggle('compact',chatCompact);const toggle=$('scene-chat-toggle');toggle.textContent=chatCompact?'⌃':'⌄';toggle.title=chatCompact?'Show conversation':'Hide conversation';toggle.setAttribute('aria-label',toggle.title);toggle.setAttribute('aria-expanded',String(!chatCompact));}
+$('scene-chat-toggle').onclick=()=>{chatCompact=!chatCompact;try{localStorage.setItem('home.chat.compact',String(chatCompact));}catch{}syncChatCompact();};syncChatCompact();
+function renderChat(){const messages=chatConversations.get(activeMap)||[];chatHistory.replaceChildren();chatHistory.hidden=!messages.length;for(const m of messages){const row=document.createElement('div');row.className='scene-chat-message '+m.role;const who=document.createElement('strong');who.textContent=m.role==='user'?'You':'Qwen';const text=document.createElement('div');text.textContent=m.display_content||m.content;row.append(who,text);chatHistory.append(row);}chatHistory.scrollTop=chatHistory.scrollHeight;}
+chatInput.addEventListener('input',()=>{chatForm.querySelector('button').disabled=chatPending||!chatInput.value.trim();});
+chatForm.onsubmit=async e=>{e.preventDefault();if(chatPending||!chatInput.value.trim())return;const map=activeMap,message=chatInput.value.trim();const history=(chatConversations.get(map)||[]).slice(-18);history.push({role:'user',content:message});if(history.reduce((n,m)=>n+m.content.length,0)>32000){chatStatus.textContent='Conversation is too long. Start a shorter conversation.';return;}chatConversations.set(map,history);renderChat();chatPending=true;chatInput.value='';chatForm.querySelector('button').disabled=true;chatStatus.textContent='Qwen is replying locally…';try{const result=await api('/api/chat',{messages:history.map(({role,content})=>({role,content})),scene:map});const changes=(result.changes||[]).map(c=>(c.summary||('Updated '+c.title+' description.'))+'\n'+(typeof c.after==='string'?c.after:c.after?JSON.stringify(c.after,null,2):'Deleted')).join('\n\n');history.push({role:'assistant',content:result.reply,display_content:result.reply+(changes?'\n\n'+changes:'\n\nNo scene changes were saved.')});if(result.changes?.length){lastScene=null;await refresh();}chatStatus.textContent=result.model+(result.changes?.length?' · saved change confirmed by Home':' · no scene changes saved');}catch(error){history.pop();if(activeMap===map&&!chatInput.value)chatInput.value=message;chatStatus.textContent=error.message;}finally{chatPending=false;renderChat();chatForm.querySelector('button').disabled=!chatInput.value.trim();}};
+$('map-select').addEventListener('change',()=>{renderChat();chatStatus.textContent=chatPending?'A local reply is pending for the previous scene…':'Local Qwen · inspect scene and edit volume descriptions';});
+for(const event of ['pointerdown','pointerup','click','dblclick','contextmenu','wheel','keydown','keyup']){
+ document.querySelector('.scene-chat').addEventListener(event,e=>e.stopPropagation());
+}
 // Organize existing live controls into the mockup's rail and exclusive panels.
 const sidebar=document.querySelector('aside'),shell=document.querySelector('.shell');
 const rail=document.createElement('nav');rail.className='icon-rail';rail.setAttribute('aria-label','Workspace panels');shell.prepend(rail);
@@ -45,6 +59,7 @@ const camera=new THREE.PerspectiveCamera(42,1,.01,100);
 const renderer=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true});renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.1;
 $('canvas').append(renderer.domElement);renderer.domElement.setAttribute('aria-label','3D voxel map');
 const controls=new OrbitControls(camera,renderer.domElement);controls.enableDamping=true;controls.minDistance=1.2;controls.maxDistance=60;controls.maxPolarAngle=Math.PI*.49;
+const ghostCamera=createGhostCamera({camera,controls,canvas:renderer.domElement,enabled:()=>!map2D.isActive()});
 let activeMap='demo',current=null,busy=false,refreshing=false,lastScene=null,selectable=[],selectedNoteId=null,deletingNoteId=null,selectedSpatialNode=null,spatialSignature='';
 let homeOffline=false,catalogInitialized=false;
 function isLocalScene(map=activeMap){return map.startsWith('local:');}
@@ -81,7 +96,9 @@ async function runnerCatalog(){
     continue;
    }
    const label=map.name==='phone-local-voxels'?'Android · local map':map.name;
-   network.append(new Option(label+' · '+map.peer_id.slice(-8),map.id));
+   const option=new Option(map.peer_alias||label+' · '+map.peer_id.slice(-8),map.id);
+   option.title=label+' · '+map.peer_id;
+   network.append(option);
   }
   runnerNames.clear();peerNames.clear();primaryRunnerPeer=null;
   for(const runner of data.runners||[]) {
@@ -123,7 +140,7 @@ function label(text,color='#36594a'){
  const c=document.createElement('canvas');c.width=384;c.height=96;const ctx=c.getContext('2d');ctx.fillStyle='#fcfdf6';ctx.beginPath();ctx.roundRect(4,8,376,76,18);ctx.fill();ctx.font='500 30px system-ui';ctx.textAlign='center';ctx.fillStyle=color;ctx.fillText(text,192,56,356);const tex=new THREE.CanvasTexture(c);tex.colorSpace=THREE.SRGBColorSpace;const sprite=new THREE.Sprite(new THREE.SpriteMaterial({map:tex,depthTest:false}));sprite.scale.set(.65,.1625,1);return sprite;
 }
 const phoneTrails=createPhoneTrails(scene,label);
-const semanticVolumes=createSemanticVolumes({scene,camera,renderer,controls,panel:panelBodies.volumes,api,label,clear,openPanel});
+const semanticVolumes=createSemanticVolumes({scene,camera,renderer,controls,panel:panelBodies.volumes,api,label,clear,openPanel,priorityPickObjects:()=>selectable.filter(o=>o.userData.kind==='note')});
 $('map-select').addEventListener('change',()=>semanticVolumes.reset());
 let phonePresenceBusy=false;
 async function refreshPhonePresence(){
@@ -159,7 +176,7 @@ function build(data){
  }
  if(first)phoneTrails.reset(data.frame);
  if(!isLocalScene())phoneTrails.ingest(data.frame,(data.notes||[]).filter(n=>n.phone_pose).map(n=>n.phone_pose));
- for(const volume of data.volumes||[]){
+ for(const volume of legacyVolumesForView(data)){
   const [w,h,d]=volume.dimensions;
   const group=new THREE.Group();group.position.fromArray(volume.position);group.rotation.y=volume.yaw;
   const geometry=new THREE.BoxGeometry(w,h,d);
@@ -170,7 +187,8 @@ function build(data){
   const tag=label(volume.name+' · '+volume.semantic_type,'#087b88');tag.position.set(0,h+.12,0);group.add(tag);
   groups.objects.add(group);
  }
- $('canvas').dataset.volumeCount=String((data.volumes||[]).length);
+ $('canvas').dataset.volumeCount=String(data.semantic_volumes?.frame===data.frame?data.semantic_volumes.items.length:(data.volumes||[]).length);
+ renderer.domElement.dataset.legacyVolumeCount=String(legacyVolumesForView(data).length);
  for(const note of data.notes||[]){
   if(note.phone_pose)continue;
   const tag=label(noteTitle(note),'#a12522');tag.position.fromArray(note.position);tag.material.depthWrite=false;tag.material.sizeAttenuation=false;tag.scale.set(.16,.04,1);tag.renderOrder=80;
@@ -364,7 +382,7 @@ renderer.domElement.addEventListener('pointerup',e=>{
  if(d.kind==='portal'&&(d.portal.anchor_id.length===11||d.portal.anchor_id.startsWith('home:'))){focusPortal(d.portal);return;}
  if(d.kind==='portal')showSelection(`Portal ${d.portal.payload.split(':').at(-1)}`,`${d.portal.side_length_m.toFixed(2)} m encoded size`,'Manually supplied · no backend lookup');
 });
-async function api(path,body,method){const r=await fetch(path,body?{method:method||'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:method?{method}:undefined);const text=await r.text();let result;try{result=JSON.parse(text);}catch{throw new Error(text);}if(!r.ok){const error=new Error(result.error||text);error.status=r.status;throw error;}return result;}
+async function api(path,body,method){if(path==='/api/chat'&&body){camera.updateMatrixWorld();const right=map2D.isActive()?[1,0,0]:new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld,0).toArray();body={...body,viewer:{frame:current?.frame||'',mode:map2D.isActive()?'2d':'3d',screen_right:right,camera_position:camera.position.toArray()}};}const r=await fetch(path,body?{method:method||'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:method?{method}:undefined);const text=await r.text();let result;try{result=JSON.parse(text);}catch{throw new Error(text);}if(!r.ok){const error=new Error(result.error||text);error.status=r.status;throw error;}return result;}
 function peerSceneUrl(map){return '/api/sensors?scene=true&sensor='+encodeURIComponent(map.slice(11));}
 async function refresh(){if(refreshing)return;refreshing=true;refreshPeer();if(!isSimulation())refreshMapping();try{const selected=activeMap;const data=await api(isLocalScene(selected)?localSceneUrl(selected):selected.startsWith('peer-scene:')?peerSceneUrl(selected):selected.startsWith('phone:')?'/api/phone-local-scene?peer='+encodeURIComponent(selected.slice(6)):isSimulation(selected)?'/api/simulation/'+selected.slice(4):selected==='home-live'?'/api/home-live-scene':isRunner(selected)?runnerUrl('/api/runner-scene',selected):selected==='domain'?'/api/domain-scene':'/api/scene');if(selected!==activeMap)return;const content=JSON.stringify({...data,remote_status:undefined});if(content!==lastScene){lastScene=content;build(data);}else {data.receivedAt=performance.now();current=data;}homeOffline=false;renderMapRows();availability.hidden=!(selected==='sim-occupancy'&&data.simulation_status!=='running');if(!availability.hidden)availability.textContent='Retained on Home · robot publishers offline · no new observations';$('connection').textContent='Home Server online';}catch(e){if(!e.status){markOffline();}else{availability.hidden=false;availability.textContent='Scene unavailable · '+e.message;if(activeMap==='sim-voxels'||activeMap.startsWith('peer-scene:')){Object.values(groups).forEach(clear);hideRobots();current=null;lastScene=null;}}$('connection').textContent=e.status?'Home online · scene unavailable':'Home offline';throw e;}finally{refreshing=false;}}
 async function action(fn){if(busy)return;busy=true;document.querySelectorAll('#load,#project,#replay').forEach(b=>b.disabled=true);$('notice').classList.remove('error');$('notice').textContent='Integrating…';try{await fn();await refresh();}catch(e){$('notice').textContent=e.message;$('notice').classList.add('error');}finally{busy=false;$('load').disabled=false;$('project').disabled=!current?.voxels.length;$('replay').disabled=!current?.sources.iphone;}}
@@ -372,7 +390,7 @@ $('load').onclick=()=>action(async()=>{const f=await api('/api/fixtures');for(co
 $('project').onclick=()=>action(async()=>{const f=await api('/api/fixtures');const result=await api('/api/detections',f.detection);$('notice').textContent=result.applied?'Book placed at the first occupied voxel hit.':'This detection is already placed. No duplicate object created.';});
 $('replay').onclick=()=>action(async()=>{const f=await api('/api/fixtures');const r=await api('/api/contributions',f.contributions[0]);$('notice').textContent=r.applied?'Contribution accepted.':'Replay ignored. Voxel evidence and object count are unchanged.';});
 new ResizeObserver(()=>{const {width,height}=$('canvas').getBoundingClientRect();renderer.setSize(width,height);camera.aspect=width/height;camera.updateProjectionMatrix();}).observe($('canvas'));
-renderer.setAnimationLoop(()=>{controls.update();semanticVolumes.tick();if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);renderer.render(scene,camera);});
+renderer.setAnimationLoop(now=>{controls.update();ghostCamera.tick(now);semanticVolumes.tick();if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);renderer.render(scene,camera);});
 refresh().catch(e=>{$('notice').textContent=e.message;$('notice').classList.add('error');});setInterval(()=>{if(!busy)refresh().catch(()=>{});},500);
 
 function updatePairingDownload(){const link=$('pairing-download');link.href=isLocalScene()?localSceneUrl()+'/connection':'/api/home-connection';link.download=isLocalScene()?activeMap.slice(6)+'-connection.json':'home-connection.json';link.textContent=isLocalScene()?'Download phone connection for selected scene ↗':'Download Xmart connection ↗';}
@@ -506,7 +524,6 @@ const labelDialog=$('label-dialog'),labelInput=$('label-dialog-text'),labelStatu
 let placement=null,placementGeneration=0,displayedCamera=null,labelFields=null;
 function placementError(message){labelStatus.textContent=message;labelSave.disabled=true;}
 async function beginLabel(request,error){
- if(isLocalScene()) {availability.hidden=false;availability.textContent='This local scene is read-only; calibration and editing are not yet enabled.';return;}
  if(activeMap.startsWith('peer-scene:')) {availability.hidden=false;availability.textContent='Peer maps are read-only.';return;}
  if(activeMap.startsWith('phone:')) {availability.hidden=false;availability.textContent='Phone-local maps are unaligned and read-only.';return;}
  const generation=++placementGeneration;placement=null;labelInput.value='';labelInput.disabled=false;labelSave.disabled=true;
@@ -675,7 +692,7 @@ function renderMapRows(){
   const options=Array.from($('map-select').options).filter(o=>(o.parentElement.label||'Local')===name);
   section.append(...options.map(option=>{
   const button=uiButton(option.textContent,()=>{$('map-select').value=option.value;$('map-select').dispatchEvent(new Event('change'));renderMapRows();});
-  button.disabled=homeOffline||option.disabled;if(homeOffline)button.textContent+=' · offline';button.dataset.map=option.value;button.setAttribute('aria-pressed',String(option.value===$('map-select').value));return button;
+  button.title=option.title;button.disabled=homeOffline||option.disabled;if(homeOffline)button.textContent+=' · offline';button.dataset.map=option.value;button.setAttribute('aria-pressed',String(option.value===$('map-select').value));return button;
  }));
   if(!options.length){const empty=document.createElement('p');empty.className='panel-hint';empty.textContent='No scenegraphs available';section.append(empty);}
   mapsList.append(section);
@@ -698,6 +715,7 @@ function catalogType(entry,kind,catalog){
  return 'Other';
 }
 function renderFleetRows(){
+ if(fleetList.contains(document.activeElement)&&document.activeElement.matches('input,textarea,select'))return;
  disconnectRobots.hidden=!fleetNetwork?.simulation;disconnectRobots.disabled=homeOffline||!(fleetNetwork?.peers||[]).some(p=>p.status==='connected');
  const selfId=fleetNetwork?.connection?.peer_id;
  const peers=[{peer_id:selfId||'self',name:'Home Server',self:true,catalog:fleetNetwork?.catalog},...Array.from(new Map((fleetNetwork?.peers||[]).filter(p=>p.peer_id&&p.peer_id!==selfId).map(p=>[p.peer_id,p])).values())];
@@ -709,6 +727,7 @@ function renderFleetRows(){
  for(const peer of peers){const options=sensors.filter(o=>o.dataset.peer===peer.peer_id);const group=document.createElement('details');group.dataset.peer=peer.peer_id;group.open=opened.has(peer.peer_id);const heading=document.createElement('summary');heading.textContent=peer.self?'Home Server':peer.name||peer.peer_id;group.append(heading);
   const detail=document.createElement('p');detail.className='panel-hint';detail.textContent=peer.self?(fleetNetwork?.enabled?'This peer · '+fleetNetwork.status:fleetNetwork?'This peer · P2P disabled':'This peer · Network status unavailable'):peer.status||'Connected peer';group.append(detail);
   if(!peer.self){const identity=document.createElement('p');identity.className='panel-hint';identity.textContent=peer.peer_id;group.append(identity);}
+  if(!peer.self){const form=document.createElement('form');const input=document.createElement('input');input.type='text';input.maxLength=64;input.placeholder='Peer alias';input.value=fleetNetwork?.aliases?.[peer.peer_id]||'';input.setAttribute('aria-label','Alias for '+(peer.name||peer.peer_id));const save=document.createElement('button');save.type='submit';save.textContent='Save alias';form.append(input,save);form.onsubmit=async e=>{e.preventDefault();save.disabled=true;try{await api('/api/peer-alias',{peer_id:peer.peer_id,alias:input.value});input.blur();fleetSignature='';lastScene=null;await refreshPeer();await runnerCatalog();await refresh();}catch(error){save.disabled=false;alert(error.message);}};group.append(form);}
   if(peer.received_observations!==undefined){const count=document.createElement('p');count.className='panel-hint';count.dataset.observations=String(peer.received_observations);count.textContent=peer.received_observations+' observations received over P2P';group.append(count);}
   if(!peer.self){const catalogStatus=document.createElement('p');catalogStatus.className='panel-hint';catalogStatus.dataset.catalogStatus=peer.catalog_status||'unknown';catalogStatus.textContent=peer.catalog_status==='ready'?((peer.catalog?.components?.length||0)+' components · '+(peer.catalog?.products?.length||0)+' products'):peer.catalog_status==='unavailable'?(peer.catalog_detail||'Component catalog unavailable'):peer.catalog?'':'Loading component catalog…';if(catalogStatus.textContent)group.append(catalogStatus);}
   if(peer.catalog_cached){const hint=document.createElement('p');hint.className='panel-hint';hint.textContent='Catalog refresh delayed · using last known entries; stream freshness checked separately';group.append(hint);}
@@ -773,12 +792,11 @@ function renderNotes(){
   }
   return;
  }
- if(!isLocalScene())notesBody.append(uiButton('+ New note',()=>editSidebarNote(null),'primary'));
+ notesBody.append(uiButton('+ New note',()=>editSidebarNote(null),'primary'));
  if(!notes.length)noteMessage('No notes in this scenegraph.');
  for(const note of notes){const row=uiButton(noteTitle(note),()=>{sidebarNoteId=note.id;noteView='detail';focusNote(note);renderNotes();});if(note.details?.thumbnail){const image=document.createElement('img');image.src=note.details.thumbnail;image.alt='';image.className='note-list-thumbnail';row.prepend(image);}notesBody.append(row);}
 }
 async function editSidebarNote(note){
- if(isLocalScene()&&!note)return;
  const editingMap=activeMap;
  noteView='edit';notesBody.replaceChildren();const form=document.createElement('form');form.className='note-form';
  const textLabel=document.createElement('label');textLabel.textContent='Title';const input=document.createElement('input');input.name='text';input.required=true;input.maxLength=120;input.value=noteTitle(note);textLabel.append(input);form.append(textLabel);
@@ -790,10 +808,10 @@ async function editSidebarNote(note){
   const heightLabel=document.createElement('label');heightLabel.textContent='Height above portal (m)';height=document.createElement('input');height.name='height';height.type='number';height.step='0.01';height.min='-100';height.max='100';height.value='1';height.required=true;heightLabel.append(height);form.append(heightLabel);
  }
  const actions=document.createElement('div');actions.className='note-actions';const save=document.createElement('button');save.type='submit';save.textContent='Save';actions.append(uiButton('Cancel',()=>{noteView=note?'detail':'list';renderNotes();}),save);form.append(actions);const error=document.createElement('p');error.className='panel-hint';error.setAttribute('role','status');form.append(error);notesBody.append(form);input.focus();
- if(!note){save.disabled=true;try{const canonical=await api('/api/scene');for(const p of canonical.portals||[])portal.add(new Option(p.anchor_id,p.anchor_id));save.disabled=!portal.options.length;}catch(e){error.textContent=e.message;}}
+ if(!note){save.disabled=true;try{const canonical=await api(isLocalScene(editingMap)?localSceneUrl(editingMap):'/api/scene');for(const p of canonical.portals||[])portal.add(new Option(p.anchor_id,p.anchor_id));save.disabled=!portal.options.length;if(save.disabled)error.textContent='No portals in this scene. Right-click a surface to place a note.';}catch(e){error.textContent=e.message;}}
  form.onsubmit=async event=>{event.preventDefault();save.disabled=true;try{
   const details=await fields.read(input.value);
-  const result=note?await api(noteUrl(note.id,editingMap),{text:input.value,details},'PATCH'):await api('/api/notes',{text:input.value,details,portal:portal.value,height_m:Number(height.value)});
+  const result=note?await api(noteUrl(note.id,editingMap),{text:input.value,details},'PATCH'):await api('/api/notes'+(isLocalScene(editingMap)?'?scene='+encodeURIComponent(editingMap.slice(6)):''),{text:input.value,details,portal:portal.value,height_m:Number(height.value)});
   sidebarNoteId=result.id;noteView='detail';
   if(isRunner()||activeMap==='domain'){$('map-select').value='demo';await $('map-select').onchange();}
   lastScene=null;await refresh();renderNotes();

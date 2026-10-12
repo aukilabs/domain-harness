@@ -139,6 +139,7 @@ impl Scene {
 }
 
 struct State {
+    voxels_cleared: bool,
     map: crate::collaborative_mapper::CollaborativeMap,
     notes: Notes,
     presence: Arc<Mutex<crate::mobile_pose::Presence>>,
@@ -152,6 +153,30 @@ pub struct NoteEditor {
     path: std::path::PathBuf,
 }
 impl NoteEditor {
+    pub fn clear_voxels(&self) -> Result<Value> {
+        let mut state=self.state.lock().map_err(|_|anyhow!("Scene unavailable"))?;
+        state.map.clear_voxels()?;
+        state.voxels_cleared=true;
+        Ok(json!({"tool":"clear_voxels","frame":self.frame,"summary":"Cleared the selected scene's voxels. Notes, volumes and localization are unchanged; active sensors may repopulate the map."}))
+    }
+    pub fn get_note(&self,id:&str)->Result<crate::notes::TextNote>{self.state.lock().map_err(|_|anyhow!("Scene annotations unavailable"))?.notes.items.iter().find(|n|n.id==id).cloned().ok_or_else(||anyhow!("Note not found in selected scene"))}
+    pub fn tool_edit(&self,edit:crate::scene_tools::NoteEdit)->Result<Value>{
+        let mut state=self.state.lock().map_err(|_|anyhow!("Scene annotations unavailable"))?;
+        let mut notes=state.notes.clone();let receipt=crate::scene_tools::apply_note(&mut notes,edit,&self.frame)?;
+        persist_notes(&notes,&self.path)?;state.notes=notes;Ok(receipt)
+    }
+    pub fn pick(&self,picks:&mut crate::picking::Picks,origin:[f64;3],direction:[f64;3]) -> Result<Value> {
+        let state=self.state.lock().map_err(|_|anyhow!("Scene annotations unavailable"))?;
+        let voxels=state.map.voxels.as_ref().map(crate::model::occupied).transpose()?.unwrap_or_default();
+        picks.pick_frame(origin,direction,&voxels,0.1,&self.frame)
+    }
+    pub fn create(&self, mut note:crate::notes::TextNote) -> Result<crate::notes::TextNote> {
+        if let Some(anchor)=&note.anchor_surface { ensure!(anchor.frame==self.frame,"Annotation belongs to another scene"); }
+        note.details.prepare_thumbnail()?;
+        let mut state=self.state.lock().map_err(|_|anyhow!("Scene annotations unavailable"))?;
+        let mut notes=state.notes.clone();notes.items.push(note.clone());notes.validate(&self.frame)?;
+        persist_notes(&notes,&self.path)?;state.notes=notes;Ok(note)
+    }
     pub fn change(&self, id: &str, edit: Option<(String, Option<crate::notes::NoteDetails>)>) -> Result<Option<crate::notes::TextNote>> {
         let mut state=self.state.lock().map_err(|_|anyhow!("Scene annotations unavailable"))?;
         let action=match &edit { Some((text,_))=>crate::mobile_notes::NoteAction::Edit{id:id.into(),text:text.clone()}, None=>crate::mobile_notes::NoteAction::Delete{id:id.into()} };
@@ -178,6 +203,10 @@ pub struct Publisher {
     scenes: Arc<LocalScenes>,
     output: ConfiguredObservable<Scene>,
     capture: BufferProductCapture<Scene>,
+    voxel_layers: [crate::voxel_layers::Publisher; 2],
+    geometry_output: ConfiguredObservable<CanonicalScene>,
+    _geometry_capture: BufferProductCapture<CanonicalScene>,
+    occupancy: crate::occupancy_mapper::OccupancyMapper,
     clock: clock::ClockRegistryEntry,
     owner: String,
     started: Instant,
@@ -243,6 +272,7 @@ impl Publisher {
         scenes.phone_presence.lock().map_err(|_| anyhow!("Phone presence unavailable"))?
             .insert(id.into(), live_presence.clone());
         let state = Arc::new(Mutex::new(State {
+            voxels_cleared: false,
             map: crate::collaborative_mapper::CollaborativeMap::for_scene(
                 &owner,
                 &clock.session_id,
@@ -262,6 +292,10 @@ impl Publisher {
                 schema: SCHEMA.into(),
                 access: vec![ObservationAccess::FollowNew],
                 exposure: Exposure::Cluster,
+            }).observable(ObservableContract {
+                name: "geometry".into(), datatype: crate::network::SCENE_SCHEMA.into(),
+                schema: crate::network::SCENE_SCHEMA.into(),
+                access: vec![ObservationAccess::FollowNew], exposure: Exposure::Cluster,
             }),
         )?;
         let output = component.configured_observable(
@@ -279,7 +313,21 @@ impl Publisher {
             )
             .in_registered_frame(crate::conventions::registry(&owner, &frame)?),
         )?;
+        let geometry_output = component.configured_observable(ConfiguredObservableSpec::new(
+            "geometry", uuid::Uuid::new_v4().to_string(),
+            crate::model::clock_ref(&crate::model::clock_entry(&owner, &clock.session_id)),
+            PayloadContract::Structured(StructuredPayloadContract {
+                modality: "scenegraph".into(), datatype: crate::network::SCENE_SCHEMA.into(),
+                schema: crate::network::SCENE_SCHEMA.into(), observes: "accumulated_home_geometry".into(), unit: Some("meters".into()),
+            })).in_registered_frame(crate::conventions::registry(&owner, &frame)?))?;
         component.expose()?;
+        let geometry_capture = runtime.capture_buffer(format!("home-geometry:{id}"), &geometry_output,
+            limits(), |s| serde_json::to_vec(s).map_or(usize::MAX, |v| v.len()))?;
+        // The retained input is bound locally by the standard SDK mapper. The
+        // derived occupancy Product, rather than this extra full scene, is exported.
+        let occupancy = crate::occupancy_mapper::OccupancyMapper::mount_scoped(runtime, endpoint,
+            &geometry_capture.product(), &owner, crate::model::clock_ref(&clock),
+            crate::occupancy_mapper::Config::new(0.), id)?;
         let capture = runtime.capture_buffer(
             crate::local_scenes::mobile_product(id),
             &output,
@@ -287,6 +335,11 @@ impl Publisher {
             size,
         )?;
         endpoint.export_product(&capture.product())?;
+        let voxel_layers = ["occupied-voxels", "observed-free-voxels"].map(|name|
+            crate::voxel_layers::Publisher::mount(runtime, endpoint, id, name,
+                crate::model::clock_ref(&clock), crate::conventions::registry(&owner, &frame)?));
+        let [occupied_layer, free_layer] = voxel_layers;
+        let voxel_layers = [occupied_layer?, free_layer?];
         let mut components = vec![component];
         let contributions = Arc::new(Mutex::new(crate::scene_contribution::Inbox::default()));
         let receiver = runtime.component(ComponentSpec::new(format!("{}:{id}",crate::scene_contribution::COMPONENT)).operable(
@@ -574,6 +627,10 @@ impl Publisher {
             scenes,
             output,
             capture,
+            voxel_layers,
+            geometry_output,
+            _geometry_capture: geometry_capture,
+            occupancy,
             clock,
             owner,
             started,
@@ -601,6 +658,10 @@ impl Publisher {
             .state
             .lock()
             .map_err(|_| anyhow!("Scene unavailable"))?;
+        if state.voxels_cleared {
+            self.occupancy.clear_geometry();
+            state.voxels_cleared=false;
+        }
         for contribution in self.contributions.lock().map_err(|_|anyhow!("Contribution inbox unavailable"))?.take() {
             let peer=contribution.source.peer_id.clone();
             if let Err(e)=state.map.integrate_contribution(contribution){state.map.peer_status(&peer,"rejected",&e.to_string());}
@@ -635,8 +696,18 @@ impl Publisher {
         scene.validate(&self.owner, &reference.scenegraph.map.frame.id)?;
         let content = serde_json::to_vec(&scene)?;
         if self.last_content.as_ref() == Some(&content) {
+            self.occupancy.tick()?;
             return Ok(());
         }
+        if let Some(geometry) = &scene.geometry {
+            let timestamp = self.started.elapsed().as_nanos() as u64;
+            for (publisher, layer) in self.voxel_layers.iter().zip(crate::voxel_layers::split(&geometry.voxels)?) {
+                publisher.publish(timestamp, layer)?;
+            }
+            self.geometry_output.publish(timestamp, Arc::new(geometry.clone()))?;
+            ensure!(self._geometry_capture.errors().is_empty(), "Home geometry retention failed");
+        }
+        self.occupancy.tick()?;
         self.scenes
             .mobile_views
             .lock()
