@@ -99,7 +99,7 @@ struct ViewerScreen: View {
                     Text(sendSummary).themeText(11).foregroundStyle(Theme.dim).lineLimit(1)
                 } else if tab == "map" {
                     MiniMapView(map: controller.miniMap, phone: controller.miniPhone, robots: mapRobots,
-                                tracked: controller.trackedRobots, showTrails: $controller.showTrails,
+                                tracked: controller.trackedDevices, showTrails: $controller.showTrails,
                                 clearTrails: controller.clearTrails)
                         .frame(height: mapHeight)
                     Text(sendSummary).themeLabel(10, .semibold).foregroundStyle(sendColor).lineLimit(2)
@@ -492,6 +492,48 @@ struct MiniMapRobot: Equatable {
     }
 }
 
+/// What this phone knows about a tapped device: who it is, how it is, and where it was last seen.
+struct DeviceCard: View {
+    let device: TrackedDevice
+    /// This phone's position, for the distance line.
+    let from: SIMD3<Float>?
+
+    static func age(_ seconds: TimeInterval) -> String {
+        let s = max(0, Int(seconds))
+        return s < 60 ? "\(s) s" : s < 3600 ? "\(s / 60) min" : "\(s / 3600) h \(s % 3600 / 60) min"
+    }
+    private func state(_ now: Date) -> String {
+        switch device.state {
+        case .live: return "Live"
+        case .asleep: return "Asleep zzz"
+        case .lost: return "Lost zzz · last seen " + Self.age(now.timeIntervalSince(device.lastSeen)) + " ago"
+        }
+    }
+    var body: some View {
+        // The "last seen" line counts up on its own.
+        TimelineView(.periodic(from: .now, by: 1)) { timeline in
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 5) {
+                    Image(systemName: device.kind == .phone ? "iphone" : "car.side").font(.system(size: 11))
+                    Text(device.name.uppercased()).font(Theme.mono(11, .semibold))
+                }.foregroundStyle(Theme.ink)
+                Text(state(timeline.date)).font(Theme.mono(10))
+                    .foregroundStyle(device.state == .live ? Theme.ink : Theme.accent)
+                let p = device.position
+                Text(String(format: "x %.2f  y %.2f  z %.2f m", p.x, p.y, p.z)).font(Theme.mono(10)).foregroundStyle(Theme.dim)
+                if let from {
+                    Text(String(format: "%.1f m from this phone", simd_distance(from, p))).font(Theme.mono(10)).foregroundStyle(Theme.dim)
+                }
+                Text(String(format: "Trail %.1f m · ", device.travelled) + String(device.id.suffix(6)))
+                    .font(Theme.mono(10)).foregroundStyle(Theme.dim)
+            }
+            .padding(7).background(Theme.paper.opacity(0.94))
+            .overlay(Rectangle().stroke(Theme.rule, lineWidth: 0.5))
+            .accessibilityElement(children: .combine)
+        }
+    }
+}
+
 /// Standard viewport controls: one finger orbits, two fingers truck, pinch
 /// dollies, double-tap resets.
 struct MiniMapGestures: UIViewRepresentable {
@@ -499,6 +541,7 @@ struct MiniMapGestures: UIViewRepresentable {
     var onTruck: (CGSize) -> Void
     var onZoom: (CGFloat) -> Void
     var onReset: () -> Void
+    var onTap: (CGPoint) -> Void = { _ in }
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> UIView {
         let view = UIView()
@@ -510,8 +553,11 @@ struct MiniMapGestures: UIViewRepresentable {
         let pinch = UIPinchGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.pinch(_:)))
         let reset = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.reset))
         reset.numberOfTapsRequired = 2
+        // One tap asks about whatever is under the finger; it waits for a second tap not to come.
+        let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.tap(_:)))
+        tap.require(toFail: reset)
         truck.delegate = context.coordinator; pinch.delegate = context.coordinator
-        [orbit, truck, pinch, reset].forEach(view.addGestureRecognizer)
+        [orbit, truck, pinch, reset, tap].forEach(view.addGestureRecognizer)
         return view
     }
     func updateUIView(_ view: UIView, context: Context) { context.coordinator.parent = self }
@@ -528,6 +574,7 @@ struct MiniMapGestures: UIViewRepresentable {
         }
         @objc func pinch(_ g: UIPinchGestureRecognizer) { parent.onZoom(g.scale); g.scale = 1 }
         @objc func reset() { parent.onReset() }
+        @objc func tap(_ g: UITapGestureRecognizer) { parent.onTap(g.location(in: g.view)) }
         // Two fingers may truck and dolly in the same motion.
         func gestureRecognizer(_ a: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith b: UIGestureRecognizer) -> Bool { true }
     }
@@ -633,8 +680,10 @@ struct MiniMapView: View {
     let map: MiniMapData
     let phone: MiniMapPhone?
     var robots = [MiniMapRobot]()
-    /// Every robot seen in this scene, with its trail; one Home no longer reports is not live.
-    var tracked = [TrackedRobot]()
+    /// Every other phone and robot seen in this scene, at its last known place, with its trail.
+    var tracked = [TrackedDevice]()
+    /// The device last tapped, described in a card until the map is tapped elsewhere.
+    @State private var queried: String?
     /// One switch for the robot trails here and in AR.
     var showTrails: Binding<Bool> = .constant(true)
     var clearTrails: () -> Void = {}
@@ -684,7 +733,13 @@ struct MiniMapView: View {
                         pan -= SIMD3(turnedX * cos(yaw) + turnedZ * sin(yaw), up, -turnedX * sin(yaw) + turnedZ * cos(yaw))
                     },
                     onZoom: { zoom = max(0.4, min(12, zoom * Float($0))) },
-                    onReset: { withAnimation { pan = .zero; yaw = 0; pitch = .pi / 2; zoom = 1 } })
+                    onReset: { withAnimation { pan = .zero; yaw = 0; pitch = .pi / 2; zoom = 1 } },
+                    onTap: { point in
+                        let near = tracked.map { ($0.id, view.place($0.position).point) }
+                            .map { ($0.0, hypot($0.1.x - point.x, $0.1.y - point.y)) }
+                            .filter { $0.1 < 28 }.min { $0.1 < $1.1 }
+                        queried = near?.0
+                    })
                 VStack(spacing: 0) {
                     Button { showVolumes.toggle() } label: {
                         Image(systemName: showVolumes ? "cube.fill" : "cube").font(.system(size: 13))
@@ -721,6 +776,11 @@ struct MiniMapView: View {
             }
         }
         .themeWell()
+        .overlay(alignment: .bottomLeading) {
+            if let device = tracked.first(where: { $0.id == queried }) {
+                DeviceCard(device: device, from: phone?.position).padding(6)
+            }
+        }
         .accessibilityLabel("Mini map")
     }
 
@@ -741,7 +801,7 @@ struct MiniMapView: View {
         if showVolumes { points += map.volumes.flatMap { Self.corners($0) } }
         if let phone { points.append(phone.position) }
         points += robots.map(\.position)
-        points += tracked.filter { !$0.live }.map(\.position)
+        points += tracked.filter { $0.kind == .phone || $0.state == .lost }.map(\.position)
         if showTrails.wrappedValue { points += tracked.flatMap(\.trail) }
         guard var low = points.first else { return nil }
         var high = low
@@ -839,19 +899,20 @@ struct MiniMapView: View {
             context.fill(square, with: .color(Theme.ink)); context.stroke(square, with: .color(Theme.paper), lineWidth: 1)
         }
         if showTrails.wrappedValue {
-            // Each robot's path: pale blue where it started, yellow where it is now.
-            for robot in tracked where !robot.trail.isEmpty {
-                let points = robot.trail.map { view.place($0).point } + [view.place(robot.position).point]
+            // Each device's path: pale blue where it started, yellow where it is now.
+            for device in tracked where !device.trail.isEmpty {
+                let points = device.trail.map { view.place($0).point } + [view.place(device.position).point]
                 for i in 1..<points.count {
                     var segment = Path(); segment.move(to: points[i - 1]); segment.addLine(to: points[i])
-                    let c = RobotTrails.color(age: Float(i) / Float(points.count - 1))
+                    let c = DeviceTrails.color(age: Float(i) / Float(points.count - 1))
                     context.stroke(segment, with: .color(Color(red: Double(c.x), green: Double(c.y), blue: Double(c.z))),
                                    style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
                 }
             }
         }
         // A robot Home no longer reports stays where it was last seen, faded.
-        let ghosts = tracked.filter { !$0.live }.map { MiniMapRobot(name: $0.name, transform: $0.base, zUp: true) }
+        let ghosts = tracked.filter { $0.kind == .robot && $0.state == .lost }
+            .map { MiniMapRobot(name: $0.name, transform: $0.pose, zUp: true) }
         for (robot, strength) in robots.map({ ($0, 1.0) }) + ghosts.map({ ($0, 0.3) }) {
             // Under the 3D model: the chassis footprint, a tick out of its nose, and its name.
             let c = robot.outline.map { view.place($0).point }
@@ -867,6 +928,41 @@ struct MiniMapView: View {
             context.stroke(Brackets(arm: 6).path(in: reticle), with: .color(Theme.ink.opacity(strength)), lineWidth: 1)
             context.draw(Text(robot.name.uppercased()).font(Theme.mono(9, .semibold)).foregroundColor(Theme.ink.opacity(strength)),
                          at: CGPoint(x: reticle.midX, y: reticle.minY - 3), anchor: .bottom)
+        }
+        for device in tracked {
+            // Last known place: a phone or robot icon, faded with "zzz" when asleep or lost.
+            let resting = device.state != .live
+            let strength = resting ? 0.4 : 1.0
+            let at = view.place(device.position).point
+            var anchor = at
+            if device.kind == .phone {
+                var icon = context.resolve(Image(systemName: "iphone"))
+                icon.shading = .color(Theme.ink.opacity(strength))
+                context.draw(icon, at: at)
+                context.draw(Text(device.name.uppercased()).font(Theme.mono(9, .semibold)).foregroundColor(Theme.ink.opacity(strength)),
+                             at: CGPoint(x: at.x, y: at.y + 12), anchor: .top)
+            } else if !showRobotModel || resting {
+                // Robot glyph: a head with two eyes and an antenna, above the footprint.
+                anchor = CGPoint(x: at.x, y: at.y - 2)
+                let head = CGRect(x: anchor.x - 7, y: anchor.y - 5, width: 14, height: 10)
+                context.fill(Path(roundedRect: head, cornerRadius: 2), with: .color(Theme.paper.opacity(strength)))
+                context.stroke(Path(roundedRect: head, cornerRadius: 2), with: .color(Theme.ink.opacity(strength)), lineWidth: 1.2)
+                for dx in [-3.0, 3.0] {
+                    context.fill(Path(ellipseIn: CGRect(x: anchor.x + dx - 1.2, y: anchor.y - 1.2, width: 2.4, height: 2.4)),
+                                 with: .color(Theme.ink.opacity(strength)))
+                }
+                var antenna = Path(); antenna.move(to: CGPoint(x: anchor.x, y: anchor.y - 5)); antenna.addLine(to: CGPoint(x: anchor.x, y: anchor.y - 9))
+                context.stroke(antenna, with: .color(Theme.ink.opacity(strength)), lineWidth: 1.2)
+                context.fill(Path(ellipseIn: CGRect(x: anchor.x - 1.5, y: anchor.y - 11.5, width: 3, height: 3)), with: .color(Theme.ink.opacity(strength)))
+            }
+            if resting {
+                context.draw(Text("zzz").font(Theme.mono(10, .bold)).foregroundColor(Theme.accent),
+                             at: CGPoint(x: anchor.x + 9, y: anchor.y - 9), anchor: .bottomLeading)
+            }
+            if device.id == queried {
+                context.stroke(Path(ellipseIn: CGRect(x: at.x - 17, y: at.y - 17, width: 34, height: 34)),
+                               with: .color(Theme.accent), lineWidth: 1.5)
+            }
         }
         if let phone {
             let at = view.place(phone.position).point
@@ -947,9 +1043,9 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private var portalReported = [String: TimeInterval]()
     @Published private(set) var miniMap = MiniMapData()
     @Published private(set) var miniPhone: MiniMapPhone?
-    /// Every robot seen in this scene, each with the path it has taken.
-    @Published private(set) var trackedRobots = [TrackedRobot]()
-    private var trails = RobotTrails()
+    /// Every other phone and robot seen in this scene, each at its last known place with its path.
+    @Published private(set) var trackedDevices = [TrackedDevice]()
+    private var trails = DeviceTrails()
     @Published var showTrails = UserDefaults.standard.object(forKey: "robotTrailsVisible") as? Bool ?? true {
         didSet {
             UserDefaults.standard.set(showTrails, forKey: "robotTrailsVisible")
@@ -958,7 +1054,9 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     }
     func clearTrails() {
         trails.clear()
-        trackedRobots = trackedRobots.map { TrackedRobot(id: $0.id, name: $0.name, base: $0.base, trail: [], live: $0.live) }
+        trackedDevices = trackedDevices.map {
+            TrackedDevice(id: $0.id, kind: $0.kind, name: $0.name, pose: $0.pose, trail: [], state: $0.state, lastSeen: $0.lastSeen)
+        }
         for node in root.childNodes + povRoot.childNodes where node.name == "robot-trail" { node.removeFromParentNode() }
     }
     /// Devices for the POV tab. This phone's entry follows its live pose.
@@ -1050,7 +1148,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         }
         self.map = map
         miniMap = MiniMapData(map)
-        trackedRobots = trails.record(map.render?.notes ?? [], frame: map.scenegraph.map.frame.id)
+        trackedDevices = trails.record(map.render?.notes ?? [], frame: map.scenegraph.map.frame.id,
+                                       ownFrame: "phone-camera:" + poseSession)
         root.childNodes.forEach { $0.removeFromParentNode() }
         for portal in map.scenegraph.anchors.values.sorted(by: { $0.anchor_id < $1.anchor_id }) {
             let node = SCNNode()
@@ -1079,7 +1178,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             root.addChildNode(node)
         }
         renderScene(map.render)
-        trackedRobots.forEach(addTrail)
+        trackedDevices.filter { $0.kind == .robot }.forEach(addTrail)
         for volume in map.render?.volumes ?? [] where volume.valid {
             root.addChildNode(volume.node())
         }
@@ -1225,15 +1324,15 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
 
     /// A robot's path as a ribbon just above the floor. A robot Home no longer
     /// reports also keeps a faint body and label where it was last seen.
-    private func addTrail(_ robot: TrackedRobot) {
-        if !robot.live {
+    private func addTrail(_ robot: TrackedDevice) {
+        if robot.state == .lost {
             let body = SCNNode(geometry: SCNBox(width: 0.5, height: 0.35, length: 0.2, chamferRadius: 0.03))
             body.geometry?.firstMaterial?.diffuse.contents = UIColor.white.withAlphaComponent(0.2)
             body.geometry?.firstMaterial?.lightingModel = .constant
-            body.simdTransform = robot.base * simd_float4x4(SIMD4(1, 0, 0, 0), SIMD4(0, 1, 0, 0), SIMD4(0, 0, 1, 0), SIMD4(0, 0, 0.1, 1))
+            body.simdTransform = robot.pose * simd_float4x4(SIMD4(1, 0, 0, 0), SIMD4(0, 1, 0, 0), SIMD4(0, 0, 1, 0), SIMD4(0, 0, 0.1, 1))
             root.addChildNode(body)
             let p = robot.position
-            addLabel(robot.name, at: [p.x, p.y, p.z], color: UIColor.white.withAlphaComponent(0.3))
+            addLabel(robot.name + " zzz", at: [p.x, p.y, p.z], color: UIColor.white.withAlphaComponent(0.3))
         }
         let path = robot.trail + [robot.position]
         var vertices = [SCNVector3](), colors = [Float](), indices = [UInt32]()
@@ -1244,8 +1343,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             let side = simd_normalize(simd_cross(SIMD3(0, 1, 0), along)) * 0.03, lift = SIMD3<Float>(0, 0.03, 0)
             let base = UInt32(vertices.count)
             // Oldest is pale blue, newest is yellow.
-            let older = RobotTrails.color(age: Float(i - 1) / Float(path.count - 1))
-            let newer = RobotTrails.color(age: Float(i) / Float(path.count - 1))
+            let older = DeviceTrails.color(age: Float(i - 1) / Float(path.count - 1))
+            let newer = DeviceTrails.color(age: Float(i) / Float(path.count - 1))
             let low = a + lift, high = b + lift
             let corners: [(SIMD3<Float>, SIMD3<Float>)] = [(low - side, older), (low + side, older), (high + side, newer), (high - side, newer)]
             for (p, c) in corners {
@@ -1326,7 +1425,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         clearPlacement()
         map = nil
         miniMap = MiniMapData()
-        trails = RobotTrails(); trackedRobots = []
+        trails = DeviceTrails(); trackedDevices = []
         povRoot.childNodes.forEach { $0.removeFromParentNode() }
         remoteDevices = []; refreshDevices()
         root.childNodes.forEach { $0.removeFromParentNode() }

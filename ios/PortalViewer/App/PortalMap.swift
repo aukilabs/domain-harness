@@ -318,60 +318,79 @@ enum DepthProjection {
     }
 }
 
-/// A robot placed in Home's frame, with the path it has taken while this phone watched.
-struct TrackedRobot: Equatable {
+/// A phone or robot placed in Home's frame, with the path it has taken while this phone watched.
+struct TrackedDevice: Equatable, Identifiable {
+    enum Kind: Equatable { case phone, robot }
+    /// `asleep` is a phone that says so; `lost` is anything Home has stopped reporting.
+    enum State: Equatable { case live, asleep, lost }
+    /// "phone:" or "robot:" followed by the peer ID, as in the device lists.
     let id: String
+    let kind: Kind
     let name: String
-    /// Base pose in Home's frame: Z up, +X forward.
-    let base: simd_float4x4
+    /// A phone's camera pose, or a robot's base pose (Z up, +X forward), in Home's frame.
+    let pose: simd_float4x4
     let trail: [SIMD3<Float>]
-    /// False once Home stops reporting the robot: it stays where it was last seen.
-    var live = true
-    var position: SIMD3<Float> { SIMD3(base.columns.3.x, base.columns.3.y, base.columns.3.z) }
+    var state = State.live
+    /// When Home last reported it.
+    var lastSeen = Date()
+    var position: SIMD3<Float> { SIMD3(pose.columns.3.x, pose.columns.3.y, pose.columns.3.z) }
+    /// Metres along the recorded path.
+    var travelled: Float { zip(trail, trail.dropFirst()).reduce(0) { $0 + simd_distance($1.0, $1.1) } }
 }
 
-/// Home sends where each robot is now, not where it has been. The phone keeps the path.
-struct RobotTrails {
-    /// A new point is kept once the robot has moved this far, so a parked robot adds nothing.
+/// Home sends where each device is now, not where it has been. The phone keeps
+/// the path, and the last known place of anything Home stops reporting.
+struct DeviceTrails {
+    /// A new point is kept once the device has moved this far, so one at rest adds nothing.
     static let step: Float = 0.05
     static let limit = 3000
     private(set) var frame: String?
     private(set) var paths = [String: [SIMD3<Float>]]()
-    private var seen = [String: TrackedRobot]()
+    private var seen = [String: TrackedDevice]()
 
-    /// Forget the paths, not the robots.
+    /// Forget the paths, not the devices.
     mutating func clear() {
         paths = [:]
-        seen = seen.mapValues { TrackedRobot(id: $0.id, name: $0.name, base: $0.base, trail: [], live: $0.live) }
+        seen = seen.mapValues {
+            TrackedDevice(id: $0.id, kind: $0.kind, name: $0.name, pose: $0.pose, trail: [], state: $0.state, lastSeen: $0.lastSeen)
+        }
     }
 
-    /// Trail colour as sRGB: pale blue where the robot was first, yellow where it is now.
+    /// Trail colour as sRGB: pale blue where the device was first, yellow where it is now.
     static func color(age fraction: Float) -> SIMD3<Float> {
         let t = max(0, min(1, fraction))
         return simd_mix(SIMD3<Float>(0.62, 0.82, 1.0), SIMD3<Float>(1.0, 0.86, 0.25), SIMD3(repeating: t))
     }
 
-    /// Record each robot Home places in `frame`, and return every robot seen with its trail.
-    mutating func record(_ notes: [RenderScene.Note], frame: String) -> [TrackedRobot] {
+    /// Record every phone and robot Home places in `frame`, and return each device
+    /// seen so far with its trail. `ownFrame` is this phone's own camera frame.
+    mutating func record(_ notes: [RenderScene.Note], frame: String, ownFrame: String? = nil,
+                         now: Date = Date()) -> [TrackedDevice] {
         // Positions from another frame cannot share a path.
         if self.frame != frame { paths = [:]; seen = [:]; self.frame = frame }
         var reported = Set<String>()
         for note in notes {
-            guard let robot = note.robot_pose, robot.pose.to_frame_id == frame,
-                  robot.pose.translation.count == 3, robot.pose.rotation_wxyz.count == 4,
-                  (robot.pose.translation + robot.pose.rotation_wxyz).allSatisfy(\.isFinite) else { continue }
-            let base = robot.pose.matrix
-            let at = SIMD3(base.columns.3.x, base.columns.3.y, base.columns.3.z)
-            var path = paths[robot.peer_id] ?? []
+            let kind: TrackedDevice.Kind, sample: RenderScene.PhonePose
+            if let robot = note.robot_pose { (kind, sample) = (.robot, robot) }
+            else if let phone = note.phone_pose, phone.pose.from_frame_id != ownFrame { (kind, sample) = (.phone, phone) }
+            else { continue }
+            guard sample.pose.to_frame_id == frame,
+                  sample.pose.translation.count == 3, sample.pose.rotation_wxyz.count == 4,
+                  (sample.pose.translation + sample.pose.rotation_wxyz).allSatisfy(\.isFinite) else { continue }
+            let id = (kind == .robot ? "robot:" : "phone:") + sample.peer_id
+            let pose = sample.pose.matrix
+            let at = SIMD3(pose.columns.3.x, pose.columns.3.y, pose.columns.3.z)
+            var path = paths[id] ?? []
             if path.last.map({ simd_distance($0, at) >= Self.step }) ?? true {
                 path.append(at)
                 if path.count > Self.limit { path.removeFirst(path.count - Self.limit) }
-                paths[robot.peer_id] = path
+                paths[id] = path
             }
-            seen[robot.peer_id] = TrackedRobot(id: robot.peer_id, name: robot.name ?? note.text, base: base, trail: path)
-            reported.insert(robot.peer_id)
+            seen[id] = TrackedDevice(id: id, kind: kind, name: sample.name ?? note.text, pose: pose, trail: path,
+                                     state: sample.state == "asleep" ? .asleep : .live, lastSeen: now)
+            reported.insert(id)
         }
-        for id in seen.keys where !reported.contains(id) { seen[id]?.live = false }
+        for id in seen.keys where !reported.contains(id) { seen[id]?.state = .lost }
         return seen.values.sorted { $0.id < $1.id }
     }
 }
