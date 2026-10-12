@@ -674,7 +674,6 @@ struct RobotMapLayer: UIViewRepresentable {
         view.isOpaque = false
         view.isUserInteractionEnabled = false
         view.autoenablesDefaultLighting = true
-        view.technique = RobotGlow.technique()
         view.antialiasingMode = .multisampling4X
         view.rendersContinuously = false
         let camera = SCNCamera()
