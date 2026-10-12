@@ -11,6 +11,8 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, io::Write, path::Path, time::Instant};
 
 pub struct LocalScenes {
+    pub note_editors: std::sync::Mutex<BTreeMap<String, crate::local_mobile::NoteEditor>>,
+    pub volumes: crate::semantic_volumes::Storage,
     pub snapshots: BTreeMap<String, MapSnapshot>,
     pub(crate) directory: std::path::PathBuf,
     pub(crate) mobile_views: std::sync::Mutex<BTreeMap<String, Value>>,
@@ -120,6 +122,8 @@ impl LocalScenes {
             );
         }
         Ok(Self {
+            note_editors: Default::default(),
+            volumes: crate::semantic_volumes::Storage::new(directory.join("semantic-volumes")),
             snapshots,
             directory: directory.into(),
             mobile_views: Default::default(),
@@ -160,7 +164,9 @@ impl LocalScenes {
             .map_err(|_| anyhow!("Local scene view unavailable"))?
             .get(id)
         {
-            return Ok(view.clone());
+            let mut view = view.clone();
+            view["semantic_volumes"] = serde_json::to_value(self.volumes.get(id, &snapshot.scenegraph.map.frame.id)?)?;
+            return Ok(view);
         }
         let map = &snapshot.scenegraph.map;
         let landmarks = crate::landmarks::portal_map(snapshot, None, &BTreeMap::new())?;
@@ -168,7 +174,7 @@ impl LocalScenes {
             json!({"environment_name":map.name,"frame":map.frame.id,"local_reference":true,
             "frame_description":map.frame.origin_description,"convention":"OpenGL · meters",
             "voxel_size":0.1,"voxels":[],"portals":snapshot.scenegraph.anchors.values().collect::<Vec<_>>(),
-            "landmarks":landmarks,"objects":[],"notes":[],"sources":{},"integrated_observations":0,"demo":false}),
+            "landmarks":landmarks,"semantic_volumes":self.volumes.get(id, &map.frame.id)?,"objects":[],"notes":[],"sources":{},"integrated_observations":0,"demo":false}),
         )
     }
 

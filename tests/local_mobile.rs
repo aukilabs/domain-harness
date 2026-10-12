@@ -66,12 +66,18 @@ async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated(
         )?;
         let home = scenes.connection("humanoid-hub-conference", HomeConnection::direct(&pair.a))?;
         let nacs = scenes.connection("nacs", HomeConnection::direct(&pair.a))?;
+        let semantic_volume = spatial_home::semantic_volumes::Volume {
+            id: uuid::Uuid::new_v4().to_string(), title: "Meeting area".into(),
+            description: "Team gathering space".into(), center: [1., 1., 2.], size: [2., 2., 3.], yaw: 0.,
+            semantic_type: "room".into(),
+        };
+        scenes.volumes.change("humanoid-hub-conference", &home.frame, None, Some(semantic_volume.clone()), &home.frame)?;
         home.validate(&pair.b)?;
         // Volume creation uses the same authenticated scene-scoped operation as notes.
         let volume = spatial_home::semantic_volumes::SemanticVolume {
             id: uuid::Uuid::new_v4().to_string(), name: "Kitchen".into(),
             semantic_type: "room".into(), position: [1., 0., 2.],
-            dimensions: [2., 2.5, 3.], yaw: 0.5,
+            dimensions: [2., 2.5, 3.], yaw: 0.5, description:None,
         };
         let request = spatial_home::mobile_notes::ChangeNote {
             request_id: uuid::Uuid::new_v4().to_string(), frame: home.frame.clone(),
@@ -82,12 +88,15 @@ async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated(
         tokio::time::sleep(Duration::from_millis(1100)).await;
         for publisher in &mut publishers { publisher.tick()?; }
         let volume_view = read(&pair.b, &home).await?;
-        assert_eq!(volume_view["render"]["volumes"].as_array().unwrap().len(), 1);
-        assert_eq!(volume_view["render"]["volumes"][0]["id"], volume.id);
+        assert_eq!(volume_view["render"]["volumes"].as_array().unwrap().len(), 2);
+        assert!(volume_view["render"]["volumes"].as_array().unwrap().iter().any(|v|v["id"]==volume.id));
         assert!(read(&pair.b, &nacs).await?["render"]["volumes"].as_array().unwrap().is_empty());
-        let saved: spatial_home::notes::Notes = serde_json::from_slice(&std::fs::read(
-            dir.path().join("mobile-notes/humanoid-hub-conference.json"))?)?;
-        assert_eq!(saved.volumes, vec![volume]);
+        let saved=scenes.volumes.get("humanoid-hub-conference",&home.frame)?;
+        assert!(saved.items.iter().any(|v|v.id==volume.id));
+        spatial_home::mobile_notes::send_change(&pair.b,&home,&spatial_home::mobile_notes::ChangeNote{
+            request_id:uuid::Uuid::new_v4().to_string(),frame:home.frame.clone(),
+            action:spatial_home::mobile_notes::NoteAction::DeleteVolume{id:volume.id},
+        }).await?;
         let runner_reference = spatial_home::network::fetch_home_portals(&pair.b, &home).await?;
         assert_eq!(runner_reference.scenegraph.map.frame.id, home.frame);
         assert_eq!(runner_reference.scenegraph.anchors.len(), 1);
@@ -206,6 +215,15 @@ async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated(
         let deleted = removed.note.unwrap();
         assert_eq!(send_change(&pair.b,&home,&delete).await?.note,Some(deleted.clone()),"Operation retries return the original result for Undo");
         send_change(&pair.b,&home,&request(NoteAction::Restore { note: deleted })).await?;
+        let editor=scenes.note_editors.lock().unwrap()["humanoid-hub-conference"].clone();
+        let details=spatial_home::notes::NoteDetails {description:"Browser description".into(),..Default::default()};
+        let edited=editor.change(&id,Some(("Browser edit".into(),Some(details))))?.unwrap();
+        assert_eq!(edited.text,"Browser edit");
+        assert_eq!(edited.details.description,"Browser description");
+        assert!(scenes.note_editors.lock().unwrap()["nacs"].change(&id,Some(("Wrong scene".into(),None))).is_err());
+        assert_eq!(editor.change(&id,None)?.unwrap().text,"Browser edit");
+        let persisted:spatial_home::notes::Notes=serde_json::from_slice(&std::fs::read(dir.path().join("mobile-notes/humanoid-hub-conference.json"))?)?;
+        assert!(!persisted.items.iter().any(|n|n.id==id));
         send_change(&pair.b,&home,&request(NoteAction::Delete { id })).await?;
         let pose = spatial_home::mobile_pose::Update {
             sample: Some(spatial_home::mobile_pose::Sample {
@@ -232,6 +250,28 @@ async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated(
         let mapped = read(&pair.b, &home).await?;
         assert_eq!(mapped["render"]["integrated_observations"], 1);
         assert_eq!(mapped["render"]["frame"], home.frame);
+        assert_eq!(mapped["render"]["semantic_volumes"]["items"][0], serde_json::to_value(&semantic_volume)?);
+        let mut phone_volume=semantic_volume.mobile();
+        phone_volume.name="iPhone edit".into();
+        phone_volume.position=[3.,0.5,4.];
+        phone_volume.description=None; // Existing iPhone wire format.
+        let put=request(NoteAction::PutVolume{volume:phone_volume.clone()});
+        assert!(send_change(&pair.b,&nacs,&put).await.is_err());
+        send_change(&pair.b,&home,&put).await?;
+        send_change(&pair.b,&home,&put).await?;
+        let shared=scenes.volumes.get("humanoid-hub-conference",&home.frame)?;
+        assert_eq!(shared.items.len(),1);
+        assert_eq!(shared.items[0].title,"iPhone edit");
+        assert_eq!(shared.items[0].center,[3.,1.5,4.]);
+        assert_eq!(shared.items[0].description,"Team gathering space");
+        let mut browser_edit=shared.items[0].clone();browser_edit.title="Home edit".into();
+        scenes.volumes.change("humanoid-hub-conference",&home.frame,Some(&browser_edit.id),Some(browser_edit.clone()),&home.frame)?;
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        for publisher in &mut publishers { publisher.tick()?; }
+        let published=read(&pair.b,&home).await?;
+        assert_eq!(published["render"]["volumes"][0]["name"],"Home edit");
+        assert_eq!(published["render"]["semantic_volumes"]["items"][0]["id"],browser_edit.id);
+        assert!(scenes.volumes.get("nacs",&nacs.frame)?.items.is_empty());
         assert!(
             mapped["render"]["voxels"]
                 .as_array()
@@ -260,6 +300,7 @@ async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated(
                 .any(|n| n["phone_pose"].is_object())
         );
         let untouched = read(&pair.b, &nacs).await?;
+        assert!(untouched["render"]["semantic_volumes"]["items"].as_array().unwrap().is_empty());
         assert!(untouched["render"]["voxels"].as_array().unwrap().is_empty());
         assert!(untouched["render"]["notes"].as_array().unwrap().is_empty());
         let xmart =
@@ -325,6 +366,7 @@ async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated(
             Instant::now(),
         )?;
         let restored = read(&pair.b, &home).await?;
+        assert_eq!(restored["render"]["semantic_volumes"]["items"][0], serde_json::to_value(&browser_edit)?);
         assert_eq!(restored["render"]["notes"].as_array().unwrap().len(), 1);
         assert_eq!(restored["render"]["notes"][0]["id"], note.id);
         assert!(restored["render"]["voxels"].as_array().unwrap().is_empty());

@@ -273,6 +273,14 @@ pub async fn send(
     home: &crate::network::HomeConnection,
     update: &Update,
 ) -> Result<()> {
+    send_component(peer, home, COMPONENT, update).await
+}
+pub async fn send_component<T: auki_components::ContractType + Serialize>(
+    peer: &auki_sdk::AukiPeer,
+    home: &crate::network::HomeConnection,
+    component: &str,
+    update: &T,
+) -> Result<()> {
     use auki_component_protocol::{CatalogResponse, ComponentProtocolClient};
     let expected = home.validate(peer)?;
     let client = ComponentProtocolClient::new(peer.protocols());
@@ -289,7 +297,7 @@ pub async fn send(
         let entry = snapshot
             .components
             .iter()
-            .find(|c| c.manifest.component_id == home.scoped_component(COMPONENT))
+            .find(|c| c.manifest.component_id == home.scoped_component(component))
             .ok_or_else(|| anyhow::anyhow!("Home phone presence unavailable"))?;
         client
             .invoke_exact::<_, bool>(

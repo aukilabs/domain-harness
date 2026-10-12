@@ -2,13 +2,16 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createArOverlay } from './ar.js';
 import { createPhoneTrails } from './phone-trails.js';
+import { createSemanticVolumes } from './semantic-volumes.js';
+import { createMap2D } from './map-2d.js';
 const $=id=>document.getElementById(id);
 // Organize existing live controls into the mockup's rail and exclusive panels.
 const sidebar=document.querySelector('aside'),shell=document.querySelector('.shell');
 const rail=document.createElement('nav');rail.className='icon-rail';rail.setAttribute('aria-label','Workspace panels');shell.prepend(rail);
-const panelNames={profile:'Profile',maps:'Maps',notes:'Notes',tags:'Tags',fleet:'Devices',settings:'Settings'};
+const panelNames={profile:'Profile',maps:'Maps',notes:'Notes',volumes:'Volumes',tags:'Tags',fleet:'Devices',settings:'Settings'};
 const iconPaths={profile:'M9 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6M3 16c0-7 12-7 12 0',maps:'M2 4l5-2 4 2 5-2v12l-5 2-4-2-5 2ZM7 2v12M11 4v12',notes:'M4 2h10v14H4ZM6 6h6M6 9h6M6 12h4',tags:'M2 6V2h4M12 2h4v4M16 12v4h-4M6 16H2v-4M6 6h6v6H6Z',fleet:'M4 6h10v9H4ZM6 2h6v4M7 9h.1M11 9h.1M7 12h4M1 10h3M14 10h3',settings:'M9 1v3M9 14v3M1 9h3M14 9h3M3 3l2 2M13 13l2 2M3 15l2-2M13 5l2-2M12 9a3 3 0 1 0-6 0 3 3 0 0 0 6 0'};
 const panelBodies={};let activePanel='profile';
+iconPaths.volumes='M2 5l7-3 7 3v8l-7 3-7-3ZM2 5l7 3 7-3M9 8v8';
 for(const [id,name] of Object.entries(panelNames)){
  const button=document.createElement('button');button.type='button';button.dataset.panel=id;button.title=name;button.setAttribute('aria-label',name);button.setAttribute('aria-controls','panel-'+id);
  button.innerHTML=`<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="${iconPaths[id]}"/></svg>`;
@@ -46,6 +49,7 @@ let activeMap='demo',current=null,busy=false,refreshing=false,lastScene=null,sel
 let homeOffline=false,catalogInitialized=false;
 function isLocalScene(map=activeMap){return map.startsWith('local:');}
 function localSceneUrl(map=activeMap){return '/api/local-scenes/'+encodeURIComponent(map.slice(6));}
+function noteUrl(id,map=activeMap){return '/api/notes/'+encodeURIComponent(id)+(isLocalScene(map)?'?scene='+encodeURIComponent(map.slice(6)):'');}
 const availability=document.createElement('div');availability.id='scene-availability';availability.setAttribute('role','status');availability.style.cssText='position:absolute;top:48px;left:12px;right:12px;z-index:90;padding:10px;background:#432b20;color:#fff;font:12px system-ui;pointer-events:none';availability.hidden=true;$('canvas').append(availability);
 function markOffline(){homeOffline=true;availability.hidden=false;availability.textContent='Home offline · showing a cached browser view, not a live or saved map';renderMapRows();}
 function isRunner(map=activeMap){return map==='runner'||map.startsWith('runner:');}
@@ -61,7 +65,12 @@ async function runnerCatalog(){
   homeOffline=false;
   for(const map of data.local||[]){if(map.available===false)continue;local.append(new Option(map.name+(map.status==='retained'?' · retained':''),map.id));}
   const network=document.createElement('optgroup');network.label='Network';
-  for(const phone of data.phones||[])network.append(new Option(phone.name,phone.id));
+  for(const phone of data.phones||[]){
+   // Prefer the phone-owned Catalog Product; the push cache is only a fallback.
+   const product=(data.scenes||[]).find(m=>m.peer_id===phone.peer_id&&m.name==='phone-local-voxels');
+   if(product){if(activeMap===phone.id){activeMap=product.id;lastScene=null;}continue;}
+   network.append(new Option(phone.name,phone.id));
+  }
   const visibleRunners=(data.runners||[]).filter(r=>r.available&&['connected','stale'].includes(r.status));
   for(const map of data.scenes||[]){
    // Configured runners subscribe to canonical-scene; keep other products on the same peer.
@@ -71,7 +80,8 @@ async function runnerCatalog(){
     if(activeMap===map.id){activeMap=runner&&!runner.primary?'runner:'+runner.peer_id:'runner';lastScene=null;}
     continue;
    }
-   network.append(new Option(map.name+' · '+map.peer_id.slice(-8),map.id));
+   const label=map.name==='phone-local-voxels'?'Android · local map':map.name;
+   network.append(new Option(label+' · '+map.peer_id.slice(-8),map.id));
   }
   runnerNames.clear();peerNames.clear();primaryRunnerPeer=null;
   for(const runner of data.runners||[]) {
@@ -97,7 +107,9 @@ async function runnerCatalog(){
 
 function domainCenter(){return new THREE.Box3().setFromPoints((current?.portals||[]).map(p=>new THREE.Vector3(...p.pose_in_map.translation))).getCenter(new THREE.Vector3());}
 function fit(){if(current?.simulation){const d=Math.max(12,11/Math.max(camera.aspect,.2));camera.position.set(0,d,d*.4);controls.target.set(0,0,0);}else if(current?.portals.length){const c=domainCenter();const box=new THREE.Box3().setFromPoints(current.portals.map(p=>new THREE.Vector3(...p.pose_in_map.translation)));const size=box.getSize(new THREE.Vector3());const distance=Math.max(size.x/Math.max(camera.aspect,.2),size.z)*1.65+3;camera.position.copy(c).add(new THREE.Vector3(0,distance,distance*.25));controls.target.copy(c);}else{camera.position.set(3.6,3.5,4.6);controls.target.set(0,.5,0);}controls.update();}
-fit();$('demo-view').onclick=()=>{camera.position.set(-.5,4.5,5.5);controls.target.set(-3.7,.5,2.1);controls.update();};$('fit').onclick=fit;$('top').onclick=()=>{fit();const c=controls.target.clone();const height=camera.position.distanceTo(c);camera.position.copy(c).add(new THREE.Vector3(0,height,.001));controls.update();};
+fit();
+const map2D=createMap2D($('canvas'),active=>{controls.enabled=!active;$('top').textContent=active?'3D':'2D';$('top').setAttribute('aria-pressed',String(active));$('top').title=active?'Switch to 3D mode':'Switch to 2D mode';$('top').setAttribute('aria-label',$('top').title);$('canvas').dataset.viewMode=active?'2d':'3d';});
+$('demo-view').onclick=()=>{camera.position.set(-.5,4.5,5.5);controls.target.set(-3.7,.5,2.1);controls.update();};$('fit').onclick=()=>map2D.isActive()?map2D.fit():fit();$('top').onclick=()=>map2D.toggle();
 scene.add(new THREE.HemisphereLight(0xffffff,0x1a2438,1.7));
 const sun=new THREE.DirectionalLight(0xffffff,2.4);sun.position.set(-3,7,4);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);Object.assign(sun.shadow.camera,{left:-5,right:5,top:5,bottom:-5,near:.1,far:20});sun.shadow.bias=-.0005;scene.add(sun);
 const ground=new THREE.Mesh(new THREE.PlaneGeometry(200,200),new THREE.MeshStandardMaterial({color:'#101014',roughness:1}));ground.rotation.x=-Math.PI/2;ground.position.y=-.15;ground.receiveShadow=true;scene.add(ground);
@@ -111,6 +123,8 @@ function label(text,color='#36594a'){
  const c=document.createElement('canvas');c.width=384;c.height=96;const ctx=c.getContext('2d');ctx.fillStyle='#fcfdf6';ctx.beginPath();ctx.roundRect(4,8,376,76,18);ctx.fill();ctx.font='500 30px system-ui';ctx.textAlign='center';ctx.fillStyle=color;ctx.fillText(text,192,56,356);const tex=new THREE.CanvasTexture(c);tex.colorSpace=THREE.SRGBColorSpace;const sprite=new THREE.Sprite(new THREE.SpriteMaterial({map:tex,depthTest:false}));sprite.scale.set(.65,.1625,1);return sprite;
 }
 const phoneTrails=createPhoneTrails(scene,label);
+const semanticVolumes=createSemanticVolumes({scene,camera,renderer,controls,panel:panelBodies.volumes,api,label,clear,openPanel});
+$('map-select').addEventListener('change',()=>semanticVolumes.reset());
 let phonePresenceBusy=false;
 async function refreshPhonePresence(){
  if(phonePresenceBusy||!isLocalScene()||!current)return;
@@ -121,6 +135,8 @@ async function refreshPhonePresence(){
 }
 setInterval(refreshPhonePresence,200);
 function build(data){
+ map2D.update(data);
+ semanticVolumes.update(activeMap,data);
  const first=current===null||current?.frame!==data.frame;data.receivedAt=performance.now();current=data;selectable=[];Object.values(groups).forEach(clear);
  const voxels=new THREE.InstancedMesh(boxGeometry,cubeMaterial,data.voxels.length);voxels.castShadow=true;voxels.receiveShadow=true;
  const matrix=new THREE.Matrix4(),color=new THREE.Color();
@@ -183,16 +199,16 @@ function build(data){
 }
 function focusNote(note){const p=new THREE.Vector3(...note.position);controls.target.copy(p);camera.position.copy(p).add(new THREE.Vector3(.5,.4,2));controls.update();showNoteSelection(note);}
 function showNoteSelection(note){
- showSelection(noteTitle(note),`[${note.position.map(v=>v.toFixed(2)).join(', ')}] m`,note.phone_pose?'Live phone position':note.anchor_surface?'Placed in Home':`${note.height_m} m above ${note.anchor_robot?note.text+' base':note.anchor_portal} · Home up axis`);
+ showSelection(noteTitle(note),`[${note.position.map(v=>v.toFixed(2)).join(', ')}] m`,note.robot_pose?'Live robot position':note.phone_pose?'Live phone position':note.anchor_surface?'Placed in Home':`${note.height_m} m above ${note.anchor_robot?note.text+' base':note.anchor_portal} · Home up axis`);
  selectedNoteId=note.id;$('selection').dataset.noteId=note.id;
  if(note.details?.description){const description=document.createElement('p');description.textContent=note.details.description;$('selection').append(description);}
  if(note.details?.photo)$('selection').append(notePhoto(note));
- if(note.anchor_robot||note.phone_pose||isRunner()||activeMap==='domain')return;
+ if(note.anchor_robot||note.phone_pose||note.robot_pose||isRunner()||activeMap==='domain')return;
  const button=document.createElement('button');button.className='delete-note';button.textContent='Delete annotation';button.disabled=deletingNoteId===note.id;
  const status=document.createElement('div');status.setAttribute('role','status');
  button.onclick=async()=>{
   if(deletingNoteId)return;deletingNoteId=note.id;button.disabled=true;status.textContent='Deleting…';
-  try{await api('/api/notes/'+encodeURIComponent(note.id),undefined,'DELETE');
+  try{await api(noteUrl(note.id),undefined,'DELETE');
    if(selectedNoteId===note.id){selectedNoteId=null;$('selection').hidden=true;}
    hideAr();lastScene=null;await refresh();
   }catch(e){status.textContent=e.message;button.disabled=false;}
@@ -288,6 +304,13 @@ function updateMapUI(){
   $('scene-note').textContent=current.local_mapping?.detail||'Discovered SDK scenegraph product · read-only';
   $('mapping-status').textContent=(current.integrated_observations||0)+' scans integrated';
   $('mapping-detail').textContent='Latest retained map from the publishing peer';
+  if(current.product_id==='phone-local-voxels'){
+   $('scene-title').textContent='Android · local voxel map';
+   $('scene-badge').textContent='PHONE-LOCAL MAP';
+   $('portal-info').textContent='Independent phone AR session frame · not merged into Home';
+   $('scene-note').textContent='Phone-owned 10 cm voxels · read directly from its SDK Catalog Product';
+   $('mapping-status').textContent='Phone-local depth mapping';
+  }
   document.querySelector('#inspect-snapshot').href=document.querySelector('.export').href=peerSceneUrl(activeMap);
   if(current.layer_type==='occupancy_2d'){
    $('scene-badge').textContent='OCCUPANCY 2D';
@@ -329,6 +352,7 @@ function showSelection(title,body,note){selectedNoteId=null;selectedSpatialNode=
 let pointerStart;
 renderer.domElement.addEventListener('pointerdown',e=>{pointerStart=[e.clientX,e.clientY];});
 renderer.domElement.addEventListener('pointerup',e=>{
+ if(e.semanticVolume)return;
  if(e.button!==0)return;
  if(!current||!pointerStart||Math.hypot(e.clientX-pointerStart[0],e.clientY-pointerStart[1])>4)return;
  const r=renderer.domElement.getBoundingClientRect(), ray=new THREE.Raycaster();ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),camera);
@@ -348,7 +372,7 @@ $('load').onclick=()=>action(async()=>{const f=await api('/api/fixtures');for(co
 $('project').onclick=()=>action(async()=>{const f=await api('/api/fixtures');const result=await api('/api/detections',f.detection);$('notice').textContent=result.applied?'Book placed at the first occupied voxel hit.':'This detection is already placed. No duplicate object created.';});
 $('replay').onclick=()=>action(async()=>{const f=await api('/api/fixtures');const r=await api('/api/contributions',f.contributions[0]);$('notice').textContent=r.applied?'Contribution accepted.':'Replay ignored. Voxel evidence and object count are unchanged.';});
 new ResizeObserver(()=>{const {width,height}=$('canvas').getBoundingClientRect();renderer.setSize(width,height);camera.aspect=width/height;camera.updateProjectionMatrix();}).observe($('canvas'));
-renderer.setAnimationLoop(()=>{controls.update();if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);renderer.render(scene,camera);});
+renderer.setAnimationLoop(()=>{controls.update();semanticVolumes.tick();if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);renderer.render(scene,camera);});
 refresh().catch(e=>{$('notice').textContent=e.message;$('notice').classList.add('error');});setInterval(()=>{if(!busy)refresh().catch(()=>{});},500);
 
 function updatePairingDownload(){const link=$('pairing-download');link.href=isLocalScene()?localSceneUrl()+'/connection':'/api/home-connection';link.download=isLocalScene()?activeMap.slice(6)+'-connection.json':'home-connection.json';link.textContent=isLocalScene()?'Download phone connection for selected scene ↗':'Download Xmart connection ↗';}
@@ -736,7 +760,6 @@ function noteFields(container,note){
  return {read:async title=>{await pending;if(photoError)throw photoError;return {title,description:description.value,photo};}};
 }
 function renderNotes(){
- if(isLocalScene()){notesBody.replaceChildren();noteMessage('Notes are not yet enabled for this independent scenegraph.');return;}
  if(noteView==='edit')return;
  notesBody.replaceChildren();const notes=current?.notes||[];const selected=notes.find(n=>n.id===sidebarNoteId);
  if(noteView==='detail'&&selected){
@@ -745,17 +768,18 @@ function renderNotes(){
   if(selected.details?.description)noteMessage(selected.details.description);
   if(selected.details?.photo)notesBody.append(notePhoto(selected));
   notesBody.append(uiButton('Focus in scene',()=>focusNote(selected)));
-  if(!selected.anchor_robot&&!selected.phone_pose&&!isRunner()&&activeMap!=='domain'){
-   notesBody.append(uiButton('Edit',()=>editSidebarNote(selected)),uiButton('Delete',async()=>{const error=noteMessage('Deleting…');try{await api('/api/notes/'+encodeURIComponent(selected.id),undefined,'DELETE');noteView='list';lastScene=null;await refresh();renderNotes();}catch(e){error.textContent=e.message;}}));
+  if(!selected.anchor_robot&&!selected.phone_pose&&!selected.robot_pose&&!isRunner()&&activeMap!=='domain'){
+   notesBody.append(uiButton('Edit',()=>editSidebarNote(selected)),uiButton('Delete',async()=>{const error=noteMessage('Deleting…');try{await api(noteUrl(selected.id),undefined,'DELETE');noteView='list';lastScene=null;await refresh();renderNotes();}catch(e){error.textContent=e.message;}}));
   }
   return;
  }
- notesBody.append(uiButton('+ New note',()=>editSidebarNote(null),'primary'));
+ if(!isLocalScene())notesBody.append(uiButton('+ New note',()=>editSidebarNote(null),'primary'));
  if(!notes.length)noteMessage('No notes in this scenegraph.');
  for(const note of notes){const row=uiButton(noteTitle(note),()=>{sidebarNoteId=note.id;noteView='detail';focusNote(note);renderNotes();});if(note.details?.thumbnail){const image=document.createElement('img');image.src=note.details.thumbnail;image.alt='';image.className='note-list-thumbnail';row.prepend(image);}notesBody.append(row);}
 }
 async function editSidebarNote(note){
- if(isLocalScene())return;
+ if(isLocalScene()&&!note)return;
+ const editingMap=activeMap;
  noteView='edit';notesBody.replaceChildren();const form=document.createElement('form');form.className='note-form';
  const textLabel=document.createElement('label');textLabel.textContent='Title';const input=document.createElement('input');input.name='text';input.required=true;input.maxLength=120;input.value=noteTitle(note);textLabel.append(input);form.append(textLabel);
  const fields=noteFields(form,note);
@@ -769,7 +793,7 @@ async function editSidebarNote(note){
  if(!note){save.disabled=true;try{const canonical=await api('/api/scene');for(const p of canonical.portals||[])portal.add(new Option(p.anchor_id,p.anchor_id));save.disabled=!portal.options.length;}catch(e){error.textContent=e.message;}}
  form.onsubmit=async event=>{event.preventDefault();save.disabled=true;try{
   const details=await fields.read(input.value);
-  const result=note?await api('/api/notes/'+encodeURIComponent(note.id),{text:input.value,details},'PATCH'):await api('/api/notes',{text:input.value,details,portal:portal.value,height_m:Number(height.value)});
+  const result=note?await api(noteUrl(note.id,editingMap),{text:input.value,details},'PATCH'):await api('/api/notes',{text:input.value,details,portal:portal.value,height_m:Number(height.value)});
   sidebarNoteId=result.id;noteView='detail';
   if(isRunner()||activeMap==='domain'){$('map-select').value='demo';await $('map-select').onchange();}
   lastScene=null;await refresh();renderNotes();

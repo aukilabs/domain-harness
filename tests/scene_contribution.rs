@@ -46,6 +46,25 @@ fn sample(peer: &str, reference: &auki_scenegraph::MapSnapshot) -> Contribution 
 }
 
 #[test]
+fn home_retains_latest_native_relationship_without_replaying_samples() -> Result<()> {
+    let dir=tempfile::tempdir()?;let scenes=LocalScenes::load(dir.path())?;
+    let reference=scenes.snapshot("humanoid-hub-conference")?;
+    let mut map=spatial_home::collaborative_mapper::CollaborativeMap::for_scene("home","session",reference)?;
+    let first=sample("bracketbot",reference);
+    assert!(map.integrate_contribution(first.clone())?);
+    let mut newer=first.clone();newer.sequence=2;newer.timestamp_ns=400;newer.alignment_timestamp_ns=300;
+    newer.native_to_scene.translation=[2.,0.,0.];
+    newer.portal_to_native.translation[0]-=2.;
+    assert!(map.integrate_contribution(newer)?);
+    let mut delayed=first;delayed.sequence=3;delayed.timestamp_ns=500;
+    assert!(map.integrate_contribution(delayed)?);
+    let scene=map.scene()?.unwrap();
+    assert_eq!(scene.voxels.integrated_observations,3);
+    assert_eq!(scene.registries["input_registries"]["peer:bracketbot"]["native_to_scene"]["translation"],serde_json::json!([2.,0.,0.]));
+    Ok(())
+}
+
+#[test]
 fn different_devices_share_one_scene_without_changing_native_data() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let scenes = LocalScenes::load(dir.path())?;

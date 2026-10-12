@@ -21,6 +21,7 @@ def main():
     ap.add_argument('--execute-phone-drive', action='store_true')
     ap.add_argument('--drive-peer')
     ap.add_argument('--drive-fast', action='store_true')
+    ap.add_argument('--disable-volume-speech', action='store_true')
     args = ap.parse_args()
     args.state.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (args.state/'supervisor.lock').open('a') as lock:
@@ -31,6 +32,8 @@ def main():
         child = None
         behavior = None
         drive = None
+        speech = None
+        tracking_led = None
         def heartbeat(running):
             tmp = args.state/'supervisor-live.tmp'
             tmp.write_text(json.dumps(dict(pid=os.getpid(), updated_ns=time.time_ns(), running=running)))
@@ -41,17 +44,25 @@ def main():
             if child and child.poll() is None: child.terminate()
             if behavior and behavior.poll() is None: behavior.terminate()
             if drive and drive.poll() is None: drive.terminate()
+            if speech and speech.poll() is None: speech.terminate()
+            if tracking_led and tracking_led.poll() is None: tracking_led.terminate()
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
         failures = 0
         try:
             heartbeat(False)
+            tracking_led = subprocess.Popen([sys.executable,str(Path(__file__).with_name('bracketbot-python.py')),
+                str(Path(__file__).with_name('bracketbot_tracking_led.py')),'--state',str(args.state)],stdin=subprocess.DEVNULL)
             behavior_args = [sys.executable, str(Path(__file__).with_name('control-bracketbot-behavior.py')),
                              '--state', str(args.state), '--supervisor-pid', str(os.getpid())]
             if args.execute_portal_search: behavior_args.append('--execute-search')
             if args.execute_phone_reach: behavior_args.append('--execute-phone-reach')
             # Never automatically restart a failed arm controller.
             behavior = subprocess.Popen(behavior_args, stdin=subprocess.DEVNULL)
+            if not args.disable_volume_speech:
+                speech = subprocess.Popen([sys.executable,
+                    str(Path(__file__).with_name('speak-bracketbot-volumes.py')),
+                    '--state', str(args.state)], stdin=subprocess.DEVNULL)
             if args.execute_phone_drive and args.drive_peer:
                 # Like the arm controller, a failed drive controller is never restarted.
                 # BBOS and numpy live in the daemons' own environment, not the system Python.
@@ -87,6 +98,16 @@ def main():
                 while not stopped and time.monotonic() < until: time.sleep(.25)
         finally:
             heartbeat(False)
+            if tracking_led and tracking_led.poll() is None:
+                tracking_led.terminate()
+                try: tracking_led.wait(timeout=4)
+                except subprocess.TimeoutExpired:
+                    tracking_led.kill(); tracking_led.wait()
+            if speech and speech.poll() is None:
+                speech.terminate()
+                try: speech.wait(timeout=4)
+                except subprocess.TimeoutExpired:
+                    speech.kill(); speech.wait()
             # The base stops first: the drive controller zeroes its topic on exit.
             if drive and drive.poll() is None:
                 drive.terminate()

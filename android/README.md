@@ -81,6 +81,13 @@ clock origins is assumed.
 
 ## Local scan
 
+Home discovers `spatial.phone-local-voxels/v1` in the phone's SDK Catalog and reads
+the retained Product under **Maps → Network → Android · local map**. The map stays
+in the phone's AR session frame, independently of portal alignment or the legacy
+Home push cache. When both paths are available, Home lists the Catalog Product
+only once. Home continues building its collaborative map from aligned capture
+observations; browsing the phone's accumulated map does not import it into Home.
+
 Scanning shows the camera and voxel overlay without text by default. Double-tap
 the top-right 96 dp corner to reveal diagnostics, and double-tap there again to
 hide them. The overlay never resizes/restarts the camera. Every new scan starts

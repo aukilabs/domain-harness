@@ -16,7 +16,7 @@ pub struct FreshIngress {
 impl FreshIngress {
     pub fn push(&mut self, v: Value) -> Result<()> {
         let kind = v["kind"].as_str().unwrap_or("");
-        if kind == "map_correction" {
+        if matches!(kind, "map_correction" | "trajectory_correction" | "correction_pending") {
             // A barrier cannot be evicted by the bounded odometry queue. Only
             // the newest barrier matters: no pre-barrier geometry survives.
             self.replaced += self.odometry.len() as u64;

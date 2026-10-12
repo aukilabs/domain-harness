@@ -306,6 +306,7 @@ impl Store {
         journal.events.push(event);
         let mut built = build(&journal.events)?;
         built.registries["text_notes"] = self.built.registries["text_notes"].clone();
+        if let Some(volumes) = self.built.registries.get("semantic_volumes") { built.registries["semantic_volumes"] = volumes.clone(); }
         if self.built.registries.get("fiducials").is_some() {
             built.registries["fiducials"] = self.built.registries["fiducials"].clone();
         }

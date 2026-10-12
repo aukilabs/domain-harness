@@ -69,11 +69,21 @@ pub fn render(peer: &str) -> Result<serde_json::Value> {
     let (e, _) = c
         .get(peer)
         .ok_or_else(|| anyhow!("Phone map publisher unavailable"))?;
+    render_snapshot(&e.snapshot, peer)
+}
+
+/// Render the phone-owned Product without requiring a copy in Home's push cache.
+/// These native-session voxels are never input to Home's collaborative mapper.
+pub fn render_snapshot(snapshot: &Snapshot, peer: &str) -> Result<serde_json::Value> {
+    snapshot.validate()?;
     Ok(
-        serde_json::json!({"frame":format!("phone-local:{peer}:{}",e.snapshot.session),
-        "mode":"Phone local map · unaligned", "local_map":true,"voxel_size":0.1,
+        serde_json::json!({"frame":format!("phone-local:{peer}:{}",snapshot.session),
+        "authority":"Android local mapper","authority_peer_id":peer,
+        "capture_timestamp_ns":snapshot.timestamp_ns,
+        "mode":"Phone-owned local map", "convention":"OpenGL · Y up · meters",
+        "local_map":true,"voxel_size":0.1,
         "portals":[],"objects":[],"notes":[],"sources":{},"integrated_observations":0,
-        "voxels":e.snapshot.cells.iter().map(|p| serde_json::json!({"center":p.map(|x| (x as f64+0.5)*0.1)})).collect::<Vec<_>>()}),
+        "voxels":snapshot.cells.iter().map(|p| serde_json::json!({"center":p.map(|x| (x as f64+0.5)*0.1)})).collect::<Vec<_>>()}),
     )
 }
 pub fn mount_receiver(

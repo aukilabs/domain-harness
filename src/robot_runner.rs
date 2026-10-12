@@ -100,6 +100,7 @@ pub async fn run(hardware: Hardware) -> Result<()> {
     let context = serde_json::to_string(&serde_json::json!({
         "clock":crate::model::clock_ref(&crate::model::clock_entry(&owner,&session)),
         "session_id":session,
+        "control_state_path":path.with_file_name("robot-control.json"),
         "camera_frame":crate::rgbd::BRACKETBOT_FRAME,
         "camera_frame_definition":auki_registry::FrameRegistryEntry::ros_optical(&owner,crate::rgbd::BRACKETBOT_FRAME),
         "base_frame_definition":auki_registry::FrameRegistryEntry::in_convention(&owner,"robot.base",auki_registry::CoordinateConvention::ZUpRightForward),
@@ -143,7 +144,7 @@ pub async fn run(hardware: Hardware) -> Result<()> {
                 if let Some(raw) = line.strip_prefix("SENSOR ") {
                     ensure!(raw.len() < 16 * 1024 * 1024, "sensor packet exceeds limit");
                     let value: serde_json::Value = serde_json::from_str(raw)?;
-                    if matches!(value["kind"].as_str(), Some("odometry" | "tracking_lost" | "map_correction")) {
+                    if matches!(value["kind"].as_str(), Some("odometry" | "tracking_lost" | "map_correction" | "trajectory_correction" | "correction_pending")) {
                         let event: SensorEvent = serde_json::from_value(value.clone())?;
                         live.lock().unwrap().accept(&event);
                     }
@@ -250,7 +251,7 @@ pub async fn run(hardware: Hardware) -> Result<()> {
                         if let SensorEvent::Status { detail } = &event {
                             capture_status.clone_from(detail);
                         }
-                        let odom = matches!(event, SensorEvent::Odometry { .. } | SensorEvent::MapCorrection { .. });
+                        let odom = matches!(event, SensorEvent::Odometry { .. } | SensorEvent::MapCorrection { .. } | SensorEvent::TrajectoryCorrection { .. });
                         match local.accept(event) {
                             Ok(()) => {
                                 if odom {
@@ -380,6 +381,33 @@ pub async fn run(hardware: Hardware) -> Result<()> {
             tokio::time::sleep(Duration::from_secs(30)).await;
         }
     };
+    let volume_work = async {
+        if hardware != Hardware::Bracketbot {
+            std::future::pending::<()>().await;
+        }
+        let cache = path.with_file_name("semantic-volumes.json");
+        loop {
+            let work = async {
+                let profile: HomeConnection = serde_json::from_slice(&std::fs::read(&home_path)?)?;
+                let cancel = tokio_util::sync::CancellationToken::new();
+                crate::local_mobile::receive_scene(&running.peer, &profile, &cancel,
+                    Duration::from_secs(5), |scene| {
+                        save(&cache, &serde_json::json!({
+                            "schema":"spatial.robot-volume-input/v1", "authenticated":true,
+                            "home_peer_id":profile.peer_id, "home_frame":profile.frame,
+                            "robot_peer_id":owner,
+                            "received_ns":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos() as u64,
+                            "volumes":scene.semantic_volumes
+                        }))
+                    }).await
+            };
+            if let Err(error) = work.await {
+                let _ = save(&cache, &serde_json::json!({"authenticated":false}));
+                eprintln!("Home volume subscription: {error}");
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    };
     let phone_work = async {
         let mut presence_reader = crate::mobile_pose::PresenceReader::default();
         loop {
@@ -480,6 +508,30 @@ pub async fn run(hardware: Hardware) -> Result<()> {
             }
         }
     };
+    let pose_work = async {
+        loop {
+            let work = async {
+                let profile: HomeConnection = serde_json::from_slice(&std::fs::read(&home_path)?)?;
+                let value = live.lock().unwrap().snapshot();
+                let update = match value {
+                    Some(value) => {
+                        let name=std::env::var("SPATIAL_ROBOT_NAME").unwrap_or_else(|_|if hardware==Hardware::Bracketbot { "Bracketbot 0184".into() } else { "Galbot".into() });
+                        crate::robot_presence::from_live(&value,&name)?
+                    },
+                    None => crate::robot_presence::Update { sample:None },
+                };
+                crate::mobile_pose::send_component(&running.peer,&profile,crate::robot_presence::COMPONENT,&update).await
+            };
+            let result = tokio::time::timeout(Duration::from_secs(2),work).await;
+            let status = match result {
+                Ok(Ok(())) => serde_json::json!({"status":"accepted"}),
+                Ok(Err(e)) => serde_json::json!({"status":"unavailable","error":e.to_string()}),
+                Err(_) => serde_json::json!({"status":"unavailable","error":"Pose publication timed out"}),
+            };
+            let _ = save(&path.with_file_name("robot-presence-status.json"), &status);
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    };
     let health = async {
         loop {
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -492,7 +544,7 @@ pub async fn run(hardware: Hardware) -> Result<()> {
             }
         }
     };
-    tokio::select! {_=tokio::signal::ctrl_c()=>{},_=terminate.recv()=>{},_=home_work=>{},_=health=>{},_=contributions=>{},_=phone_work=>{},_=live_work=>{},_=drive_work=>{}}
+    tokio::select! {_=tokio::signal::ctrl_c()=>{},_=terminate.recv()=>{},_=home_work=>{},_=health=>{},_=contributions=>{},_=phone_work=>{},_=live_work=>{},_=drive_work=>{},_=volume_work=>{},_=pose_work=>{}}
     let _ = child.start_kill();
     let _ = child.wait().await;
     stop.store(true, Ordering::Relaxed);

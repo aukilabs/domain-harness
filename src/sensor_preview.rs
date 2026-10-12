@@ -57,6 +57,7 @@ pub fn scene_products(catalogs: &crate::device_catalogs::Catalogs) -> Vec<Sensor
                                 && [
                                     crate::network::SCENE_SCHEMA,
                                     crate::occupancy_mapper::SCHEMA,
+                                    crate::mobile_local::SCHEMA,
                                 ]
                                 .contains(&c.datatype.as_str()) =>
                         {
@@ -91,6 +92,29 @@ pub async fn read_scene(client: &ComponentProtocolClient, scene: &Sensor) -> Res
         product: scene.reference.clone(),
         selection: ObservationSelection::LatestExisting,
     };
+    if scene.datatype == crate::mobile_local::SCHEMA {
+        let response = if let Some(route) = &scene.route {
+            client
+                .observations_exact::<crate::mobile_local::Snapshot>(scene.peer, route.clone(), query)
+                .await?
+        } else {
+            client
+                .observations::<crate::mobile_local::Snapshot>(scene.peer, query)
+                .await?
+        };
+        ensure!(
+            response.product.reference() == scene.reference
+                && response.gap.is_none()
+                && response.end.is_none(),
+            "Phone local map product changed or ended"
+        );
+        let observation = response.observations.last()
+            .ok_or_else(|| anyhow!("Waiting for the phone's first local map"))?;
+        let mut view = crate::mobile_local::render_snapshot(
+            &observation.payload, &scene.reference.peer_id)?;
+        view["product_id"] = json!(scene.reference.product_id);
+        return Ok(view);
+    }
     if scene.datatype == crate::occupancy_mapper::SCHEMA {
         let response = if let Some(route) = &scene.route {
             client

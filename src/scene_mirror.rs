@@ -100,9 +100,13 @@ pub fn render_scene(s: &CanonicalScene) -> Result<Value> {
             }
         }
     }
+    let volumes=match s.registries.get("semantic_volumes").filter(|v|!v.is_null()) {
+        Some(value)=>serde_json::from_value::<crate::semantic_volumes::Volumes>(value.clone())?.items.iter().map(crate::semantic_volumes::Volume::mobile).collect(),
+        None=>notes.volumes.clone(),
+    };
     let mut view = json!({"frame":display,"local_map":local,"local_mapping":metadata,"source_frame":s.frame,"source_convention":s.portals.scenegraph.map.frame.convention,"convention":"OpenGL · Y up · meters",
             "voxel_size":s.voxels.definition.grid().voxel_size_m.0,"voxels":voxels,
-            "portals":portals.scenegraph.anchors.values().collect::<Vec<_>>(),"objects":objects,"notes":notes.items,"volumes":notes.volumes,
+            "portals":portals.scenegraph.anchors.values().collect::<Vec<_>>(),"objects":objects,"notes":notes.items,"volumes":volumes,
             "sources":{"galbot":s.voxels.integrated_observations},"integrated_observations":s.voxels.integrated_observations,
             "sdk_revision":s.sdk_revision,"mode":"Runner-owned scenegraph","demo":false,"synthetic_layout":null,"sensor_positions":{},
             "authority":"Galbot mapper","authority_peer_id":s.authority_peer_id,"remote_status":null});

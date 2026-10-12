@@ -12,6 +12,7 @@ type Key = ([i32; 3], [u32; 3]);
 struct Vote {
     hit: bool,
     color: Option<[f64; 3]>,
+    timestamp_ns: u64,
 }
 #[derive(Clone, Default)]
 struct CellHistory {
@@ -25,6 +26,16 @@ pub struct RecentVoxels {
 }
 impl RecentVoxels {
     pub fn observe(&mut self, rays: &MapUpdate, endpoints: &MapUpdate) -> Result<MapUpdate> {
+        self.observe_at(rays, endpoints, 0)
+    }
+    pub fn observe_at(&mut self, rays: &MapUpdate, endpoints: &MapUpdate, timestamp_ns:u64) -> Result<MapUpdate> {
+        self.record(rays,endpoints,timestamp_ns)?;
+        self.checkpoint()
+    }
+    pub fn needed_timestamps(&self) -> BTreeSet<u64> {
+        self.cells.values().flat_map(|h|h.votes.iter().map(|v|v.timestamp_ns)).filter(|t|*t>0).collect()
+    }
+    pub fn record(&mut self, rays:&MapUpdate, endpoints:&MapUpdate, timestamp_ns:u64) -> Result<()> {
         ensure!(
             rays.checkpoint.is_none() && endpoints.checkpoint.is_none(),
             "expected sensor deltas"
@@ -80,7 +91,7 @@ impl RecentVoxels {
             if history.votes.len() == 3 {
                 history.votes.pop_front();
             }
-            history.votes.push_back(Vote { hit, color });
+            history.votes.push_back(Vote { hit, color, timestamp_ns });
             history.last_seen = self.generation;
         }
         if self.cells.len() > auki_voxel_map::MAX_VOXELS {
@@ -113,6 +124,9 @@ impl RecentVoxels {
             self.cells.len() <= auki_voxel_map::MAX_VOXELS,
             "live voxel history exceeds map bound"
         );
+        Ok(())
+    }
+    pub fn checkpoint(&self) -> Result<MapUpdate> {
         let mut chunks = BTreeMap::<[i32; 3], Vec<VoxelSnapshot>>::new();
         for ((chunk, cell), history) in &self.cells {
             let occupancy = history

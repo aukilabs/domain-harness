@@ -78,7 +78,7 @@ async fn portal_transform_is_separate_catalog_product_and_never_rebases_robot() 
         assert!((dot.abs()-1.).abs()<1e-8);
         assert_eq!(serde_json::to_value(&scene)?, before, "display never mutates native snapshot");
         map.accept(SensorEvent::TrackingLost {timestamp_ns:t+1})?;
-        assert_eq!(FrameTransform::from_local(&map,&owner)?.validity, Validity::Stale);
+        assert_eq!(FrameTransform::from_local(&map,&owner)?.validity, Validity::Valid);
         map.accept(SensorEvent::Odometry {timestamp_ns:t*2,pose:identity()})?;
         assert_eq!(FrameTransform::from_local(&map,&owner)?.validity, Validity::Valid,
                    "BBOS tracking recovery in the same map does not require another portal");
@@ -86,11 +86,11 @@ async fn portal_transform_is_separate_catalog_product_and_never_rebases_robot() 
         map.accept(SensorEvent::Camera {sample:sample("HRIPLL40GL6",t*2)})?;
         assert_eq!(FrameTransform::from_local(&map,&owner)?.validity, Validity::Valid);
         map.accept(SensorEvent::MapCorrection {timestamp_ns:t*3,pgo_count:1,pose:identity()})?;
-        assert_eq!(FrameTransform::from_local(&map,&owner)?.validity, Validity::Unavailable);
+        assert_eq!(FrameTransform::from_local(&map,&owner)?.validity, Validity::Valid);
         let corrected=publisher.publish_local(&map)?.unwrap();
         assert_eq!(corrected.frame,scene.frame);
         assert_eq!(corrected.registries["frame_transform_product"],scene.registries["frame_transform_product"]);
-        assert!(!received.usable(&corrected));
+        assert!(!received.usable(&corrected),"a new portal observation supersedes the old exact Product reference, not the frame relationship");
         subscription.close().await?;
         publisher.close().await?;
         Ok::<_,anyhow::Error>(())
@@ -181,6 +181,67 @@ fn correction_invalidates_geometry_without_recreating_components_or_changing_ses
     assert_eq!(map.metadata()["local_mapping"]["status"],"waiting_for_odometry");
     map.accept(SensorEvent::Odometry { timestamp_ns:t*7, pose:corrected })?;
     assert!(map.latest_pose.is_some());
+    Ok(())
+}
+
+#[test]
+fn trajectory_correction_json_timestamp_keys() -> Result<()> {
+    let event=SensorEvent::TrajectoryCorrection{timestamp_ns:1791759410000000000,pgo_count:128,pose:identity(),corrected_portals:Default::default(),corrected_depth:std::collections::BTreeMap::from([(1791759348506457234,identity())])};
+    let wire=serde_json::to_string(&event)?;
+    let decoded:SensorEvent=serde_json::from_str(&wire)?;
+    match decoded { SensorEvent::TrajectoryCorrection{corrected_depth,..} => assert!(corrected_depth.contains_key(&1791759348506457234)),_=>panic!("wrong event") }
+    Ok(())
+}
+
+#[test]
+fn delayed_correction_after_tracking_loss_replays_depth() -> Result<()> {
+    let runtime=ComponentRuntime::new("robot");
+    let mut map=LocalMap::new_for_robot(&runtime,"robot",&uuid::Uuid::new_v4().to_string(),BRACKETBOT_FAMILY,
+        spatial_home::rgbd::FRAME,serde_json::from_str(include_str!("../config/portals.json"))?)?;
+    let t=1_000_000_000;
+    map.accept(SensorEvent::Odometry{timestamp_ns:t,pose:identity()})?;
+    map.accept(SensorEvent::Camera{sample:sample("HRIPLL40GL6",t)})?;
+    map.accept(SensorEvent::CorrectionPending{timestamp_ns:t*2,pgo_count:2})?;
+    map.accept(SensorEvent::TrackingLost{timestamp_ns:t*3})?;
+    map.accept(SensorEvent::TrajectoryCorrection{timestamp_ns:t*4,pgo_count:2,pose:identity(),corrected_portals:Default::default(),corrected_depth:std::collections::BTreeMap::from([(t,identity())])})?;
+    assert_eq!(map.voxels.as_ref().unwrap().integrated_observations,1);
+    assert!(map.latest_pose.is_some());
+    Ok(())
+}
+
+#[test]
+fn bracketbot_pgo_keeps_capture_time_geometry_and_alignment() -> Result<()> {
+    use spatial_home::frame_transform::{FrameTransform,Validity};
+    let runtime=ComponentRuntime::new("robot");
+    let mut map=LocalMap::new_for_robot(&runtime,"robot",&uuid::Uuid::new_v4().to_string(),BRACKETBOT_FAMILY,
+        spatial_home::rgbd::FRAME,serde_json::from_str(include_str!("../config/portals.json"))?)?;
+    let t=1_000_000_000;
+    map.copy_native_scans();
+    map.accept(SensorEvent::Odometry{timestamp_ns:t,pose:identity()})?;
+    map.accept(SensorEvent::Camera{sample:sample("HRIPLL40GL6",t)})?;
+    map.take_localized_scans();
+    map.accept_home_portals(map.portals()?,"home".into())?;
+    let before=map.voxels.as_ref().unwrap().checkpoint.clone();
+    let alignment=FrameTransform::from_local(&map,"robot")?.transform.unwrap();
+    let frame=map.frame.clone();
+    for n in 2..6 {
+        map.accept(SensorEvent::CorrectionPending{timestamp_ns:t*n,pgo_count:n as i64})?;
+        assert!(map.latest_pose.is_some());
+        map.accept(SensorEvent::MapCorrection{timestamp_ns:t*n,pgo_count:n as i64,
+            pose:Pose{translation:[n as f64,0.,0.],..identity()}})?;
+        assert_eq!(map.voxels.as_ref().unwrap().checkpoint,before);
+        assert_eq!(map.voxels.as_ref().unwrap().integrated_observations,1);
+        assert_eq!(map.frame,frame);
+        let transform=FrameTransform::from_local(&map,"robot")?;
+        assert_eq!(transform.validity,Validity::Valid);
+        assert_eq!(transform.transform.unwrap(),alignment);
+        assert_eq!(map.metadata()["local_mapping"]["retained_depth_timestamps"],serde_json::json!([]));
+    }
+    map.accept(SensorEvent::TrackingLost{timestamp_ns:t*6})?;
+    assert_eq!(FrameTransform::from_local(&map,"robot")?.validity,Validity::Valid,"relationship is independent of live tracking");
+    map.accept(SensorEvent::Odometry{timestamp_ns:t*7,pose:identity()})?;
+    map.accept(SensorEvent::Camera{sample:sample("not-a-portal",t*7)})?;
+    assert!(!map.take_localized_scans().is_empty());
     Ok(())
 }
 

@@ -32,7 +32,7 @@ pub struct NoteDetails {
     pub thumbnail: Option<String>,
 }
 impl NoteDetails {
-    fn prepare_thumbnail(&mut self) -> Result<()> {
+    pub(crate) fn prepare_thumbnail(&mut self) -> Result<()> {
         use base64::Engine;
         self.validate()?;
         self.thumbnail = match &self.photo {

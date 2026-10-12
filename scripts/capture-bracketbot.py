@@ -14,6 +14,7 @@ import threading
 import time
 
 import numpy as np
+from bracketbot_capture import trajectory_correction
 from bracketbot_capture import (CAMERA_FRAME, RIGHT_CAMERA_FRAME, CaptureMailbox, NewSessionRequired, PoseGate,
                                calibration, fresh_jpeg, optical_points, sampled_points, timestamp,
                                wrist_camera_spec, right_camera_transform, head_camera_specs)
@@ -22,6 +23,7 @@ from bracketbot_capture import (CAMERA_FRAME, RIGHT_CAMERA_FRAME, CaptureMailbox
 def acquire(Reader, mailbox, emit, stopped, parent):
     """Only copy sensors and publish dense poses here; no OpenCV or point transforms."""
     gate = PoseGate()
+    pending_correction = None
     latest_pose = latest_health = None
     last_seen, writers = {}, {}
     clock_offset = time.time_ns()-time.monotonic_ns()
@@ -72,9 +74,9 @@ def acquire(Reader, mailbox, emit, stopped, parent):
             mailbox.update_pose(gate, admitted, latest_health)
             if admitted:
                 t, pose = admitted
-                emit(gate.correction or dict(kind='odometry', timestamp_ns=t, pose=pose))
+                emit(dict(kind='odometry',timestamp_ns=t,pose=pose))
             elif was_tracking and not gate.tracking and gate.last_timestamp:
-                emit(dict(kind='tracking_lost', timestamp_ns=gate.last_timestamp+1))
+                emit(dict(kind='tracking_lost',timestamp_ns=gate.last_timestamp+1))
             stopped.wait(.015)
 
 

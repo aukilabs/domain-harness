@@ -182,7 +182,11 @@ test('map, project, replay, inspect, and adapt to mobile',async({page,request})=
  await expect(page.locator('#notice')).toContainText('Replay ignored');
  const after=await (await request.get('/api/scene')).json();expect(after).toEqual(before);
  await page.locator('[data-layer="voxels"]').uncheck();await page.locator('[data-layer="voxels"]').check();
- await page.getByRole('button',{name:'Top view',exact:true}).click();
+ await page.getByRole('button',{name:'Switch to 2D mode',exact:true}).click();
+ await expect(page.locator('#canvas')).toHaveAttribute('data-view-mode','2d');
+ await expect(page.getByLabel('2D occupancy map',{exact:true})).toBeVisible();
+ await page.getByRole('button',{name:'Switch to 3D mode',exact:true}).click();
+ await expect(page.locator('#canvas')).toHaveAttribute('data-view-mode','3d');
  await page.getByRole('button',{name:'Reset camera view'}).click();
  await page.screenshot({path:'test-results/home-desktop.png'});
  await page.locator('#map-select').selectOption('domain');await expect(page.locator('#scene-title')).toHaveText('13 stored domain portals');

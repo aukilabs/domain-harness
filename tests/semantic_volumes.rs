@@ -4,7 +4,7 @@ use spatial_home::{mobile_notes::{apply_change, ChangeMemo, ChangeNote, NoteActi
 fn volume() -> SemanticVolume {
     SemanticVolume { id: uuid::Uuid::new_v4().to_string(), name: "Kitchen".into(),
         semantic_type: "room".into(), position: [1., 0., 2.],
-        dimensions: [2., 2.5, 3.], yaw: 0.4 }
+        dimensions: [2., 2.5, 3.], yaw: 0.4, description:None }
 }
 #[test]
 fn volume_round_trip_update_delete_and_frame_validation() -> anyhow::Result<()> {

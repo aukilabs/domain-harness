@@ -14,7 +14,7 @@ def main():
     name = 'depth'
     if args[:1] == ['--daemon']:
         name = args[1]
-        if name not in ('depth', 'arm_left'):
+        if name not in ('depth', 'arm_left', 'speaker'):
             raise SystemExit('Unsupported read-only adapter runtime')
         args = args[2:]
     daemon = root / 'bbos/daemons' / name
