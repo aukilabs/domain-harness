@@ -64,6 +64,16 @@ struct ViewerScreen: View {
                             .frame(width: 44, height: 44).clipShape(Circle())
                             .overlay(Circle().stroke(showDetails ? Theme.accent : Theme.paper, lineWidth: 3))
                             .shadow(color: Theme.glow, radius: 6, y: 3)
+                            // North, circling the logo once it has been found.
+                            .overlay {
+                                if let turn = controller.northTurn {
+                                    Image(systemName: "triangle.fill").font(.system(size: 9, weight: .bold))
+                                        .foregroundStyle(Theme.accent).shadow(color: Theme.glow, radius: 2)
+                                        .offset(y: -31).rotationEffect(.degrees(turn))
+                                        .animation(.linear(duration: 0.12), value: turn)
+                                        .accessibilityHidden(true)
+                                }
+                            }
                     }
                     .padding()
                     .accessibilityLabel(showDetails ? "Hide scene details" : "Show scene details")
@@ -1322,6 +1332,10 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     /// Home's frame on the Earth. It outlives the AR session, and gives the position back after a rescan.
     private(set) var homeGeo: (frame: String, reference: GeoReference)?
     private var lastGeoUpdate: TimeInterval = 0
+    private var geoInAR: GeoReference?
+    private var lastCompassUpdate: TimeInterval = 0
+    /// Degrees from the top of the screen round to north. Never wrapped, so the marker takes the short way.
+    @Published private(set) var northTurn: Double?
     @Published private(set) var geoStatus = ""
 
     override init() {
@@ -1436,11 +1450,29 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private func worldLost() {
         // An interrupted search is simply started again.
         if north == .searching { headingGate = HeadingGate() }
+        geoInAR = nil
+        northTurn = nil
         guard geoAtNorth != nil else { return }
         geoAtNorth = nil
         northAnchor = nil
         geoStatus = homeGeo == nil ? "GPS position lost with camera tracking. Relaunch to find north again."
                                    : "GPS position is kept with Home's map. Scan a Portal to restore it."
+    }
+
+    private func updateCompass(_ frame: ARFrame) {
+        guard frame.timestamp - lastCompassUpdate >= 0.1 else { return }
+        lastCompassUpdate = frame.timestamp
+        guard let geoInAR else {
+            if northTurn != nil { northTurn = nil }
+            return
+        }
+        let camera = frame.camera.transform
+        let forward = SIMD2(-camera.columns.2.x, -camera.columns.2.z)
+        // Lying flat there is no forward; the top edge of the screen stands in, as on the mini map.
+        let top = SIMD2(-camera.columns.0.x, -camera.columns.0.z)
+        let target = -geoInAR.bearing(of: simd_length(forward) > 0.3 ? forward : top)
+        let previous = northTurn ?? target
+        northTurn = previous + (target - previous).remainder(dividingBy: 360)
     }
 
     private func updateGeo(_ frame: ARFrame) {
@@ -1460,7 +1492,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             if aligned, let homeFrame { homeGeo = (homeFrame, world.expressed(in: root.simdTransform)) }
         } else if aligned, let homeGeo, homeGeo.frame == homeFrame {
             world = homeGeo.reference.expressed(in: root.simdTransform.inverse)
-        } else { return }
+        } else { geoInAR = nil; return }
+        geoInAR = world
         let camera = frame.camera.transform
         let here = world.coordinate(of: SIMD3(camera.columns.3.x, camera.columns.3.y, camera.columns.3.z))
         let forward = SIMD2(-camera.columns.2.x, -camera.columns.2.z)
@@ -2248,6 +2281,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             return
         }
         updateGeo(frame)
+        updateCompass(frame)
         if aligned {
             root.isHidden = false
             captureDepth(frame)
