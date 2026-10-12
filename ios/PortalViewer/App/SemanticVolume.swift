@@ -11,6 +11,10 @@ extension SemanticVolume {
         guard valid else { return node }
         node.simdPosition = SIMD3(position[0], position[1], position[2])
         node.eulerAngles.y = yaw
+        if surface && semantic_type == Self.circleType {
+            node.addChildNode(disc(preview: preview)); node.addChildNode(title())
+            return node
+        }
         let box = SCNBox(width: CGFloat(dimensions[0]), height: CGFloat(dimensions[1]),
                          length: CGFloat(dimensions[2]), chamferRadius: 0)
         let material = SCNMaterial()
@@ -52,16 +56,44 @@ extension SemanticVolume {
                 tube(length: w, at: SIMD3(0, y, sx * d / 2), axis: SIMD3(1, 0, 0))
             }
         }
-        let text = SCNText(string: name + " · " + semantic_type, extrusionDepth: 0)
-        text.font = Theme.uiMono(0.18, .semibold)
+        node.addChildNode(title())
+        return node
+    }
+    private func title() -> SCNNode {
+        let text = SCNText(string: surface ? name : name + " · " + semantic_type, extrusionDepth: 0)
+        text.font = Theme.uiFont(0.18, .semibold)
         text.flatness = 0.01
         text.firstMaterial?.diffuse.contents = UIColor.white
         text.firstMaterial?.lightingModel = .constant
         let label = SCNNode(geometry: text)
-        label.name = node.name; label.position.y = dimensions[1] + 0.05
+        label.name = "semantic-volume:" + id; label.position.y = dimensions[1] + 0.05
         label.constraints = [SCNBillboardConstraint()]
-        node.addChildNode(label)
-        return node
+        return label
+    }
+    /// A surface drawn as a tinted circle with a solid rim, lying flat or standing up.
+    private func disc(preview: Bool) -> SCNNode {
+        let holder = SCNNode()
+        let fill = SCNCylinder(radius: 0.5, height: 0.004)
+        fill.radialSegmentCount = 48
+        let rim = SCNTorus(ringRadius: 0.5, pipeRadius: 0.012)
+        rim.ringSegmentCount = 48
+        for (geometry, opacity) in [(fill as SCNGeometry, 0.3), (rim, 1)] {
+            let material = SCNMaterial()
+            material.diffuse.contents = preview ? UIColor.white : Theme.uiAccent
+            material.lightingModel = .constant
+            material.transparency = opacity
+            material.isDoubleSided = true
+            material.writesToDepthBuffer = opacity == 1
+            geometry.materials = [material]
+            let part = SCNNode(geometry: geometry)
+            part.name = "semantic-volume:" + id
+            holder.addChildNode(part)
+        }
+        // The cylinder's axis is +Y: right for the floor, turned onto +Z for a wall.
+        if upright { holder.eulerAngles.x = .pi / 2 }
+        holder.simdScale = SIMD3(dimensions[0], 1, flat ? dimensions[2] : dimensions[1])
+        holder.position.y = dimensions[1] / 2
+        return holder
     }
 }
 
@@ -91,17 +123,31 @@ final class VolumeAuthoring: NSObject, ObservableObject, UIGestureRecognizerDele
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         draft != nil && !saving && pendingJSON == nil && canEdit()
     }
-    func floorHit(_ point: CGPoint) -> SIMD3<Float>? {
+    /// The ray through a screen point, in Home's frame.
+    private func ray(_ point: CGPoint) -> (origin: SIMD3<Float>, direction: SIMD3<Float>)? {
         guard canEdit(), let view, let root, let camera = view.session.currentFrame?.camera else { return nil }
         let far = view.unprojectPoint(SCNVector3(Float(point.x), Float(point.y), 1))
         let inverse = root.simdTransform.inverse
         let o = inverse * camera.transform.columns.3
         let f = inverse * SIMD4(far.x, far.y, far.z, 1)
-        let direction = simd_normalize(f.xyz - o.xyz)
-        guard direction.y < -0.15 else { return nil }
+        return (o.xyz, simd_normalize(f.xyz - o.xyz))
+    }
+    func floorHit(_ point: CGPoint) -> SIMD3<Float>? {
+        guard let (o, direction) = ray(point), direction.y < -0.15 else { return nil }
         let t = -o.y / direction.y
         guard t > 0, t <= 10 else { return nil }
-        return o.xyz + direction * t
+        return o + direction * t
+    }
+    /// Where a screen point meets the plane the draft lies in: its wall if it stands up, else its own level.
+    private func dragHit(_ point: CGPoint, on volume: SemanticVolume) -> SIMD3<Float>? {
+        guard let (o, direction) = ray(point) else { return nil }
+        let through = SIMD3(volume.position[0], volume.position[1], volume.position[2])
+        let normal = volume.upright ? SIMD3(sin(volume.yaw), 0, cos(volume.yaw)) : SIMD3<Float>(0, 1, 0)
+        let facing = simd_dot(direction, normal)
+        guard abs(facing) > 0.15 else { return nil }
+        let t = simd_dot(through - o, normal) / facing
+        guard t > 0, t <= 10 else { return nil }
+        return o + direction * t
     }
     func begin(frame: String, existing: SemanticVolume? = nil) {
         guard canEdit(), let view else { message = "Scan a Portal and wait for tracking."; return }
@@ -109,11 +155,28 @@ final class VolumeAuthoring: NSObject, ObservableObject, UIGestureRecognizerDele
             guard let hit = floorHit(CGPoint(x: view.bounds.midX, y: view.bounds.midY)) else {
                 message = "Aim at the calibrated floor within 10 metres."; return
             }
-            draft = SemanticVolume(id: UUID().uuidString, name: "Volume", semantic_type: "region",
+            draft = SemanticVolume(id: UUID().uuidString, name: "Box", semantic_type: "region",
                 position: [hit.x, 0, hit.z], dimensions: [1, 1, 1], yaw: 0)
         }
         self.frame = frame; requestID = UUID().uuidString; pendingJSON = nil
-        message = "Drag to move · pinch footprint · two-finger rotate"
+        message = draft?.upright == true ? "Drag to move · pinch to resize" : "Drag to move · pinch to resize · twist with two fingers"
+    }
+    /// A circle on a detected surface, half a metre across unless the surface is smaller than that.
+    /// `normal` points out of the surface, in Home's frame.
+    /// It is saved as the thinnest volume Home accepts: lying down on a floor or table, standing up on a wall or screen.
+    func beginSurface(frame: String, at hit: SIMD3<Float>, normal: SIMD3<Float>, within: Float? = nil) {
+        guard canEdit() else { message = "Scan a Portal and wait for tracking."; return }
+        let size = max(0.1, min(0.5, within ?? 0.5)), thin = SemanticVolume.flatHeight
+        if abs(normal.y) > 0.7 {
+            draft = SemanticVolume(id: UUID().uuidString, name: "Circle", semantic_type: SemanticVolume.circleType,
+                position: [hit.x, hit.y, hit.z], dimensions: [size, thin, size], yaw: 0)
+            message = "Drag to move · pinch to resize · twist with two fingers"
+        } else {
+            draft = SemanticVolume(id: UUID().uuidString, name: "Circle", semantic_type: SemanticVolume.circleType,
+                position: [hit.x, hit.y - size / 2, hit.z], dimensions: [size, size, thin], yaw: atan2(normal.x, normal.z))
+            message = "Drag to move · pinch to resize"
+        }
+        self.frame = frame; requestID = UUID().uuidString; pendingJSON = nil
     }
     /// Saved volumes can be hidden from the AR view; a draft preview is always shown.
     var hideSaved = false
@@ -152,16 +215,18 @@ final class VolumeAuthoring: NSObject, ObservableObject, UIGestureRecognizerDele
     }
     var editable: Bool { !saving && pendingJSON == nil }
     @objc private func pan(_ g: UIPanGestureRecognizer) {
-        if g.state == .began { baseline = draft; panStart = floorHit(g.location(in: view)) }
+        if g.state == .began { baseline = draft; panStart = draft.flatMap { dragHit(g.location(in: view), on: $0) } }
         if g.state == .changed, var value = baseline, let start = panStart,
-           let hit = floorHit(g.location(in: view)) {
-            value.position[0] += hit.x - start.x; value.position[2] += hit.z - start.z; draft = value
+           let hit = dragHit(g.location(in: view), on: value) {
+            // Along the floor for anything lying down; up and along the wall for anything standing on one.
+            for i in value.upright ? [0, 1, 2] : [0, 2] { value.position[i] += hit[i] - start[i] }
+            draft = value
         }
         if g.state == .cancelled { draft = baseline }
     }
     @objc private func rotate(_ g: UIRotationGestureRecognizer) {
         if g.state == .began { baseline = draft }
-        if g.state == .changed, var value = baseline {
+        if g.state == .changed, var value = baseline, !value.upright {
             let angle = value.yaw - Float(g.rotation)
             value.yaw = atan2(sin(angle), cos(angle)); draft = value
         }
@@ -170,7 +235,7 @@ final class VolumeAuthoring: NSObject, ObservableObject, UIGestureRecognizerDele
     @objc private func pinch(_ g: UIPinchGestureRecognizer) {
         if g.state == .began { baseline = draft }
         if g.state == .changed, var value = baseline {
-            for i in [0, 2] { value.dimensions[i] = min(40, max(0.05, value.dimensions[i] * Float(g.scale))) }
+            for i in value.upright ? [0, 1] : [0, 2] { value.dimensions[i] = min(40, max(0.05, value.dimensions[i] * Float(g.scale))) }
             draft = value
         }
         if g.state == .cancelled { draft = baseline }
@@ -181,56 +246,41 @@ private extension SIMD4 where Scalar == Float {
     var xyz: SIMD3<Float> { SIMD3(x, y, z) }
 }
 
-/// The small "Create volume" tag that sits beside the volumes checkbox.
-struct VolumeCreateTag: View {
-    @ObservedObject var editor: VolumeAuthoring
-    @ObservedObject var peer: HomePeer
-    let begin: () -> Void
-    var body: some View {
-        if editor.draft == nil {
-            Button(action: begin) {
-                HStack(spacing: 7) {
-                    Image(systemName: "plus").font(.system(size: 10, weight: .bold)).frame(width: 12, height: 12)
-                    Text("Create volume").themeLabel(10, .semibold)
-                }
-                .themeTag()
-            }
-            .disabled(peer.state != "live")
-            .opacity(peer.state == "live" ? 1 : 0.45)
-        }
-    }
-}
-
 struct VolumeControls: View {
     @ObservedObject var editor: VolumeAuthoring
     @ObservedObject var peer: HomePeer
     @State private var confirmDelete = false
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if editor.draft != nil {
-                Text("[Volume]").themeLabel(13, .medium)
+            if let draft = editor.draft {
+                Text(draft.surface ? "Surface" : "Box").themeLabel(13, .medium)
                 TextField("Name", text: text(\.name))
-                TextField("Semantic type", text: text(\.semantic_type))
+                if draft.surface {
+                    TabStrip(tabs: [(SemanticVolume.circleType, "Circle"), ("area", "Rectangle")], selection: text(\.semantic_type))
+                } else {
+                    TextField("Semantic type", text: text(\.semantic_type))
+                }
                 ForEach(Array(["Width", "Height", "Depth"].enumerated()), id: \.offset) { i, title in
-                    HStack {
+                    // A surface has no thickness to set.
+                    if !(draft.flat && i == 1) && !(draft.upright && i == 2) { HStack {
                         Text(title).themeLabel().foregroundStyle(Theme.dim).frame(width: 60, alignment: .leading)
-                        TextField("metres", value: dimension(i), format: .number)
-                            .keyboardType(.decimalPad).frame(width: 65)
-                        Text("m").themeLabel().foregroundStyle(Theme.dim)
-                    }
+                        Slider(value: dimension(i), in: 0.05...max(5, draft.dimensions[i]))
+                        Text(String(format: "%.2f m", draft.dimensions[i])).themeLabel().foregroundStyle(Theme.dim)
+                            .frame(width: 54, alignment: .trailing)
+                    } }
                 }
                 .disabled(!editor.editable)
                 HStack {
                     Button("Cancel") { editor.cancel() }.disabled(editor.saving)
                     Button("Delete", role: .destructive) { confirmDelete = true }.disabled(!editor.editable)
                     Button(editor.saving ? "Saving…" : "Save / Retry") { save() }.disabled(editor.saving || peer.state != "live")
-                        .buttonStyle(PlateButtonStyle(filled: true))
+                        .buttonStyle(PillButtonStyle(filled: true))
                 }
             }
             if !editor.message.isEmpty { Text(editor.message).themeText(10).foregroundStyle(Theme.dim) }
         }
-        .textFieldStyle(RuleFieldStyle())
-        .buttonStyle(PlateButtonStyle())
+        .textFieldStyle(SoftFieldStyle())
+        .buttonStyle(PillButtonStyle())
         .themePanel(padding: 12)
         // Nothing to show until a volume is being edited or there is a result to report.
         .opacity(editor.draft == nil && editor.message.isEmpty ? 0 : 1)
@@ -256,5 +306,61 @@ struct VolumeControls: View {
     private func save(delete: Bool = false) {
         guard let json = editor.request(delete: delete) else { return }
         if !peer.changeAnnotation(json) { editor.saving = false; editor.message = "Not queued. Reconnect to Home, then retry." }
+    }
+}
+
+/// The always-visible bar for adding to the scene: a point with a speech bubble,
+/// a circle on any surface, or a box on the floor.
+struct ComponentsBar: View {
+    @ObservedObject var controller: ViewerController
+    @ObservedObject var editor: VolumeAuthoring
+    @ObservedObject var peer: HomePeer
+    let connect: () -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Components").themeLabel(15, .bold)
+                Spacer()
+                // Always in view, so it is obvious whether volumes are on in AR.
+                Button { controller.showVolumesInAR.toggle() } label: {
+                    HStack(spacing: 7) {
+                        CheckBox(on: controller.showVolumesInAR, size: 16)
+                        Text("Show").themeLabel(11, .semibold)
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(controller.showVolumesInAR ? "Hide surfaces and boxes in AR" : "Show surfaces and boxes in AR")
+            }
+            if peer.running {
+                HStack(spacing: 10) {
+                    // A point is kept on the phone and synced later, so it does not need Home right now.
+                    tool("Point", "bubble.left", "where the phone is", ready: editor.draft == nil) { controller.beginPoint() }
+                    tool("Surface", "circle.dashed", "aim at it", ready: canShape) { controller.beginSurface() }
+                    tool("Box", "cube", "aim at the floor", ready: canShape) { controller.beginVolume() }
+                }
+                if peer.state != "live" {
+                    Text("Home is out of reach. Points sync when it is back.").themeText(10).foregroundStyle(Theme.dim)
+                }
+            } else {
+                Button("Connect to Home", action: connect)
+                    .buttonStyle(PillButtonStyle(filled: true)).frame(maxWidth: .infinity)
+            }
+        }
+        .themePanel(padding: 16)
+    }
+    private var canShape: Bool { editor.draft == nil && peer.state == "live" }
+    private func tool(_ title: String, _ symbol: String, _ how: String, ready: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                Image(systemName: symbol).font(.system(size: 20, weight: .semibold)).foregroundStyle(Theme.accent)
+                    .frame(height: 24)
+                Text(title).themeLabel(11, .semibold).foregroundStyle(Theme.ink)
+                Text(how).themeText(8).foregroundStyle(Theme.dim).lineLimit(1).minimumScaleFactor(0.7)
+            }
+            .frame(maxWidth: .infinity).padding(.vertical, 12)
+            .background(Theme.well, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        }
+        .buttonStyle(SquishButtonStyle())
+        .disabled(!ready).opacity(ready ? 1 : 0.45)
     }
 }

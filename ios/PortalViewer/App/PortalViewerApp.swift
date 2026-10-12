@@ -4,6 +4,7 @@ import SceneKit
 import Vision
 import CoreMotion
 import UniformTypeIdentifiers
+import PhotosUI
 
 @main
 struct PortalViewerApp: App {
@@ -23,6 +24,8 @@ struct ViewerScreen: View {
     @State private var driveSelection: String?
     @AppStorage("panelTab") private var panelTab = "map"
     @AppStorage("panelOpen") private var panelOpen = true
+    /// Off by default: most people only need the Components bar.
+    @AppStorage("showDetails") private var showDetails = false
     @State private var promptedForLogin = false
     @Environment(\.scenePhase) private var phase
     /// Whether voxels are reaching Home right now: ink sending, orange failing, grey idle.
@@ -31,7 +34,7 @@ struct ViewerScreen: View {
         peer.state == "live" && (peer.depthDetail.hasPrefix("Depth not sent") || peer.depthDetail.hasPrefix("Color paused"))
     }
     private var sendColor: Color { sending ? Theme.ink : sendFailed ? Theme.accent : Theme.dim }
-    private var sendTag: String { sending ? "TX" : sendFailed ? "TX fault" : "Idle" }
+    private var sendTag: String { sending ? "Sending" : sendFailed ? "Not sending" : "Idle" }
     /// Robots that have a pose in this scene, for the mini map.
     private var mapRobots: [MiniMapRobot] {
         controller.devices.compactMap { device in
@@ -53,7 +56,19 @@ struct ViewerScreen: View {
         ZStack(alignment: .bottom) {
             CameraView(controller: controller).ignoresSafeArea()
             VStack {
-                VolumeControls(editor: controller.volumes, peer: peer)
+                HStack(alignment: .top) {
+                    VolumeControls(editor: controller.volumes, peer: peer)
+                    Spacer(minLength: 0)
+                    Button { withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) { showDetails.toggle() } } label: {
+                        Image(uiImage: UIImage(named: "auki.png") ?? UIImage()).renderingMode(.original).resizable()
+                            .frame(width: 44, height: 44).clipShape(Circle())
+                            .overlay(Circle().stroke(showDetails ? Theme.accent : Theme.paper, lineWidth: 3))
+                            .shadow(color: Theme.glow, radius: 6, y: 3)
+                    }
+                    .padding()
+                    .accessibilityLabel(showDetails ? "Hide scene details" : "Show scene details")
+                    .opacity(controller.snoozed ? 0 : 1).disabled(controller.snoozed)
+                }
                 Spacer()
             }
             if controller.snoozed {
@@ -65,98 +80,94 @@ struct ViewerScreen: View {
                             Image(systemName: "moon.zzz").font(.system(size: 16, weight: .regular)).foregroundStyle(Theme.accent)
                         }
                         VStack(alignment: .leading, spacing: 5) {
-                            Text("[Asleep]").themeLabel(17, .medium)
+                            Text("Asleep").themeLabel(17, .medium)
                             Text("Camera off. Pick up the phone or tap here to wake.").themeText(11).foregroundStyle(Theme.dim)
                         }
                         Spacer(minLength: 0)
                     }
-                    .padding(16).overlay(Brackets(arm: 12).stroke(Theme.ink, lineWidth: 1))
+                    .padding(16).overlay(Brackets(arm: 12).stroke(Theme.ink, style: StrokeStyle(lineWidth: 2.5, lineCap: .round)))
                     .foregroundStyle(Theme.ink)
                     // Top of the screen; the map panel fills the rest.
                     .frame(maxHeight: .infinity, alignment: .top).padding(.top, 8).padding(.horizontal, 16)
                 }
                 .onTapGesture { controller.wake() }
             }
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 9) {
-                    CheckBox(on: sending || sendFailed, color: sendColor, size: 9)
-                        .accessibilityLabel(sendSummary)
-                    Text("[\(peer.profile?.sceneLabel ?? "Home Scene")]").themeLabel(15, .medium).lineLimit(1)
-                    Spacer()
-                    Text(sendTag).themeLabel(10, .semibold).foregroundStyle(sendColor).accessibilityHidden(true)
-                    Button { withAnimation { panelOpen.toggle() } } label: {
-                        Image(systemName: panelOpen ? "chevron.down" : "chevron.up")
-                            .font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.ink)
-                            .frame(width: 30, height: 30).overlay(Rectangle().stroke(Theme.rule, lineWidth: 0.5))
-                    }.accessibilityLabel(panelOpen ? "Fold panel" : "Unfold panel")
-                        .opacity(controller.snoozed ? 0 : 1).disabled(controller.snoozed)
+            VStack(spacing: 12) {
+                // Naming a point takes the bar's place, so the field sits just above the keyboard.
+                if let placement = controller.placement {
+                    AnnotationEditor(controller: controller, peer: peer, placement: placement, close: { controller.clearPlacement() })
+                        .id(placement.id)
+                } else if !controller.snoozed {
+                    ComponentsBar(controller: controller, editor: controller.volumes, peer: peer, connect: { connecting = true })
                 }
-                if open && !controller.snoozed {
-                    TabStrip(tabs: [("map", "Map"), ("pov", "POV"), ("drive", "Drive"), ("status", "Status")],
-                             selection: $panelTab)
-                }
-                if !open {
-                    Text(sendSummary).themeText(11).foregroundStyle(Theme.dim).lineLimit(1)
-                } else if tab == "map" {
-                    MiniMapView(map: controller.miniMap, phone: controller.miniPhone, robots: mapRobots,
-                                tracked: controller.trackedDevices, showTrails: $controller.showTrails,
-                                clearTrails: controller.clearTrails)
-                        .frame(height: mapHeight)
-                    Text(sendSummary).themeLabel(10, .semibold).foregroundStyle(sendColor).lineLimit(2)
-                    Text(controller.status).themeText(11).foregroundStyle(Theme.dim).lineLimit(2)
-                } else if tab == "drive" {
-                    DrivePanel(controller: controller, peer: peer, selection: $driveSelection).frame(height: 260)
-                } else if tab == "pov" {
-                    PovPanel(controller: controller, selection: $povSelection).frame(height: 260)
-                    Text(sendSummary).themeLabel(10, .semibold).foregroundStyle(sendColor).lineLimit(1)
-                } else {
-                    Text(peer.detail).themeText(12, .semibold)
-                    Text(controller.status).themeText(11).foregroundStyle(Theme.dim)
-                    HStack(spacing: 10) {
-                        Text("Name").themeLabel().foregroundStyle(Theme.dim)
-                        TextField("How Home labels this phone", text: $phoneName)
-                            .textFieldStyle(RuleFieldStyle()).autocorrectionDisabled()
-                            .textInputAutocapitalization(.never).submitLabel(.done)
-                            .onSubmit { peer.setName(phoneName) }
-                    }
-                    Hatch()
-                    Text("Layers").themeLabel().foregroundStyle(Theme.dim)
-                    Toggle("Semantic volumes in AR", isOn: $controller.showVolumesInAR)
-                    Toggle("Share LiDAR depth", isOn: $controller.shareDepth)
-                    Text(controller.depthStatus).themeText(10).foregroundStyle(Theme.dim)
-                    if controller.shareDepth && peer.state == "live" {
-                        Text(peer.depthDetail).themeText(10).foregroundStyle(Theme.dim)
-                    }
-                    Hatch()
-                    HStack {
-                        Button(peer.running ? "Disconnect" : "Connect to Home") {
-                            if peer.running { peer.disconnect() } else { connecting = true }
-                        }.buttonStyle(PlateButtonStyle(filled: !peer.running))
-                        Spacer()
-                        Button("Realign") { controller.realign() }
-                            .disabled(controller.map == nil)
-                    }.buttonStyle(PlateButtonStyle())
-                    Text(peer.state == "live" ? "Live P2P · double-tap a surface to add a note" : "Waiting for Home · any visible map is cached")
-                        .themeText(10).foregroundStyle(Theme.dim)
-                }
-            }
-            .toggleStyle(CheckToggleStyle())
-            .themePanel()
-            .overlay(alignment: .topTrailing) {
-                HStack(spacing: 8) {
-                    VolumeCreateTag(editor: controller.volumes, peer: peer, begin: { controller.beginVolume() })
-                    // Always in view, so it is obvious whether volumes are on in AR.
-                    Button { controller.showVolumesInAR.toggle() } label: {
-                        HStack(spacing: 7) {
-                            CheckBox(on: controller.showVolumesInAR, size: 12)
-                            Text("Volumes").themeLabel(10, .semibold)
+                // The scene panel is more than most people need; the Auki button brings it up.
+                if (showDetails && controller.placement == nil) || controller.snoozed {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 9) {
+                            CheckBox(on: sending || sendFailed, color: sendColor, size: 9)
+                                .accessibilityLabel(sendSummary)
+                            Text(peer.profile?.sceneLabel ?? "Home Scene").themeLabel(15, .medium).lineLimit(1)
+                            Spacer()
+                            Text(sendTag).themeLabel(10, .semibold).foregroundStyle(sendColor).accessibilityHidden(true)
+                            Button { withAnimation { panelOpen.toggle() } } label: {
+                                Image(systemName: panelOpen ? "chevron.down" : "chevron.up")
+                                    .font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.ink)
+                                    .frame(width: 30, height: 30).background(Theme.well, in: Circle())
+                            }.accessibilityLabel(panelOpen ? "Fold panel" : "Unfold panel")
+                                .opacity(controller.snoozed ? 0 : 1).disabled(controller.snoozed)
                         }
-                        .themeTag()
+                        if open && !controller.snoozed {
+                            TabStrip(tabs: [("map", "Map"), ("pov", "POV"), ("drive", "Drive"), ("status", "Status")],
+                                     selection: $panelTab)
+                        }
+                        if !open {
+                            Text(sendSummary).themeText(11).foregroundStyle(Theme.dim).lineLimit(1)
+                        } else if tab == "map" {
+                            MiniMapView(map: controller.miniMap, phone: controller.miniPhone, robots: mapRobots,
+                                        tracked: controller.trackedDevices, showTrails: $controller.showTrails,
+                                        clearTrails: controller.clearTrails)
+                                .frame(height: mapHeight)
+                            Text(sendSummary).themeLabel(10, .semibold).foregroundStyle(sendColor).lineLimit(2)
+                            Text(controller.status).themeText(11).foregroundStyle(Theme.dim).lineLimit(2)
+                        } else if tab == "drive" {
+                            DrivePanel(controller: controller, peer: peer, selection: $driveSelection).frame(height: 260)
+                        } else if tab == "pov" {
+                            PovPanel(controller: controller, selection: $povSelection).frame(height: 260)
+                            Text(sendSummary).themeLabel(10, .semibold).foregroundStyle(sendColor).lineLimit(1)
+                        } else {
+                            Text(peer.detail).themeText(12, .semibold)
+                            Text(controller.status).themeText(11).foregroundStyle(Theme.dim)
+                            HStack(spacing: 10) {
+                                Text("Name").themeLabel().foregroundStyle(Theme.dim)
+                                TextField("How Home labels this phone", text: $phoneName)
+                                    .textFieldStyle(SoftFieldStyle()).autocorrectionDisabled()
+                                    .textInputAutocapitalization(.never).submitLabel(.done)
+                                    .onSubmit { peer.setName(phoneName) }
+                            }
+                            Dots()
+                            Text("Layers").themeLabel().foregroundStyle(Theme.dim)
+                            Toggle("Semantic volumes in AR", isOn: $controller.showVolumesInAR)
+                            Toggle("Share LiDAR depth", isOn: $controller.shareDepth)
+                            Text(controller.depthStatus).themeText(10).foregroundStyle(Theme.dim)
+                            if controller.shareDepth && peer.state == "live" {
+                                Text(peer.depthDetail).themeText(10).foregroundStyle(Theme.dim)
+                            }
+                            Dots()
+                            HStack {
+                                Button(peer.running ? "Disconnect" : "Connect to Home") {
+                                    if peer.running { peer.disconnect() } else { connecting = true }
+                                }.buttonStyle(PillButtonStyle(filled: !peer.running))
+                                Spacer()
+                                Button("Realign") { controller.realign() }
+                                    .disabled(controller.map == nil)
+                            }.buttonStyle(PillButtonStyle())
+                            Text(peer.state == "live" ? "Live P2P · double-tap a surface to add a note" : "Waiting for Home · any visible map is cached")
+                                .themeText(10).foregroundStyle(Theme.dim)
+                        }
                     }
-                    .accessibilityLabel(controller.showVolumesInAR ? "Hide semantic volumes in AR" : "Show semantic volumes in AR")
+                    .toggleStyle(CheckToggleStyle())
+                    .themePanel()
                 }
-                .offset(y: -36)
-                .opacity(controller.snoozed ? 0 : 1).disabled(controller.snoozed)
             }
             .padding()
         }
@@ -229,9 +240,6 @@ struct ViewerScreen: View {
                 } catch { pairingError = error.localizedDescription }
             }
         }
-        .sheet(item: $controller.placement, onDismiss: { controller.clearPlacement() }) { placement in
-            AnnotationEditor(peer: peer, placement: placement)
-        }
         .onChange(of: phase) { _, value in
             if value == .active { controller.start() } else { controller.pause() }
             // Leaving the foreground always lets go of the joystick.
@@ -300,7 +308,7 @@ struct DrivePanel: View {
                 }
                 .clipShape(Circle())
                 .frame(width: radius * 2, height: radius * 2)
-                .padding(4).overlay(Brackets(arm: 12).stroke(armed ? Theme.ink : Theme.rule, lineWidth: 1))
+                .padding(4).overlay(Brackets(arm: 12).stroke(armed ? Theme.ink : Theme.rule, style: StrokeStyle(lineWidth: 2.5, lineCap: .round)))
                 .contentShape(Circle())
                 .gesture(DragGesture(minimumDistance: 0)
                     .onChanged { value in
@@ -427,7 +435,7 @@ struct PovPanel: View {
             ZStack(alignment: .bottomLeading) {
                 if let chosen {
                     PovSceneView(scene: controller.povScene, transform: chosen.transform)
-                    Brackets(arm: 14).stroke(Theme.ink.opacity(0.7), lineWidth: 1).padding(10).allowsHitTesting(false)
+                    Brackets(arm: 14).stroke(Theme.ink.opacity(0.7), style: StrokeStyle(lineWidth: 2.5, lineCap: .round)).padding(10).allowsHitTesting(false)
                     Text(chosen.name + (chosen.asleep ? " · asleep, last view" : "")).themeLabel(9, .semibold)
                         .themeTag().padding(6)
                 } else {
@@ -516,20 +524,19 @@ struct DeviceCard: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
                     Image(systemName: device.kind == .phone ? "iphone" : "car.side").font(.system(size: 11))
-                    Text(device.name.uppercased()).font(Theme.mono(11, .semibold))
+                    Text(device.name).font(Theme.font(11, .semibold))
                 }.foregroundStyle(Theme.ink)
-                Text(state(timeline.date)).font(Theme.mono(10))
+                Text(state(timeline.date)).font(Theme.font(10))
                     .foregroundStyle(device.state == .live ? Theme.ink : Theme.accent)
                 let p = device.position
-                Text(String(format: "x %.2f  y %.2f  z %.2f m", p.x, p.y, p.z)).font(Theme.mono(10)).foregroundStyle(Theme.dim)
+                Text(String(format: "x %.2f  y %.2f  z %.2f m", p.x, p.y, p.z)).font(Theme.font(10)).foregroundStyle(Theme.dim)
                 if let from {
-                    Text(String(format: "%.1f m from this phone", simd_distance(from, p))).font(Theme.mono(10)).foregroundStyle(Theme.dim)
+                    Text(String(format: "%.1f m from this phone", simd_distance(from, p))).font(Theme.font(10)).foregroundStyle(Theme.dim)
                 }
                 Text(String(format: "Trail %.1f m · ", device.travelled) + String(device.id.suffix(6)))
-                    .font(Theme.mono(10)).foregroundStyle(Theme.dim)
+                    .font(Theme.font(10)).foregroundStyle(Theme.dim)
             }
-            .padding(7).background(Theme.paper.opacity(0.94))
-            .overlay(Rectangle().stroke(Theme.rule, lineWidth: 0.5))
+            .themeBubble()
             .accessibilityElement(children: .combine)
         }
     }
@@ -789,21 +796,18 @@ struct MiniMapView: View {
                     Button { showVolumes.toggle() } label: {
                         Image(systemName: showVolumes ? "cube.fill" : "cube").font(.system(size: 13))
                             .foregroundStyle(showVolumes ? Theme.accent : Theme.dim)
-                            .frame(width: 30, height: 30).background(Theme.paper.opacity(0.94))
-                            .overlay(Rectangle().stroke(Theme.rule, lineWidth: 0.5))
+                            .themeDot()
                     }.padding(6).accessibilityLabel(showVolumes ? "Hide semantic volumes on the map" : "Show semantic volumes on the map")
                     Button { showRobotModel.toggle() } label: {
                         Image(systemName: showRobotModel ? "view.3d" : "view.2d").font(.system(size: 13))
                             .foregroundStyle(showRobotModel ? Theme.accent : Theme.dim)
-                            .frame(width: 30, height: 30).background(Theme.paper.opacity(0.94))
-                            .overlay(Rectangle().stroke(Theme.rule, lineWidth: 0.5))
+                            .themeDot()
                     }.padding(.horizontal, 6).padding(.bottom, 6)
                         .accessibilityLabel(showRobotModel ? "Show robots as icons" : "Show robots as 3D models")
                     // Tap shows or hides robot trails; a long press starts them again from here.
                     Image(systemName: "point.topleft.down.to.point.bottomright.curvepath").font(.system(size: 13))
                         .foregroundStyle(showTrails.wrappedValue ? Theme.accent : Theme.dim)
-                        .frame(width: 30, height: 30).background(Theme.paper.opacity(0.94))
-                        .overlay(Rectangle().stroke(Theme.rule, lineWidth: 0.5))
+                        .themeDot()
                         .padding(.horizontal, 6).padding(.bottom, 6)
                         .onTapGesture { showTrails.wrappedValue.toggle() }
                         .onLongPressGesture { clearTrails(); UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
@@ -813,8 +817,7 @@ struct MiniMapView: View {
                     if pan != SIMD3<Float>(0, 0, 0) || yaw != 0 || pitch != .pi / 2 || zoom != 1 {
                         Button { pan = .zero; yaw = 0; pitch = .pi / 2; zoom = 1 } label: {
                             Image(systemName: "scope").font(.system(size: 13)).foregroundStyle(Theme.ink)
-                                .frame(width: 30, height: 30).background(Theme.paper.opacity(0.94))
-                                .overlay(Rectangle().stroke(Theme.rule, lineWidth: 0.5))
+                                .themeDot()
                         }.padding(.horizontal, 6).accessibilityLabel("Reset map view")
                     }
                 }
@@ -910,13 +913,13 @@ struct MiniMapView: View {
                 context.stroke(antenna, with: .color(.white), lineWidth: 2)
                 context.fill(Path(ellipseIn: CGRect(x: at.x - 2.5, y: at.y - 13.5, width: 5, height: 5)), with: .color(.white))
             }
-            let label = context.resolve(Text(name.uppercased()).font(Theme.mono(11, .bold)).foregroundColor(.white))
+            let label = context.resolve(Text(name).font(Theme.font(11, .bold)).foregroundColor(.white))
             let measured = label.measure(in: CGSize(width: 200, height: 30))
             let plate = CGRect(x: at.x - measured.width / 2 - 4, y: disc.maxY + 3, width: measured.width + 8, height: measured.height + 2)
             context.fill(Path(plate), with: .color(.black.opacity(0.8)))
             context.draw(label, at: CGPoint(x: plate.midX, y: plate.midY))
             if resting {
-                let zzz = context.resolve(Text("zzz").font(Theme.mono(14, .bold)).foregroundColor(.white))
+                let zzz = context.resolve(Text("zzz").font(Theme.font(14, .bold)).foregroundColor(.white))
                 let size = zzz.measure(in: CGSize(width: 60, height: 30))
                 let bubble = CGRect(x: disc.maxX - 6, y: disc.minY - size.height + 4, width: size.width + 8, height: size.height + 2)
                 context.fill(Path(roundedRect: bubble, cornerRadius: 4), with: .color(Theme.accent))
@@ -947,11 +950,11 @@ struct MiniMapView: View {
             context.stroke(mark, with: .color(Theme.dim), lineWidth: 0.6)
         }
         guard let (low, high) = bounds() else {
-            context.draw(Text("NO MAP YET · CONNECT AND SCAN A PORTAL").font(Theme.mono(10)).foregroundColor(Theme.dim),
+            context.draw(Text("No map yet. Connect and scan a Portal.").font(Theme.font(10)).foregroundColor(Theme.dim),
                          at: CGPoint(x: size.width / 2, y: size.height / 2))
             return
         }
-        context.draw(Text("GRID 1 M").font(Theme.mono(9)).foregroundColor(Theme.dim),
+        context.draw(Text("1 m grid").font(Theme.font(9)).foregroundColor(Theme.dim),
                      at: CGPoint(x: 22, y: size.height - 12), anchor: .leading)
         // Ground grid at the lowest level: 1 m lines, bolder every 5 m.
         let x0 = (low.x - 1).rounded(.down), x1 = (high.x + 1).rounded(.up)
@@ -1004,7 +1007,7 @@ struct MiniMapView: View {
                     context.stroke(edge, with: .color(tint.opacity(0.8)), lineWidth: 0.6)
                 }
                 let top = CGPoint(x: (c[4].x + c[6].x) / 2, y: (c[4].y + c[6].y) / 2)
-                context.draw(Text((volume.name + " · " + volume.semantic_type).uppercased()).font(Theme.mono(9, .semibold)).foregroundColor(Theme.ink), at: top)
+                context.draw(Text(volume.name + " · " + volume.semantic_type).font(Theme.font(9, .semibold)).foregroundColor(Theme.ink), at: top)
             }
         }
         for note in map.notes {
@@ -1033,7 +1036,7 @@ struct MiniMapView: View {
             let reach = max(14, c[0..<4].map { hypot($0.x - at.x, $0.y - at.y) }.max() ?? 14) + 5
             let reticle = CGRect(x: at.x - reach, y: at.y - reach, width: reach * 2, height: reach * 2)
             context.stroke(Brackets(arm: 6).path(in: reticle), with: .color(Theme.ink.opacity(strength)), lineWidth: 1)
-            context.draw(Text(robot.name.uppercased()).font(Theme.mono(9, .semibold)).foregroundColor(Theme.ink.opacity(strength)),
+            context.draw(Text(robot.name).font(Theme.font(9, .semibold)).foregroundColor(Theme.ink.opacity(strength)),
                          at: CGPoint(x: reticle.midX, y: reticle.minY - 3), anchor: .bottom)
         }
         if let phone {
@@ -1052,7 +1055,7 @@ struct MiniMapView: View {
             var bearing = atan2(phone.heading.x, -phone.heading.y) * 180 / .pi
             if bearing < 0 { bearing += 360 }
             if bearing.isFinite {
-                context.draw(Text(String(format: "%03.0f°", bearing)).font(Theme.mono(9, .semibold)).foregroundColor(Theme.ink),
+                context.draw(Text(String(format: "%03.0f°", bearing)).font(Theme.font(9, .semibold)).foregroundColor(Theme.ink),
                              at: CGPoint(x: reticle.maxX + 4, y: reticle.maxY), anchor: .bottomLeading)
             }
             let ahead = view.place(phone.position + SIMD3(phone.heading.x, 0, phone.heading.y)).point
@@ -1095,6 +1098,151 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     func beginVolume() {
         guard let map else { volumes.message = "Connect to Home first."; return }
         volumes.begin(frame: map.scenegraph.map.frame.id)
+    }
+    /// A circle on whatever surface the middle of the screen is looking at: floor, table, wall or screen.
+    func beginSurface() {
+        guard let map else { volumes.message = "Connect to Home first."; return }
+        guard volumes.draft == nil else { return }
+        let centre = CGPoint(x: view.bounds.midX, y: view.bounds.midY)
+        // A plane ARKit has already mapped, else its best guess at the surface under the point.
+        let found = [ARRaycastQuery.Target.existingPlaneGeometry, .estimatedPlane].lazy.compactMap { target in
+            self.view.raycastQuery(from: centre, allowing: target, alignment: .any)
+                .flatMap { self.view.session.raycast($0).first }
+        }.first
+        guard let found else {
+            volumes.message = "Aim at a floor, table, wall or screen and hold still for a moment."; return
+        }
+        let inverse = root.simdTransform.inverse
+        let hit = inverse * found.worldTransform.columns.3
+        // A raycast result's +Y is the surface normal.
+        let normal = inverse * found.worldTransform.columns.1
+        // The circle starts no wider than the surface ARKit has mapped.
+        let extent = (found.anchor as? ARPlaneAnchor)?.planeExtent
+        volumes.beginSurface(frame: map.scenegraph.map.frame.id, at: SIMD3(hit.x, hit.y, hit.z),
+                             normal: simd_normalize(SIMD3(normal.x, normal.y, normal.z)),
+                             within: extent.map { min($0.width, $0.height) })
+    }
+    /// The point being named. It floats in front of the camera, shedding pink dust, until it is saved.
+    private var floating: SCNNode?
+    /// How far in front of the camera a new point floats: 8 inches.
+    private static let reach: Float = 0.2
+    /// Where a new point floats, in the axes of the upright screen: 8 inches away, seen just above the name card.
+    private func aim(_ camera: ARCamera) -> SIMD3<Float> {
+        let lens = camera.projectionMatrix(for: .portrait, viewportSize: view.bounds.size, zNear: 0.01, zFar: 100)
+        // Screen centre across; 40% of the way down, which is 0.2 above the middle on a scale of -1 to 1.
+        return simd_normalize(SIMD3(0, 0.2 / lens.columns.1.y, -1)) * Self.reach
+    }
+    /// That spot in the room right now.
+    private static func ahead(_ aim: SIMD3<Float>, of camera: ARCamera) -> SIMD3<Float> {
+        let spot = camera.viewMatrix(for: .portrait).inverse * SIMD4(aim.x, aim.y, aim.z, 1)
+        return SIMD3(spot.x, spot.y, spot.z)
+    }
+    /// A note that follows the phone, 8 inches in front of it, until it is saved.
+    func beginPoint() {
+        guard volumes.draft == nil, placement == nil else { return }
+        guard aligned, let map, let frame = view.session.currentFrame, case .normal = frame.camera.trackingState else {
+            volumes.message = "Scan a Portal before placing a point."; return
+        }
+        let aim = aim(frame.camera)
+        let bubble = Self.bubble("")
+        bubble.name = "annotation-preview"
+        root.addChildNode(bubble)
+        bubble.simdWorldPosition = Self.ahead(aim, of: frame.camera)
+        // Moved on every drawn frame, not every camera frame, so it glides. It trails the phone
+        // a little and catches up in about a tenth of a second.
+        var last = CACurrentMediaTime()
+        let follow = SCNTransformConstraint.positionConstraint(inWorldSpace: true) { [weak view] _, position in
+            guard let camera = view?.session.currentFrame?.camera else { return position }
+            let now = CACurrentMediaTime()
+            let step = Float(min(0.1, now - last))
+            last = now
+            let here = SIMD3(position.x, position.y, position.z)
+            let next = here + (Self.ahead(aim, of: camera) - here) * (1 - exp(-step * 12))
+            return SCNVector3(next.x, next.y, next.z)
+        }
+        bubble.constraints = (bubble.constraints ?? []) + [follow]
+        bubble.addParticleSystem(Self.dust())
+        floating = bubble
+        let eye = frame.camera.transform.columns.3
+        let at = bubble.simdPosition, from = root.simdConvertPosition(SIMD3(eye.x, eye.y, eye.z), from: nil)
+        placement = NotePlacement(id: UUID().uuidString, frame: map.scenegraph.map.frame.id,
+            origin: [from.x, from.y, from.z], direction: [0, 0, -1], at: [at.x, at.y, at.z])
+    }
+    private var floatingText = ""
+    private var floatingPhoto: UIImage?
+    /// Photos taken for points, by note. They stay on this phone: Home is not sent them yet.
+    private var photos = [String: UIImage]()
+    /// The floating point shows what is being typed.
+    func namePoint(_ text: String) {
+        guard let floating else { return }
+        floatingText = text
+        floating.childNodes.forEach { $0.removeFromParentNode() }
+        Self.bubble(text, photo: floatingPhoto).childNodes.forEach { floating.addChildNode($0) }
+    }
+    /// What the camera sees right now, cut square.
+    func cameraPhoto() -> UIImage? {
+        guard let buffer = view.session.currentFrame?.capturedImage else { return nil }
+        let upright = CIImage(cvPixelBuffer: buffer).oriented(.right)
+        let side = min(upright.extent.width, upright.extent.height)
+        let square = upright.cropped(to: CGRect(x: upright.extent.midX - side / 2, y: upright.extent.midY - side / 2,
+                                                width: side, height: side))
+            .transformed(by: CGAffineTransform(scaleX: 720 / side, y: 720 / side))
+        return CIContext().createCGImage(square, from: square.extent).map { UIImage(cgImage: $0) }
+    }
+    /// The picture shown above the floating point: from the camera or the photo library. Nil clears it.
+    func setPointPhoto(_ photo: UIImage?) {
+        floatingPhoto = photo
+        namePoint(floatingText)
+    }
+    /// Stop the point exactly where it is seen. Nil if tracking has been lost.
+    func lockPoint(_ placement: NotePlacement) -> NotePlacement? {
+        guard let floating, aligned, let frame = view.session.currentFrame,
+              case .normal = frame.camera.trackingState else { return nil }
+        let eye = frame.camera.transform.columns.3
+        let at = root.simdConvertPosition(floating.presentation.simdWorldPosition, from: nil)
+        let from = root.simdConvertPosition(SIMD3(eye.x, eye.y, eye.z), from: nil)
+        floating.constraints = floating.constraints?.filter { $0 is SCNBillboardConstraint }
+        floating.simdPosition = at
+        floating.particleSystems?.forEach { $0.birthRate = 0 }
+        // Home wants to know where the note was placed from: the phone.
+        return NotePlacement(id: placement.id, frame: placement.frame, origin: [from.x, from.y, from.z],
+                             direction: [at.x - from.x, at.y - from.y, at.z - from.z], at: [at.x, at.y, at.z])
+    }
+    /// Points saved on this phone that Home has not sent back yet. They are drawn here until it does.
+    private var unsynced = [(id: String, frame: String, text: String, position: [Float])]()
+    /// The locked point stays where it is, whether or not Home can be reached right now.
+    func keepPoint(_ placement: NotePlacement, text: String) {
+        guard let at = placement.at else { return }
+        unsynced.append((placement.id, placement.frame, text, at))
+        photos[placement.id] = floatingPhoto
+        // No longer the preview, so closing the editor leaves it in the room.
+        floating?.name = nil
+        floating = nil
+    }
+    /// Pink dust left in the room behind a point that is still being carried.
+    private static func dust() -> SCNParticleSystem {
+        let dust = SCNParticleSystem()
+        dust.particleImage = UIGraphicsImageRenderer(size: CGSize(width: 32, height: 32)).image { context in
+            let colors = [UIColor.white.cgColor, UIColor.white.withAlphaComponent(0).cgColor] as CFArray
+            let glow = CGGradient(colorsSpace: nil, colors: colors, locations: [0, 1])!
+            context.cgContext.drawRadialGradient(glow, startCenter: CGPoint(x: 16, y: 16), startRadius: 0,
+                                                 endCenter: CGPoint(x: 16, y: 16), endRadius: 16, options: [])
+        }
+        dust.particleColor = Theme.uiAccent
+        dust.particleColorVariation = SCNVector4(0.04, 0.2, 0.1, 0)
+        dust.particleSize = 0.004; dust.particleSizeVariation = 0.003
+        dust.birthRate = 70
+        dust.particleLifeSpan = 1.4; dust.particleLifeSpanVariation = 0.5
+        dust.emitterShape = SCNSphere(radius: 0.015)
+        dust.particleVelocity = 0.015; dust.particleVelocityVariation = 0.015
+        dust.spreadingAngle = 180
+        dust.acceleration = SCNVector3(0, -0.03, 0)
+        dust.blendMode = .additive
+        dust.isLightingEnabled = false
+        let fade = CAKeyframeAnimation()
+        fade.values = [0, 1, 0]; fade.keyTimes = [0, 0.15, 1]
+        dust.propertyControllers = [.opacity: SCNParticlePropertyController(animation: fade)]
+        return dust
     }
     @Published var status = "Connect to Home to receive its scene"
     @Published var shareDepth = true {
@@ -1164,8 +1312,19 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         super.init()
         view.scene = SCNScene()
         view.scene.rootNode.addChildNode(root)
+        // Soft light from everywhere and a key light from above, for the things in the scene that are lit.
+        let ambient = SCNLight()
+        ambient.type = .ambient; ambient.intensity = 450
+        let key = SCNLight()
+        key.type = .directional; key.intensity = 800
+        for (light, tilt) in [(ambient, SCNVector3Zero), (key, SCNVector3(-1.0, 0.5, 0))] {
+            let holder = SCNNode()
+            holder.light = light; holder.eulerAngles = tilt
+            view.scene.rootNode.addChildNode(holder)
+        }
         povScene.rootNode.addChildNode(povRoot)
         view.session.delegate = self
+        Self.session = view.session
         // The robot model is physically shaded; without a light it renders black.
         view.autoenablesDefaultLighting = true
         view.session.delegateQueue = .main
@@ -1192,6 +1351,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         }
         let config = ARWorldTrackingConfiguration()
         config.worldAlignment = .gravity
+        // Surfaces are placed on detected floors, tables, walls and screens.
+        config.planeDetection = [.horizontal, .vertical]
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
             config.frameSemantics.insert(.sceneDepth)
         } else { depthStatus = "This phone does not provide LiDAR scene depth" }
@@ -1226,7 +1387,9 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         miniMap = MiniMapData(map)
         trackedDevices = trails.record(map.render?.notes ?? [], frame: map.scenegraph.map.frame.id,
                                        ownFrame: "phone-camera:" + poseSession)
-        root.childNodes.forEach { $0.removeFromParentNode() }
+        // Everything is redrawn except the point still being carried: taking it out and putting it
+        // back would restart its dust trail every time Home sends an update.
+        root.childNodes.filter { $0 !== floating }.forEach { $0.removeFromParentNode() }
         for portal in map.scenegraph.anchors.values.sorted(by: { $0.anchor_id < $1.anchor_id }) {
             let node = SCNNode()
             node.simdTransform = portal.pose_in_map.matrix
@@ -1242,7 +1405,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 node.addChildNode(line)
             }
             let text = SCNText(string: portal.anchor_id, extrusionDepth: 0)
-            text.font = Theme.uiMono(1, .semibold)
+            text.font = Theme.uiFont(1, .semibold)
             text.firstMaterial?.diffuse.contents = UIColor.white
             text.firstMaterial?.lightingModel = .constant
             let label = SCNNode(geometry: text)
@@ -1341,6 +1504,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         if scene.voxel_size.isFinite && scene.voxel_size > 0 {
             for start in stride(from: 0, to: scene.voxels.count, by: 8192) {
                 var vertices = [SCNVector3]()
+                var inner = [SCNVector3]()
                 var colors = [Float]()
                 var indices = [UInt32]()
                 for voxel in scene.voxels[start..<min(start + 8192, scene.voxels.count)] {
@@ -1351,6 +1515,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                     for corner in corners {
                         let p = center + corner * scene.voxel_size * 0.48
                         vertices.append(SCNVector3(p.x, p.y, p.z))
+                        let q = center + corner * scene.voxel_size * 0.45
+                        inner.append(SCNVector3(q.x, q.y, q.z))
                         colors.append(contentsOf: rgb + [0.65])
                     }
                     indices.append(contentsOf: faces.map { base + $0 })
@@ -1361,15 +1527,38 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                     bytesPerComponent: 4, dataOffset: 0, dataStride: 16)
                 let geometry = SCNGeometry(sources: [SCNGeometrySource(vertices: vertices), colorSource],
                     elements: [SCNGeometryElement(indices: indices, primitiveType: .triangles)])
+                // The voxels are see-through, and SceneKit does not sort triangles inside one mesh,
+                // so drawn plainly they show through each other in whatever order Home listed them.
+                // A slightly smaller copy of every voxel goes down first as depth with no colour.
+                // Colour then lands on the nearest faces only. The copy sits just inside the coloured
+                // faces, so the two never share a depth and cannot flicker against each other.
+                let depth = SCNMaterial()
+                depth.lightingModel = .constant
+                depth.colorBufferWriteMask = []
+                let shell = SCNGeometry(sources: [SCNGeometrySource(vertices: inner)],
+                    elements: [SCNGeometryElement(indices: indices, primitiveType: .triangles)])
+                shell.materials = [depth]
+                let first = SCNNode(geometry: shell)
+                first.renderingOrder = -2
+                root.addChildNode(first)
                 let material = SCNMaterial()
                 material.lightingModel = .constant
-                material.isDoubleSided = true
+                material.writesToDepthBuffer = false
                 geometry.materials = [material]
-                root.addChildNode(SCNNode(geometry: geometry))
+                let second = SCNNode(geometry: geometry)
+                second.renderingOrder = -1
+                root.addChildNode(second)
             }
         }
         for object in scene.objects { addLabel(object.label, at: object.position, color: Theme.uiAccent) }
-        for note in scene.notes { addLabel(note.text, at: note.position, color: .white) }
+        // Home's device labels stay plain; a person's note is a speech bubble.
+        for note in scene.notes {
+            if note.phone_pose == nil && note.robot_pose == nil { addBubble(note.text, at: note.position, photo: photos[note.id]) }
+            else { addLabel(note.text, at: note.position, color: .white) }
+        }
+        // Once Home sends a point back, its copy takes over from the one kept here.
+        unsynced.removeAll { kept in scene.notes.contains { $0.id == kept.id } }
+        for kept in unsynced where kept.frame == scene.frame { addBubble(kept.text, at: kept.position, photo: photos[kept.id]) }
         for note in scene.notes {
             guard let pose = note.robot_pose?.pose, pose.translation.count == 3, pose.rotation_wxyz.count == 4 else { continue }
             root.addChildNode(robotBody(at: pose.matrix))
@@ -1379,10 +1568,121 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         } else { addRobot(scene.local_mapping?.robot_pose, name: "Runner") }
     }
 
+    /// A note as a speech bubble whose tail points at the spot it was left on.
+    private func addBubble(_ title: String, at position: [Float], photo: UIImage? = nil) {
+        guard position.count == 3, position.allSatisfy(\.isFinite) else { return }
+        let bubble = Self.bubble(title, photo: photo)
+        bubble.position = SCNVector3(position[0], position[1], position[2])
+        root.addChildNode(bubble)
+    }
+    /// The AR session, for things drawn in the scene that need to know where the phone is.
+    private static weak var session: ARSession?
+    /// A speech bubble of one fixed size with its origin at the tip of its tail.
+    /// The words shrink and wrap to fit it. With no words yet it asks for a name.
+    /// A photo, if the note has one, sits above it as a rounded square.
+    private static func bubble(_ title: String, photo: UIImage? = nil) -> SCNNode {
+        // Fixed colours: a bubble in the camera view does not follow light or dark.
+        let light = UITraitCollection(userInterfaceStyle: .light)
+        // Drawn in centimetres and scaled down: SceneKit cuts curves this small into too few pieces in metres.
+        let width: CGFloat = 5.5, height: CGFloat = 2.4, pad: CGFloat = 0.4, tail: CGFloat = 0.7, thick: CGFloat = 0.3
+        let prompt = title.isEmpty
+        // One outline, tail included: round corners, and a point at the middle of the bottom edge.
+        let r: CGFloat = 1.0
+        let outline = UIBezierPath()
+        outline.move(to: CGPoint(x: r, y: 0))
+        outline.addLine(to: CGPoint(x: width / 2 - 0.45, y: 0))
+        outline.addLine(to: CGPoint(x: width / 2, y: -tail))
+        outline.addLine(to: CGPoint(x: width / 2 + 0.45, y: 0))
+        for (cx, cy, start) in [(width - r, r, -CGFloat.pi / 2), (width - r, height - r, 0), (r, height - r, .pi / 2), (r, r, .pi)] {
+            outline.addArc(withCenter: CGPoint(x: cx, y: cy), radius: r, startAngle: start, endAngle: start + .pi / 2, clockwise: true)
+        }
+        outline.close()
+        outline.flatness = 0.005
+        // A little thickness with rounded edges, and a lit material, so it reads as a solid thing in the room.
+        let shape = SCNShape(path: outline, extrusionDepth: thick)
+        shape.chamferRadius = thick * 0.45
+        // A quarter circle in many steps: the default bevel is a single flat cut.
+        let bevel = UIBezierPath()
+        bevel.move(to: CGPoint(x: 0, y: 1))
+        bevel.addQuadCurve(to: CGPoint(x: 1, y: 0), controlPoint: CGPoint(x: 1, y: 1))
+        bevel.flatness = 0.01
+        shape.chamferProfile = bevel
+        shape.firstMaterial?.diffuse.contents = Theme.uiPaper.resolvedColor(with: light)
+        // Lit for its rounded edges and shine, with a little glow of its own so it never goes dull in a dim room.
+        shape.firstMaterial?.lightingModel = .blinn
+        shape.firstMaterial?.specular.contents = UIColor(white: 1, alpha: 0.6)
+        shape.firstMaterial?.shininess = 0.4
+        shape.firstMaterial?.emission.contents = Theme.uiPaper.resolvedColor(with: light)
+        shape.firstMaterial?.emission.intensity = 0.15
+        // The drawing, in centimetres, moved so the tip of the tail is at the origin and scaled to metres.
+        // The node that is returned carries no scale or pivot of its own: it only turns to face the camera.
+        let drawing = SCNNode()
+        drawing.simdScale = SIMD3(repeating: 0.01)
+        drawing.simdPosition = SIMD3(Float(-width / 2), Float(tail), 0) * 0.01
+        drawing.addChildNode(SCNNode(geometry: shape))
+        // The words are painted as a picture, at the largest size that fits the frame on however many
+        // lines that takes. A picture also shows emoji, which SceneKit's own text leaves blank.
+        let frame = CGSize(width: (width - 2 * pad) * 120, height: (height - 2 * pad) * 120)
+        let centred = NSMutableParagraphStyle()
+        centred.alignment = .center
+        centred.lineBreakMode = .byWordWrapping
+        func words(_ size: CGFloat) -> NSAttributedString {
+            NSAttributedString(string: prompt ? "Note name" : title, attributes: [
+                .font: Theme.uiFont(size, .semibold), .paragraphStyle: centred,
+                .foregroundColor: (prompt ? Theme.uiDim : Theme.uiInk).resolvedColor(with: light)])
+        }
+        func extent(_ size: CGFloat) -> CGSize {
+            words(size).boundingRect(with: CGSize(width: frame.width, height: .greatestFiniteMagnitude),
+                                     options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil).size
+        }
+        // One short word does not fill the bubble: at most 45% of its height.
+        var size = frame.height * 0.45
+        while size > 6, extent(size).height > frame.height || extent(size).width > frame.width { size *= 0.92 }
+        let tall = extent(size).height
+        let picture = UIGraphicsImageRenderer(size: frame).image { _ in
+            words(size).draw(with: CGRect(x: 0, y: (frame.height - tall) / 2, width: frame.width, height: tall),
+                             options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
+        }
+        let face = SCNPlane(width: width - 2 * pad, height: height - 2 * pad)
+        face.firstMaterial?.diffuse.contents = picture
+        face.firstMaterial?.lightingModel = .constant
+        face.firstMaterial?.writesToDepthBuffer = false
+        let label = SCNNode(geometry: face)
+        // Centred on the bubble's face, a hair in front of it.
+        label.simdPosition = SIMD3(Float(width) / 2, Float(height) / 2, Float(thick) / 2 + 0.05)
+        label.renderingOrder = 1
+        drawing.addChildNode(label)
+        if let photo {
+            let side: CGFloat = 3.4
+            let print = SCNPlane(width: side, height: side)
+            print.cornerRadius = 0.6
+            print.firstMaterial?.diffuse.contents = photo
+            print.firstMaterial?.lightingModel = .constant
+            print.firstMaterial?.isDoubleSided = true
+            let picture = SCNNode(geometry: print)
+            picture.simdPosition = SIMD3(Float(width) / 2, Float(height + 0.35 + side / 2), 0)
+            drawing.addChildNode(picture)
+        }
+        // Life-size up close, a note is too small to read from across a room. It grows with distance
+        // from 40 cm out, so it holds its size on screen, up to six times as big.
+        let sizer = SCNNode()
+        sizer.addChildNode(drawing)
+        sizer.constraints = [SCNTransformConstraint(inWorldSpace: false) { node, transform in
+            guard let eye = session?.currentFrame?.camera.transform.columns.3 else { return transform }
+            let far = simd_distance(node.presentation.simdWorldPosition, SIMD3(eye.x, eye.y, eye.z))
+            let grow = min(6, max(1, far / 0.4))
+            return SCNMatrix4MakeScale(grow, grow, grow)
+        }]
+        let bubble = SCNNode()
+        bubble.addChildNode(sizer)
+        bubble.constraints = [SCNBillboardConstraint()]
+        return bubble
+    }
+
     private func addLabel(_ title: String, at position: [Float], color: UIColor) {
         guard position.count == 3, position.allSatisfy(\.isFinite) else { return }
         let text = SCNText(string: title, extrusionDepth: 0)
-        text.font = Theme.uiMono(1, .semibold)
+        text.font = Theme.uiFont(1, .semibold)
         text.flatness = 0.2
         text.firstMaterial?.diffuse.contents = color
         text.firstMaterial?.lightingModel = .constant
@@ -1472,6 +1772,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
 
     func clearPlacement() {
         placement = nil
+        floating = nil; floatingText = ""; floatingPhoto = nil
         root.childNode(withName: "annotation-preview", recursively: false)?.removeFromParentNode()
     }
 
@@ -1485,11 +1786,14 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 return
             }
         }
+        placeNote(at: gesture.location(in: view))
+    }
+
+    private func placeNote(at point: CGPoint) {
         guard aligned, let map, let frame = view.session.currentFrame,
               case .normal = frame.camera.trackingState, placement == nil else {
             status = "Scan a Portal before placing a note."; return
         }
-        let point = gesture.location(in: view)
         let far = view.unprojectPoint(SCNVector3(Float(point.x), Float(point.y), 1))
         let inverse = root.simdTransform.inverse
         let worldOrigin = frame.camera.transform.columns.3
@@ -1550,7 +1854,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         toast?.removeFromSuperview()
         let label = UILabel()
         label.text = text; label.numberOfLines = 0; label.textAlignment = .center
-        label.font = Theme.uiMono(14, .semibold)
+        label.font = Theme.uiFont(14, .semibold)
         label.textColor = good ? Theme.uiInk : UIColor(white: 0.1, alpha: 1)
         label.backgroundColor = (good ? Theme.uiPaper : Theme.uiAccent).withAlphaComponent(0.94)
         label.layer.borderWidth = 1
@@ -1988,37 +2292,87 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
 }
 
 
+/// A small card for naming a new point. The camera stays in view behind it.
 struct AnnotationEditor: View {
+    let controller: ViewerController
     @ObservedObject var peer: HomePeer
     let placement: NotePlacement
+    let close: () -> Void
     @State private var text = ""
-    @State private var saving = false
     @State private var message = ""
-    @Environment(\.dismiss) private var dismiss
+    @State private var photo: UIImage?
+    @State private var choosing = false
+    @State private var chosen: PhotosPickerItem?
+    @FocusState private var typing: Bool
+    private var name: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
     var body: some View {
-        NavigationStack {
-            Form {
-                TextField("Annotation", text: $text, axis: .vertical)
-                Text("Saved to Home and shared with connected viewers.").font(.caption)
-                if !message.isEmpty { Text(message) }
-                Button(saving ? "Saving…" : "Save to Home") {
-                    saving = peer.saveAnnotation(placement, text: text.trimmingCharacters(in: .whitespacesAndNewlines))
-                    message = saving ? "" : "Connect to Home before saving."
-                }.disabled(saving || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || text.count > 120)
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Point").themeLabel(13, .medium)
+            TextField("Note name", text: $text).focused($typing).submitLabel(.done).onSubmit(save)
+                .onChange(of: text) { _, value in controller.namePoint(value.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            HStack {
+                Button("Cancel", action: close)
+                // Only a point carried by the phone shows a photo above it.
+                if placement.at != nil {
+                    if let photo {
+                        Button { self.photo = nil } label: {
+                            HStack(spacing: 6) {
+                                Image(uiImage: photo).resizable().frame(width: 22, height: 22)
+                                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                Image(systemName: "xmark")
+                            }
+                        }
+                        .accessibilityLabel("Remove the photo")
+                    } else {
+                        Menu {
+                            Button { photo = controller.cameraPhoto() } label: { Label("Take photo", systemImage: "camera") }
+                            Button { choosing = true } label: { Label("Choose from library", systemImage: "photo.on.rectangle") }
+                        } label: {
+                            Label("Photo", systemImage: "camera.fill").themeLabel(12, .bold)
+                                .padding(.horizontal, 16).padding(.vertical, 10)
+                                .foregroundStyle(Theme.ink).background(Theme.well, in: Capsule())
+                        }
+                    }
+                }
+                Spacer()
+                Button("Save", action: save)
+                    .disabled(name.isEmpty || text.count > 120)
+                    .buttonStyle(PillButtonStyle(filled: true))
             }
-            .themeForm()
-            .navigationTitle("Add annotation")
-            .toolbar { Button("Cancel") { dismiss() }.disabled(saving) }
-            .interactiveDismissDisabled(saving)
-            .onChange(of: peer.annotationResult) { _, result in
-                guard let result, result.id == placement.id else { return }
-                saving = false
-                if result.saved { dismiss() } else { message = result.detail }
-            }
-            .onChange(of: peer.state) { _, state in
-                if state != "live" { saving = false; message = "Home disconnected. Reconnect before saving." }
+            if !message.isEmpty { Text(message).themeText(10).foregroundStyle(Theme.dim) }
+        }
+        .textFieldStyle(SoftFieldStyle())
+        .buttonStyle(PillButtonStyle())
+        .themePanel(padding: 16)
+        .onAppear { typing = true }
+        .onChange(of: photo) { _, value in controller.setPointPhoto(value) }
+        .photosPicker(isPresented: $choosing, selection: $chosen, matching: .images)
+        .onChange(of: chosen) { _, item in
+            guard let item else { return }
+            Task {
+                guard let data = try? await item.loadTransferable(type: Data.self), let picked = UIImage(data: data) else { return }
+                // Cut square from the middle and made small, like a photo from the camera.
+                let fill = 720 / min(picked.size.width, picked.size.height)
+                let size = CGSize(width: picked.size.width * fill, height: picked.size.height * fill)
+                let format = UIGraphicsImageRendererFormat()
+                format.scale = 1
+                photo = UIGraphicsImageRenderer(size: CGSize(width: 720, height: 720), format: format).image { _ in
+                    picked.draw(in: CGRect(x: (720 - size.width) / 2, y: (720 - size.height) / 2, width: size.width, height: size.height))
+                }
+                chosen = nil
             }
         }
+    }
+    private func save() {
+        guard !name.isEmpty, text.count <= 120 else { return }
+        // A point carried by the phone is fixed where it is at this moment.
+        guard let fixed = placement.at == nil ? placement : controller.lockPoint(placement) else {
+            message = "Hold still for a moment, then save again."; return
+        }
+        // Out of reach of Home, the note is kept on the phone and synced when Home is back.
+        controller.keepPoint(fixed, text: name)
+        peer.saveOrQueue(fixed, text: name)
+        close()
     }
 }
 
