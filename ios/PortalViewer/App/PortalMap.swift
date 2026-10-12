@@ -347,6 +347,8 @@ struct DeviceTrails {
     private(set) var frame: String?
     private(set) var paths = [String: [SIMD3<Float>]]()
     private var seen = [String: TrackedDevice]()
+    /// This phone's own ID, learned from Home's entry for its camera frame.
+    private var own: String?
 
     /// Forget the paths, not the devices.
     mutating func clear() {
@@ -368,6 +370,12 @@ struct DeviceTrails {
                          now: Date = Date()) -> [TrackedDevice] {
         // Positions from another frame cannot share a path.
         if self.frame != frame { paths = [:]; seen = [:]; self.frame = frame }
+        // Home may still hold this phone's previous session for a moment after a
+        // relaunch. It is this phone, not another one that then went missing.
+        if let mine = notes.compactMap(\.phone_pose).first(where: { $0.pose.from_frame_id == ownFrame }) {
+            own = "phone:" + mine.peer_id
+            seen[own!] = nil; paths[own!] = nil
+        }
         var reported = Set<String>()
         for note in notes {
             let kind: TrackedDevice.Kind, sample: RenderScene.PhonePose
@@ -378,6 +386,7 @@ struct DeviceTrails {
                   sample.pose.translation.count == 3, sample.pose.rotation_wxyz.count == 4,
                   (sample.pose.translation + sample.pose.rotation_wxyz).allSatisfy(\.isFinite) else { continue }
             let id = (kind == .robot ? "robot:" : "phone:") + sample.peer_id
+            if id == own { continue }
             let pose = sample.pose.matrix
             let at = SIMD3(pose.columns.3.x, pose.columns.3.y, pose.columns.3.z)
             var path = paths[id] ?? []

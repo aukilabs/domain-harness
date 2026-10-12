@@ -375,6 +375,7 @@ struct PovSceneView: UIViewRepresentable {
     }
     func makeUIView(context: Context) -> SCNView {
         let view = SCNView()
+        view.autoenablesDefaultLighting = true
         view.scene = scene
         view.backgroundColor = Theme.uiWell
         view.antialiasingMode = .multisampling2X
@@ -592,10 +593,10 @@ struct RobotMapLayer: UIViewRepresentable {
     let size: CGSize
 
     /// The rigged Bracketbot, loaded once off the main thread. Authored Z up in metres.
-    private static var template: SCNNode?
+    private(set) static var template: SCNNode?
     private static var waiting = [() -> Void]()
     private static var loading = false
-    private static func whenLoaded(_ ready: @escaping () -> Void) {
+    static func whenLoaded(_ ready: @escaping () -> Void) {
         if template != nil { ready(); return }
         waiting.append(ready)
         guard !loading else { return }
@@ -838,8 +839,15 @@ struct MiniMapView: View {
                 }
             }
         }
-        func badge(at: CGPoint, symbol: String?, fill: Color, name: String, resting: Bool, chosen: Bool) {
+        func badge(at point: CGPoint, lift: CGFloat = 0, symbol: String?, fill: Color, name: String, resting: Bool, chosen: Bool) {
             let strength = resting ? 0.55 : 1.0
+            // A lifted badge is a pin: it stands clear of what it marks, on a stalk.
+            let at = CGPoint(x: point.x, y: point.y - lift)
+            if lift > 0 {
+                var stalk = Path(); stalk.move(to: point); stalk.addLine(to: at)
+                context.stroke(stalk, with: .color(.black.opacity(0.8)), lineWidth: 4)
+                context.stroke(stalk, with: .color(.white.opacity(strength)), lineWidth: 2)
+            }
             let disc = CGRect(x: at.x - 17, y: at.y - 17, width: 34, height: 34)
             context.fill(Path(ellipseIn: disc), with: .color(fill.opacity(strength)))
             context.stroke(Path(ellipseIn: disc), with: .color(.white.opacity(strength)), lineWidth: 2.5)
@@ -876,7 +884,9 @@ struct MiniMapView: View {
             }
         }
         for device in tracked {
-            badge(at: view.place(device.position).point, symbol: device.kind == .phone ? "iphone" : nil,
+            // With the 3D model on, a robot's badge is a pin above the model.
+            badge(at: view.place(device.position).point, lift: device.kind == .robot && showRobotModel ? 46 : 0,
+                  symbol: device.kind == .phone ? "iphone" : nil,
                   fill: device.kind == .phone ? Color(red: 0.1, green: 0.45, blue: 0.95) : Color(red: 0.05, green: 0.6, blue: 0.3),
                   name: device.name, resting: device.state != .live, chosen: device.id == queried)
         }
@@ -1111,6 +1121,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         view.scene.rootNode.addChildNode(root)
         povScene.rootNode.addChildNode(povRoot)
         view.session.delegate = self
+        // The robot model is physically shaded; without a light it renders black.
+        view.autoenablesDefaultLighting = true
         view.session.delegateQueue = .main
         root.isHidden = true
         volumes.attach(view, root: root) { [weak self] in
@@ -1315,12 +1327,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         for note in scene.notes { addLabel(note.text, at: note.position, color: .white) }
         for note in scene.notes {
             guard let pose = note.robot_pose?.pose, pose.translation.count == 3, pose.rotation_wxyz.count == 4 else { continue }
-            // Base frame is Z up, +X forward: 0.5 m long, 0.35 m wide, 0.2 m tall, sitting on its origin.
-            let robot = SCNNode(geometry: SCNBox(width: 0.5, height: 0.35, length: 0.2, chamferRadius: 0.03))
-            robot.geometry?.firstMaterial?.diffuse.contents = UIColor.white
-            robot.geometry?.firstMaterial?.lightingModel = .constant
-            robot.simdTransform = pose.matrix * simd_float4x4(SIMD4(1, 0, 0, 0), SIMD4(0, 1, 0, 0), SIMD4(0, 0, 1, 0), SIMD4(0, 0, 0.1, 1))
-            root.addChildNode(robot)
+            root.addChildNode(robotBody(at: pose.matrix))
         }
         if let runners = scene.local_mapping?.runners, !runners.isEmpty {
             for (id, runner) in runners { addRobot(runner.robot_pose, name: String(id.suffix(8))) }
@@ -1343,12 +1350,30 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
 
     /// A robot's path as a ribbon just above the floor. A robot Home no longer
     /// reports also keeps a faint body and label where it was last seen.
+    /// The robot's 3D model standing on its base pose. Until the model has loaded,
+    /// a box the size of the chassis stands in for it.
+    private func robotBody(at base: simd_float4x4) -> SCNNode {
+        let holder = SCNNode()
+        holder.simdTransform = base
+        if let template = RobotMapLayer.template {
+            // The model and the base frame are both Z up, in metres.
+            holder.addChildNode(template.clone())
+        } else {
+            RobotMapLayer.whenLoaded {}
+            // Base frame is Z up, +X forward: 0.5 m long, 0.35 m wide, 0.2 m tall, sitting on its origin.
+            let box = SCNNode(geometry: SCNBox(width: 0.5, height: 0.35, length: 0.2, chamferRadius: 0.03))
+            box.geometry?.firstMaterial?.diffuse.contents = UIColor.white
+            box.geometry?.firstMaterial?.lightingModel = .constant
+            box.simdPosition = SIMD3(0, 0, 0.1)
+            holder.addChildNode(box)
+        }
+        return holder
+    }
+
     private func addTrail(_ robot: TrackedDevice) {
         if robot.state == .lost {
-            let body = SCNNode(geometry: SCNBox(width: 0.5, height: 0.35, length: 0.2, chamferRadius: 0.03))
-            body.geometry?.firstMaterial?.diffuse.contents = UIColor.white.withAlphaComponent(0.2)
-            body.geometry?.firstMaterial?.lightingModel = .constant
-            body.simdTransform = robot.pose * simd_float4x4(SIMD4(1, 0, 0, 0), SIMD4(0, 1, 0, 0), SIMD4(0, 0, 1, 0), SIMD4(0, 0, 0.1, 1))
+            let body = robotBody(at: robot.pose)
+            body.opacity = 0.3
             root.addChildNode(body)
             let p = robot.position
             addLabel(robot.name + " zzz", at: [p.x, p.y, p.z], color: UIColor.white.withAlphaComponent(0.3))
