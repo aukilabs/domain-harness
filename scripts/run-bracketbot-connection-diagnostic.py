@@ -6,6 +6,7 @@ with-home-credentials.py). Credentials go over SSH stdin, never into files.
 The binary must already be cross-built for ARM64 Linux on the laptop.
 """
 import argparse
+import hashlib
 import io
 import json
 import os
@@ -17,10 +18,15 @@ import tempfile
 
 ROOT = '/home/bracketbot/diagnostics/connection-peer'
 START = r'''
-import json,os,signal,socket,subprocess,sys,time
+import json,os,signal,socket,subprocess,sys,time,shutil,hashlib
 from pathlib import Path
 root=Path('/home/bracketbot/diagnostics/connection-peer')
 request=json.load(sys.stdin)
+if socket.gethostname() != 'bracketbot-'+request['robot']:
+    raise SystemExit('Robot hostname mismatch; refusing deployment')
+staged=root/'bin/auki-connection-diagnostic.next'
+if not staged.is_file() or hashlib.sha256(staged.read_bytes()).hexdigest()!=request['sha256']:
+    raise SystemExit('Staged binary is missing or differs from validated build')
 def commands():
     for proc in Path('/proc').iterdir():
         if not proc.name.isdigit(): continue
@@ -52,13 +58,17 @@ for pid,args in commands():
             if not Path('/proc',str(pid)).exists(): break
             time.sleep(.1)
         else: raise SystemExit('Previous diagnostic did not stop; leaving it alone')
-(root/'bin/auki-connection-diagnostic.next').replace(root/'bin/auki-connection-diagnostic')
+binary=root/'bin/auki-connection-diagnostic'
+if binary.exists():
+    shutil.copy2(binary,binary.with_name(binary.name+'.previous-'+str(time.time_ns())))
+(root/'bin/auki-connection-diagnostic.next').replace(binary)
 (root/'home-connection.json').write_text(json.dumps(home)+'\n')
 command=['python3',str(root/'scripts/bracketbot-python.py'),str(root/'scripts/bracketbot_slam_led_diagnostic.py')]
 if request.get('poses'): command+=['--publish-poses']
 command+=['--peer-command',str(root/'bin/auki-connection-diagnostic'),str(root/'peer.json'),
     str(root/'home-connection.json'),str(root/'diagnostic.identity')]
-if request.get('poses'): command+=['--poses']
+if request.get('portals'): command+=['--portals']
+elif request.get('poses'): command+=['--poses']
 with (root/'diagnostic.log').open('ab',buffering=0) as log:
     child=subprocess.Popen(command,cwd=root,env=env,stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True)
 (root/'diagnostic.pid').write_text(str(child.pid)+'\n')
@@ -74,7 +84,10 @@ def main():
     parser.add_argument('--home-connection', type=Path, required=True)
     parser.add_argument('--binary', type=Path, required=True)
     parser.add_argument('--poses', action='store_true', help='Expose only the typed BBOS pose Product')
+    parser.add_argument('--portals', action='store_true', help='Add one head camera and Arshak QR detector; implies poses')
+    parser.add_argument('--start-staged', action='store_true', help='Resume after a completed transfer; verifies the staged binary hash before stopping anything')
     args = parser.parse_args()
+    args.poses = args.poses or args.portals
     repo = Path(__file__).resolve().parents[1]
     credentials = {key: os.environ[key] for key in ('AUKI_ACCESS_KEY', 'AUKI_APP_SECRET')}
     home = json.loads(args.home_connection.read_text())
@@ -84,7 +97,7 @@ def main():
         parser.error('binary must be ARM64 Linux ELF')
     ssh = ['bb', '--llm', 'ssh', args.robot]
     with tempfile.TemporaryFile() as payload:
-        with tarfile.open(fileobj=payload, mode='w') as archive:
+        with tarfile.open(fileobj=payload, mode='w:gz', compresslevel=3) as archive:
             archive.add(args.binary, arcname='bin/auki-connection-diagnostic.next')
             # Only shared auth endpoints/Domain; never copy 182's routes or identity.
             source = json.loads((repo/'config/bracketbot-182.peer.json').read_text())
@@ -93,12 +106,13 @@ def main():
             entry = tarfile.TarInfo('peer.json')
             entry.size = len(config)
             archive.addfile(entry, io.BytesIO(config))
-            for name in ('bracketbot-python.py', 'bracketbot_slam_led_diagnostic.py'):
+            for name in ('bracketbot-python.py', 'bracketbot_slam_led_diagnostic.py', 'diagnostic-camera.py', 'bracketbot_capture.py'):
                 archive.add(repo/'scripts'/name, arcname='scripts/'+name)
         payload.seek(0)
-        subprocess.run(ssh+[f'mkdir -p {ROOT} && tar -xf - -C {ROOT}'], stdin=payload, check=True)
+        if not args.start_staged:
+            subprocess.run(ssh+[f'mkdir -p {ROOT} && tar -xzf - -C {ROOT}'], stdin=payload, check=True)
     subprocess.run(ssh+[shlex.join(['python3', '-c', START])],
-                   input=json.dumps({'home':home,'credentials':credentials,'poses':args.poses}).encode(), check=True)
+                   input=json.dumps({'home':home,'credentials':credentials,'poses':args.poses,'portals':args.portals,'robot':args.robot,'sha256':hashlib.sha256(args.binary.read_bytes()).hexdigest()}).encode(), check=True)
 
 
 if __name__ == '__main__':
