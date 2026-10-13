@@ -1,6 +1,6 @@
 //! Single-client C ABI. Swift owns returned strings and releases them with
 //! spatial_mobile_string_free. All peer work and cleanup stay on Tokio.
-use spatial_home::mobile::MobileClient;
+use spatial_home::mobile::{MobileClient, SignIn};
 
 /// Submit a bounded phone-local map, or null to stop sharing it.
 /// # Safety
@@ -171,6 +171,7 @@ fn runtime() -> &'static tokio::runtime::Runtime {
     })
 }
 
+/// Sign in with an Auki User email and password.
 /// # Safety
 /// Each argument must be a valid NUL-terminated UTF-8 string for the duration of
 /// this call. Inputs are copied before returning; no Swift pointers are retained.
@@ -181,7 +182,32 @@ pub unsafe extern "C" fn spatial_mobile_start(
     password: *const c_char,
     identity: *const c_char,
 ) -> i32 {
-    std::panic::catch_unwind(|| {
+    unsafe { start(profile, email, password, identity, |email, password| SignIn::User { email, password }) }
+}
+
+/// Sign in with an app key and secret, as Home does.
+/// # Safety
+/// Same contract as `spatial_mobile_start`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spatial_mobile_start_app(
+    profile: *const c_char,
+    key: *const c_char,
+    secret: *const c_char,
+    identity: *const c_char,
+) -> i32 {
+    unsafe { start(profile, key, secret, identity, |key, secret| SignIn::App { key, secret }) }
+}
+
+/// # Safety
+/// Each pointer must be a valid NUL-terminated UTF-8 string for the duration of this call.
+unsafe fn start(
+    profile: *const c_char,
+    first: *const c_char,
+    second: *const c_char,
+    identity: *const c_char,
+    sign_in: impl FnOnce(String, String) -> SignIn,
+) -> i32 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let read = |pointer: *const c_char| {
             if pointer.is_null() {
                 return None;
@@ -192,8 +218,8 @@ pub unsafe extern "C" fn spatial_mobile_start(
                 .ok()
                 .map(str::to_owned)
         };
-        let (Some(profile), Some(email), Some(password), Some(identity)) =
-            (read(profile), read(email), read(password), read(identity))
+        let (Some(profile), Some(first), Some(second), Some(identity)) =
+            (read(profile), read(first), read(second), read(identity))
         else {
             return 0;
         };
@@ -202,10 +228,10 @@ pub unsafe extern "C" fn spatial_mobile_start(
             return 0;
         }
         let client = Arc::new(MobileClient::default());
-        runtime().spawn(client.clone().run(profile, email, password, identity));
+        runtime().spawn(client.clone().run(profile, sign_in(first, second), identity));
         *slot = Some(client);
         1
-    })
+    }))
     .unwrap_or(0)
 }
 
@@ -262,38 +288,41 @@ mod tests {
             },
             0
         );
+        let null = std::ptr::null();
+        assert_eq!(unsafe { spatial_mobile_start_app(null, null, null, null) }, 0);
     }
     #[test]
     fn invalid_profile_finishes_without_network_or_credentials_in_output() {
-        let profile = CString::new("{}").unwrap();
-        let email = CString::new("test@example.invalid").unwrap();
-        let password = CString::new("never-log-this-test-password").unwrap();
-        let path = CString::new("/unused").unwrap();
-        assert_eq!(
-            unsafe {
-                spatial_mobile_start(
-                    profile.as_ptr(),
-                    email.as_ptr(),
-                    password.as_ptr(),
-                    path.as_ptr(),
-                )
-            },
-            1
-        );
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            let raw = spatial_mobile_poll();
-            assert!(!raw.is_null());
-            let text = unsafe { CStr::from_ptr(raw) }.to_str().unwrap().to_owned();
-            unsafe { spatial_mobile_string_free(raw) };
-            assert!(!text.contains("never-log"));
-            let state: serde_json::Value = serde_json::from_str(&text).unwrap();
-            if state["finished"] == true {
-                assert_eq!(state["update"]["state"], "error");
-                break;
+        // One shared client: the User and app-key sign-ins run one after the other.
+        type Start = unsafe extern "C" fn(*const c_char, *const c_char, *const c_char, *const c_char) -> i32;
+        let starts: [(Start, &str); 2] = [
+            (spatial_mobile_start, "test@example.invalid"),
+            (spatial_mobile_start_app, "test-app-key"),
+        ];
+        for (start, first) in starts {
+            let profile = CString::new("{}").unwrap();
+            let first = CString::new(first).unwrap();
+            let secret = CString::new("never-log-this-test-secret").unwrap();
+            let path = CString::new("/unused").unwrap();
+            assert_eq!(
+                unsafe { start(profile.as_ptr(), first.as_ptr(), secret.as_ptr(), path.as_ptr()) },
+                1
+            );
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                let raw = spatial_mobile_poll();
+                assert!(!raw.is_null());
+                let text = unsafe { CStr::from_ptr(raw) }.to_str().unwrap().to_owned();
+                unsafe { spatial_mobile_string_free(raw) };
+                assert!(!text.contains("never-log"));
+                let state: serde_json::Value = serde_json::from_str(&text).unwrap();
+                if state["finished"] == true {
+                    assert_eq!(state["update"]["state"], "error");
+                    break;
+                }
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            assert!(std::time::Instant::now() < deadline);
-            std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
 }
