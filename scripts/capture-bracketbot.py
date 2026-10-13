@@ -107,6 +107,45 @@ def arm_joint_positions(arms, latest, now_ns):
     return (max(stamps), positions) if positions else None
 
 
+def arm_joint_health(arms, latest, now_ns):
+    """Per-joint motor temperature (C) and current (A), keyed like the joint
+    positions, from the arm states arm_joint_positions last read."""
+    joints = {}
+    for name, (cfg, _) in arms.items():
+        d = latest.get(name)
+        if d is None or not 0 <= now_ns-timestamp(d) <= MAX_JOINT_AGE_NS:
+            continue
+        for joint, temp, current in zip(cfg.joint_names, d['temp'], d['current']):
+            if np.isfinite(temp) and np.isfinite(current):
+                joints[joint] = dict(temperature_c=round(float(temp), 1), current_a=round(float(current), 3))
+    return joints
+
+
+def battery_source(Reader):
+    """Optional drive.status reader for the battery; capture runs without it."""
+    try:
+        return Reader('drive.status', keeptime=False)
+    except Exception as e:
+        print(f'battery unavailable: {e}', file=sys.stderr, flush=True)
+        return None
+
+
+def battery_reading(reader, latest, now_ns):
+    """BBOS's battery voltage and percentage (its smoothed estimate between the
+    low and full voltages); drive.status updates slowly, so up to 30 s old."""
+    if reader is None:
+        return None
+    if reader.ready():
+        latest['battery'] = reader.data.copy()
+    d = latest.get('battery')
+    if d is None or not 0 <= now_ns-timestamp(d) <= MAX_BATTERY_AGE_NS:
+        return None
+    voltage, percent = float(d['voltage']), float(d['battery_percentage'])
+    if not (np.isfinite(voltage) and np.isfinite(percent)):
+        return None
+    return dict(voltage=round(voltage, 2), percent=round(min(max(percent, 0.), 100.), 1))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--seconds', type=float, default=0, help='Bounded capture for validation')
@@ -186,7 +225,8 @@ def main():
     parent = os.getppid()
     mailbox = CaptureMailbox()
     arms, latest_arms = arm_joint_sources(Config, Reader), {}
-    last_image = last_mapping = last_preview = last_status = last_joints = 0
+    battery = battery_source(Reader)
+    last_image = last_mapping = last_preview = last_status = last_joints = last_health = 0
     right_eye = False
     wrist_preview = {}
     started = time.monotonic()
@@ -258,6 +298,12 @@ def main():
                 if joints:
                     emit(dict(kind='joints', timestamp_ns=joints[0], positions=joints[1]))
                 last_joints = monotonic
+            if monotonic-last_health >= 1:
+                now = time.time_ns()
+                joint_health, power = arm_joint_health(arms, latest_arms, now), battery_reading(battery, latest_arms, now)
+                if joint_health or power:
+                    emit(dict(kind='health', timestamp_ns=now, joints=joint_health, battery=power))
+                last_health = monotonic
             if monotonic-last_status >= 1:
                 if hashlib.sha256(source.read_bytes()).hexdigest() != signature:
                     raise NewSessionRequired('stereo calibration changed')
@@ -292,6 +338,7 @@ def main():
 
 MAX_CAMERA_AGE_NS = 800_000_000
 MAX_JOINT_AGE_NS = 1_000_000_000
+MAX_BATTERY_AGE_NS = 30_000_000_000
 ARMS = ('arm_left', 'arm_right')
 if __name__ == '__main__':
     main()

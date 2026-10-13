@@ -16,7 +16,7 @@ fn sample(owner:&str, home:&str, frame:&str) -> Sample {
             target_frame:Some(reference.scenegraph.map.frame.clone()),validity:Validity::Valid,reason:"aligned".into(),
             transform:Some(auki_scenegraph::RigidTransform {from_frame_id:native.into(),to_frame_id:frame.into(),translation:[10.,0.,0.],rotation_wxyz:[1.,0.,0.,0.]}),
             evidence:Some(Evidence {portal:anchor.anchor_id.clone(),capture_timestamp_ns:10,clock,
-                provenance:Default::default(),reference_peer_id:home.into(),reference_anchor:anchor})}, joints:None }
+                provenance:Default::default(),reference_peer_id:home.into(),reference_anchor:anchor})}, joints:None, health:None }
 }
 #[test]
 fn robot_joints_ride_along_with_presence_and_must_be_finite() -> Result<()> {
@@ -89,4 +89,27 @@ async fn robot_presence_arrives_without_a_geometry_contribution() -> Result<()> 
     }.await;
     pair.shutdown().await?;
     result
+}
+#[test]
+fn robot_health_rides_along_with_presence_and_must_be_sane() -> Result<()> {
+    use spatial_home::robot_presence::{Battery,Health,JointHealth};
+    let dir=tempfile::tempdir()?;
+    let scenes=support::seeded_local_scenes(dir.path())?;
+    let reference=scenes.snapshot("humanoid-hub-conference")?;
+    let frame=&reference.scenegraph.map.frame.id;
+    let now=Instant::now(); let mut presence=Presence::default();
+    let mut s=sample("robot","home",frame);
+    s.health=Some(Health {timestamp_ns:19,
+        joints:[("lj0".to_string(),JointHealth {temperature_c:45.,current_a:2.04})].into(),
+        battery:Some(Battery {voltage:18.48,percent:32.2})});
+    presence.accept("robot","home",frame,Update {sample:Some(s.clone())},now)?;
+    let health=&presence.snapshot(now,frame)["poses"][0]["health"];
+    assert_eq!(health["joints"]["lj0"]["temperature_c"],45.);
+    assert_eq!(health["battery"]["percent"],32.2);
+    for bad in [|h:&mut Health| h.battery.as_mut().unwrap().percent=140.,
+                |h:&mut Health| h.joints.get_mut("lj0").unwrap().current_a=f64::NAN] {
+        let mut b=s.clone(); b.timestamp_ns=21; bad(b.health.as_mut().unwrap());
+        assert!(presence.accept("robot","home",frame,Update {sample:Some(b)},now).is_err());
+    }
+    Ok(())
 }

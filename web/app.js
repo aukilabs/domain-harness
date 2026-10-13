@@ -11,6 +11,7 @@ import { createPipWindow } from './pip-window.js';
 import { moveMapCamera } from './view-camera.js';
 import { createAttachedCamera } from './attached-camera.js';
 import { createRobotModel } from './robot-model.js';
+import { applyRobotHealth } from './robot-health.js';
 const $=id=>document.getElementById(id);
 const chatForm=$('scene-chat-form'),chatInput=$('scene-chat-input'),chatStatus=$('scene-chat-status');
 chatForm.querySelector('button').disabled=true;
@@ -524,7 +525,7 @@ function setGlyphModel(glyph,model){
  if(model!=='bracketbot')return;
  createRobotModel().then(robot=>{
   if(glyph.model!=='bracketbot'||glyph.robot)return;
-  glyph.robot=robot;glyph.group.add(robot.root);glyph.body.visible=false;applyJoints(glyph);
+  glyph.robot=robot;glyph.group.add(robot.root);glyph.body.visible=false;applyJoints(glyph);applyRobotHealth(glyph,glyph.health);
  }).catch(e=>console.warn('Robot model unavailable; keeping pose glyph',e));
 }
 // URDF joint positions published next to the pose; joints left out keep their last value.
@@ -581,6 +582,7 @@ function renderRunners(entries){
   if(state.pose){glyph.group.position.fromArray(state.pose.translation);glyph.group.quaternion.fromArray(state.pose.rotation_xyzw);}
   setGlyphModel(glyph,state.model||null);
   if(state.joints&&state.joints!==glyph.joints){glyph.joints=state.joints;applyJoints(glyph);}
+  glyph.health=state.health||null;applyRobotHealth(glyph,glyph.health);
   glyph.material.color.set(state.status==='live'?glyph.color:'#84908f');glyph.material.opacity=state.status==='live'?.82:.35;glyph.arrow.setColor(state.status==='live'?glyph.color:'#84908f');
   const row=list.children[i];row.dataset.status=state.status;row.dataset.visible=String(glyph.group.visible);
   row.dataset.position=state.pose?JSON.stringify(glyph.group.position.toArray()):'';row.dataset.rotation=state.pose?JSON.stringify(glyph.group.quaternion.toArray()):'';
@@ -636,13 +638,13 @@ async function refreshRunner(){
   const present=(current?.notes||[]).map(n=>n.robot_pose).filter(r=>r?.pose&&r.peer_id);
   if(!present.length){hideRobots();$('runner-status').textContent='No robot aligned to this scene';return;}
   renderRunners(present.map(r=>({key:'presence:'+r.peer_id,name:r.name||'Robot '+r.peer_id.slice(-6),
-   state:{status:(r.received_age_ms??0)<3000?'live':'stale',pose:presenceGlyphPose(r),model:robotModel(r.native_pose?.to_frame_id),joints:r.joints?.positions}})));
+   state:{status:(r.received_age_ms??0)<3000?'live':'stale',pose:presenceGlyphPose(r),model:robotModel(r.native_pose?.to_frame_id),joints:r.joints?.positions,health:r.health}})));
   $('runner-status').textContent=present.length+' robot(s) aligned to this scene';
   return;
  }
  if(activeMap.startsWith('peer-scene:')){
   const pose=robotGlyphPose(current?.local_mapping?.robot_pose);
-  showRunner({status:pose&&performance.now()-(current?.receivedAt||0)<5000?'live':'stale',pose:pose||null,model:robotModel(current?.frame),joints:current?.local_mapping?.robot_joints?.positions,detail:'Pose in the publishing robot’s map frame'});return;
+  showRunner({status:pose&&performance.now()-(current?.receivedAt||0)<5000?'live':'stale',pose:pose||null,model:robotModel(current?.frame),joints:current?.local_mapping?.robot_joints?.positions,health:current?.local_mapping?.robot_health,detail:'Pose in the publishing robot’s map frame'});return;
  }
  if(isSimulation()){
   const local=current?.local_mapping;
@@ -658,7 +660,7 @@ async function refreshRunner(){
   const local=current?.local_mapping, remote=current?.remote_status;
   const fresh=remote?.status==='connected' && remote.age_ms<10000 && performance.now()-(current?.receivedAt||0)<5000;
   if(activeMap==='home-live'&&local?.runners){showHomeRunners(local,fresh);return;}
-  showRunner({status:fresh&&local?.robot_pose?'live':'stale',pose:robotGlyphPose(local?.robot_pose),model:robotModel(current?.frame),joints:local?.robot_joints?.positions,detail:local?(activeMap==='home-live'?'Pose in Home’s observed portal frame':current?.display_alignment?'Display pose uses the Catalog transform; robot pose remains native':'Pose in the robot boot frame'):'Waiting for independent robot pose'});return;
+  showRunner({status:fresh&&local?.robot_pose?'live':'stale',pose:robotGlyphPose(local?.robot_pose),model:robotModel(current?.frame),joints:local?.robot_joints?.positions,health:local?.robot_health,detail:local?(activeMap==='home-live'?'Pose in Home’s observed portal frame':current?.display_alignment?'Display pose uses the Catalog transform; robot pose remains native':'Pose in the robot boot frame'):'Waiting for independent robot pose'});return;
  }
  if(runnerBusy)return;runnerBusy=true;try{const state=await api('/api/runner-pose');lastRunnerReply=performance.now();if(!(isLocalScene()||isRunner()||isSimulation()||activeMap==='home-live'||activeMap.startsWith('peer-scene:')))showRunner(state);}catch{if(!(isLocalScene()||isRunner()||isSimulation()||activeMap==='home-live'||activeMap.startsWith('peer-scene:')))showRunner({...runner,status:'unavailable',pose:null,detail:'Home telemetry connection lost'});}finally{runnerBusy=false;}}
 runnerCatalog();refreshRunner();setInterval(refreshRunner,250);

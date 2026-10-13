@@ -102,6 +102,8 @@ pub enum SensorEvent {
         timestamp_ns: u64,
         positions: BTreeMap<String, f64>,
     },
+    /// Joint motor temperatures/currents and battery. Presentation only.
+    Health(crate::robot_presence::Health),
 }
 impl ContractType for SensorEvent {
     const DATATYPE: &'static str = "spatial-harness.local-sensors/v1";
@@ -288,6 +290,7 @@ pub struct LocalMap {
     pending: Vec<Observation<SensorEvent>>,
     pub latest_pose: Option<(u64, Pose)>,
     pub latest_joints: Option<(u64, BTreeMap<String, f64>)>,
+    pub latest_health: Option<crate::robot_presence::Health>,
     correction: Option<(u64, i64)>,
     scan_diagnostics: ScanDiagnostics,
     last_integration: Option<std::time::Instant>,
@@ -618,6 +621,7 @@ impl LocalMap {
             pending: vec![],
             latest_pose: None,
             latest_joints: None,
+            latest_health: None,
             correction: None,
             scan_diagnostics: Default::default(),
             last_integration: None,
@@ -731,7 +735,8 @@ impl LocalMap {
             "retained_depth_timestamps":self.retained_depth.iter().map(|d|d.observation.timestamp_ns).collect::<std::collections::BTreeSet<_>>(),
             "camera_scans":self.cameras.iter().map(|(frame,c)| (frame.clone(), c.scan_status.clone())).collect::<BTreeMap<_,_>>(),
             "robot_pose":self.latest_pose.as_ref().map(|(t,p)|json!({"capture_timestamp_ns":t,"clock":self.clock,"pose":p,"from_frame":self.contract.from_frame,"frame":self.frame})),
-            "robot_joints":self.latest_joints.as_ref().map(|(t,p)|json!({"capture_timestamp_ns":t,"positions":p}))},
+            "robot_joints":self.latest_joints.as_ref().map(|(t,p)|json!({"capture_timestamp_ns":t,"positions":p})),
+            "robot_health":self.latest_health},
             "landmark_components":[crate::landmarks::ComponentCapabilities { component: self.processor.reference().clone(), landmark_types: Some(vec![crate::landmarks::PORTAL.into()]) }],
             "landmark_observations":self.landmark_capture.product().reference(),
             "frames":[self.contract.from_frame,self.contract.to_frame],"clocks":[crate::model::clock_entry(&self.sensor_owner,&self.contract.session_id)]})
@@ -871,6 +876,10 @@ impl LocalMap {
                     "joint positions must be finite (at most 64)"
                 );
                 self.latest_joints = Some((timestamp_ns, positions));
+            }
+            SensorEvent::Health(health) => {
+                health.validate()?;
+                self.latest_health = Some(health);
             }
             event => {
                 let t = match &event {

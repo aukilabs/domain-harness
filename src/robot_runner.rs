@@ -242,6 +242,7 @@ pub async fn run(hardware: Hardware) -> Result<()> {
                 let mut last_publish = Instant::now() - Duration::from_secs(1);
                 let mut last_odom = Instant::now();
                 let mut last_joints = Instant::now();
+                let mut last_health = Instant::now();
                 let mut capture_status = String::from("Starting sensor capture");
                 let mut pending_home = None;
                 let mut origin_after=0;
@@ -256,6 +257,7 @@ pub async fn run(hardware: Hardware) -> Result<()> {
                         }
                         let odom = matches!(event, SensorEvent::Odometry { .. } | SensorEvent::MapCorrection { .. } | SensorEvent::TrajectoryCorrection { .. });
                         let joints = matches!(event, SensorEvent::Joints { .. });
+                        let health = matches!(event, SensorEvent::Health(_));
                         match local.accept(event) {
                             Ok(()) => {
                                 if odom {
@@ -263,6 +265,9 @@ pub async fn run(hardware: Hardware) -> Result<()> {
                                 }
                                 if joints {
                                     last_joints = Instant::now();
+                                }
+                                if health {
+                                    last_health = Instant::now();
                                 }
                             }
                             Err(e) => {
@@ -274,6 +279,9 @@ pub async fn run(hardware: Hardware) -> Result<()> {
                     // Joints from an arm reader that stopped would freeze the model.
                     if last_joints.elapsed() > Duration::from_secs(3) {
                         local.latest_joints = None;
+                    }
+                    if last_health.elapsed() > Duration::from_secs(5) {
+                        local.latest_health = None;
                     }
                     if let Ok(home) = home_receive.try_recv() {
                         if home.1.scenegraph.anchors.is_empty() && pending_home.as_ref().is_none_or(|old:&(String,auki_scenegraph::MapSnapshot)|old.1!=home.1) {

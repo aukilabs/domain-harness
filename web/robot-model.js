@@ -110,6 +110,8 @@ export async function createRobotModel() {
  return {
   root,
   joints: [...joints.keys()],
+  // The moving frame of a joint, for attaching things that follow it.
+  anchor(name) { return joints.get(name)?.motion ?? null; },
   setJoint(name, value) {
    const j = joints.get(name);
    if (!j || !Number.isFinite(value)) return false;

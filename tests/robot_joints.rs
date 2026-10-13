@@ -40,3 +40,22 @@ fn non_finite_joint_positions_are_rejected() -> Result<()> {
     assert!(map.latest_joints.is_none());
     Ok(())
 }
+
+#[test]
+fn joint_health_and_battery_are_published_for_the_viewer() -> Result<()> {
+    let mut map = map()?;
+    assert!(map.metadata()["local_mapping"]["robot_health"].is_null());
+    // The adapter's JSON line, as the runner deserializes it.
+    let event: SensorEvent = serde_json::from_str(
+        r#"{"kind":"health","timestamp_ns":9,"joints":{"lj0":{"temperature_c":45.0,"current_a":2.04}},"battery":{"voltage":18.48,"percent":32.2}}"#,
+    )?;
+    map.accept(event)?;
+    let health = &map.metadata()["local_mapping"]["robot_health"];
+    assert_eq!(health["joints"]["lj0"]["temperature_c"], 45.0);
+    assert_eq!(health["battery"]["voltage"], 18.48);
+    let bad: SensorEvent = serde_json::from_str(
+        r#"{"kind":"health","timestamp_ns":10,"joints":{},"battery":{"voltage":18.0,"percent":-5.0}}"#,
+    )?;
+    assert!(map.accept(bad).is_err());
+    Ok(())
+}
