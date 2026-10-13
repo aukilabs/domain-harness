@@ -1656,6 +1656,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         root.childNodes.filter { $0 !== floating && $0 !== crayonRoot }.forEach { $0.removeFromParentNode() }
         // A stroke drawn here is dropped once Home's own copy of it arrives.
         let saved = Set(map.render?.paths?.items.map(\.id) ?? [])
+        erasing.formIntersection(saved)
         crayonRoot.childNodes.filter { saved.contains($0.name ?? "") }.forEach { $0.removeFromParentNode() }
         if crayonRoot.parent == nil { root.addChildNode(crayonRoot) }
         for portal in map.scenegraph.anchors.values.sorted(by: { $0.anchor_id < $1.anchor_id }) {
@@ -2242,8 +2243,10 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         shown.forEach { $0.isHidden = true }
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         onErase(id) { [weak self] erased in
-            self?.erasing.remove(id)
+            // An erased path stays marked until Home's scene stops listing it,
+            // so a finger still on it does not ask twice.
             guard !erased else { return }
+            self?.erasing.remove(id)
             shown.forEach { $0.isHidden = false }
             self?.showToast("Home did not erase that path.", good: false)
         }
