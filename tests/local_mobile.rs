@@ -66,6 +66,8 @@ async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated(
         )?;
         let home = scenes.connection("humanoid-hub-conference", HomeConnection::direct(&pair.a))?;
         let nacs = scenes.connection("nacs", HomeConnection::direct(&pair.a))?;
+        let stroke=spatial_home::scene_paths::Stroke { id:uuid::Uuid::new_v4().to_string(),title:"Walk here".into(),color:"#ffca55".into(),width_m:0.035,segments:vec![vec![[0.,0.,0.],[1.,0.,1.]]] };
+        scenes.paths.change("humanoid-hub-conference",&home.frame,&stroke.id,Some(stroke.clone()))?;
         let semantic_volume = spatial_home::semantic_volumes::Volume {
             id: uuid::Uuid::new_v4().to_string(), title: "Meeting area".into(),
             description: "Team gathering space".into(), center: [1., 1., 2.], size: [2., 2., 3.], yaw: 0.,
@@ -88,6 +90,24 @@ async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated(
         tokio::time::sleep(Duration::from_millis(1100)).await;
         for publisher in &mut publishers { publisher.tick()?; }
         let volume_view = read(&pair.b, &home).await?;
+        assert_eq!(volume_view["render"]["paths"]["items"][0]["id"],stroke.id);
+        assert_eq!(volume_view["render"]["paths_product"]["product_id"],"local-scene:humanoid-hub-conference:paths");
+        // A second peer can consume paths directly as an SDK Product.
+        let client = auki_component_protocol::ComponentProtocolClient::new(pair.b.protocols());
+        let reference = serde_json::from_value(volume_view["render"]["paths_product"].clone())?;
+        let mut subscription = client.subscribe_product_exact(
+            pair.a.peer_id(), pair.a.listen_addresses()[0].clone(), reference,
+            auki_component_protocol::ObservationStart::LatestExisting,
+            auki_components::BufferLimits::entries(1),
+            |p: &spatial_home::scene_paths::Paths| serde_json::to_vec(p).unwrap().len(),
+        ).await?;
+        let Some(auki_component_protocol::RemoteObservationEvent::Observation(observation)) =
+            tokio::time::timeout(Duration::from_secs(10), subscription.next()).await??
+        else { panic!("missing retained paths Product"); };
+        assert_eq!(observation.payload.frame, home.frame);
+        assert_eq!(observation.payload.items, vec![stroke.clone()]);
+        subscription.close().await?;
+        assert!(read(&pair.b,&nacs).await?["render"]["paths"]["items"].as_array().unwrap().is_empty());
         assert_eq!(volume_view["render"]["volumes"].as_array().unwrap().len(), 2);
         assert!(volume_view["render"]["volumes"].as_array().unwrap().iter().any(|v|v["id"]==volume.id));
         assert!(read(&pair.b, &nacs).await?["render"]["volumes"].as_array().unwrap().is_empty());

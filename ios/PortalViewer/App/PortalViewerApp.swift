@@ -1583,6 +1583,31 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             root.addChildNode(node)
         }
         renderScene(map.render)
+        if let paths = map.render?.paths, paths.frame == map.scenegraph.map.frame.id {
+            for stroke in paths.items where stroke.width_m.isFinite && stroke.width_m >= 0.005 && stroke.width_m <= 0.25 {
+                let color = UInt32(stroke.color.dropFirst(), radix: 16) ?? 0xffca55
+                let material = SCNMaterial()
+                material.diffuse.contents = UIColor(red: CGFloat((color >> 16) & 255)/255,
+                    green: CGFloat((color >> 8) & 255)/255, blue: CGFloat(color & 255)/255, alpha: 1)
+                material.lightingModel = .constant
+                for segment in stroke.segments {
+                    for (a, b) in zip(segment, segment.dropFirst()) where a.count == 3 && b.count == 3 {
+                        guard (a+b).allSatisfy({ $0.isFinite }) else { continue }
+                        let start = SIMD3<Float>(a[0], a[1], a[2]), end = SIMD3<Float>(b[0], b[1], b[2])
+                        let length = simd_length(end-start)
+                        guard length > 0.00001 else { continue }
+                        let cylinder = SCNCylinder(radius: CGFloat(stroke.width_m/2), height: CGFloat(length))
+                        cylinder.radialSegmentCount = 8
+                        cylinder.materials = [material]
+                        let node = SCNNode(geometry: cylinder)
+                        node.name = "scene-path:" + stroke.id
+                        node.simdPosition = (start+end)/2
+                        node.simdOrientation = simd_quatf(from: SIMD3<Float>(0,1,0), to: (end-start)/length)
+                        root.addChildNode(node)
+                    }
+                }
+            }
+        }
         trackedDevices.filter { $0.kind == .robot }.forEach(addTrail)
         for volume in map.render?.volumes ?? [] where volume.valid {
             root.addChildNode(volume.node())

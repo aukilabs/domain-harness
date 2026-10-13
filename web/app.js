@@ -4,6 +4,7 @@ import { createArOverlay } from './ar.js';
 import { createPhoneTrails, cameraShape } from './phone-trails.js';
 import { createSemanticVolumes, legacyVolumesForView } from './semantic-volumes.js';
 import { createMap2D } from './map-2d.js';
+import { createCrayon } from './crayon.js';
 import { createGhostCamera } from './ghost-camera.js';
 import { createNoteBubble } from './note-bubble.js';
 import { createPipWindow } from './pip-window.js';
@@ -80,7 +81,8 @@ const camera=new THREE.PerspectiveCamera(42,1,.01,100);
 const renderer=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true});renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.1;
 $('canvas').append(renderer.domElement);renderer.domElement.setAttribute('aria-label','3D voxel map');
 const controls=new OrbitControls(camera,renderer.domElement);controls.enableDamping=true;controls.minDistance=1.2;controls.maxDistance=60;controls.maxPolarAngle=Math.PI*.49;
-const ghostCamera=createGhostCamera({camera,controls,canvas:renderer.domElement,enabled:()=>!map2D.isActive(),onMove:()=>{if(attachedCamera.isActive())attachedCamera.detach();}});
+let crayon=null;
+const ghostCamera=createGhostCamera({camera,controls,canvas:renderer.domElement,enabled:()=>!map2D.isActive()&&!crayon?.isActive(),onMove:()=>{if(attachedCamera.isActive())attachedCamera.detach();}});
 let activeMap='demo',current=null,busy=false,refreshing=false,lastScene=null,selectable=[],selectedNoteId=null,deletingNoteId=null,selectedSpatialNode=null,spatialSignature='';
 let homeOffline=false,catalogInitialized=false;
 function isLocalScene(map=activeMap){return map.startsWith('local:');}
@@ -158,6 +160,10 @@ const sun=new THREE.DirectionalLight(0xffffff,2.4);sun.position.set(-3,7,4);sun.
 const ground=new THREE.Mesh(new THREE.PlaneGeometry(200,200),new THREE.MeshStandardMaterial({color:'#101014',roughness:1}));ground.rotation.x=-Math.PI/2;ground.position.y=-.15;ground.receiveShadow=true;scene.add(ground);
 const grid=new THREE.GridHelper(6,30,0x4f8ef7,0x24242b);grid.position.y=-.14;grid.material.transparent=true;grid.material.opacity=.28;scene.add(grid);
 const groups=Object.fromEntries(['voxels','portals','objects','rays','notes'].map(k=>[k,new THREE.Group()]));Object.values(groups).forEach(g=>scene.add(g));
+crayon=createCrayon({button:$('crayon'),canvas:renderer.domElement,camera,controls,scene,voxels:groups.voxels,
+ state:()=>({map:activeMap,frame:current?.frame,paths:current?.paths,editable:isLocalScene()&&!!current&&!map2D.isActive()}),
+ save:async(context,stroke)=>{const result=await api('/api/paths?scene='+encodeURIComponent(context.map),{frame:context.frame,stroke});if(activeMap===context.map&&current?.frame===context.frame)current.paths=result;lastScene=null;return result;},
+ remove:async(context,id)=>{const result=await api('/api/paths/'+encodeURIComponent(id)+'?scene='+encodeURIComponent(context.map),undefined,'DELETE');if(activeMap===context.map&&current?.frame===context.frame)current.paths=result;lastScene=null;return result;}});
 for(const input of document.querySelectorAll('[data-layer]'))input.onchange=()=>{groups[input.dataset.layer].visible=input.checked;};
 
 const boxGeometry=new THREE.BoxGeometry(1,1,1), cubeMaterial=new THREE.MeshStandardMaterial({roughness:.82,metalness:0});
@@ -181,6 +187,7 @@ function build(data){
  map2D.update(data);
  semanticVolumes.update(activeMap,data);
  const first=current===null||current?.frame!==data.frame;data.receivedAt=performance.now();current=data;selectable=[];Object.values(groups).forEach(clear);
+ crayon.update();
  const voxels=new THREE.InstancedMesh(boxGeometry,cubeMaterial,data.voxels.length);voxels.castShadow=true;voxels.receiveShadow=true;
  const matrix=new THREE.Matrix4(),color=new THREE.Color();
  data.voxels.forEach((v,i)=>{const scale=data.voxel_size;matrix.compose(new THREE.Vector3(...v.center),new THREE.Quaternion(...(data.voxel_rotation_xyzw||[0,0,0,1])),new THREE.Vector3(scale,scale,scale));voxels.setMatrixAt(i,matrix);const furnishing=data.synthetic_layout?.boxes.findLast(b=>v.center.every((n,j)=>n>=b.min[j]-.051&&n<=b.max[j]+.051));if(v.linear_rgb){color.setRGB(...v.linear_rgb,THREE.LinearSRGBColorSpace);}else color.set(furnishing?.color||(v.center[1]<0?'#c6cbbb':'#a7b4ac'));voxels.setColorAt(i,color);});
@@ -571,6 +578,7 @@ $('label-dialog-form').onsubmit=async e=>{e.preventDefault();if(!placement||labe
  catch(e){labelStatus.textContent=e.message;labelSave.disabled=false;}
 };
 renderer.domElement.addEventListener('contextmenu',e=>{e.preventDefault();
+ if(crayon.isActive())return;
  if(!current){beginLabel(null,'Wait for Home’s map to load.');return;}
  const rect=renderer.domElement.getBoundingClientRect(),ray=new THREE.Raycaster();
  ray.setFromCamera(new THREE.Vector2((e.clientX-rect.left)/rect.width*2-1,1-(e.clientY-rect.top)/rect.height*2),camera);

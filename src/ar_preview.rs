@@ -290,7 +290,7 @@ fn project_scene(
     project_geometry(&scene.frame, scene.voxels.definition.grid().voxel_size_m.0,
         if include_voxels { crate::model::occupied(&scene.voxels)? } else { vec![] },
         crate::notes::from_registries(&scene.registries, &scene.frame)?.items.into_iter().map(serde_json::to_value).collect::<std::result::Result<Vec<_>,_>>()?,
-        camera_to_map, calibration)
+        camera_to_map, calibration, None)
 }
 
 /// Project Home-owned geometry already expressed in its displayed scene frame.
@@ -298,11 +298,12 @@ pub fn project_view(view: &Value, camera_to_map: &Pose, calibration: &Value) -> 
     project_geometry(view["frame"].as_str().ok_or_else(|| anyhow!("Home scene frame missing"))?,
         view["voxel_size"].as_f64().ok_or_else(|| anyhow!("Home voxel size missing"))?,
         serde_json::from_value(view["voxels"].clone())?,
-        serde_json::from_value(view["notes"].clone())?, camera_to_map, calibration)
+        serde_json::from_value(view["notes"].clone())?, camera_to_map, calibration,
+        if view["paths"].is_object() {Some(serde_json::from_value(view["paths"].clone())?)}else{None})
 }
 
 fn project_geometry(frame: &str, voxel_size: f64, voxels: Vec<crate::raycast::Voxel>,
-    notes_in_map: Vec<Value>, camera_to_map: &Pose, calibration: &Value) -> Result<Value> {
+    notes_in_map: Vec<Value>, camera_to_map: &Pose, calibration: &Value, paths:Option<crate::scene_paths::Paths>) -> Result<Value> {
     use auki_geometry::pnp::Vector3;
     let camera = camera_model(calibration)?;
     let lens = calibration["distortion_model"].as_str().unwrap_or("");
@@ -398,8 +399,23 @@ fn project_geometry(frame: &str, voxel_size: f64, voxels: Vec<crate::raycast::Vo
             );
         }
     }
+    let mut path_segments=Vec::new();
+    if let Some(paths)=paths {
+        paths.validate(frame)?;
+        for stroke in paths.items { for segment in stroke.segments { for pair in segment.windows(2) {
+            let mut ends:[[f64;3];2]=std::array::from_fn(|i|std::array::from_fn(|r|matrix[r][3]+(0..3).map(|j|matrix[r][j]*pair[i][j]).sum::<f64>()));
+            for (plane,near) in [(0.03,true),(40.,false)] {
+                let outside=|v:f64| if near {v<plane}else{v>plane};
+                if outside(ends[0][2]) && outside(ends[1][2]) {ends=[[0.;3];2];break;}
+                for i in 0..2 {if outside(ends[i][2]) {let a=ends[i];let b=ends[1-i];let t=(plane-a[2])/(b[2]-a[2]);ends[i]=std::array::from_fn(|j|a[j]+t*(b[j]-a[j]));}}
+            }
+            if ends[0][2]<=0. || ends[1][2]<=0. {continue;}
+            let pixels:Option<Vec<_>>=ends.iter().map(|p|project_camera_point(&camera,lens,Vector3::new(p[0],p[1],p[2])).map(|uv|[uv.x,uv.y,p[2]])).collect();
+            if let Some(points)=pixels {path_segments.push(json!({"id":stroke.id,"color":stroke.color,"width_m":stroke.width_m,"points":points}));}
+        }}}
+    }
     Ok(
-        json!({"status":"ready","frame":frame,"projection":"sdk-camera","lens_model":lens,"vertices":vertices,"voxel_count":count,"notes":notes}),
+        json!({"status":"ready","frame":frame,"projection":"sdk-camera","lens_model":lens,"vertices":vertices,"voxel_count":count,"notes":notes,"path_segments":path_segments}),
     )
 }
 

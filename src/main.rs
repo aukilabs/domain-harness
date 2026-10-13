@@ -374,6 +374,27 @@ async fn scene(State(s): State<Shared>) -> ApiResult {
 struct VolumeQuery { scene: String }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct PathWrite { frame: String, stroke: spatial_home::scene_paths::Stroke }
+async fn get_paths(State(s):State<Shared>,axum::extract::Query(q):axum::extract::Query<VolumeQuery>)->ApiResult {
+    let (key,frame)=volume_context(&s,&q.scene)?;
+    Ok(Json(json!(s.local_scenes.paths.get(&key,&frame)?)))
+}
+async fn create_path(State(s):State<Shared>,headers:HeaderMap,axum::extract::Query(q):axum::extract::Query<VolumeQuery>,Json(value):Json<PathWrite>)->ApiResult {
+    local_write(&headers)?;
+    if !q.scene.starts_with("local:") { return Err(anyhow::anyhow!("Choose a local Home scene to draw").into()); }
+    let (key,frame)=volume_context(&s,&q.scene)?;
+    if frame!=value.frame { return Err(anyhow::anyhow!("Scene frame changed; redraw the path").into()); }
+    let id=value.stroke.id.clone();
+    Ok(Json(json!(s.local_scenes.paths.change(&key,&frame,&id,Some(value.stroke))?)))
+}
+async fn delete_path(State(s):State<Shared>,headers:HeaderMap,axum::extract::Path(id):axum::extract::Path<String>,axum::extract::Query(q):axum::extract::Query<VolumeQuery>)->ApiResult {
+    local_write(&headers)?;
+    if !q.scene.starts_with("local:") { return Err(anyhow::anyhow!("Choose a local Home scene").into()); }
+    let (key,frame)=volume_context(&s,&q.scene)?;
+    Ok(Json(json!(s.local_scenes.paths.change(&key,&frame,&id,None)?)))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct VolumeWrite {
     frame: String,
     volume: Option<spatial_home::semantic_volumes::Volume>,
@@ -1343,6 +1364,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/semantic-volumes/{id}", axum::routing::patch(update_volume).delete(delete_volume))
         .route("/semantic-volumes.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/semantic-volumes.js")) }))
         .route("/map-2d.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/map-2d.js")) }))
+        .route("/crayon.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/crayon.js")) }))
         .route("/ghost-camera.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/ghost-camera.js")) }))
         .route("/note-bubble.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/note-bubble.js")) }))
         .route("/pip-window.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/pip-window.js")) }))
@@ -1367,6 +1389,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/domain-snapshot", get(domain_snapshot))
         .route("/api/fixtures", get(fixture))
         .route("/api/portal-sizes", get(portal_sizes))
+        .route("/api/paths", get(get_paths).post(create_path))
+        .route("/api/paths/{id}", axum::routing::delete(delete_path))
         .route("/api/landmarks", get(landmark_catalog))
         .route(
             "/api/fiducials",

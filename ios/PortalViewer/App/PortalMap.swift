@@ -151,6 +151,18 @@ struct RenderScene: Decodable, Equatable {
     let objects: [ObjectLabel]
     let notes: [Note]
     var volumes: [SemanticVolume]? = nil
+    var paths: Paths? = nil
+    struct Paths: Decodable, Equatable {
+        let frame: String
+        let items: [Stroke]
+    }
+    struct Stroke: Decodable, Equatable {
+        let id: String
+        let title: String
+        let color: String
+        let width_m: Float
+        let segments: [[[Float]]]
+    }
     /// Where Home places this scene on the Earth, once any phone has told it.
     var geo: HomeGeo? = nil
     let local_mapping: Mapping?

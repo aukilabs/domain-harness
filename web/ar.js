@@ -16,10 +16,11 @@ export function createArOverlay(canvas){
  const material=new THREE.MeshBasicMaterial({transparent:true,opacity:.42,depthWrite:false,vertexColors:true,side:THREE.DoubleSide});
  const depth=new THREE.MeshBasicMaterial({colorWrite:false,side:THREE.DoubleSide});
  const labels=new THREE.Scene(),labelCamera=new THREE.OrthographicCamera(-1,1,1,-1,0,2);labelCamera.position.z=1;
- let mesh=null;
+ let mesh=null;const paths=new THREE.Group();
  function clearLabels(){for(const child of [...labels.children]){labels.remove(child);child.material.map.dispose();child.material.dispose();}}
  function hide(){canvas.hidden=true;canvas.dataset.voxelCount='0';canvas.dataset.noteCount='0';clearLabels();renderer.clear();}
  function show(frame){
+  for(const child of [...paths.children]){child.geometry.dispose();child.material.dispose();paths.remove(child);}scene.remove(paths);
   const ar=frame.ar;if(ar?.status!=='ready')throw Error('Calibrated AR frame unavailable');
   if(mesh){scene.remove(mesh);if(mesh.isInstancedMesh)mesh.dispose();else mesh.geometry.dispose();}
   let renderCamera=camera;
@@ -48,6 +49,8 @@ export function createArOverlay(canvas){
   scene.add(mesh);
   // Draw the closest voxel surface only, avoiding stacked transparent cube faces.
   renderer.clear();scene.overrideMaterial=depth;renderer.render(scene,renderCamera);scene.overrideMaterial=null;renderer.render(scene,renderCamera);
+  for(const segment of ar.path_segments||[]){const positions=segment.points.flatMap(([u,v,z])=>[2*u/frame.width-1,1-2*v/frame.height,(40+.03)/(40-.03)-2*40*.03/((40-.03)*z)]);const geometry=new THREE.BufferGeometry();geometry.setAttribute('position',new THREE.Float32BufferAttribute(positions,3));paths.add(new THREE.Line(geometry,new THREE.LineBasicMaterial({color:segment.color,depthTest:true,depthWrite:false})));}
+  if(paths.children.length)renderer.render(paths,new THREE.Camera());
   clearLabels();
   for(const note of ar.notes||[]){
    const c=document.createElement('canvas');const ctx=c.getContext('2d');ctx.font='600 32px system-ui';c.width=Math.min(2048,Math.ceil(ctx.measureText(note.text).width)+32);c.height=64;
