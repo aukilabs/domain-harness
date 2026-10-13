@@ -24,7 +24,7 @@ async fn catalogs_are_real_refreshable_and_not_retained_as_live_peers() -> Resul
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|c| c["manifest"]["component_id"] == "phone-local-mapper")
+                .any(|c| c["manifest"]["component_id"] == "android-local-mapper")
         );
         assert!(
             catalog["catalog"]["products"]

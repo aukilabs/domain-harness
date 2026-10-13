@@ -1,10 +1,9 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createArOverlay } from './ar.js';
-import { createPhoneTrails, cameraShape } from './phone-trails.js';
+import { createPhoneTrails } from './phone-trails.js';
 import { createSemanticVolumes, legacyVolumesForView } from './semantic-volumes.js';
 import { createMap2D } from './map-2d.js';
-import { createCompass } from './compass.js';
 import { createGhostCamera } from './ghost-camera.js';
 const $=id=>document.getElementById(id);
 const chatForm=$('scene-chat-form'),chatInput=$('scene-chat-input'),chatStatus=$('scene-chat-status');
@@ -96,7 +95,7 @@ async function runnerCatalog(){
     if(activeMap===map.id){activeMap=runner&&!runner.primary?'runner:'+runner.peer_id:'runner';lastScene=null;}
     continue;
    }
-   const label=map.name==='phone-local-voxels'?'Phone · local map':map.name;
+   const label=map.name==='phone-local-voxels'?'Android · local map':map.name;
    const option=new Option(map.peer_alias||label+' · '+map.peer_id.slice(-8),map.id);
    option.title=label+' · '+map.peer_id;
    network.append(option);
@@ -140,7 +139,7 @@ function clear(group){for(const child of [...group.children]){group.remove(child
 function label(text,color='#36594a'){
  const c=document.createElement('canvas');c.width=384;c.height=96;const ctx=c.getContext('2d');ctx.fillStyle='#fcfdf6';ctx.beginPath();ctx.roundRect(4,8,376,76,18);ctx.fill();ctx.font='500 30px system-ui';ctx.textAlign='center';ctx.fillStyle=color;ctx.fillText(text,192,56,356);const tex=new THREE.CanvasTexture(c);tex.colorSpace=THREE.SRGBColorSpace;const sprite=new THREE.Sprite(new THREE.SpriteMaterial({map:tex,depthTest:false}));sprite.scale.set(.65,.1625,1);return sprite;
 }
-const phoneTrails=createPhoneTrails(scene,label,peer=>cameraShape(fleetNetwork?.peers?.find(p=>p.peer_id===peer)?.catalog));
+const phoneTrails=createPhoneTrails(scene,label);
 const semanticVolumes=createSemanticVolumes({scene,camera,renderer,controls,panel:panelBodies.volumes,api,label,clear,openPanel,priorityPickObjects:()=>selectable.filter(o=>o.userData.kind==='note')});
 $('map-select').addEventListener('change',()=>semanticVolumes.reset());
 let phonePresenceBusy=false;
@@ -324,7 +323,7 @@ function updateMapUI(){
   $('mapping-status').textContent=(current.integrated_observations||0)+' scans integrated';
   $('mapping-detail').textContent='Latest retained map from the publishing peer';
   if(current.product_id==='phone-local-voxels'){
-   $('scene-title').textContent='Phone · local voxel map';
+   $('scene-title').textContent='Android · local voxel map';
    $('scene-badge').textContent='PHONE-LOCAL MAP';
    $('portal-info').textContent='Independent phone AR session frame · not merged into Home';
    $('scene-note').textContent='Phone-owned 10 cm voxels · read directly from its SDK Catalog Product';
@@ -341,12 +340,12 @@ function updateMapUI(){
   }
  }
  if(activeMap.startsWith('phone:')) {
-  $('scene-title').textContent='Phone · local voxel map';
-  $('map-authority').textContent='Phone peer · AR depth';
+  $('scene-title').textContent='Android · local voxel map';
+  $('map-authority').textContent='Android peer · ARCore depth';
   $('scene-badge').textContent='UNALIGNED PHONE MAP';
   $('frame-info').textContent='Phone AR session · OpenGL · Y up · meters';
   $('portal-info').textContent='No Portal calibration. Not merged into Home.';
-  $('scene-note').textContent='Real depth hits accumulated into 10 cm voxels on the phone. Tracking loss starts a new map. Unknown space is not free space.';
+  $('scene-note').textContent='Real ARCore depth hits accumulated into 10 cm voxels on the phone. Tracking loss starts a new map. Unknown space is not free space.';
   $('mapping-status').textContent='Phone-local depth mapping';
   $('mapping-detail').textContent='Unaligned · read-only · removed after 10 seconds without updates';
   document.querySelector('#inspect-snapshot').href=document.querySelector('.export').href='/api/phone-local-scene?peer='+encodeURIComponent(activeMap.slice(6));
@@ -391,10 +390,7 @@ $('load').onclick=()=>action(async()=>{const f=await api('/api/fixtures');for(co
 $('project').onclick=()=>action(async()=>{const f=await api('/api/fixtures');const result=await api('/api/detections',f.detection);$('notice').textContent=result.applied?'Book placed at the first occupied voxel hit.':'This detection is already placed. No duplicate object created.';});
 $('replay').onclick=()=>action(async()=>{const f=await api('/api/fixtures');const r=await api('/api/contributions',f.contributions[0]);$('notice').textContent=r.applied?'Contribution accepted.':'Replay ignored. Voxel evidence and object count are unchanged.';});
 new ResizeObserver(()=>{const {width,height}=$('canvas').getBoundingClientRect();renderer.setSize(width,height);camera.aspect=width/height;camera.updateProjectionMatrix();}).observe($('canvas'));
-const compass=createCompass(document.querySelector('.viewport'));
-// The 2D map is drawn with -Z up the screen; in 3D the floor direction up the screen follows the camera.
-function screenAxes(){if(map2D.isActive())return [[0,-1],[1,0]];const m=camera.matrixWorld.elements,up=[m[4]-m[8],m[6]-m[10]],length=Math.hypot(...up)||1;return [[up[0]/length,up[1]/length],[m[0],m[2]]];}
-renderer.setAnimationLoop(now=>{controls.update();ghostCamera.tick(now);compass.update(current?.geo,...screenAxes());semanticVolumes.tick();if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);renderer.render(scene,camera);});
+renderer.setAnimationLoop(now=>{controls.update();ghostCamera.tick(now);semanticVolumes.tick();if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);renderer.render(scene,camera);});
 refresh().catch(e=>{$('notice').textContent=e.message;$('notice').classList.add('error');});setInterval(()=>{if(!busy)refresh().catch(()=>{});},500);
 
 function updatePairingDownload(){const link=$('pairing-download');link.href=isLocalScene()?localSceneUrl()+'/connection':'/api/home-connection';link.download=isLocalScene()?activeMap.slice(6)+'-connection.json':'home-connection.json';link.textContent=isLocalScene()?'Download phone connection for selected scene ↗':'Download Xmart connection ↗';}

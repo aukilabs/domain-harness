@@ -92,13 +92,6 @@ h2{font-size:13px;font-weight:600;letter-spacing:0;margin:2px 0 0;color:var(--te
 .viewport-heading strong{font-size:10px;font-weight:600;color:var(--text-2);text-transform:uppercase;letter-spacing:.06em}
 .viewport-heading small{font-size:9px;color:var(--label);margin-left:2px}
 .view-controls{position:absolute;right:12px;top:10px;display:flex;gap:6px;z-index:10}
-#compass{position:absolute;right:12px;top:50px;width:56px;height:56px;border-radius:50%;background:#111116cc;border:1px solid var(--line);backdrop-filter:blur(8px);display:grid;place-items:center;z-index:10;pointer-events:auto}
-#compass[hidden]{display:none}
-#compass span{font:600 13px system-ui;color:var(--muted)}
-.compass-ring{position:absolute;inset:0}
-.compass-ring i,.compass-ring b{position:absolute;left:50%;top:50%;margin:-3px 0 0 -1px;width:2px;height:6px;border-radius:1px;background:#ffffff66}
-.compass-ring i.cardinal{background:#ffffffe6}
-.compass-ring b{margin:-4px 0 0 -4px;width:0;height:0;border-radius:0;background:none;border-left:4px solid transparent;border-right:4px solid transparent;border-bottom:8px solid #ff3b30}
 .view-controls button{width:30px;height:30px;border:1px solid var(--line);background:#111116cc;border-radius:5px;color:var(--muted);font-size:15px}
 .view-controls button:hover{color:var(--accent);border-color:#4f8ef777}
 .viewport-footer{position:absolute;bottom:0;left:0;right:0;height:28px;display:flex;align-items:center;justify-content:space-between;color:var(--label);font-size:9px;font-family:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;background:#0f0f12;border-top:1px solid var(--line-soft);padding:0 12px;pointer-events:none;z-index:2}
@@ -234,8 +227,6 @@ aside{display:block;padding:0;min-width:0;max-height:none;overflow:hidden;backgr
 #photo-dialog::backdrop{background:#000a}
 #photo-dialog>img{display:block;max-width:80vw;max-height:72dvh;object-fit:contain}
 .note-form input[type="file"]{font-size:10px;max-width:100%}
-#fleet-sensors form{display:flex;gap:6px;align-items:center;margin:6px 0}
-#fleet-sensors form input{flex:1;min-width:0;width:auto;height:auto;padding:5px 7px;border:1px solid var(--line);border-radius:3px;color:var(--text);background:var(--panel-3);font:inherit;cursor:text}
 .fiducial-form{padding-bottom:12px;border-bottom:1px solid var(--line)}
 .fiducial-form .primary{justify-content:center;margin-top:4px}
 .fiducial-basis{margin:-4px 0 10px}

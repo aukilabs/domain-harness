@@ -5,10 +5,6 @@
 //! The same report with `replace` moves a Portal the scene already knows, for
 //! when someone has moved the printed target. The phone must be aligned through
 //! a different Portal, and the scene's origin Portal stays where it is.
-//!
-//! A scene with no Portals has nothing to align to. The phone's app hands over
-//! the first one it sees without `alignment`, and the phone asks Home's
-//! `establish_origin` to make that Portal the scene's origin instead of `add`.
 use crate::local_mapper::{compose, from_rigid, inverse, rigid};
 use anyhow::{Result, anyhow, ensure};
 use auki_components::ContractType;
@@ -31,16 +27,31 @@ pub struct Report {
     /// Measured pose of the new Portal in the phone's AR session.
     pub portal_to_session: RigidTransform,
     /// The known-Portal observation that ties that session to the scene.
-    /// Absent only on the phone, for the first Portal of a scene that has
-    /// none; that report goes to Home as a `FirstPortal`, never to `add`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub alignment: Option<crate::mobile_depth::Alignment>,
+    pub alignment: crate::mobile_depth::Alignment,
     /// Move a Portal the scene already has, instead of adding a new one.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub replace: bool,
 }
 impl ContractType for Report {
     const DATATYPE: &'static str = "spatial.phone-portal-report/v1";
+}
+
+/// What the phone's app hands to its own core: a `Report`, or, with no
+/// `alignment`, the first Portal seen in a scene that has none. Home never
+/// receives this; the core sends a `Report` to `add` or a `FirstPortal` to
+/// `establish_origin`.
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Sighting {
+    pub session: String,
+    pub timestamp_ns: u64,
+    pub code: String,
+    pub side_length_m: f64,
+    pub portal_to_session: RigidTransform,
+    #[serde(default)]
+    pub alignment: Option<crate::mobile_depth::Alignment>,
+    #[serde(default)]
+    pub replace: bool,
 }
 
 /// What a phone sends to Home's `establish_origin` for a scene with no Portals.
@@ -84,10 +95,6 @@ pub fn anchor(report: &Report, scene: &MapSnapshot) -> Result<QrAnchor> {
         "Invalid Portal code"
     );
     let existing = scene.scenegraph.anchors.get(&report.code);
-    let a = report
-        .alignment
-        .as_ref()
-        .ok_or_else(|| anyhow!("A Portal report needs its alignment"))?;
     if report.replace {
         ensure!(existing.is_some(), "Portal is not in this scene, so it cannot be moved");
         // The scene's frame is named after its origin Portal; everything else is placed from it.
@@ -96,7 +103,7 @@ pub fn anchor(report: &Report, scene: &MapSnapshot) -> Result<QrAnchor> {
             "This Portal is the scene's origin and cannot be moved"
         );
         ensure!(
-            a.portal_id != report.code,
+            report.alignment.portal_id != report.code,
             "A Portal cannot be moved using itself as the reference"
         );
     } else {
@@ -110,6 +117,7 @@ pub fn anchor(report: &Report, scene: &MapSnapshot) -> Result<QrAnchor> {
         report.side_length_m.is_finite() && (0.02..=2.).contains(&report.side_length_m),
         "Invalid Portal size"
     );
+    let a = &report.alignment;
     ensure!(
         a.timestamp_ns > 0 && report.timestamp_ns >= a.timestamp_ns,
         "Portal report predates calibration"

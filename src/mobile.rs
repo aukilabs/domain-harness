@@ -164,8 +164,8 @@ pub struct MobileClient {
     commands: tokio::sync::mpsc::Sender<crate::mobile_notes::PlaceNote>,
     changes: tokio::sync::mpsc::Sender<crate::mobile_notes::ChangeNote>,
     change_receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::mobile_notes::ChangeNote>>>,
-    portal_reports: tokio::sync::mpsc::Sender<crate::mobile_portal::Report>,
-    portal_receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::mobile_portal::Report>>>,
+    portal_reports: tokio::sync::mpsc::Sender<crate::mobile_portal::Sighting>,
+    portal_receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::mobile_portal::Sighting>>>,
     receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::mobile_notes::PlaceNote>>>,
 }
 impl Default for MobileClient {
@@ -292,7 +292,7 @@ impl MobileClient {
         self.drive.send_replace(input);
     }
     /// Queue a newly seen Portal for Home to add to the scene.
-    pub fn report_portal(&self, report: crate::mobile_portal::Report) -> bool {
+    pub fn report_portal(&self, report: crate::mobile_portal::Sighting) -> bool {
         self.snapshot().state == "live" && self.portal_reports.try_send(report).is_ok()
     }
     pub fn stop(&self) {
@@ -478,7 +478,13 @@ impl MobileClient {
                         let (done, doing) = if report.replace { ("moved in", "moved") } else { ("added to", "added") };
                         let component = home.scoped_component(crate::mobile_portal::COMPONENT);
                         let request = uuid::Uuid::new_v4().to_string();
-                        let result = if report.alignment.is_some() {
+                        let result = if let Some(alignment) = report.alignment.clone() {
+                            let report = crate::mobile_portal::Report {
+                                session: report.session.clone(), timestamp_ns: report.timestamp_ns,
+                                code: code.clone(), side_length_m: report.side_length_m,
+                                portal_to_session: report.portal_to_session.clone(), alignment,
+                                replace: report.replace,
+                            };
                             tokio::time::timeout(
                                 Duration::from_secs(4),
                                 operations.invoke::<_, bool>(&component, "add", "phone-portal", &request,

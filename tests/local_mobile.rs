@@ -446,11 +446,11 @@ async fn phone_reports_a_new_portal_into_the_selected_scene() -> Result<()> {
             code: new_code.into(),
             side_length_m: spatial_home::mobile_portal::DEFAULT_SIDE_M,
             portal_to_session: rigid(&new_in_session, &new_local, &session_frame),
-            alignment: Some(alignment.clone()),
+            alignment: alignment.clone(),
             replace: false,
         };
         let mut forged = report.clone();
-        forged.alignment.as_mut().unwrap().session_to_home.translation[0] += 1.;
+        forged.alignment.session_to_home.translation[0] += 1.;
         assert!(
             spatial_home::mobile_portal::send(&pair.b, &home, &forged)
                 .await
@@ -496,7 +496,7 @@ async fn phone_reports_a_new_portal_into_the_selected_scene() -> Result<()> {
         origin.code = "HNY3JGNLRAE".into();
         origin.portal_to_session.from_frame_id = portal.pose_in_map.from_frame_id.clone();
         let mut by_itself = moved.clone();
-        by_itself.alignment.as_mut().unwrap().portal_id = new_code.into();
+        by_itself.alignment.portal_id = new_code.into();
         let mut unknown = moved.clone();
         unknown.code = "NOTINSCENE1".into();
         unknown.portal_to_session.from_frame_id = spatial_home::mobile_portal::local_frame("NOTINSCENE1");
@@ -508,27 +508,6 @@ async fn phone_reports_a_new_portal_into_the_selected_scene() -> Result<()> {
         moved.timestamp_ns = 280;
         moved.portal_to_session = rigid(&new_in_session, &new_local, &session_frame);
         assert!(spatial_home::mobile_portal::send(&pair.b, &home, &moved).await?);
-        // A phone that found north places the scene on the Earth; Home keeps that with the scene.
-        let geo = spatial_home::mobile_geo::Reference {
-            frame: home.frame.clone(),
-            latitude: 37.,
-            longitude: -122.,
-            altitude_m: 10.,
-            accuracy_m: 8.,
-            north: [0., -1.],
-            heading_error_deg: 12.,
-        };
-        assert!(
-            spatial_home::mobile_geo::send(&pair.b, &nacs, &geo).await.is_err(),
-            "another scene's place on the Earth is refused"
-        );
-        assert!(spatial_home::mobile_geo::send(&pair.b, &home, &geo).await?);
-        let worse = spatial_home::mobile_geo::Reference { latitude: 38., accuracy_m: 30., ..geo.clone() };
-        assert!(spatial_home::mobile_geo::send(&pair.b, &home, &worse).await?);
-        let kept: spatial_home::mobile_geo::Reference = serde_json::from_slice(&std::fs::read(
-            dir.path().join("mobile-geo").join("humanoid-hub-conference.json"),
-        )?)?;
-        assert_eq!(kept, geo, "Home keeps the better fix");
         // Depth calibrated on the new Portal is accepted, and the scene still publishes.
         let products = spatial_home::mobile_products::MobileProducts::mount(&pair.b)?;
         let phone = spatial_home::mobile_depth::Publisher::new(&products, &session)?;

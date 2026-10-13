@@ -59,7 +59,7 @@ fn prune(c: &mut Cache) {
 pub fn sources() -> serde_json::Value {
     let mut c = cache().lock().unwrap_or_else(|e| e.into_inner());
     prune(&mut c);
-    serde_json::json!(c.keys().map(|id| serde_json::json!({"id":format!("phone:{id}"),"name":"Phone · local voxels (unaligned)","peer_id":id})).collect::<Vec<_>>())
+    serde_json::json!(c.keys().map(|id| serde_json::json!({"id":format!("phone:{id}"),"name":"Android · local voxels (unaligned)","peer_id":id})).collect::<Vec<_>>())
 }
 pub fn render(peer: &str) -> Result<serde_json::Value> {
     let mut c = cache()
@@ -78,7 +78,7 @@ pub fn render_snapshot(snapshot: &Snapshot, peer: &str) -> Result<serde_json::Va
     snapshot.validate()?;
     Ok(
         serde_json::json!({"frame":format!("phone-local:{peer}:{}",snapshot.session),
-        "authority":"Phone local mapper","authority_peer_id":peer,
+        "authority":"Android local mapper","authority_peer_id":peer,
         "capture_timestamp_ns":snapshot.timestamp_ns,
         "mode":"Phone-owned local map", "convention":"OpenGL · Y up · meters",
         "local_map":true,"voxel_size":0.1,
@@ -147,7 +147,7 @@ impl Publisher {
         let runtime = products.runtime.clone();
         let owner = runtime.peer_id().to_string();
         let component = runtime.component(
-            ComponentSpec::new("phone-local-mapper").observable(ObservableContract {
+            ComponentSpec::new("android-local-mapper").observable(ObservableContract {
                 name: "voxels".into(),
                 datatype: SCHEMA.into(),
                 schema: SCHEMA.into(),
