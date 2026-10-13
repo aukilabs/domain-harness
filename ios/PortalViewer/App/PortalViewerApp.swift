@@ -62,7 +62,6 @@ struct ViewerScreen: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             CameraView(controller: controller).ignoresSafeArea()
-            if !controller.snoozed { MessageMarker(center: controller.messages) }
             if !controller.snoozed { MessageFound(center: controller.messages) }
             VStack(spacing: 0) {
                 MessageBanner(center: controller.messages) { withAnimation { showMessages = true } }
@@ -82,14 +81,20 @@ struct ViewerScreen: View {
                     }
                     .padding()
                     .accessibilityLabel(showDetails ? "Hide scene details" : "Show scene details")
-                    // Sometimes the room is easier to read without the voxels over it.
-                    Button { controller.showVoxels.toggle() } label: {
-                        Image(systemName: "square.grid.2x2.fill").font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(controller.showVoxels ? Theme.accent : Theme.dim)
-                            .frame(width: 36, height: 36).background(Theme.paper, in: Circle())
+                    // Three looks, in turn: the room alone, the voxels alone, and the voxels over the room.
+                    Button { controller.voxelLook = controller.voxelLook.next } label: {
+                        Image(systemName: controller.voxelLook == .camera ? "square.grid.2x2" : "square.grid.2x2.fill")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(controller.voxelLook == .camera ? Theme.dim
+                                             : controller.voxelLook == .voxels ? Theme.onAccent : Theme.accent)
+                            .frame(width: 36, height: 36)
+                            .background(controller.voxelLook == .voxels ? Theme.accent : Theme.paper, in: Circle())
                             .shadow(color: Theme.glow, radius: 4, y: 2)
                     }
-                    .accessibilityLabel(controller.showVoxels ? "Hide voxels" : "Show voxels")
+                    .accessibilityLabel("Voxels")
+                    .accessibilityValue(controller.voxelLook == .camera ? "Camera only"
+                                        : controller.voxelLook == .voxels ? "Voxels only" : "Voxels over the camera")
+                    .accessibilityHint("Changes what the camera view shows")
                     // Draw on the scene with a finger, as Home's Crayon does.
                     Button { controller.drawing.toggle() } label: {
                         Image(systemName: "scribble.variable").font(.system(size: 16, weight: .semibold))
@@ -214,6 +219,8 @@ struct ViewerScreen: View {
                 }
             }
             .padding()
+            // Last, so the way to a message is never under a panel or a button.
+            if !controller.snoozed { MessageMarker(center: controller.messages) }
         }
         .animation(.easeInOut(duration: 0.3), value: controller.snoozed)
         .onAppear {
@@ -1252,11 +1259,34 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private let crayonRoot = SCNNode()
     private var crayonDraft = CrayonDraft()
     private var crayonNode: SCNNode?
-    /// Home's voxels in the AR view and the POV tab.
-    @Published var showVoxels = UserDefaults.standard.object(forKey: "arVoxelsVisible") as? Bool ?? true {
+    /// What the AR view shows: the camera alone, Home's voxels alone, or the voxels over the camera.
+    enum VoxelLook: String {
+        case camera, voxels, both
+        var next: VoxelLook { self == .camera ? .voxels : self == .voxels ? .both : .camera }
+    }
+    /// Not remembered: every launch starts on the camera alone.
+    @Published var voxelLook = VoxelLook.camera {
         didSet {
-            UserDefaults.standard.set(showVoxels, forKey: "arVoxelsVisible")
             for node in root.childNodes + povRoot.childNodes where node.name == "voxels" { node.isHidden = !showVoxels }
+            applyCameraFeed()
+            // Whether people hide the map is part of the session; running it again keeps the tracking.
+            if (voxelLook == .voxels) != (oldValue == .voxels) { start() }
+        }
+    }
+    /// Home's voxels in the AR view and the POV tab.
+    private var showVoxels: Bool { voxelLook != .camera }
+    /// ARKit's camera picture, kept while black stands in for it.
+    private var cameraFeed: Any?
+    /// Voxels alone go on black. Until the map is placed there are none to show,
+    /// and a Portal still has to be found, so the camera stays until then.
+    private func applyCameraFeed() {
+        let hide = voxelLook == .voxels && !root.isHidden
+        if hide, cameraFeed == nil {
+            cameraFeed = view.scene.background.contents
+            view.scene.background.contents = UIColor.black
+        } else if !hide, let feed = cameraFeed {
+            view.scene.background.contents = feed
+            cameraFeed = nil
         }
     }
     private func applyVolumeVisibility() {
@@ -1724,7 +1754,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             config.frameSemantics.insert(.sceneDepth)
         } else { depthStatus = "This phone does not provide LiDAR scene depth" }
         // People in front of the map hide it, using their measured depth.
-        if ARWorldTrackingConfiguration.supportsFrameSemantics(.personSegmentationWithDepth) {
+        // Not with the voxels alone: there the camera's picture of them would cut holes in the black.
+        if voxelLook != .voxels, ARWorldTrackingConfiguration.supportsFrameSemantics(.personSegmentationWithDepth) {
             config.frameSemantics.insert(.personSegmentationWithDepth)
         }
         view.session.run(config)
@@ -2337,7 +2368,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         depthAlignment = nil
         alignedThrough = [:]
         depthStatus = shareDepth ? "Scan a Portal to share depth" : "Depth sharing off"
-        generation += 1; aligned = false; cooldown.reset(); root.isHidden = true
+        generation += 1; aligned = false; cooldown.reset(); root.isHidden = true; applyCameraFeed()
         alignment.reset()
         miniPhone = nil
         if selfInHome != nil { selfInHome = nil; refreshDevices() }
@@ -2870,7 +2901,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         updateGeo(frame)
         updateCompass(frame)
         if aligned {
-            root.isHidden = false
+            root.isHidden = false; applyCameraFeed()
             captureDepth(frame)
             if let map, frame.timestamp - lastPosePublication >= 0.2 {
                 lastPosePublication = frame.timestamp
@@ -2959,7 +2990,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                     portalInHome: SIMD3(stored.x, stored.y, stored.z), edgePixels: edgePixels)
                 let transform = self.alignment.transform
                 self.root.simdTransform = transform
-                self.root.isHidden = false
+                self.root.isHidden = false; self.applyCameraFeed()
                 self.aligned = true
                 // Home checks that the session-to-scene transform follows from the
                 // Portal's pose in the session, so report the Portal where the fused
@@ -3251,17 +3282,25 @@ struct MessageList: View {
 struct MessageMarker: View {
     @ObservedObject var center: MessageCenter
     var body: some View {
+        // Laid out in the safe area, so the arrow keeps clear of the notch and the home bar.
         GeometryReader { area in
             if center.target != nil, let aim = center.aim {
                 if let spot = aim.screen {
+                    // The spot is a fraction of the whole screen, which starts above and left of the safe area.
+                    let inset = area.safeAreaInsets
                     Brackets(arm: 14).stroke(Theme.accent, style: StrokeStyle(lineWidth: 4, lineCap: .round))
                         .frame(width: 84, height: 84).shadow(color: .black.opacity(0.35), radius: 3)
-                        .position(x: CGFloat(spot.x) * area.size.width, y: CGFloat(spot.y) * area.size.height)
+                        .position(x: CGFloat(spot.x) * (area.size.width + inset.leading + inset.trailing) - inset.leading,
+                                  y: CGFloat(spot.y) * (area.size.height + inset.top + inset.bottom) - inset.top)
                 } else if let way = center.way ?? Optional(aim), way.screen == nil {
                     // Out of view: an arrow at the edge of the screen, on the side to move
                     // toward. It points along the way there, which may be round something.
                     // Once that way is in view the line on the floor takes over.
-                    let box = CGRect(x: 44, y: 120, width: area.size.width - 88, height: max(1, area.size.height - 120 - 230))
+                    // Its outer edge runs along the safe area drawn in by a twentieth on every side.
+                    let badge = CGSize(width: 64, height: 84)
+                    let box = CGRect(origin: .zero, size: area.size)
+                        .insetBy(dx: min(area.size.width * 0.05 + badge.width / 2, area.size.width / 2 - 1),
+                                 dy: min(area.size.height * 0.05 + badge.height / 2, area.size.height / 2 - 1))
                     let across = CGFloat(sin(way.turn)), down = CGFloat(-cos(way.turn))
                     let scale = min(box.width / 2 / max(abs(across), 0.0001), box.height / 2 / max(abs(down), 0.0001))
                     VStack(spacing: 4) {
@@ -3272,13 +3311,14 @@ struct MessageMarker: View {
                         Text(String(format: "%.1f m", aim.distance)).themeLabel(11, .bold).foregroundStyle(Theme.ink)
                             .padding(.horizontal, 8).padding(.vertical, 3).background(Theme.paper, in: Capsule())
                     }
+                    .frame(width: badge.width, height: badge.height)
                     .shadow(color: .black.opacity(0.35), radius: 4)
                     .position(x: box.midX + across * scale, y: box.midY + down * scale)
                     .animation(.easeOut(duration: 0.15), value: way.turn)
                 }
             }
         }
-        .ignoresSafeArea().allowsHitTesting(false)
+        .allowsHitTesting(false)
     }
 }
 
