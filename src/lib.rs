@@ -1,4 +1,11 @@
 pub mod conventions;
+pub mod compact_pose;
+pub mod product_registry;
+pub mod phone_alignment;
+pub mod origin_reset;
+pub mod video_presentation;
+pub mod declared_depth;
+pub mod home_pose_policy;
 pub mod catalog_chat;
 pub mod scene_geometry;
 pub mod peer_aliases;

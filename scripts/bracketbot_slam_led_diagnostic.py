@@ -2,10 +2,13 @@
 """BBOS health -> red LED; optional minimal peer -> green, with red priority.
 
 Without --peer-command this remains the independent LED-only diagnostic.
-No camera, pose, map, or motion access. Does not start automatically on boot.
+Optional --publish-poses reads BBOS poses for the SDK peer.
+No camera, map, or motion access. Does not start automatically on boot.
 """
 import fcntl
 import argparse
+import json
+import math
 import os
 import select
 import signal
@@ -31,11 +34,29 @@ def led_color(tracking, connected):
     return None
 
 
+def pose_sample(record, tracking, now_ns, source_id):
+    timestamp = int(record['timestamp'].astype('int64'))
+    if tracking != 'tracking' or not 0 <= now_ns - timestamp <= 800_000_000:
+        return None
+    position = [float(v) for v in record['pos']]
+    quaternion = [float(v) for v in record['quat']]
+    if len(position) != 3 or len(quaternion) != 4 or not all(math.isfinite(v) for v in position + quaternion):
+        return None
+    norm = math.sqrt(sum(v*v for v in quaternion))
+    if abs(norm-1) > .001:
+        return None
+    return dict(timestamp_ns=timestamp, source_id=source_id,
+                pose=dict(translation=position, rotation_xyzw=[v/norm for v in quaternion]))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--publish-poses', action='store_true')
     parser.add_argument('--peer-command', nargs=argparse.REMAINDER,
                         help='Optional connection-only peer; stdout is its local liveness pipe')
     args = parser.parse_args()
+    if args.publish_poses and not args.peer_command:
+        parser.error('--publish-poses requires --peer-command')
     from bbos import Reader, Writer, Type
     stopped = False
 
@@ -55,10 +76,18 @@ def main():
         connection_received = 0
         pending = b''
         previous_color = None
+        pose_reader = None
+        last_pose_sent = 0
+        last_pose_write = 0
         try:
             if args.peer_command:
-                peer = subprocess.Popen(args.peer_command, stdout=subprocess.PIPE)
+                peer = subprocess.Popen(args.peer_command, stdout=subprocess.PIPE,
+                                        stdin=subprocess.PIPE if args.publish_poses else subprocess.DEVNULL)
                 os.set_blocking(peer.stdout.fileno(), False)
+                if args.publish_poses:
+                    os.set_blocking(peer.stdin.fileno(), False)
+                    pose_reader = Reader('slam.pose', keeptime=False)
+                    pose_reader.__enter__()
             with Reader('slam.health', keeptime=False) as reader:
                 while not stopped:
                     now = time.monotonic()
@@ -82,6 +111,22 @@ def main():
                         if stamp != timestamp and -100_000_000 <= time.time_ns() - stamp <= 3_000_000_000:
                             timestamp, health, received = stamp, sample, now
                     current = status(health, received, now)
+                    if pose_reader is not None:
+                        sample = None
+                        if pose_reader.ready():
+                            sample = pose_sample(pose_reader.data.copy(), current, time.time_ns(), pose_reader._writer_pid)
+                            if sample is not None and sample['timestamp_ns'] <= last_pose_sent:
+                                sample = None
+                        if sample is None and (current != 'tracking' or now-last_pose_write > .8) and now-last_pose_write > .2:
+                            sample = dict(timestamp_ns=time.time_ns(), pose=None, source_id=None)
+                        if sample is not None and peer.poll() is None:
+                            try:
+                                # Small atomic pipe writes; never block BBOS polling on networking.
+                                os.write(peer.stdin.fileno(), (json.dumps(sample)+'\n').encode())
+                                last_pose_sent = sample['timestamp_ns']
+                                last_pose_write = now
+                            except (BlockingIOError, BrokenPipeError):
+                                pass
                     state = (current, connected)
                     if state != previous:
                         print(time.strftime('%Y-%m-%dT%H:%M:%S%z'), current,
@@ -106,11 +151,15 @@ def main():
                         writer.__exit__(None, None, None)
                         writer = None
                     previous_color = color
-                    time.sleep(.1)
+                    time.sleep(.01 if args.publish_poses else .1)
         finally:
+            if pose_reader is not None:
+                pose_reader.__exit__(None, None, None)
             if writer is not None:
                 writer.__exit__(None, None, None)
             if peer is not None:
+                if peer.stdin is not None:
+                    peer.stdin.close()
                 if peer.poll() is None:
                     peer.terminate()
                     try:

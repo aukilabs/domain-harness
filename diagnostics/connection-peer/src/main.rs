@@ -1,4 +1,7 @@
-//! No Components, Products, discovery advertisement, sensors, or subscriptions.
+//! Connection-only diagnostic; --poses adds exactly one typed BBOS pose Product.
+mod poses;
+#[path = "../../../src/compact_pose.rs"]
+mod compact_pose;
 use anyhow::{Context, Result, ensure};
 use auki_component_protocol::{CatalogResponse, ComponentProtocolClient};
 use auki_sdk::{
@@ -10,6 +13,7 @@ use std::{
     path::Path,
     time::{Duration, Instant},
 };
+use tokio::io::AsyncBufReadExt;
 
 #[derive(Deserialize)]
 struct Config {
@@ -37,9 +41,10 @@ fn read<T: serde::de::DeserializeOwned>(path: &str) -> Result<T> {
 async fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().collect();
     ensure!(
-        args.len() == 4,
-        "usage: auki-connection-diagnostic PEER_CONFIG HOME_CONNECTION DIAGNOSTIC_IDENTITY"
+        args.len() == 4 || (args.len() == 5 && args[4] == "--poses"),
+        "usage: auki-connection-diagnostic PEER_CONFIG HOME_CONNECTION DIAGNOSTIC_IDENTITY [--poses]"
     );
+    let publish_poses = args.len() == 5;
     let config: Config = read(&args[1])?;
     let home: Home = read(&args[2])?;
     ensure!(
@@ -65,12 +70,24 @@ async fn main() -> Result<()> {
         _ => anyhow::bail!("login must be app or user"),
     };
     println!("disconnected");
-    let bootstrap = AukiPeerBootstrap::authenticate(
+    let mut peer_config = AukiPeerConfig::new(&config.dms_url)?.direct_only();
+    if publish_poses {
+        let ip: std::net::Ipv4Addr = env("DIAGNOSTIC_LAN_IP")?.parse()?;
+        ensure!(!ip.is_unspecified() && !ip.is_loopback(), "LAN IP required");
+        let route: Multiaddr = format!("/ip4/{ip}/tcp/4331").parse()?;
+        peer_config = peer_config
+            .with_listen_addresses([route.clone()])?
+            .with_advertised_direct_routes([route])?;
+    }
+    let mut bootstrap = AukiPeerBootstrap::authenticate(
         AuthClient::new(AuthEnvironment::new(&config.api_url, &config.dds_url)?)?,
         credentials,
-        AukiPeerConfig::new(&config.dms_url)?.direct_only(),
+        peer_config,
     )
     .await?;
+    if publish_poses {
+        bootstrap = bootstrap.with_dds_tracker(auki_sdk::DdsTrackerMode::DiscoverAndAdvertise);
+    }
     let peer = match bootstrap
         .start_persistent_peer(DomainSelection::new(domain), Path::new(&args[3]))
         .await
@@ -82,10 +99,16 @@ async fn main() -> Result<()> {
         }
     };
     eprintln!(
-        "Diagnostic peer {} -> Home {} (SDK PR 425); no published Products",
+        "Diagnostic peer {} -> Home {} (SDK PR 425)",
         peer.peer_id(),
         expected
     );
+    let mut publisher = if publish_poses {
+        Some(poses::Publisher::mount(&peer)?)
+    } else {
+        None
+    };
+    let mut input = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     let client = ComponentProtocolClient::new(peer.protocols());
     let (tx, rx) = tokio::sync::watch::channel(None::<Instant>);
     let requests = tokio::spawn(async move {
@@ -121,6 +144,17 @@ async fn main() -> Result<()> {
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     loop {
         tokio::select! {
+            line = input.next_line(), if publish_poses => {
+                match line {
+                    Ok(Some(line)) if line.len() <= 4096 => {
+                        match serde_json::from_str::<poses::Sample>(&line).map_err(anyhow::Error::from)
+                            .and_then(|s| publisher.as_mut().unwrap().publish(s)) {
+                            Ok(()) => {}, Err(error) => { eprintln!("Pose input failed: {error}"); break; }
+                        }
+                    },
+                    _ => { eprintln!("Pose input ended or invalid; stopping diagnostic"); break; }
+                }
+            },
             _ = tokio::signal::ctrl_c() => break,
             _ = terminate.recv() => break,
             _ = peer.wait_stopped() => break,
@@ -135,6 +169,10 @@ async fn main() -> Result<()> {
     println!("disconnected");
     requests.abort();
     let _ = requests.await;
+    if let Some(publisher) = publisher {
+        publisher.endpoint.close().await?;
+        publisher.registry.close().await?;
+    }
     let result = peer.shutdown().await;
     bootstrap.session().close().await;
     result?;

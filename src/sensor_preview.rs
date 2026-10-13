@@ -18,6 +18,8 @@ use std::{
 };
 use tokio::sync::{mpsc, oneshot, watch};
 pub struct Request {
+    pub home_frame: Option<String>,
+    pub debug_pose: bool,
     pub sensor: Option<String>,
     pub scene: bool,
     pub ar: bool,
@@ -187,33 +189,36 @@ pub async fn read_scene(client: &ComponentProtocolClient, scene: &Sensor) -> Res
 }
 #[derive(Clone)]
 pub struct Sensor {
-    datatype: String,
+    pub(crate) datatype: String,
     pub(crate) id: String,
     pub(crate) reference: ProductReference,
     pub(crate) route: Option<Multiaddr>,
     pub(crate) peer: PeerId,
     pub(crate) metadata: Option<auki_components::CatalogProductMetadata>,
-    pose: Option<ProductReference>,
+    pub(crate) pose: Option<ProductReference>,
 }
 
 /// Discover pose-bearing frames by SDK contracts, independent of camera streams.
 pub fn frame_sensors(catalogs: &crate::device_catalogs::Catalogs) -> Vec<Sensor> {
+    // Camera following is not yet migrated; never advertise legacy poses.
+    let _ = catalogs;
+    Vec::new()
+}
+fn all_frame_sensors(catalogs: &crate::device_catalogs::Catalogs) -> Vec<Sensor> {
     let mut found = Vec::new();
     for (owner,row) in catalogs {
         if row["catalog_status"] != "ready" { continue; }
         let (Ok(peer),Ok(catalog)) = (owner.parse::<PeerId>(),serde_json::from_value::<CatalogSnapshot>(row["catalog"].clone())) else { continue; };
         for p in &catalog.products {
             let Some(metadata) = &p.metadata else { continue; };
-            let Ok(contract) = serde_json::from_value::<auki_odometry::PoseContract>(metadata.value.clone()) else { continue; };
-            if p.manifest.peer_id != *owner || contract.from_frame.peer_id != *owner || contract.validate().is_err() { continue; }
-            if !catalog.components.iter().flat_map(|c|c.current_outputs.values()).any(|o|
-                o.manifest.peer_id == *owner && o.manifest.reference() == p.manifest.producer
-                && o.manifest.clock == contract.clock
-                && o.manifest.spatial_frame.as_ref().map(|f|&f.definition) == Some(&contract.to_frame)
-                && matches!(&o.manifest.payload,PayloadContract::Structured(c) if c.datatype==auki_odometry::PoseUpdate::DATATYPE)) { continue; }
-            found.push(Sensor { datatype:auki_odometry::PoseUpdate::DATATYPE.into(),id:format!("{owner}/{}",p.manifest.product_id),peer,
-                reference:ProductReference{peer_id:owner.clone(),product_id:p.manifest.product_id.clone(),manifest_hash:p.manifest_hash.clone()},
-                route:row["catalog_route"].as_str().and_then(|r|r.parse().ok()),metadata:Some(metadata.clone()),pose:None });
+            if metadata.schema==crate::compact_pose::METADATA {
+                let Ok(contract)=serde_json::from_value::<crate::compact_pose::Contract>(metadata.value.clone()) else {continue};
+                if p.manifest.peer_id!=*owner || !catalog.components.iter().flat_map(|c|c.current_outputs.values())
+                    .any(|o|o.manifest.reference()==p.manifest.producer && contract.validate_output(&o.manifest).is_ok()) {continue}
+                found.push(Sensor {datatype:crate::compact_pose::SCHEMA.into(),id:format!("{owner}/{}",p.manifest.product_id),peer,
+                    reference:p.manifest.reference(),route:row["catalog_route"].as_str().and_then(|r|r.parse().ok()),metadata:Some(metadata.clone()),pose:None});
+                continue;
+            }
         }
     }
     found
@@ -239,16 +244,8 @@ pub fn camera_sensors(catalogs: &crate::device_catalogs::Catalogs) -> Vec<Sensor
             if !snapshot.components.iter().flat_map(|c|c.current_outputs.values()).any(|o|
                 o.manifest.peer_id == *owner && o.manifest.reference()==p.manifest.producer &&
                 matches!(&o.manifest.payload, PayloadContract::Camera(c) if c.datatype==VideoFrame::DATATYPE)) { continue; }
-            let pose_id = p
-                .metadata
-                .as_ref()
-                .and_then(|m| m.value["pose_product_id"].as_str());
-            let pose = snapshot.products.iter().find(|g|
-                g.manifest.peer_id == *owner && Some(g.manifest.product_id.as_str()) == pose_id &&
-                snapshot.components.iter().flat_map(|c|c.current_outputs.values()).any(|o|
-                    o.manifest.reference()==g.manifest.producer && matches!(&o.manifest.payload,
-                        PayloadContract::Structured(c) if c.datatype==auki_odometry::PoseUpdate::DATATYPE))
-            ).map(|g| ProductReference { peer_id:owner.clone(), product_id:g.manifest.product_id.clone(), manifest_hash:g.manifest_hash.clone() });
+            // Do not advertise AR through an unmigrated pose consumer.
+            let pose = None;
             found.push(Sensor {
                 datatype: VideoFrame::DATATYPE.into(),
                 id: format!("{owner}/{}", p.manifest.product_id),
@@ -273,11 +270,15 @@ pub fn camera_choices(catalogs: &crate::device_catalogs::Catalogs) -> Vec<Value>
 }
 
 struct Frame<T = VideoFrame> {
+    received_hz: f64,
     observation: Observation<T>,
     producer: OutputManifest,
     received: Instant,
 }
 struct Preview<T = VideoFrame> {
+    history: Arc<std::sync::Mutex<std::collections::VecDeque<Arc<Frame<T>>>>>,
+    resolved_pose: Option<Value>,
+    presentation: Option<(u64,Value)>,
     reference: ProductReference,
     used: Instant,
     frames: watch::Receiver<Option<Arc<Frame<T>>>>,
@@ -293,10 +294,13 @@ fn start_preview<T: ContractType + serde::de::DeserializeOwned + Send + Sync + '
     start: ObservationStart, size: fn(&T)->usize) -> Preview<T> {
     let (send, frames) = watch::channel(None);
     let reference = sensor.reference.clone();
+    let log_poses = sensor.datatype == crate::compact_pose::SCHEMA;
+    let history = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
+    let received_history = history.clone();
     let task = tokio::spawn(async move {
         let expected = sensor.reference.clone();
         let limits = BufferLimits {
-            max_entries: Some(1),
+            max_entries: Some(if log_poses { 300 } else { 1 }),
             max_bytes: Some(8 * 1024 * 1024),
             target_duration: None,
         };
@@ -330,14 +334,27 @@ fn start_preview<T: ContractType + serde::de::DeserializeOwned + Send + Sync + '
         };
         let producer = subscription.product().producer.clone();
         if subscription.product().reference() != expected || producer.peer_id != expected.peer_id { return; }
+        let mut arrivals = std::collections::VecDeque::new();
         loop {
             match subscription.next().await {
                 Ok(Some(RemoteObservationEvent::Observation(observation))) => {
-                    send.send_replace(Some(Arc::new(Frame {
+                    let now = Instant::now();
+                    arrivals.push_back(now);
+                    while arrivals.len()>2000 || arrivals.front().is_some_and(|t| now.duration_since(*t)>Duration::from_secs(2)) { arrivals.pop_front(); }
+                    let elapsed = arrivals.front().map(|t|now.duration_since(*t).as_secs_f64()).unwrap_or(0.0);
+                    let received_hz = if elapsed>0.0 {(arrivals.len()-1) as f64/elapsed} else {0.0};
+                    let frame = Arc::new(Frame {
+                        received_hz,
                         observation,
                         producer: producer.clone(),
                         received: Instant::now(),
-                    })));
+                    });
+                    if log_poses {
+                        let mut history = received_history.lock().unwrap();
+                        history.push_back(frame.clone());
+                        while history.len() > 300 { history.pop_front(); }
+                    }
+                    send.send_replace(Some(frame));
                 }
                 Ok(Some(RemoteObservationEvent::Gap(_))) => { send.send_replace(None); },
                 _ => break,
@@ -345,6 +362,9 @@ fn start_preview<T: ContractType + serde::de::DeserializeOwned + Send + Sync + '
         }
     });
     Preview {
+        history,
+        resolved_pose: None,
+        presentation: None,
         reference,
         used: Instant::now(),
         frames,
@@ -376,12 +396,12 @@ pub async fn serve(
 ) {
     let client = ComponentProtocolClient::new(peer.protocols());
     let mut previews = BTreeMap::<String, Preview>::new();
-    let mut following = BTreeMap::<String, Preview<auki_odometry::PoseUpdate>>::new();
+    let mut compact = BTreeMap::<String, Preview<crate::compact_pose::Update>>::new();
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     loop {
         let sensors = camera_sensors(&catalogs.borrow());
-        let frames = frame_sensors(&catalogs.borrow());
-        following.retain(|id,p| p.used.elapsed()<PREVIEW_IDLE && !p.task.is_finished()
+        let frames = all_frame_sensors(&catalogs.borrow());
+        compact.retain(|id,p|p.used.elapsed()<PREVIEW_IDLE && !p.task.is_finished()
             && frames.iter().any(|s|s.id==*id && s.reference==p.reference));
         previews.retain(|id, p| {
             p.used.elapsed() < PREVIEW_IDLE
@@ -404,27 +424,54 @@ pub async fn serve(
             continue;
         }
         let work = async {
-            if request.follow {
+            if request.follow || request.debug_pose {
                 let id=request.sensor.as_ref().ok_or_else(||anyhow!("Select a sensor frame"))?;
                 let sensor=frames.iter().find(|s|&s.id==id).ok_or_else(||anyhow!("Sensor frame unavailable; waiting for its peer"))?;
                 ensure!(request.expected_manifest.as_deref()==Some(sensor.reference.manifest_hash.as_str()),"Sensor Product changed; attach again");
-                let preview=following.entry(id.clone()).or_insert_with(||start_preview(client.clone(),sensor.clone(),ObservationStart::NewOnly,|_:&auki_odometry::PoseUpdate|1024));
-                preview.used=Instant::now();
-                let sample=preview.frames.borrow().clone().ok_or_else(||anyhow!("Waiting for fresh sensor poses"))?;
-                ensure!(sample.received.elapsed()<Duration::from_secs(2),"Sensor pose stream is stale");
-                let contract:auki_odometry::PoseContract=serde_json::from_value(sensor.metadata.as_ref().unwrap().value.clone())?;
-                ensure!(sample.observation.payload.contract==contract && sample.observation.output==sample.producer.reference()
-                    && sample.producer.peer_id==sensor.reference.peer_id && sample.producer.clock==contract.clock
-                    && sample.producer.spatial_frame.as_ref().map(|f|&f.definition)==Some(&contract.to_frame),"Sensor pose contract changed");
-                let row=catalogs.borrow().get(&sensor.reference.peer_id).cloned().ok_or_else(||anyhow!("Peer unavailable"))?;
-                let (frame,pose)=crate::discovered_ar::resolve_pose(&client,sensor,&row,&sample.observation,local_scenes,&peer.peer_id().to_string(),&mut preview.ar_context).await?;
-                let mut value=crate::view_camera::frame_view(&pose,&contract.from_frame)?;
-                value["frame"]=json!(frame);value["sensor_id"]=json!(id);value["manifest_hash"]=json!(sensor.reference.manifest_hash);
-                value["sequence"]=json!(sample.observation.sequence);value["capture_timestamp_ns"]=json!(sample.observation.timestamp_ns);
-                value["clock"]=json!(contract.clock);value["source_frame"]=json!(contract.from_frame);
-                ensure!(sample.received.elapsed()<Duration::from_secs(2),"Sensor pose expired while resolving its transform");
-                value["age_ms"]=json!(sample.received.elapsed().as_millis() as u64);
-                return Ok(value);
+                if sensor.datatype==crate::compact_pose::SCHEMA {
+                    ensure!(request.debug_pose,"Compact poses currently support inspection, not camera following");
+                    let contract:crate::compact_pose::Contract=serde_json::from_value(sensor.metadata.as_ref().unwrap().value.clone())?;
+                    let start=if contract.lifetime==crate::compact_pose::Lifetime::Held {ObservationStart::LatestExisting}else{ObservationStart::NewOnly};
+                    let preview=compact.entry(id.clone()).or_insert_with(||start_preview(client.clone(),sensor.clone(),start,|_:&crate::compact_pose::Update|256));
+                    preview.used=Instant::now();
+                    let sample=preview.frames.borrow().clone().ok_or_else(||anyhow!("Waiting for fresh sensor poses"))?;
+                    contract.validate_output(&sample.producer)?;
+                    ensure!(sample.observation.output==sample.producer.reference(),"Pose producer mismatch");
+                    sample.observation.payload.validate()?;
+                    let row=catalogs.borrow().get(&sensor.reference.peer_id).cloned().ok_or_else(||anyhow!("Peer catalog unavailable"))?;
+                    if preview.resolved_pose.is_none() {
+                        let (resolved,clock)=crate::product_registry::resolved_contract(&row["registries"],&contract)?;
+                        ensure!(sample.producer.spatial_frame.as_ref().is_some_and(|f| f.definition==resolved.to_frame),"Registry frame differs from output");
+                        preview.resolved_pose=Some(json!({"contract":resolved,"clock_definition":clock,"references":contract}));
+                    }
+                    // Registry resolution can take time: re-read the most recent sample.
+                    let sample=preview.frames.borrow().clone().ok_or_else(||anyhow!("Pose stream gap"))?;
+                    sample.observation.payload.validate()?;
+                    ensure!(sample.observation.output==sample.producer.reference(),"Pose output changed");
+                    let home_pose=if let Some(target)=&request.home_frame {
+                        let view=local_scenes.snapshots.keys().filter_map(|id|local_scenes.view(id).ok()).find(|v|v["frame"]==*target).ok_or_else(||anyhow!("Unknown Home scene frame"))?;
+                        let (alignment,after)=crate::phone_alignment::resolve(&client,sensor,&row,&contract,&peer.peer_id().to_string(),&view,sample.observation.timestamp_ns).await?;
+                        ensure!(sample.observation.timestamp_ns>=after,"Pose predates alignment");
+                        let tracking=crate::phone_alignment::map_tracking(&sample.observation.payload,&alignment,sample.received.elapsed())?;
+                        Some(json!({"frame":target,"tracking":tracking,"alignment_timestamp_ns":after.to_string()}))
+                    }else{None};
+                    let age=sample.received.elapsed();
+                    let history=preview.history.lock().unwrap().iter().map(|frame| {
+                        contract.validate_output(&frame.producer)?;
+                        ensure!(frame.observation.output==frame.producer.reference(),"Pose producer mismatch");
+                        frame.observation.payload.validate()?;
+                        Ok(json!({"observation":frame.observation,
+                            "sequence":frame.observation.sequence.to_string(),
+                            "timestamp_ns":frame.observation.timestamp_ns.to_string()}))
+                    }).collect::<Result<Vec<Value>>>()?;
+                    return Ok(json!({"stream":if contract.lifetime==crate::compact_pose::Lifetime::Held {"held"} else if age<Duration::from_secs(2) {"live"} else {"stale"},
+                        "home_pose":home_pose,
+                        "history":history,"history_limit":300,
+                        "age_ms":age.as_millis() as u64,"received_hz":if age<Duration::from_secs(2) {sample.received_hz} else {0.0},
+                        "resolved":preview.resolved_pose,"observation":sample.observation,
+                        "timestamp_ns":sample.observation.timestamp_ns.to_string(),"sequence":sample.observation.sequence.to_string()}));
+                }
+                anyhow::bail!("Unsupported pose contract; compact registry-backed poses required");
             }
             if request.scene {
                 let scenes = scene_products(&catalogs.borrow());
@@ -483,6 +530,11 @@ pub async fn serve(
                 f.encoding
             );
             let mut pick_error = None;
+            let row={catalogs.borrow().get(&sensor.reference.peer_id).cloned()};
+            let presentation=if let Some((_,value))=preview.presentation.as_ref().filter(|(sequence,_)|*sequence==o.sequence) {value.clone()}else if let Some(row)=row {
+                crate::video_presentation::resolve(&client,sensor,&row,&observations.producer,o.timestamp_ns).await
+            }else{json!({"source":"unavailable","detail":"Peer catalog unavailable"})};
+            preview.presentation=Some((o.sequence,presentation.clone()));
             if request.ar || (request.pick && sensor.pose.is_some()) {
                 let deadline = tokio::time::Instant::now() + POSE_WAIT;
                 let calibrated = loop {
@@ -568,13 +620,13 @@ pub async fn serve(
                 }
                 };
                 match calibrated {
-                    Ok(frame) => return Ok(frame),
+                    Ok(mut frame) => {frame["presentation"]=presentation.clone();return Ok(frame);},
                     Err(e) if request.ar => return Err(e),
                     Err(e) => pick_error = Some(e.to_string()),
                 }
             }
             Ok(
-                json!({"pick_error":pick_error,"spatial_frame":observations.producer.spatial_frame,"metadata":sensor.metadata,"sequence":o.sequence,"capture_timestamp_ns":o.timestamp_ns,"clock":observations.producer.clock,"width":f.width,"height":f.height,"encoding":f.encoding,"data":STANDARD.encode(&f.bytes)}),
+                json!({"presentation":presentation,"pick_error":pick_error,"spatial_frame":observations.producer.spatial_frame,"metadata":sensor.metadata,"sequence":o.sequence,"capture_timestamp_ns":o.timestamp_ns,"clock":observations.producer.clock,"width":f.width,"height":f.height,"encoding":f.encoding,"data":STANDARD.encode(&f.bytes)}),
             )
         };
         let result = tokio::select! {_ = stop.cancelled()=>break,r=tokio::time::timeout(Duration::from_secs(8),work)=>r.unwrap_or_else(|_|Err(anyhow!("Sensor peer timed out")))};

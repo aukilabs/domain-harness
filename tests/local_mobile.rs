@@ -391,13 +391,13 @@ async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated(
         );
         let editor=scenes.note_editors.lock().unwrap()["humanoid-hub-conference"].clone();
         assert!(!retained["render"]["voxels"].as_array().unwrap().is_empty());
-        editor.reset_mapping(&editor.reference()?)?;
+        assert_eq!(editor.reset_mapping(&editor.reference()?)?["restart_required"],true);
         assert!(spatial_home::mobile_depth::send(&pair.b,&home,&dense).await.is_err(),"Old calibration cannot repopulate a reset map");
         tokio::time::sleep(Duration::from_millis(1100)).await;
         for publisher in &mut publishers {publisher.tick()?;}
         let cleared=read(&pair.b,&home).await?;
-        assert!(cleared["scenegraph"]["anchors"].as_object().unwrap().is_empty());
-        assert!(cleared["render"]["voxels"].as_array().unwrap().is_empty());
+        assert_eq!(cleared["scenegraph"]["anchors"],retained["scenegraph"]["anchors"]);
+        assert_eq!(cleared["render"]["voxels"],retained["render"]["voxels"]);
         assert_eq!(cleared["render"]["semantic_volumes"],retained["render"]["semantic_volumes"]);
         assert_eq!(editor.get_note(&note.id)?,saved);
         drop(publishers);
@@ -406,6 +406,7 @@ async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated(
         // previous run's sensor map as fresh observations.
         let server = ScenePublisher::mount(&pair.a)?;
         let restarted = Arc::new(LocalScenes::load(dir.path())?);
+        let home=restarted.connection("humanoid-hub-conference",spatial_home::network::HomeConnection::direct(&pair.a))?;
         let publishers = spatial_home::local_mobile::Publisher::mount_all(
             &server.runtime,
             &server.endpoint,

@@ -69,6 +69,7 @@ pub fn establish(current: &MapSnapshot, observation: &Observation) -> Result<Map
 
 pub fn reset(current: &MapSnapshot) -> Result<MapSnapshot> {
     let mut graph=current.scenegraph.clone();graph.anchors.clear();
+    graph.map.frame.id=format!("local-scene:{}:epoch-{}",graph.map.map_id,uuid::Uuid::new_v4());
     graph.map.frame.origin_description=format!("{DESCRIPTION}. Waiting for observation; reset {}",uuid::Uuid::new_v4());
     MapSnapshot::new(graph).map_err(Into::into)
 }

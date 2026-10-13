@@ -167,6 +167,8 @@ pub struct MobileClient {
     change_receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::mobile_notes::ChangeNote>>>,
     portal_reports: tokio::sync::mpsc::Sender<crate::mobile_portal::Sighting>,
     portal_receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::mobile_portal::Sighting>>>,
+    path_changes: tokio::sync::mpsc::Sender<crate::scene_paths::Change>,
+    path_receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::scene_paths::Change>>>,
     origin_reports: tokio::sync::mpsc::Sender<crate::scene_origin::Observation>,
     origin_receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::scene_origin::Observation>>>,
     receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::mobile_notes::PlaceNote>>>,
@@ -176,6 +178,7 @@ impl Default for MobileClient {
         let (commands, receiver) = tokio::sync::mpsc::channel(1);
         let (changes, change_receiver) = tokio::sync::mpsc::channel(1);
         let (portal_reports, portal_receiver) = tokio::sync::mpsc::channel(4);
+        let (path_changes, path_receiver) = tokio::sync::mpsc::channel(16);
         let (pose_log, pose_log_receiver) = tokio::sync::mpsc::channel(256);
         let (origin_reports, origin_receiver) = tokio::sync::mpsc::channel(1);
         Self {
@@ -187,6 +190,8 @@ impl Default for MobileClient {
             change_receiver: Mutex::new(Some(change_receiver)),
             portal_reports,
             portal_receiver: Mutex::new(Some(portal_receiver)),
+            path_changes,
+            path_receiver: Mutex::new(Some(path_receiver)),
             camera: tokio::sync::watch::channel(None).0,
             camera_configuration:tokio::sync::watch::channel(None).0,
             camera_active: AtomicBool::new(false),
@@ -266,7 +271,7 @@ impl MobileClient {
     }
     pub fn update_pose(&self, mut sample: Option<crate::mobile_pose::Sample>) {
         if let Some(sample)=&mut sample {sample.camera_configuration_id=self.camera_configuration.borrow().as_ref().filter(|c|c.configuration.session==sample.session).map(|c|c.id.clone());}
-        // Preserve the phone's capture-time pose history as well as live presence.
+        // Capture-time compact pose history; no legacy Home presence push.
         let _ = self.pose_log.try_send(sample.clone());
         self.pose.send_replace(sample);
     }
@@ -304,6 +309,10 @@ impl MobileClient {
     /// Set or release the joystick. Releasing sends explicit stops.
     pub fn set_drive(&self, input: Option<(String, f32, f32)>) {
         self.drive.send_replace(input);
+    }
+    /// Queue a drawn path for Home to save, or a saved one for Home to remove.
+    pub fn change_path(&self, change: crate::scene_paths::Change) -> bool {
+        self.snapshot().state == "live" && self.path_changes.try_send(change).is_ok()
     }
     /// Queue a newly seen Portal for Home to add to the scene.
     pub fn report_portal(&self, report: crate::mobile_portal::Sighting) -> bool {
@@ -500,7 +509,6 @@ impl MobileClient {
                         });
                     }
                 };
-                let mut poses = self.pose.subscribe();
                 let mut changes = self.change_receiver.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap();
                 let mut portal_reports = self.portal_receiver.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap();
                 let mut origin_reports=self.origin_receiver.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap();
@@ -508,6 +516,32 @@ impl MobileClient {
                     while let Some(observation)=origin_reports.recv().await {
                         let result=operations.invoke::<_,bool>(&home.scoped_component(crate::mobile_portal::COMPONENT),crate::scene_origin::OPERATION,"portal-observer",&uuid::Uuid::new_v4().to_string(),Duration::from_secs(3),&observation).await;
                         self.local_status(match result {Ok(true)=>format!("Portal {} added to Home as its origin",observation.code),Ok(false)=>"Home refused origin observation".into(),Err(e)=>format!("Origin not set: {e}")});
+                    }
+                };
+                let mut path_changes = self.path_receiver.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap();
+                let path_work = async {
+                    use crate::scene_paths::Change;
+                    while let Some(change) = path_changes.recv().await {
+                        let component = home.scoped_component(crate::scene_paths::COMPONENT);
+                        let request = uuid::Uuid::new_v4().to_string();
+                        let (id, done, doing) = match &change {
+                            Change::Add(add) => (add.stroke.id.clone(), "saved", "saved"),
+                            Change::Remove(remove) => (remove.id.clone(), "removed", "removed"),
+                        };
+                        let result = tokio::time::timeout(Duration::from_secs(4), async {
+                            match &change {
+                                Change::Add(add) => operations.invoke::<_, bool>(&component, "add", "phone-path", &request, Duration::from_secs(3), add).await,
+                                Change::Remove(remove) => operations.invoke::<_, bool>(&component, "remove", "phone-path", &request, Duration::from_secs(3), remove).await,
+                            }
+                        })
+                        .await;
+                        // The app matches these on the path's ID.
+                        self.local_status(match result {
+                            Ok(Ok(true)) => format!("Path {id} {done}"),
+                            Ok(Ok(false)) => format!("Path {id} not {doing}: Home refused it"),
+                            Ok(Err(error)) => format!("Path {id} not {doing}: {error}"),
+                            Err(_) => format!("Path {id} not {doing}: Home did not answer"),
+                        });
                     }
                 };
                 let portal_work = async {
@@ -738,27 +772,6 @@ impl MobileClient {
                         }
                     }
                 };
-                let pose_work = async {
-                    // Latest-only watch channel: send immediately, never queue old poses.
-                    loop {
-                        // While asleep, repeat the status so Home keeps the phone listed.
-                        let asleep = self.asleep.load(Ordering::Acquire);
-                        tokio::select! {
-                            changed = poses.changed() => if changed.is_err() { break },
-                            _ = tokio::time::sleep(Duration::from_secs(20)), if asleep => {}
-                        }
-                        let sample = poses.borrow_and_update().clone();
-                        let status = (sample.is_none() && self.asleep.load(Ordering::Acquire))
-                            .then(|| "asleep".to_string());
-                        let _ = tokio::time::timeout(
-                            Duration::from_secs(2),
-                            operations.invoke::<_,bool>(&home.scoped_component(crate::mobile_pose::COMPONENT),
-                                "update","phone-pose",&uuid::Uuid::new_v4().to_string(),Duration::from_secs(1),
-                                &crate::mobile_pose::Update { sample, status }),
-                        )
-                        .await;
-                    }
-                };
                 let mut depths = self.depth.subscribe();
                 // An older Home rejects the optional color field. Only repeated
                 // failures that are about color pause it, and it is offered again
@@ -871,12 +884,12 @@ impl MobileClient {
                     result = camera_work => result,
                     _ = change_work => Ok(()),
                     _ = portal_work => Ok(()),
+                    _ = path_work => Ok(()),
                     _ = origin_work => Ok(()),
                     _ = drive_work => Ok(()),
                     _ = name_work => Ok(()),
                     _ = geo_work => Ok(()),
                     result = local_work => result,
-                    _ = pose_work => Ok(()),
                     _ = pose_product_work => Ok(()),
                     _ = depth_image_work => Ok(()),
                     _ = depth_work => Ok(()),
@@ -899,19 +912,6 @@ impl MobileClient {
                 if let Some(publisher) = pose_publisher {
                     let _ = publisher.close();
                 }
-                let _ = tokio::time::timeout(
-                    Duration::from_secs(2),
-                    crate::mobile_pose::send(
-                        &peer,
-                        &home,
-                        // A phone that locks while asleep stays listed as asleep.
-                        &crate::mobile_pose::Update {
-                            sample: None,
-                            status: self.asleep.load(Ordering::Acquire).then(|| "asleep".to_string()),
-                        },
-                    ),
-                )
-                .await;
                 let cleanup = products.close().await;
                 work.and(cleanup)
                 }.await;

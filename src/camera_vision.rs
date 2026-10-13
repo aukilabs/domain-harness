@@ -11,7 +11,7 @@ pub async fn capture(tx:&tokio::sync::mpsc::Sender<crate::sensor_preview::Reques
  ensure!(args["product_id"].as_str().is_some_and(|s|!s.is_empty()),"Select an exact camera product");
  let selected=crate::catalog_chat::camera_action(network,args)?;
  let (reply,receive)=tokio::sync::oneshot::channel();
- tx.try_send(crate::sensor_preview::Request{sensor:Some(selected["sensor_id"].as_str().unwrap().into()),capture:true,follow:false,scene:false,ar:false,pick:false,expected_manifest:None,reply})
+ tx.try_send(crate::sensor_preview::Request{home_frame:None,debug_pose:false,sensor:Some(selected["sensor_id"].as_str().unwrap().into()),capture:true,follow:false,scene:false,ar:false,pick:false,expected_manifest:None,reply})
   .map_err(|_|anyhow::anyhow!("Camera request queue unavailable"))?;
  tokio::time::timeout(std::time::Duration::from_secs(10),receive).await
   .map_err(|_|anyhow::anyhow!("Camera did not provide a fresh frame in time"))?

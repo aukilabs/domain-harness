@@ -79,7 +79,13 @@ def main():
                     headers={"Content-Type": "application/json", "Origin": base}, method="POST")
                 try:
                     with urllib.request.urlopen(request, timeout=15) as response:
-                        print("Reset receipt:", json.dumps(json.load(response)), flush=True)
+                        receipt = json.load(response)
+                        print("Reset receipt:", json.dumps(receipt), flush=True)
+                    if receipt.get("restart_required"):
+                        child.terminate()
+                        child.wait(timeout=20)
+                        child = subprocess.Popen([sys.executable, str(root / "scripts/with-home-credentials.py"), str(binary)],
+                                                 cwd=root, env=environment)
                     break
                 except urllib.error.HTTPError as error:
                     detail = error.read(4096).decode("utf-8", errors="replace")

@@ -1,9 +1,9 @@
-//! Phone pose as a declared SDK Product, alongside the pose pushed to Home.
-//! The push keeps presence working; this makes the same pose discoverable in
-//! the phone's own Catalog with explicit frames and clock.
+//! Compact native AR pose Product; interpretation lives in Registry v3.
 use anyhow::{Result, ensure};
 use auki_components::*;
-use auki_odometry::{METADATA_SCHEMA, POSE_SCHEMA, Pose, PoseContract, PoseUpdate, Tracking};
+use auki_odometry::{Pose, PoseContract, Tracking};
+use crate::compact_pose::{Update as PoseUpdate, SCHEMA as POSE_SCHEMA, METADATA as METADATA_SCHEMA};
+use auki_protocols::registry::v3::{RegistryEntryEnvelope,RegistryKind};
 use auki_registry::FrameRegistryEntry;
 use std::sync::Arc;
 
@@ -16,28 +16,52 @@ pub fn product_id(session: &str) -> String {
 
 /// The camera frame and capture clock are the ones phone depth declares, so
 /// a reader can relate a depth sample to the pose of the same AR session.
-/// The destination is Home's scene frame, owned by Home.
-pub fn contract(owner: &str, home_peer: &str, sample: &crate::mobile_pose::Sample) -> PoseContract {
+/// Both endpoints belong to this phone, independent of Home alignment.
+pub fn contract(owner: &str, _home_peer: &str, sample: &crate::mobile_pose::Sample) -> PoseContract {
     let mut clock = crate::model::clock_entry(owner, &sample.session);
     clock.clock_id = "arkit-capture".into();
     PoseContract {
         from_frame: FrameRegistryEntry::opengl(owner, &sample.pose.from_frame_id),
-        to_frame: FrameRegistryEntry::opengl(home_peer, &sample.pose.to_frame_id),
+        to_frame: FrameRegistryEntry::opengl(owner, &sample.pose.to_frame_id),
         clock: crate::model::clock_ref(&clock),
         session_id: sample.session.clone(),
     }
 }
 
+
+fn compact(c:&PoseContract)->crate::compact_pose::Contract {
+    crate::compact_pose::Contract{from_frame:(&c.from_frame).into(),to_frame:(&c.to_frame).into(),clock:c.clock.clone(),session_id:c.session_id.clone(),lifetime:crate::compact_pose::Lifetime::Sampled}
+}
+fn validate_native(c:&PoseContract)->Result<()> {
+    uuid::Uuid::parse_str(&c.session_id)?;
+    c.validate()?;
+    ensure!(c.from_frame.frame_id==format!("phone-camera:{}",c.session_id)
+        && c.to_frame.frame_id==format!("phone-ar:{}",c.session_id),"Phone pose must be in native AR session space");
+    Ok(())
+}
+fn register(entries:&Arc<std::sync::Mutex<Vec<RegistryEntryEnvelope>>>,c:&PoseContract)->Result<()> {
+    let mut clock=crate::model::clock_entry(&c.clock.peer_id,&c.session_id);
+    clock.clock_id=c.clock.id.clone();
+    ensure!(clock.hash()==c.clock.hash,"Clock definition mismatch");
+    let mut entries=entries.lock().map_err(|_|anyhow::anyhow!("Registry unavailable"))?;
+    for entry in [
+        RegistryEntryEnvelope{kind:RegistryKind::Clock,id:clock.clock_id.clone(),hash:clock.hash(),canonical_json:String::from_utf8(clock.canonical_bytes())?},
+        RegistryEntryEnvelope{kind:RegistryKind::Frame,id:c.from_frame.frame_id.clone(),hash:c.from_frame.hash(),canonical_json:String::from_utf8(c.from_frame.canonical_bytes())?},
+        RegistryEntryEnvelope{kind:RegistryKind::Frame,id:c.to_frame.frame_id.clone(),hash:c.to_frame.hash(),canonical_json:String::from_utf8(c.to_frame.canonical_bytes())?},
+    ] {if !entries.iter().any(|e|e.kind==entry.kind&&e.id==entry.id&&e.hash==entry.hash){entries.push(entry);}}
+    Ok(())
+}
+
 fn spec(contract: &PoseContract) -> ConfiguredObservableSpec {
     ConfiguredObservableSpec::new(
         SLOT,
-        format!("poses:{}:{}", contract.session_id, uuid::Uuid::new_v4()),
+        compact(contract).output_id(),
         contract.clock.clone(),
         PayloadContract::Structured(StructuredPayloadContract {
             modality: "pose".into(),
             datatype: PoseUpdate::DATATYPE.into(),
             schema: POSE_SCHEMA.into(),
-            observes: "phone_camera_pose_in_home_scene".into(),
+            observes: "phone_camera_pose_in_ar_session".into(),
             unit: None,
         }),
     )
@@ -49,7 +73,7 @@ fn capture(
     output: &ConfiguredObservable<PoseUpdate>,
     contract: &PoseContract,
 ) -> Result<BufferProductCapture<PoseUpdate>> {
-    let expected = contract.clone();
+    let expected = compact(contract);
     Ok(runtime.capture_buffer_with_metadata(
         product_id(&contract.session_id),
         output,
@@ -78,6 +102,7 @@ pub struct Publisher {
     lost: bool,
     component: Component,
     runtime: ComponentRuntime,
+    definitions: Arc<std::sync::Mutex<Vec<RegistryEntryEnvelope>>>,
 }
 impl Publisher {
     pub fn new(
@@ -88,7 +113,8 @@ impl Publisher {
         uuid::Uuid::parse_str(&sample.session)?;
         let runtime = products.runtime.clone();
         let contract = contract(runtime.peer_id(), home_peer, sample);
-        contract.validate()?;
+        validate_native(&contract)?;
+        register(&products.definitions,&contract)?;
         let component =
             runtime.component(ComponentSpec::new(COMPONENT).observable(ObservableContract {
                 name: SLOT.into(),
@@ -111,6 +137,7 @@ impl Publisher {
             lost: false,
             component,
             runtime,
+            definitions: products.definitions.clone(),
         })
     }
     pub fn contract(&self) -> &PoseContract {
@@ -146,10 +173,7 @@ impl Publisher {
         Ok(())
     }
     fn send(&mut self, timestamp_ns: u64, tracking: Tracking) -> Result<()> {
-        let update = PoseUpdate {
-            contract: self.contract.clone(),
-            tracking,
-        };
+        let update = PoseUpdate { tracking };
         update.validate()?;
         self.output.publish(timestamp_ns, Arc::new(update))?;
         self.last_timestamp = timestamp_ns;
@@ -161,7 +185,8 @@ impl Publisher {
     }
     /// A new AR session or scene is a new Output and Product on the same Component.
     fn reconfigure(&mut self, contract: PoseContract, timestamp_ns: u64) -> Result<()> {
-        contract.validate()?;
+        validate_native(&contract)?;
+        register(&self.definitions,&contract)?;
         let replacement = self
             .component
             .replace_configured_observable(&self.output, spec(&contract), timestamp_ns)?

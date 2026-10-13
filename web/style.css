@@ -129,7 +129,9 @@ h3{font-size:13px;font-weight:600;letter-spacing:0;margin:8px 0 5px;color:var(--
 .pip-resize::after{content:'';position:absolute;right:5px;bottom:5px;width:10px;height:10px;border-right:2px solid currentColor;border-bottom:2px solid currentColor}
 #sensor-pip #sensor-feed-status{padding-right:28px}
 #sensor-close{background:transparent;border:0;color:#ffffff99;font-size:18px}
-#sensor-stage{position:relative}
+#sensor-stage{position:relative;overflow:hidden;aspect-ratio:16/9}
+.sensor-presentation{position:absolute;left:0;top:0;width:100%;transform-origin:0 0}
+.sensor-orientation{width:auto;max-width:85px;font-size:11px;padding:2px}
 #sensor-image{display:block;width:100%;aspect-ratio:16/9;object-fit:contain;background:#09090b}
 #sensor-ar-overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
 #sensor-feed-status,#sensor-ar-status{font-size:10px;padding:6px 8px;color:#9da6b8}

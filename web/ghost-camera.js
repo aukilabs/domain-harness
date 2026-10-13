@@ -2,6 +2,26 @@
 export function isEditing(target) {
  return !!target && (target.isContentEditable || !!target.closest?.('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"]'));
 }
+// Animate position and orbit target together; manual input may cancel at any time.
+export function createCameraPan({camera,controls,duration=700,now=()=>performance.now()}) {
+ let flight=null;
+ return {
+  cancel(){flight=null;},
+  start(position,target){
+   const damping=controls.enableDamping;controls.enableDamping=false;controls.update();controls.enableDamping=damping;
+   flight={began:now(),from:camera.position.clone(),targetFrom:controls.target.clone(),position:position.clone(),target:target.clone()};
+  },
+  tick(time){
+   if(!flight)return false;
+   const t=Math.min(1,Math.max(0,(time-flight.began)/duration)),ease=t*t*(3-2*t);
+   camera.position.copy(flight.from).lerp(flight.position,ease);
+   controls.target.copy(flight.targetFrom).lerp(flight.target,ease);
+   camera.lookAt(controls.target);
+   if(t===1)flight=null;
+   return true;
+  }
+ };
+}
 export function ghostStep(keys, forward, right, dt, speed=3) {
  const f=Number(keys.has('KeyW'))-Number(keys.has('KeyS'));
  const r=Number(keys.has('KeyD'))-Number(keys.has('KeyA'));

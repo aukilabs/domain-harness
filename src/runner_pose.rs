@@ -256,6 +256,7 @@ pub async fn monitor(
     });
     loop {
         let attempt = async {
+            crate::home_pose_policy::unsupported("Home runner pose, alignment and mapping")?;
             let expected: PeerId = config.peer_id.parse()?;
             ensure!(
                 peer.domain_id().to_string() == DOMAIN,

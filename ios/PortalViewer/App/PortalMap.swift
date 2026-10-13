@@ -272,14 +272,12 @@ struct PhonePoseSample: Encodable {
     let session: String
     let timestamp_ns: UInt64
     let pose: Portal.Pose
-    init(session: String, timestamp: TimeInterval, cameraInAR: simd_float4x4,
-         homeInAR: simd_float4x4, homeFrame: String) {
+    init(session: String, timestamp: TimeInterval, cameraInAR: simd_float4x4) {
         self.session = session
         timestamp_ns = UInt64(timestamp * 1_000_000_000)
-        let cameraInHome = homeInAR.inverse * cameraInAR
-        let q = simd_normalize(simd_quatf(cameraInHome))
-        pose = Portal.Pose(from_frame_id: "phone-camera:\(session)", to_frame_id: homeFrame,
-            translation: [cameraInHome.columns.3.x, cameraInHome.columns.3.y, cameraInHome.columns.3.z],
+        let q = simd_normalize(simd_quatf(cameraInAR))
+        pose = Portal.Pose(from_frame_id: "phone-camera:\(session)", to_frame_id: "phone-ar:\(session)",
+            translation: [cameraInAR.columns.3.x, cameraInAR.columns.3.y, cameraInAR.columns.3.z],
             rotation_wxyz: [q.real, q.imag.x, q.imag.y, q.imag.z])
     }
 }

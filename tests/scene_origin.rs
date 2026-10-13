@@ -27,7 +27,7 @@ fn first_observation_is_origin_and_reset_invalidates_old_offers()->Result<()> {
     assert_eq!(anchor.pose_in_map.rotation_wxyz,[std::f64::consts::FRAC_1_SQRT_2,-std::f64::consts::FRAC_1_SQRT_2,0.,0.]);
     assert!(scene_origin::establish(&established,&offer(empty,"ZYXWVUTSRQP")).is_err());
     let reset=scene_origin::reset(&established)?;
-    assert_eq!(reset.scenegraph.map.frame.id,empty.scenegraph.map.frame.id);
+    assert_ne!(reset.scenegraph.map.frame.id,empty.scenegraph.map.frame.id);
     assert!(scene_origin::establish(&reset,&observation).is_err());
     let next=scene_origin::establish(&reset,&offer(&reset,"ZYXWVUTSRQP"))?;
     assert_eq!(scene_origin::portal(&next)?,Some("ZYXWVUTSRQP"));
@@ -77,13 +77,22 @@ async fn sdk_first_writer_wins_and_reset_preserves_authored_content()->Result<()
         scenes.volumes.change("humanoid-hub-conference",&home.frame,None,Some(volume),&home.frame)?;
         let volumes_before=serde_json::to_value(scenes.volumes.get("humanoid-hub-conference",&home.frame)?)?;
         assert!(editor.reset_mapping(&empty).is_err(),"reset must reject a stale reference");
-        let receipt=editor.reset_mapping(&saved)?;assert_eq!(receipt["voxels_cleared"],true);
+        let receipt=editor.reset_mapping(&saved)?;assert_eq!(receipt["restart_required"],true);
         assert_eq!(editor.get_note(note_id)?,note_before);
         assert_eq!(serde_json::to_value(scenes.volumes.get("humanoid-hub-conference",&home.frame)?)?,volumes_before);
-        let reset=editor.reference()?;assert!(reset.scenegraph.anchors.is_empty());
+        assert_eq!(editor.reference()?,saved,"live reference stays immutable until restart");
         assert!(scene_origin::send(&pair.b,&home,&first).await.is_err());
-        let fresh=offer(&reset,"NEWPORTAL01");assert!(scene_origin::send(&pair.b,&home,&fresh).await?);
-        assert_eq!(scene_origin::portal(&editor.reference()?)?,Some("NEWPORTAL01"));
+        drop(publishers);
+        let restarted=LocalScenes::load(dir.path())?;
+        let reset=restarted.snapshot("humanoid-hub-conference")?;
+        assert_ne!(reset.scenegraph.map.frame.id,home.frame);
+        assert!(reset.scenegraph.anchors.is_empty());
+        let new_frame=&reset.scenegraph.map.frame.id;
+        assert_eq!(restarted.volumes.get("humanoid-hub-conference",new_frame)?.items.len(),1);
+        let notes:spatial_home::notes::Notes=serde_json::from_slice(&std::fs::read(dir.path().join("mobile-notes/humanoid-hub-conference.json"))?)?;
+        notes.validate(new_frame)?;assert_eq!(notes.items[0].text,note_before.text);
+        let next=scene_origin::establish(reset,&offer(reset,"NEWPORTAL01"))?;
+        assert_eq!(scene_origin::portal(&next)?,Some("NEWPORTAL01"));
         Ok::<(),anyhow::Error>(())
     }.await;
     pair.shutdown().await?;result
