@@ -96,6 +96,12 @@ pub enum SensorEvent {
     Status {
         detail: String,
     },
+    /// URDF joint positions (rad or m) keyed by URDF joint name. Presentation
+    /// only: they pose the viewer's robot model and never touch mapping.
+    Joints {
+        timestamp_ns: u64,
+        positions: BTreeMap<String, f64>,
+    },
 }
 impl ContractType for SensorEvent {
     const DATATYPE: &'static str = "spatial-harness.local-sensors/v1";
@@ -281,6 +287,7 @@ pub struct LocalMap {
     evidence: BTreeMap<String, Value>,
     pending: Vec<Observation<SensorEvent>>,
     pub latest_pose: Option<(u64, Pose)>,
+    pub latest_joints: Option<(u64, BTreeMap<String, f64>)>,
     correction: Option<(u64, i64)>,
     scan_diagnostics: ScanDiagnostics,
     last_integration: Option<std::time::Instant>,
@@ -610,6 +617,7 @@ impl LocalMap {
             evidence: BTreeMap::new(),
             pending: vec![],
             latest_pose: None,
+            latest_joints: None,
             correction: None,
             scan_diagnostics: Default::default(),
             last_integration: None,
@@ -722,7 +730,8 @@ impl LocalMap {
             "observed_portals":self.evidence,
             "retained_depth_timestamps":self.retained_depth.iter().map(|d|d.observation.timestamp_ns).collect::<std::collections::BTreeSet<_>>(),
             "camera_scans":self.cameras.iter().map(|(frame,c)| (frame.clone(), c.scan_status.clone())).collect::<BTreeMap<_,_>>(),
-            "robot_pose":self.latest_pose.as_ref().map(|(t,p)|json!({"capture_timestamp_ns":t,"clock":self.clock,"pose":p,"from_frame":self.contract.from_frame,"frame":self.frame}))},
+            "robot_pose":self.latest_pose.as_ref().map(|(t,p)|json!({"capture_timestamp_ns":t,"clock":self.clock,"pose":p,"from_frame":self.contract.from_frame,"frame":self.frame})),
+            "robot_joints":self.latest_joints.as_ref().map(|(t,p)|json!({"capture_timestamp_ns":t,"positions":p}))},
             "landmark_components":[crate::landmarks::ComponentCapabilities { component: self.processor.reference().clone(), landmark_types: Some(vec![crate::landmarks::PORTAL.into()]) }],
             "landmark_observations":self.landmark_capture.product().reference(),
             "frames":[self.contract.from_frame,self.contract.to_frame],"clocks":[crate::model::clock_entry(&self.sensor_owner,&self.contract.session_id)]})
@@ -856,6 +865,13 @@ impl LocalMap {
                 }
             }
             SensorEvent::Status { detail } => self.detail = detail,
+            SensorEvent::Joints { timestamp_ns, positions } => {
+                ensure!(
+                    positions.len() <= 64 && positions.values().all(|v| v.is_finite()),
+                    "joint positions must be finite (at most 64)"
+                );
+                self.latest_joints = Some((timestamp_ns, positions));
+            }
             event => {
                 let t = match &event {
                     SensorEvent::Camera { sample } => sample.timestamp_ns,

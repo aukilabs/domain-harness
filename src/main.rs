@@ -937,15 +937,45 @@ async fn vendor(axum::extract::Path(name): axum::extract::Path<String>) -> Respo
         "three.module.js" => "node_modules/three/build/three.module.js",
         "three.core.js" => "node_modules/three/build/three.core.js",
         "OrbitControls.js" => "node_modules/three/examples/jsm/controls/OrbitControls.js",
+        "GLTFLoader.js" => "node_modules/three/examples/jsm/loaders/GLTFLoader.js",
+        "DRACOLoader.js" => "node_modules/three/examples/jsm/loaders/DRACOLoader.js",
+        "BufferGeometryUtils.js" => "node_modules/three/examples/jsm/utils/BufferGeometryUtils.js",
+        "draco_wasm_wrapper.js" => "node_modules/three/examples/jsm/libs/draco/draco_wasm_wrapper.js",
+        "draco_decoder.js" => "node_modules/three/examples/jsm/libs/draco/draco_decoder.js",
+        "draco_decoder.wasm" => "node_modules/three/examples/jsm/libs/draco/draco_decoder.wasm",
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
+    let content_type = if name.ends_with(".wasm") {
+        "application/wasm"
+    } else {
+        "text/javascript"
+    };
     match std::fs::read(path) {
-        Ok(bytes) => ([(header::CONTENT_TYPE, "text/javascript")], bytes).into_response(),
+        Ok(bytes) => ([(header::CONTENT_TYPE, content_type)], bytes).into_response(),
         Err(_) => (
             StatusCode::SERVICE_UNAVAILABLE,
             "Run npm ci to install local viewer assets",
         )
             .into_response(),
+    }
+}
+/// Bracketbot URDF and its Draco GLBs, read from web/robot/ like the vendor files.
+async fn robot_asset(axum::extract::Path(path): axum::extract::Path<String>) -> Response {
+    let content_type = match path.rsplit_once('.').map(|(_, ext)| ext) {
+        Some("urdf") => "application/xml",
+        Some("json") => "application/json",
+        Some("glb") => "model/gltf-binary",
+        _ => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let safe = path
+        .split('/')
+        .all(|part| !part.is_empty() && part != ".." && !part.starts_with('.'));
+    if !safe {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    match std::fs::read(std::path::Path::new("web/robot").join(&path)) {
+        Ok(bytes) => ([(header::CONTENT_TYPE, content_type)], bytes).into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
 }
 async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Json<spatial_home::chatbot::Request>)->ApiResult {
@@ -1364,6 +1394,8 @@ async fn main() -> anyhow::Result<()> {
             }),
         )
         .route("/vendor/{name}", get(vendor))
+        .route("/robot-model.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/robot-model.js")) }))
+        .route("/robot/{*path}", get(robot_asset))
         .route("/api/sensors", get(sensor_preview))
         .route("/api/robot-occupancy", get(robot_occupancy))
         .route("/api/scene", get(scene))

@@ -80,6 +80,33 @@ def acquire(Reader, mailbox, emit, stopped, parent):
             stopped.wait(.015)
 
 
+def arm_joint_sources(Config, Reader):
+    """Optional read-only arm states for the viewer's URDF model. A missing or
+    uncalibrated arm must not stop camera capture or mapping."""
+    arms = {}
+    for name in ARMS:
+        try:
+            arms[name] = (Config(name), Reader(name+'.state', keeptime=False))
+        except Exception as e:
+            print(f'{name} joints unavailable: {e}', file=sys.stderr, flush=True)
+    return arms
+
+
+def arm_joint_positions(arms, latest, now_ns):
+    """URDF joint positions from fresh arm states, using BBOS's own q2urdf."""
+    positions, stamps = {}, []
+    for name, (cfg, reader) in arms.items():
+        if reader.ready():
+            latest[name] = reader.data.copy()
+        d = latest.get(name)
+        if d is None or not 0 <= now_ns-timestamp(d) <= MAX_JOINT_AGE_NS:
+            continue
+        angles = cfg.q2urdf(np.array(d['pos'], np.float64))
+        positions.update(zip(cfg.joint_names, (float(a) for a in angles)))
+        stamps.append(timestamp(d))
+    return (max(stamps), positions) if positions else None
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--seconds', type=float, default=0, help='Bounded capture for validation')
@@ -158,7 +185,8 @@ def main():
     signal.signal(signal.SIGINT, stop)
     parent = os.getppid()
     mailbox = CaptureMailbox()
-    last_image = last_mapping = last_preview = last_status = 0
+    arms, latest_arms = arm_joint_sources(Config, Reader), {}
+    last_image = last_mapping = last_preview = last_status = last_joints = 0
     right_eye = False
     wrist_preview = {}
     started = time.monotonic()
@@ -225,6 +253,11 @@ def main():
                             tracking=dict(status='valid', pose=eye_calibration['sensor_to_base']))))
                         sample(camera_id, t, raw=jpeg.tobytes())
                     last_preview = t
+            if arms and monotonic-last_joints >= .2:
+                joints = arm_joint_positions(arms, latest_arms, time.time_ns())
+                if joints:
+                    emit(dict(kind='joints', timestamp_ns=joints[0], positions=joints[1]))
+                last_joints = monotonic
             if monotonic-last_status >= 1:
                 if hashlib.sha256(source.read_bytes()).hexdigest() != signature:
                     raise NewSessionRequired('stereo calibration changed')
@@ -258,5 +291,7 @@ def main():
 
 
 MAX_CAMERA_AGE_NS = 800_000_000
+MAX_JOINT_AGE_NS = 1_000_000_000
+ARMS = ('arm_left', 'arm_right')
 if __name__ == '__main__':
     main()

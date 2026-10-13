@@ -277,5 +277,35 @@ class BracketbotCaptureTests(unittest.TestCase):
         expected = colors[4:][2::4][:384].tolist()
         self.assertEqual(rgb, expected)
 
+    def test_arm_joints_use_bbos_q2urdf_and_skip_stale_or_missing_arms(self):
+        spec = importlib.util.spec_from_file_location('capture_bracketbot',
+            Path(__file__).resolve().parents[1] / 'scripts/capture-bracketbot.py')
+        capture = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(capture)
+        now = time.time_ns()
+        def state(t, pos):
+            d = np.zeros((), dtype=[('pos', 'f4', 8), ('timestamp', 'i8')])
+            d['pos'], d['timestamp'] = pos, t
+            return d
+        class Config:
+            def __init__(self, name):
+                if name == 'arm_right': raise FileNotFoundError('no arm')
+                self.joint_names = [f'lj{i}' for i in range(7)]+['left_left_gripper']
+            def q2urdf(self, q): return q*2
+        class Reader:
+            def __init__(self, name, keeptime=True): self.data, self.fresh = state(now-1000, np.arange(8)), True
+            def ready(self):
+                fresh, self.fresh = self.fresh, False
+                return fresh
+        arms, latest = capture.arm_joint_sources(Config, Reader), {}
+        self.assertEqual(list(arms), ['arm_left'])
+        t, positions = capture.arm_joint_positions(arms, latest, now)
+        self.assertEqual(t, now-1000)
+        self.assertEqual(positions['lj3'], 6.0)
+        self.assertEqual(positions['left_left_gripper'], 14.0)
+        # The last reading is reused between samples, but not once it goes stale.
+        self.assertIsNotNone(capture.arm_joint_positions(arms, latest, now+500_000_000))
+        self.assertIsNone(capture.arm_joint_positions(arms, latest, now+2_000_000_000))
+
 
 if __name__ == '__main__': unittest.main()
