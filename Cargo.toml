@@ -30,7 +30,6 @@ auki-components = { git = "https://github.com/aukilabs/auki-sdk.git", rev = "334
 auki-scenegraph = { git = "https://github.com/aukilabs/auki-sdk.git", rev = "3342d589605846f5f45c1de5430dd22923555de2" }
 auki-voxel-map = { path = "vendor/auki-voxel-map" }
 auki-registry = { git = "https://github.com/aukilabs/auki-sdk.git", rev = "3342d589605846f5f45c1de5430dd22923555de2" }
-auki-protocols = { git = "https://github.com/aukilabs/auki-sdk.git", rev = "3342d589605846f5f45c1de5430dd22923555de2", features = ["registry-endpoint"] }
 auki-geometry = { git = "https://github.com/aukilabs/auki-sdk.git", rev = "3342d589605846f5f45c1de5430dd22923555de2" }
 auki-datatypes = { git = "https://github.com/aukilabs/auki-sdk.git", rev = "3342d589605846f5f45c1de5430dd22923555de2" }
 auki-sdk = { git = "https://github.com/aukilabs/auki-sdk.git", rev = "3342d589605846f5f45c1de5430dd22923555de2" }
