@@ -56,7 +56,7 @@ async fn phone_depth_image_is_declared_and_read_back_exactly() -> Result<()> {
         let metadata = &entry["metadata"]["value"];
         assert_eq!(metadata["width"], 256);
         assert_eq!(metadata["camera_product_id"], "phone-camera");
-        assert_eq!(metadata["capture_pose_product_id"], format!("phone-pose:{session}"));
+        assert_eq!(metadata["pose_product_id"], format!("phone-pose:{session}"));
         assert_eq!(metadata["alignment_timestamp_ns"], 42);
 
         // A reader gets the same millimetres and confidence back.
@@ -96,7 +96,7 @@ async fn phone_depth_image_is_declared_and_read_back_exactly() -> Result<()> {
             .find(|p| p["manifest"]["product_id"] == PRODUCT)
             .unwrap();
         assert_eq!(entry["metadata"]["value"]["camera_frame"], format!("phone-camera:{next}"));
-        assert!(entry["metadata"]["value"]["capture_pose_product_id"].is_null());
+        assert!(entry["metadata"]["value"]["pose_product_id"].is_null());
         publisher.close()?;
         products.close().await?;
         Ok::<_, anyhow::Error>(())

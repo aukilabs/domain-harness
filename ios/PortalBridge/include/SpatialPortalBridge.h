@@ -5,6 +5,7 @@
 extern "C" {
 #endif
 int32_t spatial_mobile_start(const char *profile, const char *email, const char *password, const char *identity_path);
+int32_t spatial_mobile_start_app(const char *profile, const char *key, const char *secret, const char *identity_path);
 char *spatial_mobile_poll(void);
 void spatial_mobile_stop(void);
 int32_t spatial_mobile_local_map(const char *sample);
@@ -15,6 +16,7 @@ void spatial_mobile_name(const char *name);
 void spatial_mobile_geo(const char *reference);
 void spatial_mobile_drive(const char *target, float forward, float turn);
 int32_t spatial_mobile_report_portal(const char *report);
+int32_t spatial_mobile_change_path(const char *change);
 int32_t spatial_mobile_report_origin(const char *report);
 void spatial_mobile_depth(const char *sample);
 int32_t spatial_mobile_camera_demand(int32_t active);

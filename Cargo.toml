@@ -15,6 +15,7 @@ auki-p2p = { path = "vendor/auki-p2p" }
 auki-component-protocol = { path = "vendor/auki-component-protocol" }
 
 [dependencies]
+auki-protocols = { git = "https://github.com/aukilabs/auki-sdk.git", rev = "3342d589605846f5f45c1de5430dd22923555de2", features = ["registry-endpoint"] }
 futures = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
@@ -85,6 +86,12 @@ opt-level = 2
 [profile.dev.package.qr-lab-geometry]
 opt-level = 2
 [profile.dev.package.auki-geometry]
+opt-level = 2
+# Portal detectors decode every camera JPEG and resize frames for the
+# small-code retry; unoptimized, these dominate the robot's detector time.
+[profile.dev.package.image]
+opt-level = 2
+[profile.dev.package.zune-jpeg]
 opt-level = 2
 [profile.dev.package.pnp-core]
 opt-level = 2

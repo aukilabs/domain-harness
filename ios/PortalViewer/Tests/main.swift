@@ -174,6 +174,24 @@ let ownJSON = try JSONSerialization.jsonObject(with: JSONEncoder().encode(
 check(Set(ownJSON.keys) == ["session", "timestamp_ns", "cells"], "Home refuses a local map with any other field")
 print("Phone own map checks passed")
 
+var crayon = CrayonDraft()
+check(crayon.add(SIMD3(0, 0, 0)) == nil && crayon.add(SIMD3(0.01, 0, 0)) == nil, "points closer than 2 cm add no line")
+check(crayon.add(SIMD3(0.05, 0, 0)) != nil && crayon.stroke(id: "a")?.segments == [[[0, 0, 0], [0.05, 0, 0]]], "a stroke is its spaced points")
+_ = crayon.add(nil); _ = crayon.add(SIMD3(1, 0, 0))
+check(crayon.segments.count == 2 && crayon.stroke(id: "a")?.segments.count == 1, "a miss starts a new segment, and a lone point is not saved")
+check(CrayonDraft().stroke(id: "a") == nil, "nothing drawn, nothing saved")
+let bend = [SIMD3<Float>(0, 0, 0), SIMD3(0.1, 0, 0), SIMD3(0.1, 0, 0.1)]
+let curve = CrayonTube.smooth(bend)
+check(curve.count == 9 && curve[0] == bend[0] && simd_distance(curve[4], bend[1]) < 0.0001 && curve[8] == bend[2],
+      "the smooth line still passes through every drawn point")
+let tube = CrayonTube.mesh(bend, radius: 0.02)!
+check(tube.vertices.count == 9 * 8 + 2 && tube.indices.count == 8 * 8 * 6 + 2 * 8 * 3 && tube.indices.allSatisfy { $0 < UInt32(tube.vertices.count) },
+      "a tube is one closed skin of rings with two ends")
+check(tube.vertices.prefix(72).enumerated().allSatisfy { abs(simd_distance($1, curve[$0 / 8]) - 0.02) < 0.0001 },
+      "every ring sits one radius from the line")
+check(CrayonTube.mesh([bend[0]], radius: 0.02) == nil && CrayonTube.mesh([bend[0], bend[0]], radius: 0.02) == nil, "a point is not a line")
+print("Crayon stroke checks passed")
+
 let firstPortal = try JSONSerialization.jsonObject(with: JSONEncoder().encode(PortalReport(
     session: "s", timestamp_ns: 7, code: "NV16FWJ9G2X", side_length_m: PortalReport.assumedSide,
     portal_to_session: .transform(matrix_identity_float4x4, from: "portal:NV16FWJ9G2X:local", to: "phone-ar:s"),

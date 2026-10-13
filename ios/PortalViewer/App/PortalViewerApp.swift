@@ -60,6 +60,7 @@ struct ViewerScreen: View {
                 HStack(alignment: .top) {
                     VolumeControls(editor: controller.volumes, peer: peer)
                     Spacer(minLength: 0)
+                    VStack(spacing: 0) {
                     Button { withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) { showDetails.toggle() } } label: {
                         Image(uiImage: UIImage(named: "auki.png") ?? UIImage()).renderingMode(.original).resizable()
                             .frame(width: 44, height: 44).clipShape(Circle())
@@ -72,6 +73,25 @@ struct ViewerScreen: View {
                     }
                     .padding()
                     .accessibilityLabel(showDetails ? "Hide scene details" : "Show scene details")
+                    // Sometimes the room is easier to read without the voxels over it.
+                    Button { controller.showVoxels.toggle() } label: {
+                        Image(systemName: "square.grid.2x2.fill").font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(controller.showVoxels ? Theme.accent : Theme.dim)
+                            .frame(width: 36, height: 36).background(Theme.paper, in: Circle())
+                            .shadow(color: Theme.glow, radius: 4, y: 2)
+                    }
+                    .accessibilityLabel(controller.showVoxels ? "Hide voxels" : "Show voxels")
+                    // Draw on the scene with a finger, as Home's Crayon does.
+                    Button { controller.drawing.toggle() } label: {
+                        Image(systemName: "scribble.variable").font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(controller.drawing ? Theme.accent : Theme.dim)
+                            .frame(width: 36, height: 36).background(Theme.paper, in: Circle())
+                            .shadow(color: Theme.glow, radius: 4, y: 2)
+                    }
+                    .padding(.top, 10)
+                    .accessibilityLabel(controller.drawing ? "Stop drawing" : "Draw on the scene")
+                    if controller.drawing { CrayonTools(controller: controller).padding(.top, 10) }
+                    }
                     .opacity(controller.snoozed ? 0 : 1).disabled(controller.snoozed)
                 }
                 Spacer()
@@ -189,6 +209,8 @@ struct ViewerScreen: View {
             controller.onSleep = { peer.setAsleep($0) }
             controller.onNewPortal = { peer.reportPortal($0) }
             controller.onGeo = { peer.setGeo($0) }
+            controller.onStroke = { peer.saveStroke($0, frame: $1, done: $2) }
+            controller.onErase = { peer.eraseStroke($0, frame: $1, done: $2) }
             peer.onPortalResult = { controller.showPortalResult($0) }
             // A Portal seen before Home's map has arrived offers sign-in once.
             controller.onPortalSeen = { _ in
@@ -216,13 +238,32 @@ struct ViewerScreen: View {
                             .font(.caption)
                         if let pairingError { Text(pairingError).foregroundStyle(Theme.accent) }
                     }
-                    Section("Auki User · development environment") {
-                        TextField("Email", text: $peer.email)
-                            .textContentType(.username).keyboardType(.emailAddress)
-                            .textInputAutocapitalization(.never).autocorrectionDisabled()
-                        SecureField("Password", text: $peer.password).textContentType(.password)
-                        Text("Use a User account with access to Home's Domain. Passwords are not saved.")
-                            .font(.caption)
+                    Section("Sign in · Auki development environment") {
+                        Picker("Sign in with", selection: $peer.useAppKey) {
+                            Text("User account").tag(false)
+                            Text("App key").tag(true)
+                        }.pickerStyle(.segmented)
+                        if peer.useAppKey {
+                            if peer.savedAppKey {
+                                HStack {
+                                    Text("App key saved on this iPhone")
+                                    Spacer()
+                                    Button("Forget", role: .destructive) { peer.forgetAppKey() }
+                                }
+                            }
+                            TextField(peer.savedAppKey ? "New app key (optional)" : "App key", text: $peer.appKey)
+                                .textInputAutocapitalization(.never).autocorrectionDisabled()
+                            SecureField(peer.savedAppKey ? "New app secret (optional)" : "App secret", text: $peer.appSecret)
+                            Text("Use an app key with access to Home's Domain. It is kept in this iPhone's Keychain after the first sign-in.")
+                                .font(.caption)
+                        } else {
+                            TextField("Email", text: $peer.email)
+                                .textContentType(.username).keyboardType(.emailAddress)
+                                .textInputAutocapitalization(.never).autocorrectionDisabled()
+                            SecureField("Password", text: $peer.password).textContentType(.password)
+                            Text("Use a User account with access to Home's Domain. Passwords are not saved.")
+                                .font(.caption)
+                        }
                         if peer.profile == nil {
                             Text("Import Home's connection profile above to enable sign-in.")
                                 .font(.caption).foregroundStyle(.secondary)
@@ -230,7 +271,7 @@ struct ViewerScreen: View {
                         Button("Sign in and connect") {
                             peer.connect()
                             if peer.running { connecting = false }
-                        }.disabled(peer.profile == nil || peer.email.isEmpty || peer.password.isEmpty || peer.running)
+                        }.disabled(peer.profile == nil || !peer.hasCredentials || peer.running)
                     }
                     Text(peer.detail)
                 }
@@ -255,6 +296,54 @@ struct ViewerScreen: View {
             // Leaving the foreground always lets go of the joystick.
             if value != .active { peer.drive(target: nil) }
             if value == .background { peer.disconnect(background: true) }
+        }
+    }
+}
+
+/// What a finger does while drawing is on.
+enum CrayonTool { case surface, spray, erase }
+
+/// The drawing tools, shown under the draw button while drawing is on.
+struct CrayonTools: View {
+    @ObservedObject var controller: ViewerController
+    @State private var sizing = false
+    private func icon(_ name: String, on: Bool) -> some View {
+        Image(systemName: name).font(.system(size: 16, weight: .semibold))
+            .foregroundStyle(on ? Theme.accent : Theme.dim)
+            .frame(width: 36, height: 36).background(Theme.paper, in: Circle())
+            .shadow(color: Theme.glow, radius: 4, y: 2)
+    }
+    private func tool(_ name: String, _ tool: CrayonTool, _ label: String) -> some View {
+        Button { controller.crayonTool = tool } label: { icon(name, on: controller.crayonTool == tool) }
+            .accessibilityLabel(label)
+    }
+    var body: some View {
+        VStack(spacing: 10) {
+            // One button for the two ways to draw: the brush on surfaces, or the spray in the air.
+            Button { controller.crayonTool = controller.crayonTool == .surface ? .spray : .surface } label: {
+                icon(controller.sprays ? "ladybug.fill" : "paintbrush.fill", on: controller.crayonTool != .erase)
+            }
+            .accessibilityLabel(controller.sprays ? "Spraying in the air. Switch to the brush" : "Brush on voxels or the floor. Switch to spray")
+            tool("eraser.fill", .erase, "Erase a path")
+            Button { controller.undoStroke() } label: { icon("arrow.uturn.backward", on: false) }
+                .opacity(controller.canUndoStroke ? 1 : 0.45).disabled(!controller.canUndoStroke)
+                .accessibilityLabel("Undo my last path")
+            ColorPicker("Color", selection: $controller.crayonColor, supportsOpacity: false)
+                .labelsHidden().frame(width: 36, height: 36)
+            Button { sizing.toggle() } label: { icon("lineweight", on: sizing) }
+                .accessibilityLabel("Line size")
+                .overlay(alignment: .trailing) {
+                    if sizing {
+                        HStack(spacing: 8) {
+                            Slider(value: $controller.crayonWidth, in: 0.01...0.15).frame(width: 150).tint(Theme.accent)
+                            Text(String(format: "%.0f cm", controller.crayonWidth * 100)).themeText(11)
+                                .foregroundStyle(Theme.dim).frame(width: 40, alignment: .trailing)
+                        }
+                        .padding(.horizontal, 12).frame(height: 36).background(Theme.paper, in: Capsule())
+                        .shadow(color: Theme.glow, radius: 4, y: 2)
+                        .fixedSize().offset(x: -46)
+                    }
+                }
         }
     }
 }
@@ -1096,6 +1185,63 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     @Published var showVolumesInAR = UserDefaults.standard.object(forKey: "arVolumesVisible") as? Bool ?? true {
         didSet { UserDefaults.standard.set(showVolumesInAR, forKey: "arVolumesVisible"); applyVolumeVisibility() }
     }
+    /// Crayon: while on, a finger dragged over the camera view draws on the voxels or the floor.
+    @Published var drawing = false {
+        didSet {
+            guard drawing != oldValue else { return }
+            if drawing && !aligned { drawing = false; showToast("Scan a Portal before drawing.", good: false); return }
+            drawPan?.isEnabled = drawing
+            if drawing { showToast("Drag on voxels or the floor.", good: true) } else { crayonTouch = nil; abandonStroke() }
+        }
+    }
+    /// Surface: on the nearest voxel or the floor. Spray: in the air, half a metre
+    /// ahead, so moving the phone draws. Erase: touch a path to remove it.
+    @Published var crayonTool = CrayonTool.surface {
+        didSet { abandonStroke(); crayonTouch = nil; if crayonTool != .erase { sprays = crayonTool == .spray } }
+    }
+    /// Which way of drawing the draw button shows, remembered while the eraser is out.
+    @Published private(set) var sprays = false
+    /// Paths this phone drew and Home saved, oldest first, for undo.
+    @Published private var drawn = [String]()
+    var canUndoStroke: Bool { !drawn.isEmpty }
+    func undoStroke() {
+        guard let id = drawn.popLast() else { return }
+        guard let onErase else { showToast("Home is not connected, so the path was not removed.", good: false); return }
+        erasing.insert(id)
+        let shown = (root.childNodes + povRoot.childNodes).filter { $0.name == "scene-path:" + id }
+            + crayonRoot.childNodes.filter { $0.name == id }
+        shown.forEach { $0.isHidden = true }
+        onErase(id, map?.scenegraph.map.frame.id ?? "") { [weak self] erased in
+            guard !erased else { return }
+            self?.erasing.remove(id)
+            shown.forEach { $0.isHidden = false }
+            self?.drawn.append(id)
+            self?.showToast("Home did not remove that path.", good: false)
+        }
+    }
+    @Published var crayonColor = Color(red: 1, green: 0xca / 255.0, blue: 0x55 / 255.0)
+    @Published var crayonWidth = CrayonStroke.width
+    /// Saves a finished stroke to Home for a scene frame; answers whether Home took it.
+    var onStroke: ((CrayonStroke, String, @escaping (Bool) -> Void) -> Void)?
+    /// Removes a saved path from Home by its ID, in a scene frame; answers whether Home did.
+    var onErase: ((String, String, @escaping (Bool) -> Void) -> Void)?
+    private var drawPan: UILongPressGestureRecognizer?
+    /// Where the finger is while it is down. The line is sampled from here every
+    /// frame, so a still finger on a moving phone draws too.
+    private var crayonTouch: CGPoint?
+    /// Paths asked to be removed, hidden until Home agrees or refuses.
+    private var erasing = Set<String>()
+    /// Strokes drawn here that Home has not sent back yet. Survives Home's redraws.
+    private let crayonRoot = SCNNode()
+    private var crayonDraft = CrayonDraft()
+    private var crayonNode: SCNNode?
+    /// Home's voxels in the AR view and the POV tab.
+    @Published var showVoxels = UserDefaults.standard.object(forKey: "arVoxelsVisible") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(showVoxels, forKey: "arVoxelsVisible")
+            for node in root.childNodes + povRoot.childNodes where node.name == "voxels" { node.isHidden = !showVoxels }
+        }
+    }
     private func applyVolumeVisibility() {
         // The authoring controller owns the AR nodes and re-shows them on every
         // redraw, so it carries the flag; the POV copy is plain nodes.
@@ -1384,10 +1530,15 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         let tap = UITapGestureRecognizer(target: self, action: #selector(doubleTap(_:)))
         tap.numberOfTapsRequired = 2
         view.addGestureRecognizer(tap)
-        // Long-press means "look for a Portal here, now".
+        // Long-press on a QR code means "use this Portal, now". Anywhere else it does nothing.
         let press = UILongPressGestureRecognizer(target: self, action: #selector(longPress(_:)))
         press.minimumPressDuration = 0.35
         view.addGestureRecognizer(press)
+        // No wait and no movement needed: drawing starts where the finger lands.
+        let pan = UILongPressGestureRecognizer(target: self, action: #selector(draw(_:)))
+        pan.minimumPressDuration = 0
+        pan.isEnabled = false
+        view.addGestureRecognizer(pan); drawPan = pan
     }
 
     func start() {
@@ -1552,7 +1703,13 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                                        ownFrame: "phone-camera:" + poseSession)
         // Everything is redrawn except the point still being carried: taking it out and putting it
         // back would restart its dust trail every time Home sends an update.
-        root.childNodes.filter { $0 !== floating }.forEach { $0.removeFromParentNode() }
+        root.childNodes.filter { $0 !== floating && $0 !== crayonRoot }.forEach { $0.removeFromParentNode() }
+        // A stroke drawn here is dropped once Home's own copy of it arrives.
+        let saved = Set(map.render?.paths?.items.map(\.id) ?? [])
+        crayonRoot.childNodes.filter { $0.isHidden }.forEach { $0.removeFromParentNode() }
+        erasing.formIntersection(saved)
+        crayonRoot.childNodes.filter { saved.contains($0.name ?? "") }.forEach { $0.removeFromParentNode() }
+        if crayonRoot.parent == nil { root.addChildNode(crayonRoot) }
         for portal in map.scenegraph.anchors.values.sorted(by: { $0.anchor_id < $1.anchor_id }) {
             let node = SCNNode()
             node.simdTransform = portal.pose_in_map.matrix
@@ -1585,27 +1742,15 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         }
         renderScene(map.render)
         if let paths = map.render?.paths, paths.frame == map.scenegraph.map.frame.id {
-            for stroke in paths.items where stroke.width_m.isFinite && stroke.width_m >= 0.005 && stroke.width_m <= 0.25 {
+            for stroke in paths.items where CrayonStroke.widths.contains(stroke.width_m) && !erasing.contains(stroke.id) {
                 let color = UInt32(stroke.color.dropFirst(), radix: 16) ?? 0xffca55
-                let material = SCNMaterial()
-                material.diffuse.contents = UIColor(red: CGFloat((color >> 16) & 255)/255,
-                    green: CGFloat((color >> 8) & 255)/255, blue: CGFloat(color & 255)/255, alpha: 1)
-                material.lightingModel = .constant
+                let material = Self.crayonMaterial(UIColor(red: CGFloat((color >> 16) & 255)/255,
+                    green: CGFloat((color >> 8) & 255)/255, blue: CGFloat(color & 255)/255, alpha: 1))
                 for segment in stroke.segments {
-                    for (a, b) in zip(segment, segment.dropFirst()) where a.count == 3 && b.count == 3 {
-                        guard (a+b).allSatisfy({ $0.isFinite }) else { continue }
-                        let start = SIMD3<Float>(a[0], a[1], a[2]), end = SIMD3<Float>(b[0], b[1], b[2])
-                        let length = simd_length(end-start)
-                        guard length > 0.00001 else { continue }
-                        let cylinder = SCNCylinder(radius: CGFloat(stroke.width_m/2), height: CGFloat(length))
-                        cylinder.radialSegmentCount = 8
-                        cylinder.materials = [material]
-                        let node = SCNNode(geometry: cylinder)
-                        node.name = "scene-path:" + stroke.id
-                        node.simdPosition = (start+end)/2
-                        node.simdOrientation = simd_quatf(from: SIMD3<Float>(0,1,0), to: (end-start)/length)
-                        root.addChildNode(node)
-                    }
+                    let points = segment.filter { $0.count == 3 }.map { SIMD3<Float>($0[0], $0[1], $0[2]) }
+                    guard let node = Self.pathNode(points, width: stroke.width_m, material: material) else { continue }
+                    node.name = "scene-path:" + stroke.id
+                    root.addChildNode(node)
                 }
             }
         }
@@ -1732,6 +1877,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 shell.materials = [depth]
                 let first = SCNNode(geometry: shell)
                 first.renderingOrder = -2
+                first.name = "voxels"; first.isHidden = !showVoxels
                 root.addChildNode(first)
                 let material = SCNMaterial()
                 material.lightingModel = .constant
@@ -1739,6 +1885,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 geometry.materials = [material]
                 let second = SCNNode(geometry: geometry)
                 second.renderingOrder = -1
+                second.name = "voxels"; second.isHidden = !showVoxels
                 root.addChildNode(second)
             }
         }
@@ -1969,7 +2116,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     @objc private func doubleTap(_ gesture: UITapGestureRecognizer) {
-        guard volumes.draft == nil else { return }
+        guard volumes.draft == nil, !drawing else { return }
         if aligned, let map {
             let hits = view.hitTest(gesture.location(in: view), options: [:])
             if let name = hits.first(where: { $0.node.name?.hasPrefix("semantic-volume:") == true })?.node.name,
@@ -2020,6 +2167,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
 
     private func invalidate() {
         volumes.invalidate()
+        drawing = false
         onPose?(nil)
         onDepth?(nil)
         onLocalMap?(nil)
@@ -2075,16 +2223,131 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { layer.removeFromSuperlayer() }
     }
 
-    /// Explicit user scan: always gives visible feedback, and forces the next
-    /// alignment attempt instead of waiting for the cooldown.
-    @objc private func longPress(_ gesture: UILongPressGestureRecognizer) {
-        guard volumes.draft == nil else { return }
-        guard gesture.state == .began else { return }
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-        guard let frame = view.session.currentFrame else {
-            showToast("Camera is not ready yet", good: false); return
+    /// The ray through a finger, in Home's frame.
+    private func sceneRay(at point: CGPoint) -> (origin: SIMD3<Float>, direction: SIMD3<Float>)? {
+        guard aligned, let frame = view.session.currentFrame,
+              case .normal = frame.camera.trackingState else { return nil }
+        let far = view.unprojectPoint(SCNVector3(Float(point.x), Float(point.y), 1))
+        let inverse = root.simdTransform.inverse
+        let localOrigin = inverse * frame.camera.transform.columns.3
+        let localFar = inverse * SIMD4(far.x, far.y, far.z, 1)
+        let origin = SIMD3(localOrigin.x, localOrigin.y, localOrigin.z)
+        let direction = SIMD3(localFar.x, localFar.y, localFar.z) - origin
+        guard simd_length(direction) > 0.000001 else { return nil }
+        return (origin, simd_normalize(direction))
+    }
+
+    private static func crayonMaterial(_ color: UIColor) -> SCNMaterial {
+        let material = SCNMaterial()
+        material.diffuse.contents = color
+        material.lightingModel = .constant
+        return material
+    }
+
+    /// One smooth tube through a segment's points.
+    private static func pathNode(_ points: [SIMD3<Float>], width: Float, material: SCNMaterial) -> SCNNode? {
+        guard let mesh = CrayonTube.mesh(points, radius: width / 2) else { return nil }
+        let geometry = SCNGeometry(sources: [SCNGeometrySource(vertices: mesh.vertices.map { SCNVector3($0.x, $0.y, $0.z) })],
+                                   elements: [SCNGeometryElement(indices: mesh.indices, primitiveType: .triangles)])
+        material.isDoubleSided = true
+        geometry.materials = [material]
+        return SCNNode(geometry: geometry)
+    }
+
+    private func abandonStroke() {
+        crayonNode?.removeFromParentNode(); crayonNode = nil
+        crayonDraft = CrayonDraft()
+    }
+
+    /// Add the point under the finger to the line being drawn, and redraw the piece it changed.
+    private func sampleCrayon() {
+        guard let touch = crayonTouch, let node = crayonNode, crayonTool != .erase else { return }
+        let ray = sceneRay(at: touch)
+        let point = crayonTool == .spray ? ray.map { $0.origin + $0.direction * 0.5 }
+                                         : ray.flatMap { SceneRay.hit(origin: $0.origin, direction: $0.direction, scene: map?.render) }
+        guard crayonDraft.add(point) != nil else { return }
+        let index = crayonDraft.segments.count - 1
+        let material = node.childNodes.first?.geometry?.firstMaterial ?? Self.crayonMaterial(UIColor(crayonColor))
+        node.childNode(withName: String(index), recursively: false)?.removeFromParentNode()
+        if let piece = Self.pathNode(crayonDraft.segments[index], width: crayonWidth, material: material) {
+            piece.name = String(index)
+            node.addChildNode(piece)
         }
-        showToast("Looking for a Portal…", good: true)
+    }
+
+    /// Remove the saved path nearest the finger, if one is within a fingertip of it.
+    private func erase(at point: CGPoint) {
+        guard aligned, let paths = map?.render?.paths else { return }
+        var nearest: (id: String, distance: CGFloat)?
+        for stroke in paths.items where !erasing.contains(stroke.id) {
+            for position in stroke.segments.joined() where position.count == 3 {
+                let shown = view.projectPoint(root.convertPosition(SCNVector3(position[0], position[1], position[2]), to: nil))
+                guard shown.z > 0, shown.z < 1 else { continue }
+                let distance = hypot(CGFloat(shown.x) - point.x, CGFloat(shown.y) - point.y)
+                if distance < 28, distance < nearest?.distance ?? .infinity { nearest = (stroke.id, distance) }
+            }
+        }
+        guard let id = nearest?.id else { return }
+        guard let onErase else { showToast("Home is not connected, so the path was not erased.", good: false); return }
+        erasing.insert(id)
+        let shown = (root.childNodes + povRoot.childNodes).filter { $0.name == "scene-path:" + id }
+        shown.forEach { $0.isHidden = true }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        onErase(id, map?.scenegraph.map.frame.id ?? "") { [weak self] erased in
+            // An erased path stays marked until Home's scene stops listing it,
+            // so a finger still on it does not ask twice.
+            guard !erased else { return }
+            self?.erasing.remove(id)
+            shown.forEach { $0.isHidden = false }
+            self?.showToast("Home did not erase that path.", good: false)
+        }
+    }
+
+    @objc private func draw(_ gesture: UILongPressGestureRecognizer) {
+        guard drawing else { return }
+        let point = gesture.location(in: view)
+        switch gesture.state {
+        case .began where crayonTool != .erase:
+            abandonStroke()
+            let node = SCNNode(); node.name = UUID().uuidString.lowercased()
+            crayonRoot.addChildNode(node); crayonNode = node
+            crayonTouch = point
+            sampleCrayon()
+        case .began, .changed:
+            crayonTouch = point
+            if crayonTool == .erase { erase(at: point) } else { sampleCrayon() }
+        case .ended where crayonTool != .erase:
+            crayonTouch = point
+            sampleCrayon()
+            crayonTouch = nil
+            let rgb = UIColor(crayonColor).cgColor.converted(to: CGColorSpace(name: CGColorSpace.sRGB)!, intent: .defaultIntent, options: nil)?.components ?? [1, 0.79, 0.33]
+            let hex = "#" + rgb.prefix(3).map { String(format: "%02x", Int((max(0, min(1, $0)) * 255).rounded())) }.joined()
+            guard let node = crayonNode, let frame = map?.scenegraph.map.frame.id, hex.count == 7,
+                  let stroke = crayonDraft.stroke(id: node.name ?? "", color: hex, width: crayonWidth) else { abandonStroke(); return }
+            // The drawn line stays up until Home sends its own copy back, or refuses it.
+            crayonNode = nil; crayonDraft = CrayonDraft()
+            guard let onStroke else {
+                node.removeFromParentNode(); showToast("Home is not connected, so the path was not saved.", good: false); return
+            }
+            onStroke(stroke, frame) { [weak self] saved in
+                guard !saved else { self?.drawn.append(stroke.id); return }
+                node.removeFromParentNode()
+                self?.showToast("Home did not save that path.", good: false)
+            }
+        default:
+            crayonTouch = nil
+            abandonStroke()
+        }
+    }
+
+    /// Explicit user scan of the QR code under the finger: gives visible feedback
+    /// and forces the next alignment attempt instead of waiting for the cooldown.
+    /// A press that is not on a QR code is left alone, silently, so it stays
+    /// free for other gestures such as drawing.
+    @objc private func longPress(_ gesture: UILongPressGestureRecognizer) {
+        guard volumes.draft == nil, !drawing else { return }
+        guard gesture.state == .began, let frame = view.session.currentFrame else { return }
+        let pressed = gesture.location(in: view)
         let size = view.bounds.size
         let orientation = view.window?.windowScene?.interfaceOrientation ?? .portrait
         let display = frame.displayTransform(for: orientation, viewportSize: size)
@@ -2108,11 +2371,19 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 return (code.payloadStringValue, corners, pose.map { frame.camera.transform * $0 }, pixels)
             }
             DispatchQueue.main.async {
-                guard let (payload, corners, portalInAR, pixels) = codes.first(where: { $0.0.flatMap(PortalMap.portalCode) != nil }) ?? codes.first else {
-                    UINotificationFeedbackGenerator().notificationOccurred(.warning)
-                    self.showToast("No QR code in view. Get the whole code in frame and hold still.", good: false)
-                    return
-                }
+                // The code under the finger, with a margin of a quarter of its size all round.
+                guard let (payload, corners, portalInAR, pixels) = codes.first(where: { code in
+                    let corners = code.1
+                    let center = CGPoint(x: corners.map(\.x).reduce(0, +) / 4, y: corners.map(\.y).reduce(0, +) / 4)
+                    let outline = UIBezierPath()
+                    for (i, c) in corners.enumerated() {
+                        let p = CGPoint(x: center.x + (c.x - center.x) * 1.5, y: center.y + (c.y - center.y) * 1.5)
+                        if i == 0 { outline.move(to: p) } else { outline.addLine(to: p) }
+                    }
+                    outline.close()
+                    return outline.contains(pressed)
+                }) else { return }
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                 guard let payload, let code = PortalMap.portalCode(payload) else {
                     self.showOutline(corners, good: false)
                     UINotificationFeedbackGenerator().notificationOccurred(.warning)
@@ -2310,9 +2581,10 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     /// Send a camera frame if someone is reading them, with the LiDAR depth
-    /// image of the same capture. The sensor image is landscape, so the picture
-    /// is turned upright for how the phone is held before it is sent, and its
-    /// intrinsics are turned and scaled with it. The depth image is not turned.
+    /// image of the same capture. The picture goes out as the sensor gave it,
+    /// landscape however the phone is held, so it is in the camera frame the
+    /// pose and depth are declared in. Only its size, and its intrinsics with
+    /// it, are scaled. A reader turns it for display if it wants to.
     /// `alignment` is the capture time of the Portal alignment in use, or 0.
     private func shareCamera(_ frame: ARFrame, alignment: UInt64, withPose: Bool) {
         guard spatial_mobile_camera_demand(1) != 0, !cameraShareBusy,
@@ -2325,27 +2597,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         let timestamp = UInt64(frame.timestamp * 1_000_000_000)
         let k = frame.camera.intrinsics
         let fx = Double(k[0][0]), fy = Double(k[1][1]), cx = Double(k[2][0]), cy = Double(k[2][1])
-        // Clockwise turn that makes the image upright, and the same turn applied to the intrinsics.
-        let turn: Int32, orientation: CGImagePropertyOrientation
-        let turned: (fx: Double, fy: Double, cx: Double, cy: Double, width: Double, height: Double)
-        switch view.window?.windowScene?.interfaceOrientation ?? .portrait {
-        case .landscapeRight:
-            turn = 0; orientation = .up
-            turned = (fx, fy, cx, cy, width, height)
-        case .landscapeLeft:
-            turn = 180; orientation = .down
-            turned = (fx, fy, width - cx, height - cy, width, height)
-        case .portraitUpsideDown:
-            turn = 270; orientation = .left
-            turned = (fy, fx, cy, width - cx, height, width)
-        default:
-            turn = 90; orientation = .right
-            turned = (fy, fx, height - cy, cx, height, width)
-        }
-        let sideways = turn == 90 || turn == 270
-        let long = Self.cameraShareLongSide, short = long * 3 / 4
-        let sentWidth = sideways ? short : long, sentHeight = sideways ? long : short
-        let sx = sentWidth / turned.width, sy = sentHeight / turned.height
+        let sentWidth = Self.cameraShareLongSide, sentHeight = sentWidth * 3 / 4
+        let sx = sentWidth / width, sy = sentHeight / height
         let session = poseSession
         let context = cameraShareContext
         let depth = frame.sceneDepth
@@ -2354,9 +2607,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 Self.shareDepthImage(depth.depthMap, confidence, timestamp: timestamp, session: session,
                                      intrinsics: (fx, fy, cx, cy), imageSize: (width, height), alignment: alignment)
             }
-            let upright = CIImage(cvPixelBuffer: buffer).oriented(orientation)
-            let image = upright
-                .transformed(by: CGAffineTransform(translationX: -upright.extent.minX, y: -upright.extent.minY))
+            let image = CIImage(cvPixelBuffer: buffer)
                 .transformed(by: CGAffineTransform(scaleX: sx, y: sy))
                 .cropped(to: CGRect(x: 0, y: 0, width: sentWidth, height: sentHeight))
             if let space = CGColorSpace(name: CGColorSpace.sRGB),
@@ -2366,8 +2617,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                     if let base = bytes.bindMemory(to: UInt8.self).baseAddress {
                         session.withCString {
                             spatial_mobile_camera_calibrated(timestamp, base, jpeg.count, $0,
-                                                             turned.fx * sx, turned.fy * sy, turned.cx * sx, turned.cy * sy,
-                                                             turn, alignment)
+                                                             fx * sx, fy * sy, cx * sx, cy * sy,
+                                                             0, alignment)
                         }
                     }
                 }
@@ -2412,6 +2663,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         if snoozed { return }
         checkRest(frame)
         if snoozed { return }
+        sampleCrayon()
         // Aligned frames are shared below, together with their pose.
         if !aligned { shareCamera(frame, alignment: 0, withPose: false) }
         if north == .searching {
@@ -2845,11 +3097,16 @@ struct CompassRing: View {
     var body: some View {
         ZStack {
             // The glass stays put; only the markings turn.
+            // glassEffect needs the iOS 26 SDK (Xcode 26, Swift 6.2); older Xcodes build the fallback.
+            #if compiler(>=6.2)
             if #available(iOS 26.0, *) {
                 Color.clear.glassEffect(.regular, in: Circle())
             } else {
                 Circle().fill(.ultraThinMaterial)
             }
+            #else
+            Circle().fill(.ultraThinMaterial)
+            #endif
             ZStack {
                 ForEach(1..<24, id: \.self) { tick in
                     Capsule().fill(Color.white.opacity(tick % 6 == 0 ? 0.9 : 0.4))

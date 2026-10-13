@@ -545,6 +545,22 @@ async fn phone_reports_a_new_portal_into_the_selected_scene() -> Result<()> {
                            (unknown, "only a Portal in the scene can be moved")] {
             assert!(spatial_home::mobile_portal::send(&pair.b, &home, &bad).await.is_err(), "{why}");
         }
+
+        // A phone draws a path into its scene over the same link, and takes it out again.
+        use spatial_home::scene_paths::{Add, Change, Remove, Stroke};
+        let stroke = Stroke { id: uuid::Uuid::new_v4().to_string(), title: "Crayon path".into(), color: "#ffca55".into(),
+            width_m: 0.035, segments: vec![vec![[0., 0., 0.], [0.1, 0., 0.]]] };
+        let add = Change::Add(Add { frame: home.frame.clone(), stroke: stroke.clone() });
+        assert!(spatial_home::scene_paths::send(&pair.b, &home, &add).await?);
+        assert_eq!(scenes.paths.get("humanoid-hub-conference", &home.frame)?.items, vec![stroke.clone()]);
+        assert!(scenes.paths.get("nacs", &nacs.frame)?.items.is_empty(), "the path is in the phone's scene only");
+        assert!(spatial_home::scene_paths::send(&pair.b, &nacs, &add).await.is_err(), "a path drawn for another scene is refused");
+        let wide = Change::Add(Add { frame: home.frame.clone(), stroke: Stroke { id: uuid::Uuid::new_v4().to_string(), width_m: 3., ..stroke.clone() } });
+        assert!(spatial_home::scene_paths::send(&pair.b, &home, &wide).await.is_err(), "Home's own path rules still apply");
+        let remove = Change::Remove(Remove { frame: home.frame.clone(), id: stroke.id.clone() });
+        assert!(spatial_home::scene_paths::send(&pair.b, &home, &remove).await?);
+        assert!(scenes.paths.get("humanoid-hub-conference", &home.frame)?.items.is_empty());
+        assert!(spatial_home::scene_paths::send(&pair.b, &home, &remove).await.is_err(), "a path already gone cannot be removed");
         // Put it back so the rest of the test sees the scene it expects.
         moved.timestamp_ns = 280;
         moved.portal_to_session = rigid(&new_in_session, &new_local, &session_frame);

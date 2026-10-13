@@ -379,6 +379,7 @@ fn home_camera_localization_accepts_a_different_known_portal_without_seeing_ucof
         },
         hit_points_m: vec![[0., 0., 0.25]],
         hit_colors_srgb: vec![[255, 0, 0]],
+        unrectified: None,
     };
     let sensor_to_base = camera.calibration.sensor_to_base.clone();
     let image_b64 = camera.gray_base64.clone();

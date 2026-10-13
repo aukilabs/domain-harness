@@ -964,6 +964,7 @@ fn sample(code: &str, t: u64) -> CameraSample {
         },
         hit_points_m: vec![[0., 0., 0.25]],
         hit_colors_srgb: vec![[255, 0, 0]],
+        unrectified: None,
     }
 }
 
@@ -1241,6 +1242,74 @@ fn robot_home_reference_overlay_switches_to_newly_observed_known_portal() -> Res
             )
             .all(|(a, b)| (a - b).abs() < 1e-8)
     );
+    Ok(())
+}
+
+/// Portals are detected on the unrectified eye and only their corners are
+/// rectified: the pose must match detection on the rectified image, even when
+/// the rectified image itself is blank.
+#[test]
+fn bracketbot_detects_portals_on_the_unrectified_eye() -> Result<()> {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let t = 1_000_000_000;
+    let portal_pose = |camera: CameraSample| -> Result<Option<[f64; 3]>> {
+        let runtime = ComponentRuntime::new("bracketbot");
+        let mut map = LocalMap::new_for_robot(
+            &runtime,
+            "bracketbot",
+            &uuid::Uuid::new_v4().to_string(),
+            BRACKETBOT_FAMILY,
+            spatial_home::rgbd::BRACKETBOT_FRAME,
+            serde_json::from_str(include_str!("../config/humanoid-hub-conference/portals.json"))?,
+        )?;
+        map.accept(SensorEvent::Odometry { timestamp_ns: t, pose: identity() })?;
+        map.accept(SensorEvent::Camera { sample: camera })?;
+        Ok(map
+            .portals()?
+            .scenegraph
+            .anchors
+            .get("HNY3JGNLRAE")
+            .map(|a| a.pose_in_map.translation))
+    };
+    let mut camera = sample("HNY3JGNLRAE", t);
+    camera.calibration.sensor_frame = spatial_home::rgbd::BRACKETBOT_FRAME.into();
+    camera.calibration.calibration_source =
+        format!("{}{}", spatial_home::rgbd::BRACKETBOT_CALIBRATION, "a".repeat(64));
+    let reference = portal_pose(camera.clone())?.expect("rectified detection");
+
+    let rectified = image::GrayImage::from_raw(1280, 720, b64.decode(&camera.gray_base64)?).unwrap();
+    // Render the true unrectified view: an equidistant fisheye (r = f·θ) seeing
+    // what the rectified pinhole camera (r = f·tan θ) sees, same f and centre.
+    let (f, cx, cy) = (camera.fx, camera.cx, camera.cy);
+    let gray = image::GrayImage::from_fn(1280, 720, |u, v| {
+        let (x, y) = ((u as f64 - cx) / f, (v as f64 - cy) / f);
+        let theta = (x * x + y * y).sqrt();
+        let k = if theta > 1e-9 { theta.tan() / theta } else { 1. };
+        let (su, sv) = (cx + f * x * k, cy + f * y * k);
+        if (0. ..1279.).contains(&su) && (0. ..719.).contains(&sv) {
+            *rectified.get_pixel(su.round() as u32, sv.round() as u32)
+        } else {
+            image::Luma([255])
+        }
+    });
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 95).encode_image(&gray)?;
+    let mut blank = camera.clone();
+    blank.gray_base64 = b64.encode(vec![255u8; 1280 * 720]);
+    assert!(portal_pose(blank.clone())?.is_none(), "blank rectified image alone has no Portal");
+    blank.unrectified = Some(spatial_home::fisheye::UnrectifiedEye {
+        width: 1280,
+        height: 720,
+        jpeg_base64: b64.encode(&jpeg),
+        k: [camera.fx, camera.fy, camera.cx, camera.cy],
+        d: [0.; 4],
+        r: [1., 0., 0., 0., 1., 0., 0., 0., 1.],
+    });
+    let unrectified = portal_pose(blank)?.expect("unrectified detection");
+    for (a, b) in unrectified.iter().zip(reference) {
+        assert!((a - b).abs() < 0.01, "{unrectified:?} vs {reference:?}");
+    }
     Ok(())
 }
 

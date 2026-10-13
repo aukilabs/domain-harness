@@ -121,6 +121,39 @@ mod startup_error_tests {
     }
 }
 
+/// How the phone signs in to Auki: a person's User account, or an app key and
+/// secret (the same kind Home uses), entered on the phone and never bundled.
+pub enum SignIn {
+    User { email: String, password: String },
+    App { key: String, secret: String },
+}
+impl SignIn {
+    fn credentials(self) -> Result<Credentials> {
+        Ok(match self {
+            Self::User { email, password } => {
+                ensure!(
+                    !email.trim().is_empty() && !password.is_empty(),
+                    "Enter your Auki User email and password"
+                );
+                Credentials::user_password(email, password)
+            }
+            Self::App { key, secret } => {
+                ensure!(
+                    !key.trim().is_empty() && !secret.is_empty(),
+                    "Enter the app key and secret"
+                );
+                Credentials::app(key.trim(), secret)
+            }
+        })
+    }
+    fn failure(&self) -> &'static str {
+        match self {
+            Self::User { .. } => "Auki User sign-in failed. Check your account and network.",
+            Self::App { .. } => "App key sign-in failed. Check the key, secret and network.",
+        }
+    }
+}
+
 #[derive(Clone, Serialize)]
 pub struct MobileState {
     pub local_detail: String,
@@ -348,12 +381,11 @@ impl MobileClient {
     pub async fn run(
         self: Arc<Self>,
         profile: String,
-        email: String,
-        password: String,
+        sign_in: SignIn,
         identity: String,
     ) {
         let result = self
-            .connect(profile, email, password, Path::new(&identity))
+            .connect(profile, sign_in, Path::new(&identity))
             .await;
         if let Err(error) = result {
             self.status("error", error.to_string());
@@ -366,8 +398,7 @@ impl MobileClient {
     async fn connect(
         &self,
         profile: String,
-        email: String,
-        password: String,
+        sign_in: SignIn,
         identity: &Path,
     ) -> Result<()> {
         ensure!(
@@ -394,10 +425,8 @@ impl MobileClient {
             let _: auki_sdk::Multiaddr = route.parse()?;
         }
         let domain = home.domain_id.parse()?;
-        ensure!(
-            !email.trim().is_empty() && !password.is_empty(),
-            "Enter your Auki User email and password"
-        );
+        let failure = sign_in.failure();
+        let credentials = sign_in.credentials()?;
         if self.stop.is_cancelled() {
             return Ok(());
         }
@@ -405,14 +434,14 @@ impl MobileClient {
             AukiPeerConfig::dev().with_listen_addresses(["/ip4/0.0.0.0/tcp/0".parse()?])?;
         let auth = AukiPeerBootstrap::authenticate(
             AuthClient::new(AuthEnvironment::dev())?,
-            Credentials::user_password(email, password),
+            credentials,
             config,
         );
         let bootstrap = tokio::select! {
             _ = self.stop.cancelled() => return Ok(()),
             result = tokio::time::timeout(Duration::from_secs(45), auth) =>
                 result.map_err(|_| anyhow::anyhow!("Sign-in timed out"))?
-                    .map_err(|_| anyhow::anyhow!("Auki User sign-in failed. Check your account and network."))?,
+                    .map_err(|_| anyhow::anyhow!(failure))?,
         };
         // Await startup and then always shut it down if Stop arrived meanwhile.
         // Advertise the mounted component endpoint and current relay routes so
@@ -571,13 +600,13 @@ impl MobileClient {
                                 self.local_status(format!("Portal {code} not added: no scene received from Home yet"));
                                 continue;
                             };
-                            let first = crate::mobile_portal::FirstPortal {
+                            let first = crate::scene_origin::Observation {
                                 expected_scene, code: code.clone(), side_length_m: report.side_length_m,
                                 timestamp_ns: report.timestamp_ns, portal_to_native: report.portal_to_session.clone(),
                             };
                             tokio::time::timeout(
                                 Duration::from_secs(4),
-                                operations.invoke::<_, bool>(&component, "establish_origin", "phone-portal", &request,
+                                operations.invoke::<_, bool>(&component, crate::scene_origin::OPERATION, "phone-portal", &request,
                                     Duration::from_secs(3), &first),
                             )
                             .await
