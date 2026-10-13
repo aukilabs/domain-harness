@@ -222,6 +222,24 @@ check(tube.vertices.prefix(72).enumerated().allSatisfy { abs(simd_distance($1, c
 check(CrayonTube.mesh([bend[0]], radius: 0.02) == nil && CrayonTube.mesh([bend[0], bend[0]], radius: 0.02) == nil, "a point is not a line")
 print("Crayon stroke checks passed")
 
+// A wall across the way at body height, with a gap at its far end, on floor the map has seen.
+var walled = [SIMD3<Float>]()
+for x in stride(from: Float(-2), to: 2, by: 0.1) { for z in stride(from: Float(-1), to: 3, by: 0.1) { walled.append(SIMD3(x + 0.05, 0.05, z + 0.05)) } }
+for x in stride(from: Float(-2), to: 1, by: 0.1) { for y in stride(from: Float(0.35), to: 1.5, by: 0.1) { walled.append(SIMD3(x + 0.05, y, 1.05)) } }
+let walkway = MessageRoute.plan(from: SIMD3(-1, 1.4, 0), to: SIMD3(-1, 1.2, 2), voxels: walled, size: 0.1)
+check(walkway.count > 2 && walkway.first == SIMD3(-1, MessageRoute.lift, 0) && walkway.last == SIMD3(-1, MessageRoute.lift, 2), "the way starts under the phone and ends under the message")
+check(walkway.contains { $0.x > 1.2 } && zip(walkway, walkway.dropFirst()).allSatisfy { a, b in
+    (0...20).allSatisfy { step in
+        let p = a + (b - a) * (Float(step) / 20)
+        return !(p.x < 1.0 && abs(p.z - 1.05) < 0.05)
+    } }, "the way goes round the wall through the gap, never through it")
+check(MessageRoute.plan(from: SIMD3(0, 1, 0), to: SIMD3(1, 1, 1), voxels: [], size: 0.1).count == 2, "with nothing known in the way it is the straight line")
+check(MessageRoute.plan(from: SIMD3(0, 1, 0), to: SIMD3(900, 1, 0), voxels: walled, size: 0.1).count == 2, "too far to plan across is the straight line")
+let crumbTrail = MessageRoute.crumbs([SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(1, 0, 1)], every: 0.4)
+check(crumbTrail.count == 5 && abs(crumbTrail[0].x - 0.4) < 0.0001 && abs(crumbTrail[2].z - 0.2) < 0.0001 && crumbTrail.last == SIMD3(1, 0, 1), "crumbs are evenly spaced round a corner and end on the spot")
+check(MessageRoute.ahead([SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(1, 0, 1)], by: 1.5) == SIMD3(1, 0, 0.5) && MessageRoute.ahead([SIMD3(0, 0, 0), SIMD3(1, 0, 0)], by: 9) == SIMD3(1, 0, 0), "the next spot to head for is along the way, not past its end")
+print("Message route checks passed")
+
 let firstPortal = try JSONSerialization.jsonObject(with: JSONEncoder().encode(PortalReport(
     session: "s", timestamp_ns: 7, code: "NV16FWJ9G2X", side_length_m: PortalReport.assumedSide,
     portal_to_session: .transform(matrix_identity_float4x4, from: "portal:NV16FWJ9G2X:local", to: "phone-ar:s"),

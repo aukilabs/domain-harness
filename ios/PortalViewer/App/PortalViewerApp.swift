@@ -1428,6 +1428,69 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         }
         messages.record(scene.notes, frame: scene.frame, mine: ownNotes)
     }
+    /// The trail of crumbs to the message being looked for. Survives Home's redraws.
+    private let guideRoot = SCNNode()
+    private var guideRoute = [SIMD3<Float>]()
+    private var guidePlanned: (id: String, at: TimeInterval)?
+    private var guidePlanning = false
+    private let guideQueue = DispatchQueue(label: "home.phone.route")
+    private static let crumb: SCNGeometry = {
+        let dot = SCNSphere(radius: 0.035)
+        dot.segmentCount = 12
+        dot.firstMaterial?.diffuse.contents = Theme.uiAccent
+        dot.firstMaterial?.lightingModel = .constant
+        // Seen through the voxels: the trail is what the user is following.
+        dot.firstMaterial?.readsFromDepthBuffer = false
+        dot.firstMaterial?.writesToDepthBuffer = false
+        return dot
+    }()
+    private func endGuide() {
+        guard guidePlanned != nil || !guideRoute.isEmpty || messages.way != nil else { return }
+        guideRoot.childNodes.forEach { $0.removeFromParentNode() }
+        guideRoute = []; guidePlanned = nil
+        if messages.way != nil { messages.way = nil }
+    }
+    /// Plan the way to the message across the floor, round what the map shows, lay crumbs
+    /// along it, and say which way to head next. Planned again as the phone moves and the
+    /// map fills in.
+    private func guideToMessage(_ frame: ARFrame) {
+        guard let target = messages.target, aligned, case .normal = frame.camera.trackingState,
+              let scene = map?.render, view.bounds.width > 0 else { endGuide(); return }
+        let inHome = root.simdTransform.inverse * frame.camera.transform.columns.3
+        let phone = SIMD3(inHome.x, inHome.y, inHome.z)
+        if !guidePlanning, guidePlanned?.id != target.id || frame.timestamp - (guidePlanned?.at ?? 0) > 1.5 {
+            guidePlanning = true
+            if guidePlanned?.id != target.id { guideRoot.childNodes.forEach { $0.removeFromParentNode() }; guideRoute = [] }
+            let voxels = scene.voxels, size = scene.voxel_size, time = frame.timestamp
+            guideQueue.async {
+                let centers = voxels.compactMap { $0.center.count == 3 ? SIMD3($0.center[0], $0.center[1], $0.center[2]) : nil }
+                let route = MessageRoute.plan(from: phone, to: target.position, voxels: centers, size: size)
+                let crumbs = MessageRoute.crumbs(route).suffix(240)
+                DispatchQueue.main.async {
+                    self.guidePlanning = false
+                    guard self.messages.target?.id == target.id else { return }
+                    self.guidePlanned = (target.id, time)
+                    self.guideRoute = route
+                    self.guideRoot.childNodes.forEach { $0.removeFromParentNode() }
+                    for (index, spot) in crumbs.enumerated() {
+                        let node = SCNNode(geometry: Self.crumb)
+                        node.simdPosition = spot
+                        node.renderingOrder = 150
+                        // The last crumb is the spot itself, and stands out.
+                        if index == crumbs.count - 1 { node.simdScale = SIMD3(repeating: 2.2) }
+                        self.guideRoot.addChildNode(node)
+                    }
+                }
+            }
+        }
+        var way: MessageAim?
+        if let next = MessageRoute.ahead(guideRoute, by: 1.2) {
+            let spot = frame.camera.viewMatrix(for: .portrait) * (root.simdTransform * SIMD4(next.x, next.y, next.z, 1))
+            way = MessageAim(spot: SIMD3(spot.x, spot.y, spot.z),
+                             lens: frame.camera.projectionMatrix(for: .portrait, viewportSize: view.bounds.size, zNear: 0.01, zFar: 100))
+        }
+        if way != messages.way { messages.way = way }
+    }
     /// Where the message being looked for is from the phone, on every camera frame.
     private func aimAtMessage(_ frame: ARFrame) {
         guard let target = messages.target else { return }
@@ -1744,7 +1807,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                                        ownFrame: "phone-camera:" + poseSession)
         // Everything is redrawn except the point still being carried: taking it out and putting it
         // back would restart its dust trail every time Home sends an update.
-        root.childNodes.filter { $0 !== floating && $0 !== crayonRoot }.forEach { $0.removeFromParentNode() }
+        root.childNodes.filter { $0 !== floating && $0 !== crayonRoot && $0 !== guideRoot }.forEach { $0.removeFromParentNode() }
+        if guideRoot.parent == nil { root.addChildNode(guideRoot) }
         // A stroke drawn here is dropped once Home's own copy of it arrives.
         let saved = Set(map.render?.paths?.items.map(\.id) ?? [])
         crayonRoot.childNodes.filter { $0.isHidden }.forEach { $0.removeFromParentNode() }
@@ -1801,7 +1865,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         }
         volumes.redraw()
         povRoot.childNodes.forEach { $0.removeFromParentNode() }
-        root.childNodes.forEach { povRoot.addChildNode($0.clone()) }
+        root.childNodes.filter { $0 !== guideRoot }.forEach { povRoot.addChildNode($0.clone()) }
         applyVolumeVisibility()
         remoteDevices = Self.remoteDevices(map, ownSession: poseSession)
         refreshDevices()
@@ -2708,6 +2772,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         // Aligned frames are shared below, together with their pose.
         if !aligned { shareCamera(frame, alignment: 0, withPose: false) }
         aimAtMessage(frame)
+        guideToMessage(frame)
         if north == .searching {
             searchNorth(frame)
             // This frame, and any already on their way, are still in the compass's axes.
@@ -2937,6 +3002,9 @@ final class MessageCenter: ObservableObject {
     @Published private(set) var target: MessageInbox.Message?
     /// Nil while the phone does not know where it is in the scene.
     @Published var aim: MessageAim?
+    /// The next spot to head for along the way there, which is not always
+    /// straight at the message. Nil until a way has been found.
+    @Published var way: MessageAim?
     private var shown = 0
 
     func record(_ notes: [RenderScene.Note], frame: String, mine: Set<String>) {
@@ -2962,10 +3030,10 @@ final class MessageCenter: ObservableObject {
     func find(_ message: MessageInbox.Message) {
         inbox.open(message.id)
         banner = []
-        aim = nil
+        aim = nil; way = nil
         target = inbox.messages.first { $0.id == message.id }
     }
-    func stop() { target = nil; aim = nil }
+    func stop() { target = nil; aim = nil; way = nil }
 }
 
 /// A new message, across the top. Tapping it points the way to the message.
@@ -3075,15 +3143,24 @@ struct MessageMarker: View {
                     Brackets(arm: 14).stroke(Theme.accent, style: StrokeStyle(lineWidth: 4, lineCap: .round))
                         .frame(width: 84, height: 84).shadow(color: .black.opacity(0.35), radius: 3)
                         .position(x: CGFloat(spot.x) * area.size.width, y: CGFloat(spot.y) * area.size.height)
-                } else {
-                    let reach = min(area.size.width, area.size.height) * 0.3
-                    Image(systemName: "arrow.up").font(.system(size: 34, weight: .heavy)).foregroundStyle(Theme.onAccent)
-                        .frame(width: 68, height: 68).background(Theme.accent, in: Circle())
-                        .overlay(Circle().stroke(Theme.paper, lineWidth: 3))
-                        .shadow(color: .black.opacity(0.35), radius: 4)
-                        .rotationEffect(.radians(Double(aim.turn)))
-                        .position(x: area.size.width / 2 + reach * CGFloat(sin(aim.turn)),
-                                  y: area.size.height * 0.4 - reach * CGFloat(cos(aim.turn)))
+                } else if let way = center.way ?? Optional(aim), way.screen == nil {
+                    // Out of view: an arrow at the edge of the screen, on the side to move
+                    // toward. It points along the way there, which may be round something.
+                    // Once that way is in view the crumbs on the floor take over.
+                    let box = CGRect(x: 44, y: 120, width: area.size.width - 88, height: max(1, area.size.height - 120 - 230))
+                    let across = CGFloat(sin(way.turn)), down = CGFloat(-cos(way.turn))
+                    let scale = min(box.width / 2 / max(abs(across), 0.0001), box.height / 2 / max(abs(down), 0.0001))
+                    VStack(spacing: 4) {
+                        Image(systemName: "arrow.up").font(.system(size: 28, weight: .heavy)).foregroundStyle(Theme.onAccent)
+                            .frame(width: 56, height: 56).background(Theme.accent, in: Circle())
+                            .overlay(Circle().stroke(Theme.paper, lineWidth: 3))
+                            .rotationEffect(.radians(Double(way.turn)))
+                        Text(String(format: "%.1f m", aim.distance)).themeLabel(11, .bold).foregroundStyle(Theme.ink)
+                            .padding(.horizontal, 8).padding(.vertical, 3).background(Theme.paper, in: Capsule())
+                    }
+                    .shadow(color: .black.opacity(0.35), radius: 4)
+                    .position(x: box.midX + across * scale, y: box.midY + down * scale)
+                    .animation(.easeOut(duration: 0.15), value: way.turn)
                 }
             }
         }
@@ -3116,7 +3193,10 @@ struct MessageGuide: View {
     private var way: String {
         guard let aim = center.aim else { return "Scan a Portal so the phone knows where it is." }
         let far = String(format: "%.1f m away", aim.distance)
-        return aim.screen == nil ? "\(aim.hint) · \(far)" : "It is here · \(far)"
+        guard aim.screen == nil else { return "It is here · \(far)" }
+        // With a way planned, the words follow it and not the straight line through a wall.
+        guard let way = center.way else { return "\(aim.hint) · \(far)" }
+        return "\(way.screen == nil ? way.hint : "Follow the dots") · \(far)"
     }
 }
 

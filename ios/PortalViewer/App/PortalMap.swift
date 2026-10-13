@@ -582,6 +582,151 @@ struct MessageInbox: Equatable {
     }
 }
 
+/// A way across the floor to a spot, round what the map shows is in the way.
+enum MessageRoute {
+    /// The floor is Y = 0 in Home's frame. Voxels in this band above it are in a walker's way.
+    static let body: ClosedRange<Float> = 0.25...1.9
+    /// Farthest a route is planned across, in cells each way.
+    static let reach = 320
+    static let lift: Float = 0.06
+
+    /// Corners of a walkable way from `from` to `to`, both ends included, just above the floor.
+    /// It goes round voxels at body height, keeps a step clear of them where it can, and
+    /// prefers floor the map has actually seen to floor it has not. With nothing known in
+    /// the way, or no way round, it is the straight line.
+    static func plan(from: SIMD3<Float>, to: SIMD3<Float>, voxels: [SIMD3<Float>], size: Float) -> [SIMD3<Float>] {
+        let start = SIMD3(from.x, lift, from.z), goal = SIMD3(to.x, lift, to.z)
+        guard size > 0.01, [start, goal].allSatisfy({ $0.x.isFinite && $0.z.isFinite }) else { return [start, goal] }
+        func cell(_ p: SIMD3<Float>) -> SIMD2<Int> { SIMD2(Int((p.x / size).rounded(.down)), Int((p.z / size).rounded(.down))) }
+        let a = cell(start), b = cell(goal)
+        let margin = Int((3 / size).rounded(.up))
+        let low = SIMD2(min(a.x, b.x) - margin, min(a.y, b.y) - margin)
+        let width = abs(a.x - b.x) + 2 * margin + 1, height = abs(a.y - b.y) + 2 * margin + 1
+        guard width <= reach, height <= reach else { return [start, goal] }
+        func index(_ c: SIMD2<Int>) -> Int? {
+            let x = c.x - low.x, y = c.y - low.y
+            return x >= 0 && y >= 0 && x < width && y < height ? y * width + x : nil
+        }
+        // 0 unseen, 1 seen floor, 2 near something, 3 something in the way.
+        var grid = [UInt8](repeating: 0, count: width * height)
+        var blocked = [SIMD2<Int>]()
+        for voxel in voxels {
+            guard let i = index(cell(voxel)) else { continue }
+            if body.contains(voxel.y) { if grid[i] != 3 { grid[i] = 3; blocked.append(cell(voxel)) } }
+            else if voxel.y < body.lowerBound, grid[i] == 0 { grid[i] = 1 }
+        }
+        guard !blocked.isEmpty else { return [start, goal] }
+        let clearance = max(1, Int((0.25 / size).rounded()))
+        for c in blocked {
+            for dy in -clearance...clearance { for dx in -clearance...clearance {
+                if let i = index(SIMD2(c.x + dx, c.y + dy)), grid[i] < 2 { grid[i] = 2 }
+            } }
+        }
+        // Standing in, or heading into, something on the map: those ends stay reachable.
+        for end in [a, b] {
+            for dy in -clearance...clearance { for dx in -clearance...clearance {
+                if let i = index(SIMD2(end.x + dx, end.y + dy)), grid[i] == 3 { grid[i] = 2 }
+            } }
+        }
+        guard let first = index(a), let last = index(b) else { return [start, goal] }
+        func price(_ i: Int) -> Float { grid[i] == 1 ? 1 : grid[i] == 0 ? 2.5 : 6 }
+        var cost = [Float](repeating: .infinity, count: grid.count), parent = [Int32](repeating: -1, count: grid.count)
+        var heap = [(Float, Int)]()
+        func push(_ item: (Float, Int)) {
+            heap.append(item)
+            var child = heap.count - 1
+            while child > 0, heap[(child - 1) / 2].0 > heap[child].0 { heap.swapAt(child, (child - 1) / 2); child = (child - 1) / 2 }
+        }
+        func pop() -> (Float, Int) {
+            let top = heap[0], end = heap.removeLast()
+            if !heap.isEmpty {
+                heap[0] = end
+                var node = 0
+                while true {
+                    var least = node
+                    for child in [2 * node + 1, 2 * node + 2] where child < heap.count && heap[child].0 < heap[least].0 { least = child }
+                    if least == node { break }
+                    heap.swapAt(node, least); node = least
+                }
+            }
+            return top
+        }
+        func ahead(_ i: Int) -> Float {
+            let dx = Float(abs(i % width - last % width)), dy = Float(abs(i / width - last / width))
+            return max(dx, dy) + 0.4142 * min(dx, dy)
+        }
+        cost[first] = 0; push((ahead(first), first))
+        while !heap.isEmpty {
+            let (rank, here) = pop()
+            if here == last { break }
+            if rank > cost[here] + ahead(here) + 0.001 { continue }
+            let x = here % width, y = here / width
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
+                let nx = x + dx, ny = y + dy
+                guard nx >= 0, ny >= 0, nx < width, ny < height else { continue }
+                let next = ny * width + nx
+                guard grid[next] != 3 else { continue }
+                // No squeezing diagonally between two things.
+                if dx != 0, dy != 0, grid[y * width + nx] == 3 || grid[ny * width + x] == 3 { continue }
+                let reached = cost[here] + (dx != 0 && dy != 0 ? 1.4142 : 1) * price(next)
+                if reached < cost[next] { cost[next] = reached; parent[next] = Int32(here); push((reached + ahead(next), next)) }
+            }
+        }
+        guard cost[last].isFinite else { return [start, goal] }
+        var cells = [Int](), at = last
+        while at != first { cells.append(at); at = Int(parent[at]) }
+        cells.append(first); cells.reverse()
+        func middle(_ i: Int) -> SIMD3<Float> {
+            SIMD3((Float(i % width + low.x) + 0.5) * size, lift, (Float(i / width + low.y) + 0.5) * size)
+        }
+        var points = [start] + cells.dropFirst().dropLast().map(middle) + [goal]
+        // A straight stretch is clear when nothing along it is near a voxel.
+        func clear(_ p: SIMD3<Float>, _ q: SIMD3<Float>) -> Bool {
+            let steps = max(1, Int((simd_distance(p, q) / (size / 2)).rounded(.up)))
+            for step in 1..<max(2, steps) {
+                guard let i = index(cell(p + (q - p) * (Float(step) / Float(steps)))), grid[i] < 2 else { return false }
+            }
+            return true
+        }
+        var corners = [points[0]], from = 0
+        while from < points.count - 1 {
+            var next = from + 1
+            for far in stride(from: points.count - 1, to: from + 1, by: -1) where clear(points[from], points[far]) { next = far; break }
+            corners.append(points[next]); from = next
+        }
+        points = corners
+        return points
+    }
+
+    /// Evenly spaced spots along a route, for a trail of crumbs. The last is the route's end.
+    static func crumbs(_ route: [SIMD3<Float>], every gap: Float = 0.4) -> [SIMD3<Float>] {
+        guard route.count > 1, gap > 0 else { return route }
+        var crumbs = [SIMD3<Float>](), owed = gap
+        for (a, b) in zip(route, route.dropFirst()) {
+            let length = simd_distance(a, b)
+            guard length > 0.0001 else { continue }
+            var along = owed
+            while along <= length { crumbs.append(a + (b - a) * (along / length)); along += gap }
+            owed = along - length
+        }
+        if let end = route.last, crumbs.last.map({ simd_distance($0, end) > gap / 2 }) ?? true { crumbs.append(end) }
+        else if let end = route.last { crumbs[crumbs.count - 1] = end }
+        return crumbs
+    }
+
+    /// The spot `distance` along the route from its start: where to head next.
+    static func ahead(_ route: [SIMD3<Float>], by distance: Float) -> SIMD3<Float>? {
+        guard var spot = route.first else { return nil }
+        var left = distance
+        for next in route.dropFirst() {
+            let length = simd_distance(spot, next)
+            if length >= left, length > 0.0001 { return spot + (next - spot) * (left / length) }
+            left -= length; spot = next
+        }
+        return spot
+    }
+}
+
 /// Where a spot in the room is from the phone: on the screen, or which way to turn to bring it there.
 struct MessageAim: Equatable {
     /// Across and down the screen from its top left corner, each 0 to 1. Nil when the spot is out of view.
