@@ -53,7 +53,14 @@ pub struct CameraSample {
     pub calibration: crate::runner_voxels::SensorCalibration,
     pub hit_points_m: Vec<[f64; 3]>,
     pub hit_colors_srgb: Vec<[u8; 3]>,
+    /// The same capture before rectification. When present, Portals are
+    /// detected here and only their corners are rectified (see `fisheye`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unrectified: Option<crate::fisheye::UnrectifiedEye>,
 }
+/// Minimum spacing of upscaled Portal retries; each costs several native
+/// scans and runs on the mapping thread.
+const UPSCALE_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SensorEvent {
@@ -257,6 +264,7 @@ pub struct LocalMap {
     cameras: BTreeMap<String, CameraChannel>,
     pub ar_frame: Option<crate::ar_preview::Frame>,
     detector: auki_qr_detector::QrDetector,
+    last_upscale_retry: Option<std::time::Instant>,
     processor: Component,
     landmark_output: ConfiguredObservable<crate::landmarks::LandmarkObservations>,
     landmark_capture: BufferProductCapture<crate::landmarks::LandmarkObservations>,
@@ -585,6 +593,7 @@ impl LocalMap {
             cameras: BTreeMap::new(),
             ar_frame: None,
             detector: auki_qr_detector::QrDetector::new(Default::default()),
+            last_upscale_retry: None,
             processor,
             landmark_output,
             landmark_capture,
@@ -1102,6 +1111,7 @@ impl LocalMap {
             s.cx,
             s.cy,
             &s.calibration.calibration_source,
+            s.unrectified.as_ref().map(|u| (u.width, u.height, u.k, u.d, u.r)),
         ))?;
         if let Some(previous) = &channel.key {
             ensure!(
@@ -1182,30 +1192,48 @@ impl LocalMap {
                 bytes: bytes.clone().into(),
             }),
         )?;
-        let detections = self.detector.detect_luma(
-            &bytes,
-            s.width as usize,
-            s.height as usize,
-            s.width as usize,
-        )?;
+        let retry = self
+            .last_upscale_retry
+            .is_none_or(|t| t.elapsed() >= UPSCALE_RETRY_INTERVAL);
+        let rectified = [s.fx, s.fy, s.cx, s.cy];
+        let (codes, upscaled, detected_on) = if let Some(eye) = &s.unrectified {
+            eye.validate()?;
+            let jpeg = STANDARD.decode(&eye.jpeg_base64)?;
+            let gray = image::load_from_memory_with_format(&jpeg, image::ImageFormat::Jpeg)?.to_luma8();
+            ensure!(
+                (gray.width(), gray.height()) == (eye.width, eye.height),
+                "unrectified eye size mismatch"
+            );
+            let (codes, upscaled) = crate::portal_camera_detector::detect_codes(&mut self.detector, &gray, retry)?;
+            // Corners into the rectified camera that the pose solver and the
+            // published frames use; drop codes whose corners cannot map.
+            let codes = codes
+                .into_iter()
+                .filter_map(|mut c| {
+                    let mapped: Option<Vec<_>> = c.corners_px.iter().map(|p| eye.rectify(*p, rectified)).collect();
+                    c.corners_px = mapped?.try_into().ok()?;
+                    Some(c)
+                })
+                .collect::<Vec<_>>();
+            (codes, upscaled, "unrectified")
+        } else {
+            let gray = image::GrayImage::from_raw(s.width, s.height, bytes.clone())
+                .ok_or_else(|| anyhow!("camera buffer size mismatch"))?;
+            let (codes, upscaled) = crate::portal_camera_detector::detect_codes(&mut self.detector, &gray, retry)?;
+            (codes, upscaled, "rectified")
+        };
+        if retry && !codes.iter().any(|c| c.portal().is_some()) || upscaled {
+            self.last_upscale_retry = Some(std::time::Instant::now());
+        }
         let camera_source = crate::landmarks::SourceObservation {
             output: camera_observation.output,
             sequence: camera_observation.sequence,
             timestamp_ns: camera_observation.timestamp_ns,
             clock: self.clock.clone(),
         };
-        let image_landmarks = detections
-            .codes
+        let image_landmarks = codes
             .iter()
-            .filter(|code| !code.mirrored)
-            .filter_map(|code| {
-                portal_code(&code.payload).map(|identity| {
-                    (
-                        identity,
-                        code.refined_corners_px.as_ref().unwrap_or(&code.corners_px),
-                    )
-                })
-            })
+            .filter_map(|code| code.portal().map(|identity| (identity, code.corners_px)))
             .flat_map(|(identity, corners)| {
                 crate::landmarks::CORNERS
                     .into_iter()
@@ -1215,7 +1243,7 @@ impl LocalMap {
                             landmark_type: crate::landmarks::PORTAL.into(),
                             identity: format!("{identity}/{feature}"),
                         },
-                        pixel: [pixel.x, pixel.y],
+                        pixel,
                     })
             })
             .collect();
@@ -1241,10 +1269,10 @@ impl LocalMap {
         };
         let camera_odom = compose(base, &s.calibration.sensor_to_base)?;
         let mut accepted = 0;
-        let decoded = detections.codes.len();
+        let decoded = codes.len();
         channel.scan_status = json!({"timestamp_ns":s.timestamp_ns,"decoded_qrs":decoded,
-            "mapped_portals":0,"rejections":[]});
-        for code in detections.codes {
+            "mapped_portals":0,"rejections":[],"detected_on":detected_on,"upscaled":upscaled});
+        for code in codes {
             if code.mirrored {
                 channel.scan_status["rejections"].as_array_mut().unwrap().push(json!("mirrored QR"));
                 continue;
@@ -1264,11 +1292,7 @@ impl LocalMap {
                 side_length_m: size,
                 pose_in_map: rigid(&identity(), &format!("portal-{short}"), &self.frame),
             };
-            let corners = code
-                .refined_corners_px
-                .as_ref()
-                .unwrap_or(&code.corners_px)
-                .map(|p| [p.x, p.y]);
+            let corners = code.corners_px;
             let estimate = match auki_qr_localizer::estimate_camera_pose(
                 &snapshot.scenegraph.map,
                 &template,

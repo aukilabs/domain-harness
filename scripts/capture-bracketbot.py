@@ -109,6 +109,22 @@ def main():
         if full is None or full.shape != (height, width*2, 3):
             raise NewSessionRequired('head stereo camera shape changed')
         return full
+    def fisheye(k, d, r):
+        # Unrectified-eye calibration for corner-only rectification in the mapper.
+        k = np.asarray(k, dtype=float)
+        if abs(k[0, 1]) > 1e-9: raise ValueError('fisheye skew is not supported')
+        return dict(k=[k[0, 0], k[1, 1], k[0, 2], k[1, 2]],
+                    d=np.asarray(d, dtype=float).reshape(-1)[:4].tolist(),
+                    r=np.asarray(r, dtype=float).reshape(-1).tolist())
+    eye_fisheye = (fisheye(k_left, d_left, r_left), fisheye(k_right, d_right, r_right))
+    def unrectified(full, right=False):
+        """Grey unrectified eye: detecting Portals here avoids the whole-image
+        resample, which shrinks the image centre and blurs small codes."""
+        eye = cv2.cvtColor(full[:, width:] if right else full[:, :width], cv2.COLOR_BGR2GRAY)
+        ok, jpeg = cv2.imencode('.jpg', eye, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        if not ok: raise ValueError('JPEG encoding failed')
+        return dict(width=width, height=height, jpeg_base64=base64.b64encode(jpeg.tobytes()).decode(),
+                    **eye_fisheye[int(right)])
     def rectify(full, right=False):
         left = cv2.remap(full[:, width:] if right else full[:, :width],
                          *(right_maps if right else maps), cv2.INTER_LINEAR)
@@ -180,13 +196,15 @@ def main():
                     eye_k = right_k if right_eye else k
                     eye_calibration = right_calibrated if right_eye else calibrated
                     hits, rgb = sampled_points(optical_points(points, eye_transform), colors, t)
-                    gray = cv2.cvtColor(rectify(decode(raw), right_eye), cv2.COLOR_RGB2GRAY)
+                    full = decode(raw)
+                    gray = cv2.cvtColor(rectify(full, right_eye), cv2.COLOR_RGB2GRAY)
                     if mailbox.scan_is_current(t, time.time_ns()):
                         emit(dict(kind='camera', sample=dict(timestamp_ns=t, rgb_timestamp_ns=t,
                             transform_timestamp_ns=t, width=width, height=height,
                             fx=float(eye_k[0, 0]), fy=float(eye_k[1, 1]), cx=float(eye_k[0, 2]), cy=float(eye_k[1, 2]),
                             gray_base64=base64.b64encode(gray.tobytes()).decode(), calibration=eye_calibration,
-                            hit_points_m=hits, hit_colors_srgb=rgb)))
+                            hit_points_m=hits, hit_colors_srgb=rgb,
+                            unrectified=unrectified(full, right_eye))))
                         mailbox.emitted(t)
                         right_eye = not right_eye
                     last_image, last_mapping = t, monotonic
