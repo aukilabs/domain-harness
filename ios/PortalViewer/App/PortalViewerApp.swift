@@ -3092,11 +3092,16 @@ struct CompassRing: View {
     var body: some View {
         ZStack {
             // The glass stays put; only the markings turn.
+            // glassEffect needs the iOS 26 SDK (Xcode 26, Swift 6.2); older Xcodes build the fallback.
+            #if compiler(>=6.2)
             if #available(iOS 26.0, *) {
                 Color.clear.glassEffect(.regular, in: Circle())
             } else {
                 Circle().fill(.ultraThinMaterial)
             }
+            #else
+            Circle().fill(.ultraThinMaterial)
+            #endif
             ZStack {
                 ForEach(1..<24, id: \.self) { tick in
                     Capsule().fill(Color.white.opacity(tick % 6 == 0 ? 0.9 : 0.4))
