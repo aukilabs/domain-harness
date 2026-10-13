@@ -149,7 +149,24 @@ pub async fn resolve_pose(client: &ComponentProtocolClient, sensor: &Sensor, row
         };
         (home, compose(&from_rigid(c.transform.value.transform.as_ref().unwrap()), &camera_local)?)
     };
-    Ok((home.scenegraph.map.frame.id.clone(), optical))
+    Ok((home.scenegraph.map.frame.id.clone(), optical_pose(&optical, &contract.from_frame)?))
+}
+
+/// Home projects with a camera that looks along +Z with Y down. A camera
+/// declares its own axes, so its pose is re-read in those optical axes here,
+/// from the declaration and not from who published it. A camera that already
+/// declares optical axes is unchanged.
+pub fn optical_pose(camera_to_map: &auki_odometry::Pose, declared: &auki_registry::FrameRegistryEntry) -> Result<auki_odometry::Pose> {
+    use auki_datatypes::pose::{Quat, SpatialTransform, Vec3};
+    let [x, y, z, w] = camera_to_map.rotation_xyzw;
+    let [tx, ty, tz] = camera_to_map.translation;
+    let optical = auki_registry::FrameRegistryEntry::ros_optical(&declared.peer_id, &declared.frame_id);
+    let converted = auki_geometry::convert_transform_source_convention(
+        &SpatialTransform { translation: Some(Vec3 { x: tx, y: ty, z: tz }), orientation: Some(Quat { x, y, z, w }) },
+        declared, &optical)?;
+    let (t, q) = (converted.translation.ok_or_else(|| anyhow!("Camera pose lost its position"))?,
+                  converted.orientation.ok_or_else(|| anyhow!("Camera pose lost its rotation"))?);
+    Ok(auki_odometry::Pose { translation: [t.x, t.y, t.z], rotation_xyzw: [q.x, q.y, q.z, q.w] })
 }
 
 #[cfg(test)]
@@ -170,6 +187,20 @@ mod tests {
         assert_eq!(projected["voxel_count"], 1);
         assert_eq!(projected["vertices"][0][3], 1.);
         assert_eq!(projected["vertices"][0][4], 0.);
+        Ok(())
+    }
+    #[test]
+    fn a_camera_is_read_in_the_axes_it_declares() -> Result<()> {
+        let calibration = json!({"K":[100.,0.,50.,0.,100.,40.,0.,0.,1.],"D":[],"distortion_model":"none","width":100,"height":80});
+        let pose = crate::local_mapper::identity();
+        // A phone camera looks along -Z with Y up; a note ahead of it and up to its right...
+        let view = json!({"frame":"home-conference","voxel_size":0.1,"voxels":[],
+            "notes":[{"id":"note","text":"Dan","position":[0.2,0.1,-2.]}]});
+        let phone = optical_pose(&pose, &auki_registry::FrameRegistryEntry::opengl("phone", "phone-camera:s"))?;
+        // ...lands right of centre and above it in the picture.
+        assert_eq!(crate::ar_preview::project_view(&view, &phone, &calibration)?["notes"][0]["pixel"], json!([60.,35.]));
+        // A camera that already declares optical axes is left as it is.
+        assert_eq!(optical_pose(&pose, &auki_registry::FrameRegistryEntry::ros_optical("robot", "head"))?.rotation_xyzw, pose.rotation_xyzw);
         Ok(())
     }
 }

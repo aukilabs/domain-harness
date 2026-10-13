@@ -235,3 +235,89 @@ async fn phone_camera_joins_the_ar_session_and_declares_its_calibration() -> Res
     .await;
     result.and(pair.shutdown().await)
 }
+
+/// Home draws its scene over a phone's camera through the same path it uses
+/// for a robot: the camera names its pose Product, image and pose share a
+/// frame, a clock and a capture time, and Home reads the camera in the axes
+/// it declares.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn home_draws_over_a_phone_camera_without_a_phone_adapter() -> Result<()> {
+    use spatial_home::mobile_camera::Geometry;
+    let pair = support::LocalPair::start().await?;
+    let products = MobileProducts::mount(&pair.b)?;
+    let mut camera = Camera::new(&products)?;
+    let dir = tempfile::tempdir()?;
+    let homes = support::seeded_local_scenes(dir.path())?;
+    let home_frame = homes.snapshots["humanoid-hub-conference"].scenegraph.map.frame.id.clone();
+    let home_peer = pair.a.peer_id().to_string();
+    let session = uuid::Uuid::new_v4().to_string();
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
+        .encode_image(&image::RgbImage::from_pixel(640, 480, image::Rgb([50, 100, 150])))?;
+    // One capture: the picture as the sensor took it, and the camera's pose at that instant.
+    let geometry = Geometry { session: session.clone(), fx: 480., fy: 481., cx: 320., cy: 240., rotation_deg: 0, alignment_timestamp_ns: 77 };
+    camera.publish_calibrated(1000, jpeg, geometry)?;
+    let sample = spatial_home::mobile_pose::Sample {
+        session: session.clone(),
+        timestamp_ns: 1000,
+        pose: auki_scenegraph::RigidTransform {
+            from_frame_id: format!("phone-camera:{session}"),
+            to_frame_id: home_frame.clone(),
+            translation: [1., 1.5, 2.],
+            rotation_wxyz: [1., 0., 0., 0.],
+        },
+        camera_configuration_id: None,
+    };
+    let mut pose = spatial_home::mobile_odometry::Publisher::new(&products, &home_peer, &sample)?;
+    pose.publish(&home_peer, &sample)?;
+
+    let routes = pair.b.listen_addresses().iter().map(ToString::to_string).collect::<Vec<_>>();
+    let catalogs = Catalogs::from([(pair.b.peer_id().to_string(), fetch(&pair.a, pair.b.peer_id(), &routes).await)]);
+    let (_catalog_tx, catalog_rx) = watch::channel(catalogs);
+    let (tx, rx) = mpsc::channel(4);
+    let (_live_tx, live) = watch::channel(spatial_home::scene_mirror::RemoteScene::default());
+    let frames = spatial_home::ar_preview::Frames::default();
+    let stop = CancellationToken::new();
+    let serve = sensor_preview::serve(&pair.a, catalog_rx, rx, live, &frames, &homes, &stop);
+    let exercise = async {
+        let listing = preview(&tx, None).await?;
+        let listed = listing["sensors"].as_array().unwrap().iter().find(|s| s["label"] == "phone-camera").unwrap();
+        assert_eq!(listed["ar_available"], true, "the camera's pose is found by pose_product_id");
+        let id = listed["id"].as_str().unwrap().to_owned();
+        let mut last = String::new();
+        let drawn = tokio::time::timeout(Duration::from_secs(8), async {
+            loop {
+                let (reply, answer) = oneshot::channel();
+                tx.send(Request { scene: false, sensor: Some(id.clone()), ar: true, pick: false, follow: false,
+                    capture: false, expected_manifest: None, reply }).await?;
+                match answer.await? {
+                    Ok(frame) => break Ok::<_, anyhow::Error>(frame),
+                    Err(error) => last = error.to_string(),
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("Home never drew over the phone camera: {last}"))??;
+        assert_eq!(drawn["capture_timestamp_ns"], 1000);
+        assert_eq!(drawn["ar"]["status"], "ready");
+        assert_eq!(drawn["ar"]["frame"], home_frame);
+        let seen = &drawn["picking"]["camera_to_map"];
+        assert_eq!(seen["translation"], serde_json::json!([1., 1.5, 2.]), "the camera is where the phone said");
+        // The phone's camera looks along -Z with Y up. Read as an optical
+        // camera, that is half a turn about X.
+        let q: Vec<f64> = serde_json::from_value(seen["rotation_xyzw"].clone())?;
+        assert!((q[0].abs() - 1.).abs() < 1e-9 && q[1].abs() + q[2].abs() + q[3].abs() < 1e-9, "{q:?}");
+        Ok::<_, anyhow::Error>(())
+    };
+    let (_, result) = tokio::join!(serve, async {
+        let r = exercise.await;
+        stop.cancel();
+        r
+    });
+    pose.close()?;
+    camera.close()?;
+    products.close().await?;
+    pair.shutdown().await?;
+    result
+}
