@@ -209,6 +209,8 @@ struct ViewerScreen: View {
             controller.onSleep = { peer.setAsleep($0) }
             controller.onNewPortal = { peer.reportPortal($0) }
             controller.onGeo = { peer.setGeo($0) }
+            controller.onStroke = { peer.saveStroke($0, frame: $1, done: $2) }
+            controller.onErase = { peer.eraseStroke($0, frame: $1, done: $2) }
             peer.onPortalResult = { controller.showPortalResult($0) }
             // A Portal seen before Home's map has arrived offers sign-in once.
             controller.onPortalSeen = { _ in
@@ -1190,7 +1192,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         let shown = (root.childNodes + povRoot.childNodes).filter { $0.name == "scene-path:" + id }
             + crayonRoot.childNodes.filter { $0.name == id }
         shown.forEach { $0.isHidden = true }
-        onErase(id) { [weak self] erased in
+        onErase(id, map?.scenegraph.map.frame.id ?? "") { [weak self] erased in
             guard !erased else { return }
             self?.erasing.remove(id)
             shown.forEach { $0.isHidden = false }
@@ -1202,8 +1204,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     @Published var crayonWidth = CrayonStroke.width
     /// Saves a finished stroke to Home for a scene frame; answers whether Home took it.
     var onStroke: ((CrayonStroke, String, @escaping (Bool) -> Void) -> Void)?
-    /// Removes a saved path from Home by its ID; answers whether Home did.
-    var onErase: ((String, @escaping (Bool) -> Void) -> Void)?
+    /// Removes a saved path from Home by its ID, in a scene frame; answers whether Home did.
+    var onErase: ((String, String, @escaping (Bool) -> Void) -> Void)?
     private var drawPan: UILongPressGestureRecognizer?
     /// Where the finger is while it is down. The line is sampled from here every
     /// frame, so a still finger on a moving phone draws too.
@@ -2271,7 +2273,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         let shown = (root.childNodes + povRoot.childNodes).filter { $0.name == "scene-path:" + id }
         shown.forEach { $0.isHidden = true }
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        onErase(id) { [weak self] erased in
+        onErase(id, map?.scenegraph.map.frame.id ?? "") { [weak self] erased in
             // An erased path stays marked until Home's scene stops listing it,
             // so a finger still on it does not ask twice.
             guard !erased else { return }

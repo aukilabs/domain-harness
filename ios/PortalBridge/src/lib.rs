@@ -57,6 +57,22 @@ pub unsafe extern "C" fn spatial_mobile_report_portal(report: *const c_char) -> 
     }).unwrap_or(0)
 }
 
+/// Add a drawn path to Home's scene, or remove a saved one. The outcome arrives
+/// in the polled `local_detail` as "Path <id> …".
+/// # Safety
+/// `change` must be a NUL-terminated UTF-8 JSON string valid for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spatial_mobile_change_path(change: *const c_char) -> i32 {
+    std::panic::catch_unwind(|| {
+        if change.is_null() { return 0; }
+        let bytes = unsafe { CStr::from_ptr(change) }.to_bytes();
+        if bytes.len() > 2 * 1024 * 1024 { return 0; }
+        let Ok(change) = serde_json::from_slice(bytes) else { return 0; };
+        CLIENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+            .map_or(0, |client| i32::from(client.change_path(change)))
+    }).unwrap_or(0)
+}
+
 /// Advertise camera availability while scanning and query SDK subscription demand.
 /// Queue an unlocalized first-Portal measurement against the exact empty scene
 /// the UI captured. The bridge supplies the full authenticated SDK snapshot.

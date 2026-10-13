@@ -4,6 +4,23 @@ use auki_components::*;
 use serde::{Serialize, Deserialize};
 use std::{path::PathBuf, sync::{Arc, Mutex}, collections::BTreeSet};
 pub const SCHEMA: &str = "spatial-harness.scene-paths/v1";
+pub const COMPONENT: &str = "scene-paths";
+
+/// A peer adds a path it drew. `frame` is the scene frame the points are in;
+/// Home refuses a path drawn for another frame.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Add { pub frame: String, pub stroke: Stroke }
+impl ContractType for Add { const DATATYPE: &'static str = "spatial-harness.scene-path-add/v1"; }
+/// A peer removes a saved path by its ID.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Remove { pub frame: String, pub id: String }
+impl ContractType for Remove { const DATATYPE: &'static str = "spatial-harness.scene-path-remove/v1"; }
+/// What a phone's app hands its core: one of the two requests above.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(untagged)]
+pub enum Change { Add(Add), Remove(Remove) }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -40,6 +57,27 @@ impl Paths {
         ensure!(total <= 32768, "Scene path point budget exceeded");
         Ok(())
     }
+}
+/// Send one path change to Home's path component for the paired scene.
+pub async fn send(peer: &auki_sdk::AukiPeer, home: &crate::network::HomeConnection, change: &Change) -> Result<bool> {
+    use auki_component_protocol::{CatalogResponse, ComponentProtocolClient};
+    use std::time::Duration;
+    let expected = home.validate(peer)?;
+    let client = ComponentProtocolClient::new(peer.protocols());
+    for route in &home.routes {
+        let route: auki_sdk::Multiaddr = route.parse()?;
+        let Ok(Ok(CatalogResponse::Snapshot { snapshot })) = tokio::time::timeout(
+            Duration::from_secs(1), client.catalog_exact(expected, route.clone(), None)).await else { continue; };
+        let component = snapshot.components.iter()
+            .find(|c| c.manifest.component_id == home.scoped_component(COMPONENT))
+            .ok_or_else(|| anyhow!("Home path component unavailable"))?.manifest.reference();
+        let (request, wait) = (uuid::Uuid::new_v4().to_string(), Some(Duration::from_secs(3)));
+        return Ok(match change {
+            Change::Add(add) => client.invoke_exact::<_, bool>(expected, route, component, "add", "phone-path", request, wait, add).await?,
+            Change::Remove(remove) => client.invoke_exact::<_, bool>(expected, route, component, "remove", "phone-path", request, wait, remove).await?,
+        }.result);
+    }
+    anyhow::bail!("Home path component unreachable")
 }
 pub struct Storage { directory: PathBuf, writer: Mutex<()> }
 impl Storage {
@@ -101,14 +139,33 @@ pub struct Publisher {
     last: Option<Paths>,
 }
 impl Publisher {
+    /// `store` adds a path (`Some`) or removes one (`None`) in this scene's saved paths.
     pub fn mount(runtime:&ComponentRuntime, endpoint:&auki_component_protocol::ComponentProtocolEndpoint,
-        id:&str, owner:&str, frame:&str, clock:ClockReference)->Result<Self> {
-        let component=runtime.component(ComponentSpec::new(format!("scene-paths:{id}")).observable(ObservableContract {
-            name:"paths".into(),datatype:SCHEMA.into(),schema:SCHEMA.into(),access:vec![ObservationAccess::FollowNew],exposure:Exposure::Cluster }))?;
+        id:&str, owner:&str, frame:&str, clock:ClockReference,
+        store: impl Fn(&str, Option<Stroke>) -> Result<Paths> + Send + Sync + 'static)->Result<Self> {
+        let operable=|name:&str,instruction:&str| OperableContract { name:name.into(), instruction:instruction.into(), result:"bool".into(), exposure:Exposure::Cluster };
+        let component=runtime.component(ComponentSpec::new(format!("{COMPONENT}:{id}")).observable(ObservableContract {
+            name:"paths".into(),datatype:SCHEMA.into(),schema:SCHEMA.into(),access:vec![ObservationAccess::FollowNew],exposure:Exposure::Cluster })
+            .operable(operable("add",Add::DATATYPE)).operable(operable("remove",Remove::DATATYPE)))?;
+        // Any authenticated peer of the scene may draw or erase, as any browser on Home's page may.
+        let store=Arc::new(store);
+        let (adding,scene)=(store.clone(),frame.to_owned());
+        let add=component.operable("add",|ctx|!ctx.caller_peer_id.is_empty(),move |_,request:Add| {
+            if request.frame!=scene { return Err(InvocationError::Rejected("Scene frame changed; redraw the path".into())); }
+            let id=request.stroke.id.clone();
+            adding(&id,Some(request.stroke)).map(|_|true).map_err(|e|InvocationError::Rejected(e.to_string()))
+        })?;
+        let scene=frame.to_owned();
+        let remove=component.operable("remove",|ctx|!ctx.caller_peer_id.is_empty(),move |_,request:Remove| {
+            if request.frame!=scene { return Err(InvocationError::Rejected("Scene frame changed".into())); }
+            store(&request.id,None).map(|_|true).map_err(|e|InvocationError::Rejected(e.to_string()))
+        })?;
         let output=component.configured_observable(ConfiguredObservableSpec::new("paths",uuid::Uuid::new_v4().to_string(),clock,
             PayloadContract::Structured(StructuredPayloadContract {modality:"scenegraph".into(),datatype:SCHEMA.into(),schema:SCHEMA.into(),observes:"authored_surface_paths".into(),unit:Some("meters".into())}))
             .in_registered_frame(crate::conventions::registry(owner,frame)?))?;
         component.expose()?;
+        endpoint.export_operable(&add)?;
+        endpoint.export_operable(&remove)?;
         let capture=runtime.capture_buffer(format!("local-scene:{id}:paths"),&output,BufferLimits::entries(1),|v:&Paths|serde_json::to_vec(v).map_or(usize::MAX,|b|b.len()))?;
         endpoint.export_product(&capture.product())?;
         Ok(Self {_component:component,output,capture,last:None})
