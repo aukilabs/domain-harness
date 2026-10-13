@@ -1,0 +1,15 @@
+[package]
+name = "auki-connection-diagnostic"
+version = "0.1.0"
+edition = "2024"
+
+# Deliberately independent of Home and the full robot runner.
+[workspace]
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt", "signal", "time", "sync"] }
+auki-sdk = { git = "https://github.com/aukilabs/auki-sdk.git", rev = "3342d589605846f5f45c1de5430dd22923555de2" }
+auki-component-protocol = { git = "https://github.com/aukilabs/auki-sdk.git", rev = "3342d589605846f5f45c1de5430dd22923555de2" }
