@@ -469,12 +469,15 @@ impl MobileClient {
                     depth: Option<crate::mobile_depth::Publisher>,
                     depth_image: Option<crate::mobile_depth_image::Publisher>,
                     pose: Option<crate::mobile_odometry::Publisher>,
+                    /// The phone's alignment into the scene and its depth points, for Home to read.
+                    placed: Option<crate::mobile_declared::Publisher>,
                 }
                 let declared = std::sync::Mutex::new(Declared {
                     camera: Some(crate::mobile_camera::Camera::new(&products)?),
                     depth: None,
                     depth_image: None,
                     pose: None,
+                    placed: None,
                 });
                 let declared = || declared.lock().unwrap_or_else(|e| e.into_inner());
                 let mut frames = self.camera.subscribe();
@@ -818,6 +821,8 @@ impl MobileClient {
                         }
                         let latest = depths.borrow_and_update().clone();
                         let Some((mut sample, received)) = latest else {
+                            // No capture means no alignment to vouch for either.
+                            if let Some(placed) = declared().placed.as_mut() { let _ = placed.lose(); }
                             self.depth_status("Depth sharing paused".into());
                             continue;
                         };
@@ -832,6 +837,22 @@ impl MobileClient {
                         }
                         let colored = sample.colors.is_some();
                         let count = sample.points.len();
+                        // Declared for Home to read: where this AR session sits in the scene, and
+                        // the points with no pose of their own. Home places them from the phone's
+                        // pose Product at the capture time.
+                        let published = (|| {
+                            let mut declared = declared();
+                            if declared.placed.as_ref().is_some_and(|p| !p.serves(&sample.session, &home.peer_id, &home.frame))
+                                && let Some(old) = declared.placed.take() {
+                                old.close()?;
+                            }
+                            if declared.placed.is_none() {
+                                declared.placed = Some(crate::mobile_declared::Publisher::new(&products, &sample.session, &home.peer_id, &home.frame)?);
+                            }
+                            let placed = declared.placed.as_mut().unwrap();
+                            placed.align(sample.alignment.timestamp_ns, &sample.alignment.session_to_home)?;
+                            placed.capture(sample.timestamp_ns, &sample.points, sample.colors.as_deref())
+                        })();
                         let result = async {
                             let envelope = {
                                 let mut declared = declared();
@@ -874,6 +895,12 @@ impl MobileClient {
                             Ok(()) if colored => format!("Depth sent to Home · {count} colored voxels"),
                             Ok(()) => format!("Depth sent to Home · {count} voxels"),
                             Err(error) if colored && !send_colors => format!("Color paused for a minute after repeated failures: {error}"),
+                            // A Home that reads depth itself no longer takes it pushed. What it
+                            // needs is published; say so, and say if even that failed.
+                            Err(error) if error.to_string().contains("compact pose contract required") => match &published {
+                                Ok(()) => format!("Depth published for Home to read · {count} voxels"),
+                                Err(error) => format!("Depth not published: {error}"),
+                            },
                             Err(error) => format!("Depth not sent: {error}"),
                         });
                     }
@@ -927,8 +954,9 @@ impl MobileClient {
                     _ = commands => Ok(()),
                 };
                 self.camera_demand.store(false, Ordering::Release);
-                let Declared { camera, depth: depth_publisher, depth_image, pose: pose_publisher } = std::mem::replace(
-                    &mut *declared(), Declared { camera: None, depth: None, depth_image: None, pose: None });
+                let Declared { camera, depth: depth_publisher, depth_image, pose: pose_publisher, placed } = std::mem::replace(
+                    &mut *declared(), Declared { camera: None, depth: None, depth_image: None, pose: None, placed: None });
+                if let Some(publisher) = placed { let _ = publisher.close(); }
                 if let Some(publisher) = depth_image { let _ = publisher.close(); }
                 if let Some(camera) = camera { let _ = camera.close(); }
                 if let Some(calibration)=calibration_publisher {let _=calibration.close();}

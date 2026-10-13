@@ -30,7 +30,7 @@ pub fn contract(owner: &str, _home_peer: &str, sample: &crate::mobile_pose::Samp
 
 
 fn compact(c:&PoseContract)->crate::compact_pose::Contract {
-    crate::compact_pose::Contract{from_frame:(&c.from_frame).into(),to_frame:(&c.to_frame).into(),clock:c.clock.clone(),session_id:c.session_id.clone()}
+    crate::compact_pose::Contract{from_frame:(&c.from_frame).into(),to_frame:(&c.to_frame).into(),clock:c.clock.clone(),session_id:c.session_id.clone(),lifetime:Default::default()}
 }
 fn validate_native(c:&PoseContract)->Result<()> {
     uuid::Uuid::parse_str(&c.session_id)?;

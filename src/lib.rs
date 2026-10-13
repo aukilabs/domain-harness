@@ -71,6 +71,7 @@ pub mod occupancy_mapper;
 pub mod voxel_layers;
 pub mod occupancy_fixture;
 pub mod simulated_robot;
+pub mod mobile_declared;
 pub mod mobile_local;
 pub mod mobile_products;
 pub mod device_catalogs;
