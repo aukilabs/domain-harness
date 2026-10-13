@@ -2561,9 +2561,10 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     /// Send a camera frame if someone is reading them, with the LiDAR depth
-    /// image of the same capture. The sensor image is landscape, so the picture
-    /// is turned upright for how the phone is held before it is sent, and its
-    /// intrinsics are turned and scaled with it. The depth image is not turned.
+    /// image of the same capture. The picture goes out as the sensor gave it,
+    /// landscape however the phone is held, so it is in the camera frame the
+    /// pose and depth are declared in. Only its size, and its intrinsics with
+    /// it, are scaled. A reader turns it for display if it wants to.
     /// `alignment` is the capture time of the Portal alignment in use, or 0.
     private func shareCamera(_ frame: ARFrame, alignment: UInt64, withPose: Bool) {
         guard spatial_mobile_camera_demand(1) != 0, !cameraShareBusy,
@@ -2576,27 +2577,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         let timestamp = UInt64(frame.timestamp * 1_000_000_000)
         let k = frame.camera.intrinsics
         let fx = Double(k[0][0]), fy = Double(k[1][1]), cx = Double(k[2][0]), cy = Double(k[2][1])
-        // Clockwise turn that makes the image upright, and the same turn applied to the intrinsics.
-        let turn: Int32, orientation: CGImagePropertyOrientation
-        let turned: (fx: Double, fy: Double, cx: Double, cy: Double, width: Double, height: Double)
-        switch view.window?.windowScene?.interfaceOrientation ?? .portrait {
-        case .landscapeRight:
-            turn = 0; orientation = .up
-            turned = (fx, fy, cx, cy, width, height)
-        case .landscapeLeft:
-            turn = 180; orientation = .down
-            turned = (fx, fy, width - cx, height - cy, width, height)
-        case .portraitUpsideDown:
-            turn = 270; orientation = .left
-            turned = (fy, fx, cy, width - cx, height, width)
-        default:
-            turn = 90; orientation = .right
-            turned = (fy, fx, height - cy, cx, height, width)
-        }
-        let sideways = turn == 90 || turn == 270
-        let long = Self.cameraShareLongSide, short = long * 3 / 4
-        let sentWidth = sideways ? short : long, sentHeight = sideways ? long : short
-        let sx = sentWidth / turned.width, sy = sentHeight / turned.height
+        let sentWidth = Self.cameraShareLongSide, sentHeight = sentWidth * 3 / 4
+        let sx = sentWidth / width, sy = sentHeight / height
         let session = poseSession
         let context = cameraShareContext
         let depth = frame.sceneDepth
@@ -2605,9 +2587,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 Self.shareDepthImage(depth.depthMap, confidence, timestamp: timestamp, session: session,
                                      intrinsics: (fx, fy, cx, cy), imageSize: (width, height), alignment: alignment)
             }
-            let upright = CIImage(cvPixelBuffer: buffer).oriented(orientation)
-            let image = upright
-                .transformed(by: CGAffineTransform(translationX: -upright.extent.minX, y: -upright.extent.minY))
+            let image = CIImage(cvPixelBuffer: buffer)
                 .transformed(by: CGAffineTransform(scaleX: sx, y: sy))
                 .cropped(to: CGRect(x: 0, y: 0, width: sentWidth, height: sentHeight))
             if let space = CGColorSpace(name: CGColorSpace.sRGB),
@@ -2617,8 +2597,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                     if let base = bytes.bindMemory(to: UInt8.self).baseAddress {
                         session.withCString {
                             spatial_mobile_camera_calibrated(timestamp, base, jpeg.count, $0,
-                                                             turned.fx * sx, turned.fy * sy, turned.cx * sx, turned.cy * sy,
-                                                             turn, alignment)
+                                                             fx * sx, fy * sy, cx * sx, cy * sy,
+                                                             0, alignment)
                         }
                     }
                 }

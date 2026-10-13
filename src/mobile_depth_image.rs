@@ -144,7 +144,7 @@ fn capture(
                     "image_geometry": "ar_depth_image, not turned, row-major from the top-left pixel",
                     "camera_frame": format!("phone-camera:{}", image.session),
                     "camera_product_id": crate::mobile_camera::PRODUCT,
-                    "capture_pose_product_id": (image.alignment_timestamp_ns > 0).then(|| crate::mobile_odometry::product_id(&image.session)),
+                    "pose_product_id": (image.alignment_timestamp_ns > 0).then(|| crate::mobile_odometry::product_id(&image.session)),
                     "alignment_timestamp_ns": (image.alignment_timestamp_ns > 0).then_some(image.alignment_timestamp_ns),
                     "timestamp_basis": "AR capture timestamp, equal to the camera frame of the same capture",
                 }),

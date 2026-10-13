@@ -572,13 +572,13 @@ impl MobileClient {
                                 self.local_status(format!("Portal {code} not added: no scene received from Home yet"));
                                 continue;
                             };
-                            let first = crate::mobile_portal::FirstPortal {
+                            let first = crate::scene_origin::Observation {
                                 expected_scene, code: code.clone(), side_length_m: report.side_length_m,
                                 timestamp_ns: report.timestamp_ns, portal_to_native: report.portal_to_session.clone(),
                             };
                             tokio::time::timeout(
                                 Duration::from_secs(4),
-                                operations.invoke::<_, bool>(&component, "establish_origin", "phone-portal", &request,
+                                operations.invoke::<_, bool>(&component, crate::scene_origin::OPERATION, "phone-portal", &request,
                                     Duration::from_secs(3), &first),
                             )
                             .await
