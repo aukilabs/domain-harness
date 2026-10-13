@@ -135,6 +135,7 @@ pub async fn run(hardware: Hardware) -> Result<()> {
     let sensor_status = Arc::new(Mutex::new(serde_json::json!({})));
     let home_status = Arc::new(Mutex::new(serde_json::json!({"status":"connecting"})));
     let (home_send, home_receive) = std::sync::mpsc::sync_channel::<(String, auki_scenegraph::MapSnapshot)>(1);
+    let (origin_send,mut origin_receive)=tokio::sync::mpsc::channel::<crate::scene_origin::Observation>(1);
     let reader = {
         let live = live.clone();
         let sensors = sensors.clone();
@@ -242,6 +243,7 @@ pub async fn run(hardware: Hardware) -> Result<()> {
                 let mut last_odom = Instant::now();
                 let mut capture_status = String::from("Starting sensor capture");
                 let mut pending_home = None;
+                let mut origin_after=0;
                 let mut last_alignment_attempt = Instant::now() - Duration::from_secs(1);
                 while !stop.load(Ordering::Relaxed) {
                     let started = Instant::now();
@@ -265,6 +267,9 @@ pub async fn run(hardware: Hardware) -> Result<()> {
                         }
                     }
                     if let Ok(home) = home_receive.try_recv() {
+                        if home.1.scenegraph.anchors.is_empty() && pending_home.as_ref().is_none_or(|old:&(String,auki_scenegraph::MapSnapshot)|old.1!=home.1) {
+                            origin_after=local.latest_pose.as_ref().map_or(0,|(t,_)|*t);
+                        }
                         pending_home = Some(home);
                         // Refresh changed Home references as well as retaining
                         // them for re-alignment after a local map correction.
@@ -278,7 +283,17 @@ pub async fn run(hardware: Hardware) -> Result<()> {
                         && let Some((peer_id, portals)) = pending_home.as_ref()
                     {
                         last_alignment_attempt = Instant::now();
-                        if let Err(e) = local.accept_home_portals(portals.clone(), peer_id.clone()) {
+                        if portals.scenegraph.anchors.is_empty() {
+                            let measured=local.portals()?;
+                            let metadata=local.metadata();
+                            let first=metadata["local_mapping"]["observed_portals"].as_object().into_iter().flatten()
+                                .filter_map(|(id,e)|e["capture_timestamp_ns"].as_u64().filter(|t|*t>origin_after).map(|t|(t,id)))
+                                .min_by_key(|(t,_)|*t);
+                            if let Some((timestamp,id))=first && let Some(anchor)=measured.scenegraph.anchors.get(id) {
+                                let mut pose=anchor.pose_in_map.clone();pose.from_frame_id=crate::mobile_portal::local_frame(id);
+                                let _=origin_send.try_send(crate::scene_origin::Observation{expected_scene:portals.clone(),code:id.clone(),side_length_m:anchor.side_length_m,timestamp_ns:timestamp,portal_to_native:pose});
+                            }
+                        } else if let Err(e) = local.accept_home_portals(portals.clone(), peer_id.clone()) {
                             eprintln!("Home references: {e}");
                         }
                     }
@@ -362,6 +377,7 @@ pub async fn run(hardware: Hardware) -> Result<()> {
         .unwrap_or_else(|| path.parent().unwrap().join("home-connection.json"));
     let home_work = async {
         loop {
+            let mut refresh_seconds=30;
             let fetch = async {
                 let profile: HomeConnection = serde_json::from_slice(&std::fs::read(&home_path)?)?;
                 let portals = crate::network::fetch_home_portals(&running.peer, &profile).await?;
@@ -369,6 +385,7 @@ pub async fn run(hardware: Hardware) -> Result<()> {
             };
             match fetch.await {
                 Ok((peer_id, portals)) => {
+                    if portals.scenegraph.anchors.is_empty(){refresh_seconds=3;}
                     *home_status.lock().unwrap() = serde_json::json!({"status":"received", "peer_id":peer_id,"frame":portals.scenegraph.map.frame.id});
                     let _ = home_send.try_send((peer_id, portals));
                 }
@@ -378,7 +395,16 @@ pub async fn run(hardware: Hardware) -> Result<()> {
                     eprintln!("Home reference fetch: {e}");
                 }
             }
-            tokio::time::sleep(Duration::from_secs(30)).await;
+            tokio::time::sleep(Duration::from_secs(refresh_seconds)).await;
+        }
+    };
+    let origin_work=async {
+        while let Some(observation)=origin_receive.recv().await {
+            let result=async {
+                let profile:HomeConnection=serde_json::from_slice(&std::fs::read(&home_path)?)?;
+                crate::scene_origin::send(&running.peer,&profile,&observation).await
+            }.await;
+            if let Err(e)=result {eprintln!("Home origin observation: {e}");}
         }
     };
     let volume_work = async {
@@ -554,7 +580,9 @@ pub async fn run(hardware: Hardware) -> Result<()> {
         }
     };
     let pose_work = async {
+        let mut sender = crate::mobile_pose::PresenceSender::default();
         loop {
+            let began = std::time::Instant::now();
             let work = async {
                 let profile: HomeConnection = serde_json::from_slice(&std::fs::read(&home_path)?)?;
                 let value = live.lock().unwrap().snapshot();
@@ -565,14 +593,16 @@ pub async fn run(hardware: Hardware) -> Result<()> {
                     },
                     None => crate::robot_presence::Update { sample:None },
                 };
-                crate::mobile_pose::send_component(&running.peer,&profile,crate::robot_presence::COMPONENT,&update).await
+                sender.send(&running.peer,&profile,crate::robot_presence::COMPONENT,&update).await
             };
             let result = tokio::time::timeout(Duration::from_secs(2),work).await;
-            let status = match result {
+            let mut status = match result {
                 Ok(Ok(())) => serde_json::json!({"status":"accepted"}),
                 Ok(Err(e)) => serde_json::json!({"status":"unavailable","error":e.to_string()}),
                 Err(_) => serde_json::json!({"status":"unavailable","error":"Pose publication timed out"}),
             };
+            status["elapsed_ms"] = serde_json::json!(began.elapsed().as_millis());
+            status["catalog_requests"] = serde_json::json!(sender.catalog_requests());
             let _ = save(&path.with_file_name("robot-presence-status.json"), &status);
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
@@ -589,7 +619,7 @@ pub async fn run(hardware: Hardware) -> Result<()> {
             }
         }
     };
-    tokio::select! {_=tokio::signal::ctrl_c()=>{},_=terminate.recv()=>{},_=home_work=>{},_=health=>{},_=contributions=>{},_=phone_work=>{},_=live_work=>{},_=drive_work=>{},_=volume_work=>{},_=pose_work=>{}}
+    tokio::select! {_=tokio::signal::ctrl_c()=>{},_=terminate.recv()=>{},_=home_work=>{},_=origin_work=>{},_=health=>{},_=contributions=>{},_=phone_work=>{},_=live_work=>{},_=drive_work=>{},_=volume_work=>{},_=pose_work=>{}}
     let _ = child.start_kill();
     let _ = child.wait().await;
     stop.store(true, Ordering::Relaxed);

@@ -48,12 +48,42 @@ fn set_points(snapshot: &mut auki_voxel_map::VoxelSnapshot, points: &[([i32; 3],
     .encode_to_vec();
 }
 fn value(grid: &OccupancyGrid, u: i32, v: i32) -> i8 {
+    let width=cell_width(grid).unwrap() as i32;
     grid.cells
         .iter()
-        .find(|c| c.index == [u.div_euclid(20), v.div_euclid(20)])
+        .find(|c| c.index == [u.div_euclid(width), v.div_euclid(width)])
         .map_or(UNKNOWN, |c| {
-            c.values[(v.rem_euclid(20) * 20 + u.rem_euclid(20)) as usize]
+            c.values[(v.rem_euclid(width) * width + u.rem_euclid(width)) as usize]
         })
+}
+
+#[test]
+fn three_cm_input_requires_complete_free_coverage_and_preserves_two_metre_cells()->Result<()> {
+    let mut snapshot=built()?.voxels;
+    let auki_registry::MapBody::Voxel(grid)=&mut snapshot.definition.registry.body;
+    grid.voxel_size_m.0=0.03;
+    let up=[snapshot.definition.frame.axes.x,snapshot.definition.frame.axes.y,snapshot.definition.frame.axes.z]
+        .iter().position(|a|*a==auki_registry::AxisDirection::Up).unwrap();
+    let horizontal:Vec<_>=(0..3).filter(|i|*i!=up).collect();
+    let point=|x,y,z| {let mut p=[0;3];p[horizontal[0]]=x;p[up]=y;p[horizontal[1]]=z;p};
+    let mut points=Vec::new();
+    for x in 0..4 {for z in 0..4 {for y in 0..33 {points.push((point(x,y,z),-1.));}}}
+    set_points(&mut snapshot,&points);
+    assert_eq!(value(&project(&snapshot,0.)?,0,0),FREE);
+    points.pop();set_points(&mut snapshot,&points);
+    assert_eq!(value(&project(&snapshot,0.)?,3,3),UNKNOWN);
+    points.iter_mut().find(|(p,_)|*p==point(3,10,3)).unwrap().1=1.;set_points(&mut snapshot,&points);
+    let grid=project(&snapshot,0.)?;
+    assert_eq!(grid.resolution_m,0.03);
+    assert_eq!(cell_width(&grid)?,67);
+    assert_eq!(value(&grid,3,3),OCCUPIED);
+    assert_eq!(value(&grid,0,0),FREE);
+    set_points(&mut snapshot,&[(point(66,0,0),1.),(point(67,0,0),1.),(point(-1,0,0),1.)]);
+    let layers=spatial_home::voxel_layers::split(&snapshot)?;
+    assert_eq!(layers[0].resolution_m,0.03);assert_eq!(layers[0].cell_size_m,2.);
+    let indices:Vec<_>=layers[0].cells.iter().map(|c|c.index[horizontal[0]]).collect();
+    assert!(indices.contains(&-1)&&indices.contains(&0)&&indices.contains(&1));
+    Ok(())
 }
 
 #[test]

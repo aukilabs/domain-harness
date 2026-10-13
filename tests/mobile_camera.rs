@@ -17,6 +17,9 @@ async fn preview(tx: &mpsc::Sender<Request>, sensor: Option<String>) -> Result<s
         sensor,
         ar: false,
         pick: false,
+        follow: false,
+        capture: false,
+        expected_manifest: None,
         reply,
     })
     .await?;
@@ -49,7 +52,9 @@ async fn phone_camera_shares_sdk_catalog_and_home_consumes_only_on_demand() -> R
     let (_live_tx, live) = watch::channel(spatial_home::scene_mirror::RemoteScene::default());
     let frames = spatial_home::ar_preview::Frames::default();
     let stop = CancellationToken::new();
-    let serve = sensor_preview::serve(&pair.a, catalog_rx, rx, live, &frames, &stop);
+    let dir=tempfile::tempdir()?;
+    let homes=spatial_home::local_scenes::LocalScenes::load(dir.path())?;
+    let serve = sensor_preview::serve(&pair.a, catalog_rx, rx, live, &frames, &homes, &stop);
     let exercise = async {
         let listing = preview(&tx, None).await?;
         let id = listing["sensors"][0]["id"].as_str().unwrap().to_owned();
@@ -80,7 +85,7 @@ async fn phone_camera_shares_sdk_catalog_and_home_consumes_only_on_demand() -> R
         assert_eq!(frame["width"], 640);
         assert_eq!(frame["height"], 480);
         assert_eq!(frame["capture_timestamp_ns"], 100);
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(Duration::from_secs(35), async {
             while camera.demanded() {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }

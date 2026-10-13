@@ -121,6 +121,15 @@ fn sdk_decodes_real_qr_pixels_without_hardcoded_marker_ids() {
         result.diagnostics.total_us >= result.diagnostics.decode_us + result.diagnostics.pose_us
     );
     assert_eq!(result.alignment.unwrap().portal_id, "ABCDEFGHIJK");
+    let mut empty=capture();empty.scenegraph.anchors.clear();
+    let first=detect(&image,&empty).unwrap();
+    assert!(first.alignment.is_none(),"Client must wait for Home's origin decision");
+    let offer=first.origin_observation.expect("unlocalized observation offered");
+    assert_eq!(offer.code,"ABCDEFGHIJK");
+    assert!(offer.expected_scene.scenegraph.anchors.is_empty());
+    let home=spatial_home::scene_origin::establish(&offer.expected_scene,&offer).unwrap();
+    empty.scenegraph=home.scenegraph;
+    assert!(detect(&image,&empty).unwrap().alignment.is_some(),"Phone localizes only after Home accepts a Portal");
     let mut unknown = capture();
     let mut other = unknown.scenegraph.anchors.remove("ABCDEFGHIJK").unwrap();
     other.anchor_id = "ZYXWVUTSRQP".into();

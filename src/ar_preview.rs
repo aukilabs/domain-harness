@@ -287,6 +287,22 @@ fn project_scene(
     calibration: &Value,
     include_voxels: bool,
 ) -> Result<Value> {
+    project_geometry(&scene.frame, scene.voxels.definition.grid().voxel_size_m.0,
+        if include_voxels { crate::model::occupied(&scene.voxels)? } else { vec![] },
+        crate::notes::from_registries(&scene.registries, &scene.frame)?.items.into_iter().map(serde_json::to_value).collect::<std::result::Result<Vec<_>,_>>()?,
+        camera_to_map, calibration)
+}
+
+/// Project Home-owned geometry already expressed in its displayed scene frame.
+pub fn project_view(view: &Value, camera_to_map: &Pose, calibration: &Value) -> Result<Value> {
+    project_geometry(view["frame"].as_str().ok_or_else(|| anyhow!("Home scene frame missing"))?,
+        view["voxel_size"].as_f64().ok_or_else(|| anyhow!("Home voxel size missing"))?,
+        serde_json::from_value(view["voxels"].clone())?,
+        serde_json::from_value(view["notes"].clone())?, camera_to_map, calibration)
+}
+
+fn project_geometry(frame: &str, voxel_size: f64, voxels: Vec<crate::raycast::Voxel>,
+    notes_in_map: Vec<Value>, camera_to_map: &Pose, calibration: &Value) -> Result<Value> {
     use auki_geometry::pnp::Vector3;
     let camera = camera_model(calibration)?;
     let lens = calibration["distortion_model"].as_str().unwrap_or("");
@@ -307,7 +323,7 @@ fn project_scene(
     let height = calibration["height"]
         .as_f64()
         .ok_or_else(|| anyhow!("Camera height missing"))?;
-    let half = scene.voxels.definition.grid().voxel_size_m.0 / 2.;
+    let half = voxel_size / 2.;
     let faces = [
         [0, 1, 3, 2],
         [4, 6, 7, 5],
@@ -318,11 +334,7 @@ fn project_scene(
     ];
     let mut vertices: Vec<[f32; 6]> = Vec::new();
     let mut count = 0;
-    for voxel in if include_voxels {
-        crate::model::occupied(&scene.voxels)?
-    } else {
-        vec![]
-    } {
+    for voxel in voxels {
         let mut corners = [[0.; 3]; 8];
         let mut visible = true;
         for (i, corner) in corners.iter_mut().enumerate() {
@@ -369,9 +381,10 @@ fn project_scene(
         count += 1;
     }
     let mut notes = Vec::new();
-    for note in crate::notes::from_registries(&scene.registries, &scene.frame)?.items {
+    for note in notes_in_map {
+        let position: [f64;3] = serde_json::from_value(note["position"].clone())?;
         let c: [f64; 3] = std::array::from_fn(|r| {
-            matrix[r][3] + (0..3).map(|j| matrix[r][j] * note.position[j]).sum::<f64>()
+            matrix[r][3] + (0..3).map(|j| matrix[r][j] * position[j]).sum::<f64>()
         });
         if !(0.03..=40.).contains(&c[2]) {
             continue;
@@ -381,12 +394,12 @@ fn project_scene(
             && (0. ..height).contains(&pixel.y)
         {
             notes.push(
-                json!({"id":note.id,"text":note.text,"pixel":[pixel.x,pixel.y],"depth_m":c[2]}),
+                json!({"id":note["id"],"text":note["text"],"pixel":[pixel.x,pixel.y],"depth_m":c[2]}),
             );
         }
     }
     Ok(
-        json!({"status":"ready","frame":scene.frame,"projection":"sdk-camera","lens_model":lens,"vertices":vertices,"voxel_count":count,"notes":notes}),
+        json!({"status":"ready","frame":frame,"projection":"sdk-camera","lens_model":lens,"vertices":vertices,"voxel_count":count,"notes":notes}),
     )
 }
 
@@ -427,6 +440,7 @@ pub fn camera_pose_preview_mode(
     overlay: bool,
 ) -> Result<Value> {
     use base64::Engine;
+    validate_camera_sample(source, image, image_output, geometry, geometry_output, calibration)?;
     let update = &geometry.payload;
     update.validate()?;
     let auki_odometry::Tracking::Valid {
@@ -527,4 +541,27 @@ pub fn camera_pose_preview_mode(
         json!({"sequence":image.sequence,"capture_timestamp_ns":image.timestamp_ns,"clock":image_output.clock,"spatial_frame":frame,"calibration":calibration,
         "picking":{"frame":scene.frame,"camera_to_map":optical,"calibration":calibration},"width":image.payload.width,"height":image.payload.height,"encoding":image.payload.encoding,"data":base64::engine::general_purpose::STANDARD.encode(&image.payload.bytes),"ar":ar}),
     )
+}
+
+/// Shared checks for both direct discovered frame chains and legacy mapper AR.
+pub fn validate_camera_sample(
+    source: &ProductReference, image: &auki_components::Observation<auki_components::VideoFrame>,
+    image_output: &auki_components::OutputManifest,
+    geometry: &auki_components::Observation<auki_odometry::PoseUpdate>,
+    geometry_output: &auki_components::OutputManifest, calibration: &Value,
+) -> Result<()> {
+    let update = &geometry.payload;
+    update.validate()?;
+    ensure!(matches!(update.tracking, auki_odometry::Tracking::Valid { .. }), "Camera tracking unavailable");
+    let frame = image_output.spatial_frame.as_ref().ok_or_else(|| anyhow!("Camera optical frame missing"))?;
+    frame.validate().map_err(|e| anyhow!(e))?;
+    ensure!(image_output.peer_id == source.peer_id && geometry_output.peer_id == source.peer_id
+        && image.output == image_output.reference() && geometry.output == geometry_output.reference(), "Camera/geometry owner mismatch");
+    ensure!(update.contract.from_frame == frame.definition
+        && geometry_output.spatial_frame.as_ref().map(|f| &f.definition) == Some(&update.contract.to_frame), "Camera/pose frame mismatch");
+    ensure!(image.timestamp_ns == geometry.timestamp_ns && image_output.clock == geometry_output.clock
+        && update.contract.clock == image_output.clock, "Camera/transform capture time or clock mismatch");
+    ensure!(calibration["width"].as_u64() == Some(image.payload.width as u64)
+        && calibration["height"].as_u64() == Some(image.payload.height as u64), "Calibration dimensions differ from image");
+    Ok(())
 }

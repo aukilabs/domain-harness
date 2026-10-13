@@ -5,6 +5,10 @@ import { createPhoneTrails, cameraShape } from './phone-trails.js';
 import { createSemanticVolumes, legacyVolumesForView } from './semantic-volumes.js';
 import { createMap2D } from './map-2d.js';
 import { createGhostCamera } from './ghost-camera.js';
+import { createNoteBubble } from './note-bubble.js';
+import { createPipWindow } from './pip-window.js';
+import { moveMapCamera } from './view-camera.js';
+import { createAttachedCamera } from './attached-camera.js';
 const $=id=>document.getElementById(id);
 const chatForm=$('scene-chat-form'),chatInput=$('scene-chat-input'),chatStatus=$('scene-chat-status');
 chatForm.querySelector('button').disabled=true;
@@ -14,7 +18,24 @@ function syncChatCompact(){document.querySelector('.scene-chat').classList.toggl
 $('scene-chat-toggle').onclick=()=>{chatCompact=!chatCompact;try{localStorage.setItem('home.chat.compact',String(chatCompact));}catch{}syncChatCompact();};syncChatCompact();
 function renderChat(){const messages=chatConversations.get(activeMap)||[];chatHistory.replaceChildren();chatHistory.hidden=!messages.length;for(const m of messages){const row=document.createElement('div');row.className='scene-chat-message '+m.role;const who=document.createElement('strong');who.textContent=m.role==='user'?'You':'Qwen';const text=document.createElement('div');text.textContent=m.display_content||m.content;row.append(who,text);chatHistory.append(row);}chatHistory.scrollTop=chatHistory.scrollHeight;}
 chatInput.addEventListener('input',()=>{chatForm.querySelector('button').disabled=chatPending||!chatInput.value.trim();});
-chatForm.onsubmit=async e=>{e.preventDefault();if(chatPending||!chatInput.value.trim())return;const map=activeMap,message=chatInput.value.trim();const history=(chatConversations.get(map)||[]).slice(-18);history.push({role:'user',content:message});if(history.reduce((n,m)=>n+m.content.length,0)>32000){chatStatus.textContent='Conversation is too long. Start a shorter conversation.';return;}chatConversations.set(map,history);renderChat();chatPending=true;chatInput.value='';chatForm.querySelector('button').disabled=true;chatStatus.textContent='Qwen is replying locally…';try{const result=await api('/api/chat',{messages:history.map(({role,content})=>({role,content})),scene:map});const changes=(result.changes||[]).map(c=>(c.summary||('Updated '+c.title+' description.'))+'\n'+(typeof c.after==='string'?c.after:c.after?JSON.stringify(c.after,null,2):'Deleted')).join('\n\n');history.push({role:'assistant',content:result.reply,display_content:result.reply+(changes?'\n\n'+changes:'\n\nNo scene changes were saved.')});if(result.changes?.length){lastScene=null;await refresh();}chatStatus.textContent=result.model+(result.changes?.length?' · saved change confirmed by Home':' · no scene changes saved');}catch(error){history.pop();if(activeMap===map&&!chatInput.value)chatInput.value=message;chatStatus.textContent=error.message;}finally{chatPending=false;renderChat();chatForm.querySelector('button').disabled=!chatInput.value.trim();}};
+chatForm.onsubmit=async e=>{
+ e.preventDefault();if(chatPending||!chatInput.value.trim())return;
+ const map=activeMap,message=chatInput.value.trim(),history=(chatConversations.get(map)||[]).slice(-18);
+ history.push({role:'user',content:message});
+ if(history.reduce((n,m)=>n+m.content.length,0)>32000){chatStatus.textContent='Conversation is too long. Start a shorter conversation.';return;}
+ chatConversations.set(map,history);renderChat();chatPending=true;chatInput.value='';chatForm.querySelector('button').disabled=true;chatStatus.textContent='Qwen is replying locally…';
+ try{
+  const result=await api('/api/chat',{messages:history.map(({role,content})=>({role,content})),scene:map});
+  let cameraResult=null;
+  if(result.ui_actions?.length){try{cameraResult=await applyChatCamera(result.ui_actions,map);}catch(error){cameraResult=(result.ui_actions[0]?.type==='open_camera_pip'?'Camera not opened: ':'Map camera not moved: ')+error.message;}}
+  const changes=(result.changes||[]).map(c=>(c.summary||('Updated '+c.title+' description.'))+'\n'+(typeof c.after==='string'?c.after:c.after?JSON.stringify(c.after,null,2):'Deleted')).join('\n\n');
+  const reply=cameraResult||result.reply;
+  history.push({role:'assistant',content:reply,display_content:reply+(changes?'\n\n'+changes:cameraResult?'':'\n\nNo scene changes were saved.')});
+  if(result.changes?.length){lastScene=null;await refresh();}
+  chatStatus.textContent=result.model+(cameraResult?' · '+cameraResult:result.changes?.length?' · saved change confirmed by Home':' · no scene changes saved');
+ }catch(error){history.pop();if(activeMap===map&&!chatInput.value)chatInput.value=message;chatStatus.textContent=error.message;}
+ finally{chatPending=false;renderChat();chatForm.querySelector('button').disabled=!chatInput.value.trim();}
+};
 $('map-select').addEventListener('change',()=>{renderChat();chatStatus.textContent=chatPending?'A local reply is pending for the previous scene…':'Local Qwen · inspect scene and edit volume descriptions';});
 for(const event of ['pointerdown','pointerup','click','dblclick','contextmenu','wheel','keydown','keyup']){
  document.querySelector('.scene-chat').addEventListener(event,e=>e.stopPropagation());
@@ -59,7 +80,7 @@ const camera=new THREE.PerspectiveCamera(42,1,.01,100);
 const renderer=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true});renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.1;
 $('canvas').append(renderer.domElement);renderer.domElement.setAttribute('aria-label','3D voxel map');
 const controls=new OrbitControls(camera,renderer.domElement);controls.enableDamping=true;controls.minDistance=1.2;controls.maxDistance=60;controls.maxPolarAngle=Math.PI*.49;
-const ghostCamera=createGhostCamera({camera,controls,canvas:renderer.domElement,enabled:()=>!map2D.isActive()});
+const ghostCamera=createGhostCamera({camera,controls,canvas:renderer.domElement,enabled:()=>!map2D.isActive(),onMove:()=>{if(attachedCamera.isActive())attachedCamera.detach();}});
 let activeMap='demo',current=null,busy=false,refreshing=false,lastScene=null,selectable=[],selectedNoteId=null,deletingNoteId=null,selectedSpatialNode=null,spatialSignature='';
 let homeOffline=false,catalogInitialized=false;
 function isLocalScene(map=activeMap){return map.startsWith('local:');}
@@ -126,6 +147,11 @@ function domainCenter(){return new THREE.Box3().setFromPoints((current?.portals|
 function fit(){if(current?.simulation){const d=Math.max(12,11/Math.max(camera.aspect,.2));camera.position.set(0,d,d*.4);controls.target.set(0,0,0);}else if(current?.portals.length){const c=domainCenter();const box=new THREE.Box3().setFromPoints(current.portals.map(p=>new THREE.Vector3(...p.pose_in_map.translation)));const size=box.getSize(new THREE.Vector3());const distance=Math.max(size.x/Math.max(camera.aspect,.2),size.z)*1.65+3;camera.position.copy(c).add(new THREE.Vector3(0,distance,distance*.25));controls.target.copy(c);}else{camera.position.set(3.6,3.5,4.6);controls.target.set(0,.5,0);}controls.update();}
 fit();
 const map2D=createMap2D($('canvas'),active=>{controls.enabled=!active;$('top').textContent=active?'3D':'2D';$('top').setAttribute('aria-pressed',String(active));$('top').title=active?'Switch to 3D mode':'Switch to 2D mode';$('top').setAttribute('aria-label',$('top').title);$('canvas').dataset.viewMode=active?'2d':'3d';});
+const attachedCamera=createAttachedCamera({host:$('canvas'),camera,controls,map2D,context:()=>({scene:activeMap,frame:current?.frame}),request:async(action,signal)=>{
+ const q=new URLSearchParams({follow:'true',sensor:action.sensor_id,expected_manifest:action.pose_product.manifest_hash});
+ const response=await fetch('/api/sensors?'+q,{signal});const value=await response.json();if(!response.ok)throw Error(value.error||'Sensor unavailable');return value;
+}});
+for(const id of ['map-select','fit','top','demo-view'])$(id).addEventListener(id==='map-select'?'change':'click',()=>{if(attachedCamera.isActive())attachedCamera.detach();},true);
 $('demo-view').onclick=()=>{camera.position.set(-.5,4.5,5.5);controls.target.set(-3.7,.5,2.1);controls.update();};$('fit').onclick=()=>map2D.isActive()?map2D.fit():fit();$('top').onclick=()=>map2D.toggle();
 scene.add(new THREE.HemisphereLight(0xffffff,0x1a2438,1.7));
 const sun=new THREE.DirectionalLight(0xffffff,2.4);sun.position.set(-3,7,4);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);Object.assign(sun.shadow.camera,{left:-5,right:5,top:5,bottom:-5,near:.1,far:20});sun.shadow.bias=-.0005;scene.add(sun);
@@ -139,7 +165,7 @@ function clear(group){for(const child of [...group.children]){group.remove(child
 function label(text,color='#36594a'){
  const c=document.createElement('canvas');c.width=384;c.height=96;const ctx=c.getContext('2d');ctx.fillStyle='#fcfdf6';ctx.beginPath();ctx.roundRect(4,8,376,76,18);ctx.fill();ctx.font='500 30px system-ui';ctx.textAlign='center';ctx.fillStyle=color;ctx.fillText(text,192,56,356);const tex=new THREE.CanvasTexture(c);tex.colorSpace=THREE.SRGBColorSpace;const sprite=new THREE.Sprite(new THREE.SpriteMaterial({map:tex,depthTest:false}));sprite.scale.set(.65,.1625,1);return sprite;
 }
-const phoneTrails=createPhoneTrails(scene,label,peer=>cameraShape(fleetNetwork?.peers?.find(p=>p.peer_id===peer)?.catalog));
+const phoneTrails=createPhoneTrails(scene,text=>createNoteBubble(text,{peer:true}),peer=>cameraShape(fleetNetwork?.peers?.find(p=>p.peer_id===peer)?.catalog));
 const semanticVolumes=createSemanticVolumes({scene,camera,renderer,controls,panel:panelBodies.volumes,api,label,clear,openPanel,priorityPickObjects:()=>selectable.filter(o=>o.userData.kind==='note')});
 $('map-select').addEventListener('change',()=>semanticVolumes.reset());
 let phonePresenceBusy=false;
@@ -157,7 +183,7 @@ function build(data){
  const first=current===null||current?.frame!==data.frame;data.receivedAt=performance.now();current=data;selectable=[];Object.values(groups).forEach(clear);
  const voxels=new THREE.InstancedMesh(boxGeometry,cubeMaterial,data.voxels.length);voxels.castShadow=true;voxels.receiveShadow=true;
  const matrix=new THREE.Matrix4(),color=new THREE.Color();
- data.voxels.forEach((v,i)=>{const scale=data.voxel_size*.95;matrix.compose(new THREE.Vector3(...v.center),new THREE.Quaternion(...(data.voxel_rotation_xyzw||[0,0,0,1])),new THREE.Vector3(scale,scale,scale));voxels.setMatrixAt(i,matrix);const furnishing=data.synthetic_layout?.boxes.findLast(b=>v.center.every((n,j)=>n>=b.min[j]-.051&&n<=b.max[j]+.051));if(v.linear_rgb){color.setRGB(...v.linear_rgb,THREE.LinearSRGBColorSpace);}else color.set(furnishing?.color||(v.center[1]<0?'#c6cbbb':'#a7b4ac'));voxels.setColorAt(i,color);});
+ data.voxels.forEach((v,i)=>{const scale=data.voxel_size;matrix.compose(new THREE.Vector3(...v.center),new THREE.Quaternion(...(data.voxel_rotation_xyzw||[0,0,0,1])),new THREE.Vector3(scale,scale,scale));voxels.setMatrixAt(i,matrix);const furnishing=data.synthetic_layout?.boxes.findLast(b=>v.center.every((n,j)=>n>=b.min[j]-.051&&n<=b.max[j]+.051));if(v.linear_rgb){color.setRGB(...v.linear_rgb,THREE.LinearSRGBColorSpace);}else color.set(furnishing?.color||(v.center[1]<0?'#c6cbbb':'#a7b4ac'));voxels.setColorAt(i,color);});
  voxels.userData.kind='voxels';groups.voxels.add(voxels);selectable.push(voxels);
  if(data.occupancy_tiles){
   const tiles=new THREE.InstancedMesh(boxGeometry,new THREE.MeshBasicMaterial(),data.occupancy_tiles.length);
@@ -191,7 +217,8 @@ function build(data){
  renderer.domElement.dataset.legacyVolumeCount=String(legacyVolumesForView(data).length);
  for(const note of data.notes||[]){
   if(note.phone_pose)continue;
-  const tag=label(noteTitle(note),'#a12522');tag.position.fromArray(note.position);tag.material.depthWrite=false;tag.material.sizeAttenuation=false;tag.scale.set(.16,.04,1);tag.renderOrder=80;
+  const peer=Boolean(note.robot_pose||note.anchor_robot||note.id?.startsWith('robot-name:')||note.id?.startsWith('phone-name:'));
+  const tag=createNoteBubble(noteTitle(note),{peer});tag.position.fromArray(note.position);
   tag.userData={kind:'note',note};groups.notes.add(tag);selectable.push(tag);
  }
  $('canvas').dataset.noteCount=String((data.notes||[]).length);
@@ -382,7 +409,7 @@ renderer.domElement.addEventListener('pointerup',e=>{
  if(d.kind==='portal'&&(d.portal.anchor_id.length===11||d.portal.anchor_id.startsWith('home:'))){focusPortal(d.portal);return;}
  if(d.kind==='portal')showSelection(`Portal ${d.portal.payload.split(':').at(-1)}`,`${d.portal.side_length_m.toFixed(2)} m encoded size`,'Manually supplied · no backend lookup');
 });
-async function api(path,body,method){if(path==='/api/chat'&&body){camera.updateMatrixWorld();const right=map2D.isActive()?[1,0,0]:new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld,0).toArray();body={...body,viewer:{frame:current?.frame||'',mode:map2D.isActive()?'2d':'3d',screen_right:right,camera_position:camera.position.toArray()}};}const r=await fetch(path,body?{method:method||'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:method?{method}:undefined);const text=await r.text();let result;try{result=JSON.parse(text);}catch{throw new Error(text);}if(!r.ok){const error=new Error(result.error||text);error.status=r.status;throw error;}return result;}
+async function api(path,body,method){if(path==='/api/chat'&&body){camera.updateMatrixWorld();const right=map2D.isActive()?[1,0,0]:new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld,0).toArray();body={...body,viewer:{frame:current?.frame||'',mode:map2D.isActive()?'2d':'3d',screen_right:right,camera_position:camera.position.toArray(),camera_target:controls.target.toArray()}};}const r=await fetch(path,body?{method:method||'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:method?{method}:undefined);const text=await r.text();let result;try{result=JSON.parse(text);}catch{throw new Error(text);}if(!r.ok){const error=new Error(result.error||text);error.status=r.status;throw error;}return result;}
 function peerSceneUrl(map){return '/api/sensors?scene=true&sensor='+encodeURIComponent(map.slice(11));}
 async function refresh(){if(refreshing)return;refreshing=true;refreshPeer();if(!isSimulation())refreshMapping();try{const selected=activeMap;const data=await api(isLocalScene(selected)?localSceneUrl(selected):selected.startsWith('peer-scene:')?peerSceneUrl(selected):selected.startsWith('phone:')?'/api/phone-local-scene?peer='+encodeURIComponent(selected.slice(6)):isSimulation(selected)?'/api/simulation/'+selected.slice(4):selected==='home-live'?'/api/home-live-scene':isRunner(selected)?runnerUrl('/api/runner-scene',selected):selected==='domain'?'/api/domain-scene':'/api/scene');if(selected!==activeMap)return;const content=JSON.stringify({...data,remote_status:undefined});if(content!==lastScene){lastScene=content;build(data);}else {data.receivedAt=performance.now();current=data;}homeOffline=false;renderMapRows();availability.hidden=!(selected==='sim-occupancy'&&data.simulation_status!=='running');if(!availability.hidden)availability.textContent='Retained on Home · robot publishers offline · no new observations';$('connection').textContent='Home Server online';}catch(e){if(!e.status){markOffline();}else{availability.hidden=false;availability.textContent='Scene unavailable · '+e.message;if(activeMap==='sim-voxels'||activeMap.startsWith('peer-scene:')){Object.values(groups).forEach(clear);hideRobots();current=null;lastScene=null;}}$('connection').textContent=e.status?'Home online · scene unavailable':'Home offline';throw e;}finally{refreshing=false;}}
 async function action(fn){if(busy)return;busy=true;document.querySelectorAll('#load,#project,#replay').forEach(b=>b.disabled=true);$('notice').classList.remove('error');$('notice').textContent='Integrating…';try{await fn();await refresh();}catch(e){$('notice').textContent=e.message;$('notice').classList.add('error');}finally{busy=false;$('load').disabled=false;$('project').disabled=!current?.voxels.length;$('replay').disabled=!current?.sources.iphone;}}
@@ -390,7 +417,7 @@ $('load').onclick=()=>action(async()=>{const f=await api('/api/fixtures');for(co
 $('project').onclick=()=>action(async()=>{const f=await api('/api/fixtures');const result=await api('/api/detections',f.detection);$('notice').textContent=result.applied?'Book placed at the first occupied voxel hit.':'This detection is already placed. No duplicate object created.';});
 $('replay').onclick=()=>action(async()=>{const f=await api('/api/fixtures');const r=await api('/api/contributions',f.contributions[0]);$('notice').textContent=r.applied?'Contribution accepted.':'Replay ignored. Voxel evidence and object count are unchanged.';});
 new ResizeObserver(()=>{const {width,height}=$('canvas').getBoundingClientRect();renderer.setSize(width,height);camera.aspect=width/height;camera.updateProjectionMatrix();}).observe($('canvas'));
-renderer.setAnimationLoop(now=>{controls.update();ghostCamera.tick(now);semanticVolumes.tick();if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);renderer.render(scene,camera);});
+renderer.setAnimationLoop(now=>{if(!attachedCamera.isActive())controls.update();ghostCamera.tick(now);semanticVolumes.tick();if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);renderer.render(scene,camera);});
 refresh().catch(e=>{$('notice').textContent=e.message;$('notice').classList.add('error');});setInterval(()=>{if(!busy)refresh().catch(()=>{});},500);
 
 function updatePairingDownload(){const link=$('pairing-download');link.href=isLocalScene()?localSceneUrl()+'/connection':'/api/home-connection';link.download=isLocalScene()?activeMap.slice(6)+'-connection.json':'home-connection.json';link.textContent=isLocalScene()?'Download phone connection for selected scene ↗':'Download Xmart connection ↗';}
@@ -524,8 +551,8 @@ const labelDialog=$('label-dialog'),labelInput=$('label-dialog-text'),labelStatu
 let placement=null,placementGeneration=0,displayedCamera=null,labelFields=null;
 function placementError(message){labelStatus.textContent=message;labelSave.disabled=true;}
 async function beginLabel(request,error){
- if(activeMap.startsWith('peer-scene:')) {availability.hidden=false;availability.textContent='Peer maps are read-only.';return;}
- if(activeMap.startsWith('phone:')) {availability.hidden=false;availability.textContent='Phone-local maps are unaligned and read-only.';return;}
+ if(request?.source!=='camera'&&activeMap.startsWith('peer-scene:')) {availability.hidden=false;availability.textContent='Peer maps are read-only.';return;}
+ if(request?.source!=='camera'&&activeMap.startsWith('phone:')) {availability.hidden=false;availability.textContent='Phone-local maps are unaligned and read-only.';return;}
  const generation=++placementGeneration;placement=null;labelInput.value='';labelInput.disabled=false;labelSave.disabled=true;
  $('label-note-fields').replaceChildren();labelFields=noteFields($('label-note-fields'),null);
  labelStatus.textContent='Finding a surface · 50 cm beam…';if(!labelDialog.open)labelDialog.showModal();
@@ -558,6 +585,7 @@ $('sensor-stage').addEventListener('contextmenu',e=>{e.preventDefault();e.stopPr
 
 // Camera previews are independent of the selected map and never control the robot.
 const sensorSelect=document.querySelector('#sensor-select'),pip=document.querySelector('#sensor-pip'),sensorCanvas=document.querySelector('#sensor-image');
+createPipWindow(pip);
 let sensorGeneration=0,lastSensorSequence=null,lastSensorChange=0;
 const arToggle=$('sensor-ar'),arStatus=$('sensor-ar-status');
 let arOverlay=null,arLastSuccess=0;
@@ -574,6 +602,26 @@ function restartSensor(){
  const generation=++sensorGeneration;displayedCamera=null;lastSensorSequence=null;lastSensorChange=0;hideAr();
  if(arToggle.checked){arStatus.hidden=false;arStatus.textContent='AR · waiting for a matched image and pose…';}
  watchSensor(generation);
+}
+async function applyChatCamera(actions,map){
+ if(actions.length!==1)throw Error('Unsupported camera action');
+ if(activeMap!==map)throw Error('Selected scene changed; ask again in the current scene');
+ if(actions[0].type==='attach_camera')return attachedCamera.attach(actions[0]);
+ if(actions[0].type==='detach_camera'){
+  if(actions[0].scene!==activeMap||actions[0].frame!==current?.frame)throw Error('Selected scene changed; ask again');
+  return attachedCamera.detach();
+ }
+ if(actions[0].type==='move_camera'){const result=moveMapCamera(actions[0],{scene:activeMap,frame:current?.frame,camera,controls,map2D});attachedCamera.detach();return result;}
+ if(actions[0].type!=='open_camera_pip')throw Error('Unsupported camera action');
+ const action=actions[0],catalog=await api('/api/sensors');
+ if(activeMap!==map)throw Error('Selected scene changed; ask again in the current scene');
+ const sensor=catalog.sensors.find(s=>s.id===action.sensor_id&&s.peer_id===action.peer_id);
+ if(!sensor)throw Error('Camera is no longer available');
+ let option=Array.from(sensorSelect.options).find(o=>o.value===sensor.id);
+ if(!option){option=new Option(sensor.label,sensor.id);option.dataset.peer=sensor.peer_id;sensorSelect.append(option);}
+ arAvailable.set(sensor.id,sensor.ar_available===true);
+ if(sensorSelect.value!==sensor.id||pip.hidden){sensorSelect.value=sensor.id;sensorSelect.dispatchEvent(new Event('change'));}
+ return 'Camera PiP opened · waiting for live frames.';
 }
 arToggle.addEventListener('change',restartSensor);
 setInterval(()=>{if(!labelDialog.open&&arToggle.checked&&arLastSuccess&&Date.now()-arLastSuccess>3000){hideAr();arStatus.hidden=false;arStatus.textContent='AR paused · camera frames are stale';}},500);
@@ -610,7 +658,7 @@ async function watchSensor(generation){
     for(let i=0;i<f.width*f.height;i++){image.data[i*4]=bytes[i*channels];image.data[i*4+1]=bytes[i*channels+(channels===3?1:0)];image.data[i*4+2]=bytes[i*channels+(channels===3?2:0)];image.data[i*4+3]=255;}ctx.putImageData(image,0,0);
    }
    displayedCamera={token:f.camera_token,error:f.pick_error,width:f.width,height:f.height,receivedAt:Date.now()};
-   if(arToggle.checked){arOverlay??=createArOverlay($('sensor-ar-overlay'));arOverlay.show(f);arLastSuccess=Date.now();arStatus.textContent=['sdk-camera','sdk-fisheye'].includes(f.ar?.projection)?'AR · Home live voxels + notes · SDK camera projection':'AR · Home live voxels + notes · synchronized mapping camera';}
+   if(arToggle.checked){arOverlay??=createArOverlay($('sensor-ar-overlay'));arOverlay.show(f);arLastSuccess=Date.now();arStatus.textContent=['sdk-camera','sdk-fisheye'].includes(f.ar?.projection)?'AR · Home scene voxels + notes · capture-matched camera':'AR · Home live voxels + notes · synchronized mapping camera';}
    lastSensorSequence=f.sequence;lastSensorChange=Date.now();
   }
   status.textContent=Date.now()-lastSensorChange>3000?'Stale · no new frames':'Receiving · frame '+f.sequence;

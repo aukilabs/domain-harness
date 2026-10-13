@@ -87,9 +87,10 @@ export function createPhoneTrails(scene,makeLabel,shapeOf=()=>null){
    // A sleeping phone keeps its last pose, drawn grey and labelled, until Home drops it.
    const asleep=sample.state==='asleep';
    const geometry=outline(sample.peer_id);
-   if(g&&(g.userData.asleep!==asleep||g.userData.geometry!==geometry)){removeLive(sample.peer_id);g=null;}
+   const name=(sample.name||'Phone')+(asleep?' · asleep':'');
+   if(g&&(g.userData.asleep!==asleep||g.userData.geometry!==geometry||g.userData.name!==name)){removeLive(sample.peer_id);g=null;}
    if(!g){g=new THREE.Group();g.userData.geometry=geometry;g.add(new THREE.LineSegments(geometry,new THREE.LineBasicMaterial({color:asleep?'#9aa3a8':'#76dfff'})));
-    const tag=makeLabel((sample.name||'Phone')+(asleep?' · asleep':''),asleep?'#6b7479':'#167f9c');g.add(tag);g.userData.tag=tag;g.userData.asleep=asleep;group.add(g);live.set(sample.peer_id,g);}
+    const tag=makeLabel(name);g.add(tag);g.userData.tag=tag;g.userData.asleep=asleep;g.userData.name=name;group.add(g);live.set(sample.peer_id,g);}
    place(g,sample.pose);g.userData.received=asleep?now:now-Math.max(0,Number(sample.received_age_ms)||0);
   }
   for(const k of live.keys())if(!active.has(k))removeLive(k);

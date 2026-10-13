@@ -17,7 +17,7 @@ export function lookDirection(forward,dx,dy,sensitivity=.003) {
  const pitch=Math.max(-Math.PI/2+.01,Math.min(Math.PI/2-.01,Math.asin(Math.max(-1,Math.min(1,forward[1])))-dy*sensitivity));
  return [Math.sin(yaw)*Math.cos(pitch),Math.sin(pitch),-Math.cos(yaw)*Math.cos(pitch)];
 }
-export function createGhostCamera({camera,controls,enabled,canvas,host=window,doc=document}) {
+export function createGhostCamera({camera,controls,enabled,canvas,host=window,doc=document,onMove=()=>{}}) {
  const keys=new Set();let last=null;
  const looking=()=>['KeyW','KeyA','KeyS','KeyD'].some(key=>keys.has(key));
  const originalRotate=controls.enableRotate;
@@ -46,6 +46,7 @@ export function createGhostCamera({camera,controls,enabled,canvas,host=window,do
   camera.lookAt(controls.target);
  };
  host.addEventListener('keydown',e=>{
+  if(['KeyW','KeyA','KeyS','KeyD'].includes(e.code)&&enabled()&&!doc.hidden&&!isEditing(doc.activeElement)&&!e.isComposing&&!e.ctrlKey&&!e.metaKey&&!e.altKey&&!e.composedPath?.().some(isEditing))onMove();
   if(blocked(e)){reset();return;}
   if(!['KeyW','KeyA','KeyS','KeyD','KeyQ','KeyE','ShiftLeft','ShiftRight'].includes(e.code))return;
   if(!e.code.startsWith('Shift'))e.preventDefault();keys.add(e.code);syncMode();

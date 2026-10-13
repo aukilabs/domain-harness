@@ -49,7 +49,7 @@ async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated(
     let pair = support::LocalPair::start().await?;
     let result = async {
         let dir = tempfile::tempdir()?;
-        let scenes = Arc::new(LocalScenes::load(dir.path())?);
+        let scenes = Arc::new(support::seeded_local_scenes(dir.path())?);
         let original_nacs = std::fs::read(dir.path().join("nacs.json"))?;
         let original_conference = std::fs::read(dir.path().join("humanoid-hub-conference.json"))?;
         let store = spatial_home::model::Store::open_canonical(dir.path().join("xmart.journal"))?;
@@ -238,6 +238,7 @@ async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated(
             sample: Some(spatial_home::mobile_pose::Sample {
                 session: session.clone(),
                 timestamp_ns: 200,
+                camera_configuration_id:None,
                 pose: rigid(&home_from_session, &camera, &home.frame),
             }),
             status: None,
@@ -257,7 +258,7 @@ async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated(
             publisher.tick()?;
         }
         let mapped = read(&pair.b, &home).await?;
-        assert_eq!(mapped["render"]["integrated_observations"], 1);
+        assert_eq!(mapped["render"]["integrated_observations"], 1, "{mapped}");
         assert_eq!(mapped["render"]["frame"], home.frame);
         assert_eq!(mapped["render"]["semantic_volumes"]["items"][0], serde_json::to_value(&semantic_volume)?);
         let mut phone_volume=semantic_volume.mobile();
@@ -361,6 +362,17 @@ async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated(
             retained["render"]["voxels"], dense_map["render"]["voxels"],
             "no decay when the phone stops publishing"
         );
+        let editor=scenes.note_editors.lock().unwrap()["humanoid-hub-conference"].clone();
+        assert!(!retained["render"]["voxels"].as_array().unwrap().is_empty());
+        editor.reset_mapping(&editor.reference()?)?;
+        assert!(spatial_home::mobile_depth::send(&pair.b,&home,&dense).await.is_err(),"Old calibration cannot repopulate a reset map");
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        for publisher in &mut publishers {publisher.tick()?;}
+        let cleared=read(&pair.b,&home).await?;
+        assert!(cleared["scenegraph"]["anchors"].as_object().unwrap().is_empty());
+        assert!(cleared["render"]["voxels"].as_array().unwrap().is_empty());
+        assert_eq!(cleared["render"]["semantic_volumes"],retained["render"]["semantic_volumes"]);
+        assert_eq!(editor.get_note(&note.id)?,saved);
         drop(publishers);
         server.close().await?;
         // Home retains authored notes across restarts, but does not resurrect a
@@ -394,7 +406,7 @@ async fn phone_reports_a_new_portal_into_the_selected_scene() -> Result<()> {
     let pair = support::LocalPair::start().await?;
     let result = async {
         let dir = tempfile::tempdir()?;
-        let scenes = Arc::new(LocalScenes::load(dir.path())?);
+        let scenes = Arc::new(support::seeded_local_scenes(dir.path())?);
         let store = spatial_home::model::Store::open_canonical(dir.path().join("xmart.journal"))?;
         let mut server = ScenePublisher::mount(&pair.a)?;
         server.publish(&store.built)?;
@@ -436,7 +448,7 @@ async fn phone_reports_a_new_portal_into_the_selected_scene() -> Result<()> {
         let new_code = "NEWPORTAL01";
         let new_in_home = auki_odometry::Pose {
             translation: [2., 0., 1.],
-            ..identity()
+            rotation_xyzw: [5_f64.to_radians().sin(),0.,0.,5_f64.to_radians().cos()],
         };
         let new_in_session = compose(&inverse(&home_from_session)?, &new_in_home)?;
         let new_local = spatial_home::mobile_portal::local_frame(new_code);
@@ -474,6 +486,7 @@ async fn phone_reports_a_new_portal_into_the_selected_scene() -> Result<()> {
             dir.path().join("humanoid-hub-conference.json"),
         )?)?;
         let added = &stored.scenegraph.anchors[new_code];
+        assert!(added.pose_in_map.rotation_wxyz[0].abs()>1.-1e-9,"Home straightens a slightly tilted upright wall Portal");
         assert_eq!(added.side_length_m, 0.15);
         for (got, want) in added.pose_in_map.translation.iter().zip([2., 0., 1.]) {
             assert!((got - want).abs() < 1e-9, "Home composed the new Portal pose");
@@ -509,6 +522,11 @@ async fn phone_reports_a_new_portal_into_the_selected_scene() -> Result<()> {
         moved.portal_to_session = rigid(&new_in_session, &new_local, &session_frame);
         assert!(spatial_home::mobile_portal::send(&pair.b, &home, &moved).await?);
         // Depth calibrated on the new Portal is accepted, and the scene still publishes.
+        // A subsequent clean sighting uses the corrected reference, not the
+        // deliberately tilted placement measurement used above.
+        let new_in_session=compose(&inverse(&home_from_session)?,&auki_odometry::Pose {
+            translation:[2.,0.,1.],..identity()
+        })?;
         let products = spatial_home::mobile_products::MobileProducts::mount(&pair.b)?;
         let phone = spatial_home::mobile_depth::Publisher::new(&products, &session)?;
         let sample = Sample {

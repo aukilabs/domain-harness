@@ -66,6 +66,9 @@ fn lock(state: &Shared) -> Result<std::sync::MutexGuard<'_, Store>, ApiError> {
 
 #[derive(Deserialize)]
 struct PreviewQuery {
+    #[serde(default)]
+    follow: bool,
+    expected_manifest: Option<String>,
     sensor: Option<String>,
     #[serde(default)]
     scene: bool,
@@ -85,6 +88,9 @@ async fn sensor_preview(
             scene: q.scene,
             ar: q.ar,
             pick: q.pick,
+            follow: q.follow,
+            capture: false,
+            expected_manifest: q.expected_manifest,
             reply,
         })
         .map_err(|_| anyhow::anyhow!("Sensor connection unavailable"))?;
@@ -274,7 +280,7 @@ async fn scene_sources(State(s): State<Shared>) -> ApiResult {
     // Catalog listing opens no scene subscriptions or sensor streams.
     status["scenes"] = json!([]);
     let (reply, receive) = tokio::sync::oneshot::channel();
-    if s.previews.try_send(spatial_home::sensor_preview::Request {sensor:None, scene:true, ar:false, pick:false, reply}).is_ok() {
+    if s.previews.try_send(spatial_home::sensor_preview::Request {sensor:None, scene:true, ar:false, pick:false, follow:false, capture:false, expected_manifest:None, reply}).is_ok() {
         if let Ok(Ok(Ok(value))) = tokio::time::timeout(std::time::Duration::from_secs(2), receive).await {
             status["scenes"] = value["scenes"].clone();
         }
@@ -420,7 +426,16 @@ async fn local_snapshot(
     State(s): State<Shared>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> ApiResult {
-    Ok(Json(serde_json::to_value(s.local_scenes.snapshot(&id)?).map_err(anyhow::Error::from)?))
+    let editor=s.local_scenes.note_editors.lock().map_err(|_|anyhow::anyhow!("Scene unavailable"))?.get(&id).cloned();
+    let snapshot=if let Some(editor)=editor{editor.reference()?}else{s.local_scenes.snapshot(&id)?.clone()};
+    Ok(Json(serde_json::to_value(snapshot).map_err(anyhow::Error::from)?))
+}
+// Reset is an explicit, snapshot-checked write, never part of normal startup.
+async fn reset_local_mapping(State(s):State<Shared>,headers:HeaderMap,axum::extract::Path(id):axum::extract::Path<String>,Json(expected):Json<auki_scenegraph::MapSnapshot>)->ApiResult{
+    local_write(&headers)?;
+    expected.validate().map_err(anyhow::Error::from)?;
+    let editor=s.local_scenes.note_editors.lock().map_err(|_|anyhow::anyhow!("Scene unavailable"))?.get(&id).cloned().ok_or_else(||anyhow::anyhow!("Unknown local scene"))?;
+    Ok(Json(editor.reset_mapping(&expected)?))
 }
 async fn delete_note(
     State(s): State<Shared>,
@@ -804,7 +819,15 @@ async fn label_pick(
     Json(request): Json<spatial_home::picking::PickRequest>,
 ) -> ApiResult {
     local_write(&headers)?;
-    if let spatial_home::picking::PickRequest::Scene{frame,origin,direction}=&request {
+    let resolved;
+    let scene_request = match &request {
+        spatial_home::picking::PickRequest::Camera {camera_token,pixel} => {
+            resolved = s.picks.lock().map_err(|_|anyhow::anyhow!("Picking unavailable"))?.camera_ray(camera_token,*pixel)?;
+            &resolved
+        }
+        _ => &request,
+    };
+    if let spatial_home::picking::PickRequest::Scene{frame,origin,direction}=scene_request {
         if let Some(scene)=spatial_home::local_scenes::frame_scene_id(frame) {
             let expected=s.local_scenes.snapshot(scene)?.scenegraph.map.frame.id.clone();
             if *frame!=expected { return Err(ApiError(anyhow::anyhow!("Annotation belongs to another scene"))); }
@@ -819,7 +842,7 @@ async fn label_pick(
             frame,
             origin,
             direction,
-        } = &request
+        } = scene_request
             && frame == spatial_home::model::FRAME
         {
             let (voxels, size) = {
@@ -910,10 +933,32 @@ async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Jso
     }).collect::<Vec<_>>()).unwrap_or_default();
     let mut fresh_volumes=std::collections::BTreeSet::new();
     let mut geometry_points=Vec::<[f64;3]>::new();
-    let result=spatial_home::chatbot::chat(request,|name,mut args| {
+    let mut camera_hits=Vec::<[f64;3]>::new();
+    let result=spatial_home::chatbot::chat_with_camera(request,|name,mut args| {
         #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Get {id:String}
         #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Edit {id:String,expected_description:String,description:String}
         match name {
+            "raycast_peer_camera"=>{
+                let a:spatial_home::scene_geometry::CameraRay=serde_json::from_value(args)?;
+                let view=if scene.starts_with("local:"){s.local_scenes.view(&key)?}else{serde_json::to_value(&lock(&s).map_err(|e|e.0)?.built.view)?};
+                let id=format!("phone-name:{}",a.peer_id);
+                let camera=view["notes"].as_array().and_then(|notes|notes.iter().find(|n|n["id"]==id)).map(|n|&n["phone_pose"]).ok_or_else(||anyhow::anyhow!("Peer camera unavailable"))?;
+                let calibration=if a.pixel.is_some(){Some(spatial_home::mobile_camera::registry_calibration(&s.peer.borrow(),&a.peer_id,camera["camera_configuration_id"].as_str().ok_or_else(||anyhow::anyhow!("Phone has not published a camera registry reference; rebuild phone"))?,camera["pose"]["from_frame_id"].as_str().ok_or_else(||anyhow::anyhow!("Camera frame missing"))?)?)}else{None};
+                let ray=spatial_home::scene_geometry::peer_camera_ray(&view,&a.peer_id,a.pixel,&frame,calibration.as_ref())?;
+                let voxels:Vec<spatial_home::raycast::Voxel>=serde_json::from_value(view["voxels"].clone())?;
+                let size=view["voxel_size"].as_f64().ok_or_else(||anyhow::anyhow!("Scene voxel geometry unavailable"))?;
+                let hit=spatial_home::mobile_notes::intersection(&voxels,size,serde_json::from_value(ray["origin"].clone())?,serde_json::from_value(ray["direction"].clone())?)?;
+                if let Some((hit,floor))=hit {geometry_points.push(hit.position);camera_hits.push(hit.position);Ok(json!({"frame":frame,"peer_id":a.peer_id,"position":hit.position,"hit":{"kind":if floor{"floor"}else{"voxel"},"distance_m":hit.distance},"ray":ray}))}
+                else{Ok(json!({"frame":frame,"peer_id":a.peer_id,"hit":null,"ray":ray,"detail":"No occupied voxel or floor intersection within 40 meters; do not create a note without a hit"}))}
+            },
+            "point_relative_to_peer"=>{
+                #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct PeerPoint {peer_id:String,direction:String,distance_m:f64,#[serde(default)]elevation_y:Option<f64>}
+                let a:PeerPoint=serde_json::from_value(args)?;
+                let view=if scene.starts_with("local:"){s.local_scenes.view(&key)?}else{serde_json::to_value(&lock(&s).map_err(|e|e.0)?.built.view)?};
+                let position=spatial_home::scene_geometry::peer_relative_point(&view,&a.peer_id,&a.direction,a.distance_m,&frame)?;
+                let position=spatial_home::scene_geometry::placement_elevation(position,a.elevation_y,&latest)?;
+                geometry_points.push(position);Ok(json!({"frame":frame,"peer_id":a.peer_id,"position":position}))
+            },
             "get_volume_corners"|"point_inside_volume"|"offset_point"=>{
                 let view=viewer.as_ref().ok_or_else(||anyhow::anyhow!("Captured viewer context missing; refresh Home"))?;
                 anyhow::ensure!(view.frame==frame,"Viewer belongs to another scene");
@@ -939,6 +984,12 @@ async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Jso
                 let edit=spatial_home::scene_tools::NoteEdit::Create{name:a.name,description:a.description,position};
                 if key=="canonical"{let mut store=lock(&s).map_err(|e|e.0)?;let receipt=spatial_home::notes::tool_edit(&mut store,edit)?;s.changes.send_replace(());Ok(receipt)}else{s.local_scenes.note_editors.lock().map_err(|_|anyhow::anyhow!("Scene unavailable"))?.get(&key).cloned().ok_or_else(||anyhow::anyhow!("Scene unavailable"))?.tool_edit(edit)}
             },
+            "inspect_catalog"=>spatial_home::catalog_chat::inspect(&spatial_home::peer_aliases::network(s.peer.borrow().clone())?,args),
+            "open_camera_pip"=>spatial_home::catalog_chat::camera_action(&s.peer.borrow(),args),
+            "move_camera"=>spatial_home::view_camera::action(args,&scene,&frame,viewer.as_ref()),
+            "inspect_sensor_frames"=>spatial_home::view_camera::inspect_frames(&s.peer.borrow(),args),
+            "attach_camera"=>spatial_home::view_camera::attach_action(&s.peer.borrow(),args,&scene,&frame,viewer.as_ref()),
+            "detach_camera"=>{anyhow::ensure!(args==json!({}),"detach_camera takes no arguments");Ok(json!({"type":"detach_camera","scene":scene,"frame":frame}))},
             "set_peer_alias"=>peer_alias_edit(&s,args),
             "create_volume"=>{
                 #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Create {name:String,#[serde(default)]description:String,center:Option<[f64;3]>,size:Option<[f64;3]>,yaw:Option<f64>}
@@ -948,14 +999,17 @@ async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Jso
                 Ok(receipt)
             },
             "create_note_relative_to_view"=>{
+                anyhow::ensure!(!["raycast","looking","pixel"].iter().any(|word|spatial_home::scene_tools::mentions_name(&latest,word)),"Use raycast_peer_camera then create_note for camera surface placement");
                 anyhow::ensure!(!latest.to_lowercase().contains("corner"),"Use create_note_at_volume_corner for corner placement, not a center offset");
-                #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Relative {name:String,description:String,reference_id:String,reference_kind:String,direction:String,distance_m:f64}
-                let a:Relative=serde_json::from_value(args)?;
+                #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Relative {name:String,description:String,reference_id:String,reference_kind:String,direction:String,distance_m:f64,#[serde(default)]elevation_y:Option<f64>}
+                let mut a:Relative=serde_json::from_value(args)?;
+                if let Some(peer)=a.reference_id.strip_prefix("phone-name:").or_else(||a.reference_id.strip_prefix("robot-name:")) {a.reference_id=peer.to_string();a.reference_kind="peer".into();}
                 let instruction=latest.to_lowercase();
                 if instruction.contains("behind") {anyhow::ensure!(a.direction=="behind","The user requested behind, not a sideways placement");}
                 if instruction.contains("in front of") {anyhow::ensure!(a.direction=="in_front","The user requested in front, not a sideways placement");}
                 let v=viewer.as_ref().ok_or_else(||anyhow::anyhow!("Viewer context missing; refresh Home before making a view-relative request"))?;
                 anyhow::ensure!(v.frame==frame,"Viewer belongs to another scene frame");
+                let peer_view=if a.reference_kind=="peer"{Some(if scene.starts_with("local:"){s.local_scenes.view(&key)?}else{serde_json::to_value(&lock(&s).map_err(|e|e.0)?.built.view)?})}else{None};
                 let origin:[f64;3]=match a.reference_kind.as_str(){
                     "peer"=>{let view=if scene.starts_with("local:"){s.local_scenes.view(&key)?}else{serde_json::to_value(&lock(&s).map_err(|e|e.0)?.built.view)?};let phone=format!("phone-name:{}",a.reference_id);let robot=format!("robot-name:{}",a.reference_id);let note=view["notes"].as_array().and_then(|notes|notes.iter().find(|n|n["id"]==phone||n["id"]==robot)).ok_or_else(||anyhow::anyhow!("Peer has no current localized position in the selected scene; cannot place relative to it"))?;serde_json::from_value(note["position"].clone())?},
                     "volume"=>s.local_scenes.volumes.get(&key,&frame)?.items.into_iter().find(|v|v.id==a.reference_id).ok_or_else(||anyhow::anyhow!("Reference volume not found"))?.center,
@@ -965,10 +1019,14 @@ async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Jso
                     "anchor"=>{let view=if scene.starts_with("local:"){s.local_scenes.view(&key)?}else{serde_json::to_value(&lock(&s).map_err(|e|e.0)?.built.view)?};let portal=view["portals"].as_array().and_then(|p|p.iter().find(|p|p["anchor_id"]==a.reference_id)).ok_or_else(||anyhow::anyhow!("Reference anchor not found"))?;serde_json::from_value(portal["pose_in_map"]["translation"].clone())?},
                     _=>anyhow::bail!("Invalid reference kind")
                 };
-                let position=if matches!(a.direction.as_str(),"behind"|"in_front") {
+                let explicit_viewer=["from my perspective","from my viewpoint","from my point of view","from the viewer"].iter().any(|s|instruction.contains(s));
+                let position=if let Some(view)=peer_view.as_ref().filter(|_|!explicit_viewer){
+                    spatial_home::scene_geometry::peer_relative_point(view,&a.reference_id,&a.direction,a.distance_m,&frame)?
+                }else if matches!(a.direction.as_str(),"behind"|"in_front") {
                     anyhow::ensure!(v.mode=="3d","Behind/front is ambiguous in 2D mode; switch to 3D");
                     spatial_home::scene_tools::view_relative_depth(origin,v.camera_position.ok_or_else(||anyhow::anyhow!("Camera position missing; refresh the viewer"))?,&a.direction,a.distance_m)?
                 }else{spatial_home::scene_tools::view_relative_position(origin,v.screen_right,&a.direction,a.distance_m)?};
+                let position=spatial_home::scene_geometry::placement_elevation(position,a.elevation_y,&latest)?;
                 let edit=spatial_home::scene_tools::NoteEdit::Create{name:a.name,description:a.description,position};
                 if key=="canonical"{let mut store=lock(&s).map_err(|e|e.0)?;let receipt=spatial_home::notes::tool_edit(&mut store,edit)?;s.changes.send_replace(());Ok(receipt)}else{s.local_scenes.note_editors.lock().map_err(|_|anyhow::anyhow!("Scene unavailable"))?.get(&key).cloned().ok_or_else(||anyhow::anyhow!("Scene unavailable"))?.tool_edit(edit)}
             },
@@ -986,7 +1044,12 @@ async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Jso
                 let view=if scene.starts_with("local:"){s.local_scenes.view(&key)?}else{serde_json::to_value(&lock(&s).map_err(|e|e.0)?.built.view)?};
                 let notes=view["notes"].as_array().map(|n|n.iter().map(|n|json!({"authored":n["anchor_robot"].is_null()&&!n["id"].as_str().unwrap_or("").starts_with("robot-name:")&&!n["id"].as_str().unwrap_or("").starts_with("phone-name:"),"id":n["id"],"text":n["text"],"position":n["position"],"description":n["details"]["description"]})).collect::<Vec<_>>()).unwrap_or_default();
                 let network=spatial_home::peer_aliases::network(s.peer.borrow().clone())?;
-                let peers=network["peers"].as_array().map(|peers|peers.iter().map(|p|json!({"peer_id":p["peer_id"],"name":p["name"],"alias":p["alias"],"reported_name":p["reported_name"],"status":p["status"]})).collect::<Vec<_>>()).unwrap_or_default();
+                let presence=if scene.starts_with("local:"){s.local_scenes.presence(&key)?}else{lock(&s).map_err(|e|e.0)?.built.registries["mobile_presence"].clone()};
+                let peers=network["peers"].as_array().map(|peers|peers.iter().map(|p|{
+                    let mut peer=json!({"peer_id":p["peer_id"],"name":p["name"],"alias":p["alias"],"reported_name":p["reported_name"],"status":p["status"]});
+                    if let Some(position)=spatial_home::view_camera::peer_position(&presence,p["peer_id"].as_str().unwrap_or(""),&frame){peer["location"]=position;}
+                    peer
+                }).collect::<Vec<_>>()).unwrap_or_default();
                 Ok(json!({"scene":scene,"frame":frame,"notes":notes,"peers":peers,"peer_aliases":network["aliases"],"anchors":view["portals"],"landmarks":view["landmarks"],"semantic_volumes":s.local_scenes.volumes.get(&key,&frame)?}))
             },
             "delete_volume"=>{
@@ -1029,6 +1092,7 @@ async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Jso
             "delete_all_notes"|"create_note"|"delete_note"|"move_note"|"rename_note"|"change_note_description"=>{
                 if name=="delete_all_notes"{anyhow::ensure!(spatial_home::scene_tools::requests_all_note_deletion(&latest),"Bulk deletion requires an explicit request to delete all notes in this scene");}
                 if name=="delete_note"{anyhow::ensure!(!spatial_home::scene_tools::requests_all_note_deletion(&latest),"Use delete_all_notes for all notes, not a single deletion");}
+                if matches!(name,"create_note"|"move_note") && ["raycast","looking","pixel"].iter().any(|word|spatial_home::scene_tools::mentions_name(&latest,word)){let point:[f64;3]=serde_json::from_value(args["position"].clone())?;args["position"]=json!(spatial_home::scene_geometry::resolve_calculated_point(point,&camera_hits)?);}
                 if matches!(name,"create_note"|"move_note") && ["corner","inside","closer","toward","towards","away"].iter().any(|word|spatial_home::scene_tools::mentions_name(&latest,word)){let point:[f64;3]=serde_json::from_value(args["position"].clone())?;args["position"]=json!(spatial_home::scene_geometry::resolve_calculated_point(point,&geometry_points)?);}
                 let edit=spatial_home::scene_tools::decode(name,args)?;
                 let receipt=if key=="canonical"{
@@ -1044,6 +1108,9 @@ async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Jso
             },
             _=>anyhow::bail!("Unknown scene tool"),
         }
+    },|args| {
+        let network=s.peer.borrow().clone();let tx=s.previews.clone();
+        async move {spatial_home::camera_vision::capture(&tx,&network,args).await}
     }).await?;
     Ok(Json(result))
 }
@@ -1277,6 +1344,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/semantic-volumes.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/semantic-volumes.js")) }))
         .route("/map-2d.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/map-2d.js")) }))
         .route("/ghost-camera.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/ghost-camera.js")) }))
+        .route("/note-bubble.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/note-bubble.js")) }))
+        .route("/pip-window.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/pip-window.js")) }))
+        .route("/view-camera.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/view-camera.js")) }))
+        .route("/attached-camera.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/attached-camera.js")) }))
         .route("/api/notes", post(add_note))
         .route("/api/notes/{id}", delete(delete_note).patch(rename_note))
         .route("/api/label-pick", post(label_pick))
@@ -1289,6 +1360,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/scene-sources", get(scene_sources))
         .route("/api/local-scenes/{id}", get(local_scene))
         .route("/api/local-scenes/{id}/snapshot", get(local_snapshot))
+        .route("/api/local-scenes/{id}/reset-mapping", post(reset_local_mapping))
         .route("/api/local-scenes/{id}/presence", get(local_presence))
         .route("/api/phone-local-scene", get(phone_local_scene))
         .route("/api/domain-scene", get(domain_scene))

@@ -79,6 +79,18 @@ async fn phone_local_depth_reaches_home_and_is_transformed_once() -> Result<()> 
         let publisher = Publisher::new(&products, &session)?;
         let packet = sample(&canonical, &session)?;
         let envelope = publisher.publish(packet.clone())?;
+        // Localization must preserve all received measurements, even above the
+        // raycaster's point/work limits. Surface and free-space budgets differ.
+        let mut dense = packet.clone();
+        dense.points = (0..2048).map(|i| [i as f64 / 1000., 0., -4.]).collect();
+        dense.colors = Some((0..2048).map(|i| [i as u8, 40, 80]).collect());
+        let mut dense_envelope = envelope.clone();
+        dense_envelope.sample = dense.clone();
+        let localized = spatial_home::mobile_depth::localize(
+            dense_envelope, &canonical, store.built.voxels.definition.portal_snapshot.clone(), FRAME,
+        )?;
+        assert_eq!(localized.observation.hit_points_m, dense.points);
+        assert_eq!(localized.colors, dense.colors.unwrap().into_iter().map(Some).collect::<Vec<_>>());
         assert_eq!(
             envelope.sample.points,
             vec![[0., 0., -1.]],

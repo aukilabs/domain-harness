@@ -16,6 +16,27 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 pub const ORIGIN_PORTAL: &str = "UCOF1J40N7O";
+pub const HOME_VOXEL_SIZE: f64 = 0.1;
+
+/// Preserve the full capture for surface voxelization; only this copy is thinned
+/// for the SDK's bounded free-space traversal. No untraced ray implies free space.
+fn bounded_rays(observation: &DepthObservation) -> Result<DepthObservation> {
+    let points = &observation.hit_points_m;
+    ensure!(!points.is_empty() && points.len() <= 2048, "Invalid surface point count");
+    let mut max_steps = 1;
+    for p in points {
+        let range = p[0].hypot(p[1]).hypot(p[2]);
+        ensure!(p.iter().all(|v| v.is_finite()) && range > 0. && range <= 100.,
+            "Invalid surface point range");
+        max_steps = max_steps.max(3 * (range / HOME_VOXEL_SIZE).ceil() as usize + 3);
+    }
+    let count = points.len().min(auki_voxel_map::MAX_POINTS)
+        .min(auki_voxel_map::MAX_RAY_SAMPLES / max_steps);
+    ensure!(count > 0, "Depth capture exceeds ray work budget");
+    let mut rays = observation.clone();
+    rays.hit_points_m = (0..count).map(|i| points[i * points.len() / count]).collect();
+    Ok(rays)
+}
 /// Produced inside Home after capture-time localization in the measured portal
 /// basis. Source Product, sequence and capture clock retain the robot identity.
 #[derive(Clone)]
@@ -88,20 +109,7 @@ impl CollaborativeMap {
                 == Some(reference.scenegraph.map.map_id.as_str()),
             "Independent scene identity mismatch"
         );
-        let origin = frame.split_once(":portal-").unwrap().1;
-        let anchor = reference
-            .scenegraph
-            .anchors
-            .get(origin)
-            .ok_or_else(|| anyhow::anyhow!("Scene origin Portal missing"))?;
-        ensure!(
-            anchor
-                .pose_in_map
-                .translation
-                .iter()
-                .all(|v| v.abs() < 1e-8),
-            "Scene origin must be at zero"
-        );
+        let origin = crate::scene_origin::portal(reference)?.unwrap_or("");
         let mut map = Self::create(
             owner,
             session,
@@ -262,7 +270,7 @@ impl CollaborativeMap {
                 o.source.clone(),
                 scan.binding.sensor_frame.clone(),
                 o.clock.clone(),
-                0.1,
+                HOME_VOXEL_SIZE,
             )?;
             crate::voxel_color::enable(&mut definition);
             VoxelSnapshot {
@@ -295,9 +303,12 @@ impl CollaborativeMap {
         o.pose.portal_snapshot = saved.definition.portal_snapshot.clone();
         let p = from_rigid(&o.pose.sensor_to_map);
         let transform = spatial(&p);
-        let mut rays = PortalVoxelMapper::new(saved.definition.clone())?.map_observation(&o)?;
-        crate::voxel_color::add(&mut rays, &o.hit_points_m, &scan.colors, &transform, 0.1)?;
-        let endpoints = auki_mappers::Voxelizer::new(0.1, 16)?.map_sensor_points(
+        let mut rays = PortalVoxelMapper::new(saved.definition.clone())?.map_observation(&bounded_rays(&o)?)?;
+        // Colors and endpoints use the complete capture, including measurements
+        // omitted from free-space tracing. RecentVoxels gives hits precedence
+        // over crossing free rays and counts each cell once per capture.
+        crate::voxel_color::add(&mut rays, &o.hit_points_m, &scan.colors, &transform, HOME_VOXEL_SIZE)?;
+        let endpoints = auki_mappers::Voxelizer::new(HOME_VOXEL_SIZE, 16)?.map_sensor_points(
             o.hit_points_m.iter().map(|p| auki_datatypes::pose::Vec3 {
                 x: p[0],
                 y: p[1],

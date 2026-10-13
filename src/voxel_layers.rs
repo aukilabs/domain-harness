@@ -80,10 +80,8 @@ impl Layer {
 }
 pub fn split(snapshot: &VoxelSnapshot) -> Result<[Layer; 2]> {
     let d = &snapshot.definition;
-    ensure!(
-        (d.grid().voxel_size_m.0 - 0.1).abs() < 1e-9,
-        "layers require 10 cm voxels"
-    );
+    let resolution = d.grid().voxel_size_m.0;
+    ensure!(resolution.is_finite() && resolution>0., "invalid voxel resolution");
     snapshot.accumulator()?; // Validate coordinates, finite evidence and provenance.
     // The SDK's surface viewer intentionally omits free evidence at every
     // threshold. Read the validated checkpoint rather than that render view.
@@ -106,13 +104,15 @@ pub fn split(snapshot: &VoxelSnapshot) -> Result<[Layer; 2]> {
             }
             let layer = usize::from(v.occupancy_evidence < 0.);
             cells[layer]
-                .entry(index.map(|x| x.div_euclid(20)))
+                // Retrieval cells remain two metres even when their edges do
+                // not coincide with voxel edges. Assign by voxel center.
+                .entry(index.map(|x| (((f64::from(x)+0.5)*resolution)/2.).floor() as i32))
                 .or_default()
                 .push(Sample {
                     index,
                     voxel: crate::raycast::Voxel {
                         center: std::array::from_fn(|i| {
-                            (f64::from(index[i]) + 0.5) * 0.1 + d.grid_origin_m[i]
+                            (f64::from(index[i]) + 0.5) * resolution + d.grid_origin_m[i]
                         }),
                         evidence: v.occupancy_evidence,
                         linear_rgb: if layer == 0 {
@@ -132,7 +132,7 @@ pub fn split(snapshot: &VoxelSnapshot) -> Result<[Layer; 2]> {
         kind: Kind::Occupied,
         frame: d.frame.clone(),
         grid_origin_m: d.grid_origin_m,
-        resolution_m: 0.1,
+        resolution_m: resolution,
         cell_size_m: 2.,
         requested_cells: None,
         cells: cells
@@ -236,6 +236,11 @@ impl Publisher {
             self.capture.errors().is_empty(),
             "voxel layer retention failed"
         );
+        Ok(())
+    }
+    pub fn clear(&self,timestamp:u64)->Result<()> {
+        let previous=self.served.lock().map_err(|_|anyhow::anyhow!("voxel layer unavailable"))?.clone();
+        if let Some(mut layer)=previous {layer.cells.clear();layer.requested_cells=None;self.publish(timestamp,layer)?;}
         Ok(())
     }
 }

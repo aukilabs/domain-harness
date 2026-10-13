@@ -58,6 +58,21 @@ pub unsafe extern "C" fn spatial_mobile_report_portal(report: *const c_char) -> 
 }
 
 /// Advertise camera availability while scanning and query SDK subscription demand.
+/// Queue an unlocalized first-Portal measurement against the exact empty scene
+/// the UI captured. The bridge supplies the full authenticated SDK snapshot.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spatial_mobile_report_origin(raw:*const c_char)->i32 {
+    std::panic::catch_unwind(||{
+        if raw.is_null(){return 0;}
+        let bytes=unsafe{CStr::from_ptr(raw)}.to_bytes();if bytes.len()>8192{return 0;}
+        let Ok(m)=serde_json::from_slice::<spatial_home::scene_origin::PhoneMeasurement>(bytes) else{return 0};
+        let client=CLIENT.lock().unwrap_or_else(|e|e.into_inner());let Some(client)=client.as_ref() else{return 0};
+        let Ok(reference)=client.origin_reference() else{return 0};
+        if reference.scenegraph.map.frame.id!=m.expected_frame || reference.scenegraph.map.frame.origin_description!=m.expected_origin_description{return 0;}
+        i32::from(client.report_origin(spatial_home::scene_origin::Observation{expected_scene:reference,code:m.code,side_length_m:m.side_length_m,timestamp_ns:m.timestamp_ns,portal_to_native:m.portal_to_native}))
+    }).unwrap_or(0)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn spatial_mobile_camera_demand(active: i32) -> i32 {
     CLIENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
@@ -139,7 +154,7 @@ pub unsafe extern "C" fn spatial_mobile_calibrate(luma: *const u8, length: usize
         let parsed = serde_json::from_slice::<spatial_home::mobile_calibration::Capture>(metadata);
         let report = match parsed {
             Ok(c) => spatial_home::mobile_calibration::detect(unsafe { std::slice::from_raw_parts(luma, length) }, &c)
-                .map(|r| serde_json::to_value(r).unwrap()).unwrap_or_else(|e| serde_json::json!({"detail":format!("Calibration unavailable: {e}"),"alignment":null})),
+                .map(|r| {if let Some(observation)=&r.origin_observation {if let Some(client)=CLIENT.lock().unwrap_or_else(|e|e.into_inner()).as_ref(){client.report_origin(observation.clone());}} serde_json::to_value(r).unwrap()}).unwrap_or_else(|e| serde_json::json!({"detail":format!("Calibration unavailable: {e}"),"alignment":null})),
             Err(_) => serde_json::json!({"detail":"Invalid calibration capture","alignment":null}),
         };
         CString::new(report.to_string()).map_or(std::ptr::null_mut(), CString::into_raw)
@@ -327,6 +342,15 @@ pub unsafe extern "C" fn spatial_mobile_pose(value: *const c_char) {
             client.update_pose(sample);
         }
     });
+}
+/// # Safety
+/// Configuration must be a NUL-terminated UTF-8 JSON string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spatial_mobile_configure_camera(value:*const c_char){
+ let _=std::panic::catch_unwind(||{
+  if value.is_null(){return;}let bytes=unsafe{CStr::from_ptr(value)}.to_bytes();if bytes.len()>4096{return;}
+  if let Ok(config)=serde_json::from_slice(bytes){if let Some(client)=CLIENT.lock().unwrap_or_else(|e|e.into_inner()).as_ref(){let _=client.configure_camera(config);}}
+ });
 }
 
 /// Set the name Home shows for this phone. Null or empty leaves it unchanged.

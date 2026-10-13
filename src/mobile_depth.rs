@@ -186,31 +186,16 @@ pub fn localize(
         portal,
     )?;
     let camera_in_shared = compose(&origin.odometry_to_local, &from_rigid(&s.camera_to_session))?;
-    // The transport accepts more points than the SDK raycaster's work budget.
-    // Select real measurements evenly across the full capture; preserve their
-    // coordinates, timestamp and source. Unselected rays do not imply free space.
-    let max_ray_steps = s
-        .points
-        .iter()
-        .map(|p| 3 * (p[0].hypot(p[1]).hypot(p[2]) / 0.1).ceil() as usize + 3)
-        .max()
-        .unwrap_or(1);
-    let count = s
-        .points
-        .len()
-        .min(auki_voxel_map::MAX_POINTS)
-        .min(auki_voxel_map::MAX_RAY_SAMPLES / max_ray_steps);
-    ensure!(count > 0, "Depth capture exceeds ray work budget");
-    let points: Vec<_> = (0..count)
-        .map(|i| s.points[i * s.points.len() / count])
-        .collect();
+    // Preserve every measured endpoint and its color. Home independently bounds
+    // free-space ray tracing; that budget must not thin the observed surface.
+    let colors = (0..s.points.len()).map(|i| s.colors.as_ref().map(|c| c[i])).collect();
     let observation = auki_voxel_map::DepthObservation {
         source: e.source.clone(),
         sequence: e.sequence,
         timestamp_ns: s.timestamp_ns,
         clock: clock.clone(),
         sensor_frame_id: e.sensor_frame.frame_id.clone(),
-        hit_points_m: points,
+        hit_points_m: s.points,
         pose: auki_voxel_map::TimedSensorPose {
             timestamp_ns: s.timestamp_ns,
             clock: clock.clone(),
@@ -225,10 +210,7 @@ pub fn localize(
             sensor_frame: e.sensor_frame,
             observation_clock: clock,
         },
-        // Colors follow the exact same even selection as their points.
-        colors: (0..count)
-            .map(|i| s.colors.as_ref().map(|c| c[i * s.points.len() / count]))
-            .collect(),
+        colors,
         origin,
     })
 }

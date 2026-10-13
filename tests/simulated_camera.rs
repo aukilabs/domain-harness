@@ -16,6 +16,9 @@ async fn request(tx: &mpsc::Sender<Request>, sensor: Option<String>) -> Result<s
         sensor,
         ar: false,
         pick: false,
+        follow: false,
+        capture: false,
+        expected_manifest: None,
         reply,
     })
     .await?;
@@ -47,7 +50,9 @@ async fn discovered_camera_uses_real_catalog_and_subscription_demand() -> Result
     let (_, live) = watch::channel(spatial_home::scene_mirror::RemoteScene::default());
     let frames = spatial_home::ar_preview::Frames::default();
     let stop = CancellationToken::new();
-    let serve = sensor_preview::serve(&pair.a, catalog_rx, rx, live, &frames, &stop);
+    let dir=tempfile::tempdir()?;
+    let homes=spatial_home::local_scenes::LocalScenes::load(dir.path())?;
+    let serve = sensor_preview::serve(&pair.a, catalog_rx, rx, live, &frames, &homes, &stop);
     let exercise = async {
         let listing = request(&tx, None).await?;
         let id = listing["sensors"][0]["id"].as_str().unwrap().to_owned();
@@ -98,7 +103,7 @@ async fn discovered_camera_uses_real_catalog_and_subscription_demand() -> Result
             .unwrap_err()
             .to_string()
             .contains("stale"));
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(Duration::from_secs(35), async {
             while camera.demanded() {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }

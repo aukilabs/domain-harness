@@ -9,6 +9,7 @@ use spatial_home::{
 
 fn sample(session: &str, timestamp_ns: u64, x: f64) -> Sample {
     Sample {
+        camera_configuration_id: None,
         session: session.into(),
         timestamp_ns,
         pose: auki_scenegraph::RigidTransform {

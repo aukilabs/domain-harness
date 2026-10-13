@@ -3,7 +3,7 @@
 async fn geometry_inset_and_toward_viewer_feed_move_note()->anyhow::Result<()> {
  use serde_json::json;use spatial_home::{scene_geometry,semantic_volumes::Volume,chatbot::Viewer};
  let volume=Volume{id:"office-id".into(),title:"office".into(),description:"".into(),semantic_type:"region".into(),center:[0.,1.,0.],size:[10.,2.,10.],yaw:0.};
- let viewer=Viewer{frame:"frame".into(),mode:"3d".into(),screen_right:[1.,0.,0.],camera_position:Some([5.,2.,5.])};
+ let viewer=Viewer{frame:"frame".into(),mode:"3d".into(),screen_right:[1.,0.,0.],camera_position:Some([5.,2.,5.]),camera_target:None};
  for instruction in ["move the fancy car note one meter inside the farthest corner of the office","move the fancy car note one meter closer to me while staying on the ground"]{
   let note=json!({"id":"car-id","name":"fancy car","text":"fancy car","position":[0,0,0],"description":"keep this"});let mut calculated=None::<serde_json::Value>;let mut moved=false;
   let result=spatial_home::chatbot::chat(spatial_home::chatbot::Request{viewer:Some(viewer.clone()),scene:"local:synthetic".into(),messages:vec![spatial_home::chatbot::Message{role:"user".into(),content:instruction.into()}]},|name,args|match name{
@@ -58,6 +58,17 @@ async fn local_model_places_note_in_far_corner_without_questions()->anyhow::Resu
   "create_note"=>{anyhow::ensure!(args["name"]=="test"&&args["position"]==json!([-5,0,-5]),"Wrong placement: {args}");created=true;Ok(json!({"summary":"Created note test.","after":{"position":[-5,0,-5]}}))},
   _=>anyhow::bail!("Query corners then create_note"),
  }).await?;assert!(created,"{result}");Ok(())
+}
+#[tokio::test]
+#[ignore = "requires local Ollama with configured Qwen model"]
+async fn local_model_names_peer_without_alias_jargon()->anyhow::Result<()> {
+ use serde_json::json;let mut saved=false;
+ let peer="12D3KooWHH5M8E69fZTMdutjqq4ektFHqnswvNiUrk6hTtaamwtL";
+ let result=spatial_home::chatbot::chat(spatial_home::chatbot::Request{viewer:None,scene:"local:synthetic".into(),messages:vec![spatial_home::chatbot::Message{role:"user".into(),content:format!("I want to name the peer {peer} \"stevie\"")}]},|name,args|match name {
+  "inspect_scenegraph"=>Ok(json!({"peers":[{"peer_id":peer,"status":"connected"}],"peer_aliases":{},"notes":[],"semantic_volumes":{"items":[]}})),
+  "set_peer_alias"=>{anyhow::ensure!(args["peer_id"]==peer&&args["alias"]=="stevie","Wrong peer or alias: {args}");saved=true;Ok(json!({"summary":"Named peer stevie."}))},
+  _=>anyhow::bail!("Use set_peer_alias with the exact peer ID and requested alias"),
+ }).await?;assert!(saved,"{result}");assert_eq!(result["changes"].as_array().unwrap().len(),1);Ok(())
 }
 #[tokio::test]
 #[ignore = "requires local Ollama with configured Qwen model"]
@@ -211,4 +222,94 @@ async fn floor_placement_is_absolute_not_a_relative_lowering()->anyhow::Result<(
    _=>anyhow::bail!("Use absolute floor placement, not relative move or note creation"),
   }
  }).await?;assert!(wrote,"{result}");Ok(())
+}
+#[tokio::test]
+#[ignore = "requires local Ollama with configured Qwen model"]
+async fn camera_raycast_then_create_note()->anyhow::Result<()> {
+ use serde_json::json;
+ for instruction in ["Place a note called camera test where Dan's phone is looking", "Place a note called camera test by raycasting pixel 320,400 in Dan's camera space"] {
+  let mut queried=false;let mut created=false;
+  let result=spatial_home::chatbot::chat(spatial_home::chatbot::Request{viewer:None,scene:"local:synthetic".into(),messages:vec![spatial_home::chatbot::Message{role:"user".into(),content:instruction.into()}]},|name,args|match name {
+   "inspect_scenegraph"=>Ok(json!({"peers":[{"peer_id":"dan-peer","name":"Dan"}],"peer_aliases":{"dan-peer":"Dan"},"notes":[],"semantic_volumes":{"items":[]}})),
+   "raycast_peer_camera"=>{anyhow::ensure!(args["peer_id"]=="dan-peer","Wrong peer");if instruction.contains("pixel"){anyhow::ensure!(args["pixel"]==json!([320,400]),"Wrong pixel");}else{anyhow::ensure!(args["pixel"].is_null(),"Expected optical axis");}queried=true;Ok(json!({"frame":"frame","position":[2,0,-4],"hit":{"kind":"floor","distance_m":4}}))},
+   "create_note"=>{anyhow::ensure!(queried&&args["position"]==json!([2,0,-4]),"Must use raycast hit");created=true;Ok(json!({"summary":"Created note camera test.","after":{"position":[2,0,-4]}}))},
+   _=>anyhow::bail!("Raycast then create_note"),
+  }).await?;assert!(queried&&created,"{result}");
+ }Ok(())
+}
+#[tokio::test]
+#[ignore = "requires local Ollama with configured Qwen model"]
+async fn local_model_moves_view_camera_without_scene_edits()->anyhow::Result<()> {
+ use serde_json::json;
+ let viewer:spatial_home::chatbot::Viewer=serde_json::from_value(json!({"frame":"synthetic-frame","mode":"3d","screen_right":[1,0,0],"camera_position":[3,4,5],"camera_target":[0,0,0]}))?;
+ let result=spatial_home::chatbot::chat(spatial_home::chatbot::Request{
+  viewer:Some(viewer.clone()),scene:"local:synthetic".into(),messages:vec![spatial_home::chatbot::Message{role:"user".into(),content:"Move the map camera to [2,3,4] looking at [0,1,0].".into()}]
+ },|name,args|match name {
+  "inspect_scenegraph"=>Ok(json!({"notes":[],"semantic_volumes":{"items":[]}})),
+  "move_camera"=>{let position:[f64;3]=serde_json::from_value(args["position"].clone())?;let target:[f64;3]=serde_json::from_value(args["look_at"].clone())?;anyhow::ensure!(position==[2.,3.,4.]&&target==[0.,1.,0.],"Wrong view: {args}");spatial_home::view_camera::action(args,"local:synthetic","synthetic-frame",Some(&viewer))},
+  _=>anyhow::bail!("Only a browser-local camera move is authorized"),
+ }).await?;
+ assert_eq!(result["changes"],json!([]));
+ assert_eq!(result["ui_actions"][0]["type"],"move_camera","{result}");
+ Ok(())
+}
+#[tokio::test]
+#[ignore = "requires local Ollama with configured Qwen model"]
+async fn local_model_attaches_sensor_view_camera()->anyhow::Result<()> {
+ use serde_json::json;
+ let viewer=serde_json::from_value(json!({"frame":"home-frame","mode":"3d","screen_right":[1,0,0],"camera_position":[3,4,5],"camera_target":[0,0,0]}))?;
+ let mut inspected=false;
+ let result=spatial_home::chatbot::chat(spatial_home::chatbot::Request{viewer:Some(viewer),scene:"local:home".into(),messages:vec![spatial_home::chatbot::Message{role:"user".into(),content:"Attach the map camera to Dan's Phone so I see the world from its POV.".into()}]},|name,args|match name {
+  "inspect_scenegraph"=>Ok(json!({"notes":[],"semantic_volumes":{"items":[]},"peers":[{"peer_id":"phone-peer"}],"peer_aliases":{"phone-peer":"Dan's Phone"}})),
+  "inspect_catalog"=>Ok(json!({"section":"peers","page":{"items":[{"peer_id":"phone-peer","alias":"Dan's Phone","catalog_status":"ready"}],"next_offset":null}})),
+  "inspect_sensor_frames"=>{anyhow::ensure!(args["peer_id"]=="phone-peer","Wrong peer");inspected=true;Ok(json!({"frames":[{"peer_id":"phone-peer","frame_id":"phone-camera-optical","pose_product":{"product_id":"camera-pose-history"}},{"peer_id":"phone-peer","frame_id":"phone-body","pose_product":{"product_id":"body-pose-history"}}]}))},
+  "attach_camera"=>{anyhow::ensure!(inspected&&args["peer_id"]=="phone-peer"&&args["frame_id"]=="phone-camera-optical","Wrong attachment: {args}");Ok(json!({"type":"attach_camera","scene":"local:home","frame":"home-frame","peer_id":"phone-peer","frame_id":"phone-camera-optical"}))},
+  _=>anyhow::bail!("Use sensor pose attachment, not video, hardware commands or scene edits"),
+ }).await?;
+ assert_eq!(result["ui_actions"][0]["type"],"attach_camera","{result}");assert_eq!(result["changes"],json!([]));Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires local Ollama with configured Qwen model"]
+async fn local_model_where_is_reveals_note_without_moving_it()->anyhow::Result<()> {
+ use serde_json::json;
+ let viewer:spatial_home::chatbot::Viewer=serde_json::from_value(json!({"frame":"home-frame","mode":"3d","screen_right":[1,0,0],"camera_position":[3,4,5],"camera_target":[0,0,0]}))?;
+ let mut read=false;
+ let result=spatial_home::chatbot::chat(spatial_home::chatbot::Request{viewer:Some(viewer.clone()),scene:"local:home".into(),messages:vec![spatial_home::chatbot::Message{role:"user".into(),content:"Where is this is dan?".into()}]},|name,args|match name {
+  "inspect_scenegraph"=>Ok(json!({"notes":[{"id":"dan-note","name":"this is dan","text":"this is dan","authored":true}],"semantic_volumes":{"items":[]}})),
+  "get_note"=>{anyhow::ensure!(args["id"]=="dan-note","Wrong note: {args}");read=true;Ok(json!({"id":"dan-note","text":"this is dan","position":[8,1,-3],"authored":true}))},
+  "move_camera"=>{anyhow::ensure!(read,"Must read actual target position");let target:[f64;3]=serde_json::from_value(args["look_at"].clone())?;let p:[f64;3]=serde_json::from_value(args["position"].clone())?;
+   anyhow::ensure!(target==[8.,1.,-3.],"Must aim at the note: {args}");let distance=p.iter().zip(target).map(|(a,b)|(a-b).powi(2)).sum::<f64>().sqrt();anyhow::ensure!((1.0..=12.).contains(&distance)&&p[1]>target[1],"Expected a useful elevated view: {args}");
+   spatial_home::view_camera::action(args,"local:home","home-frame",Some(&viewer))},
+  _=>anyhow::bail!("Only read target and move browser viewpoint, not scene edits or video"),
+ }).await?;
+ assert_eq!(result["ui_actions"][0]["type"],"move_camera","{result}");assert_eq!(result["changes"],json!([]));Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires local Ollama with configured vision Qwen model"]
+async fn local_model_describes_selected_camera_image()->anyhow::Result<()> {
+ use serde_json::json;
+ let mut captured=false;
+ let image=spatial_home::camera_vision::encode(&auki_components::VideoFrame{width:128,height:128,encoding:"rgb8".into(),bytes:vec![255,0,0].repeat(128*128).into()})?;
+ let result=spatial_home::chatbot::chat_with_camera(spatial_home::chatbot::Request{viewer:None,scene:"local:home".into(),messages:vec![spatial_home::chatbot::Message{role:"user".into(),content:"Describe what Steve 182's left wrist camera is looking at.".into()}]},|name,args|match name {
+  "inspect_scenegraph"=>Ok(json!({"notes":[],"semantic_volumes":{"items":[]},"peers":[],"peer_aliases":{"robot-peer":"Steve 182"}})),
+  "inspect_catalog"=>if args["peer_id"].is_null(){Ok(json!({"section":"peers","page":{"items":[{"peer_id":"robot-peer","alias":"Steve 182","catalog_status":"ready"}],"next_offset":null}}))}else{anyhow::ensure!(args["peer_id"]=="robot-peer","Wrong peer");Ok(json!({"section":"products","available":true,"page":{"items":[{"manifest":{"product_id":"camera.wrist.left","payload":"VideoFrame"}},{"manifest":{"product_id":"camera.wrist.right","payload":"VideoFrame"}}],"next_offset":null}}))},
+  _=>anyhow::bail!("Descriptions must not open PiP, raycast, edit scenes or move cameras"),
+ },|args|{captured=true;let image=image.clone();async move {anyhow::ensure!(args["peer_id"]=="robot-peer"&&args["product_id"]=="camera.wrist.left","Wrong camera: {args}");Ok(json!({"image":image,"peer_id":"robot-peer","product":{"product_id":"camera.wrist.left"},"capture_timestamp_ns":100}))}}).await?;
+ assert!(captured,"{result}");assert!(result["reply"].as_str().unwrap().to_lowercase().contains("red"),"Must actually see the red image: {result}");
+ assert_eq!(result["changes"],json!([]));assert!(result.get("ui_actions").is_none());assert!(result["camera_frame"].get("image").is_none());Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires local Ollama with configured Qwen model"]
+async fn local_model_where_is_phone_uses_live_position_not_attachment()->anyhow::Result<()> {
+ use serde_json::json;
+ let viewer:spatial_home::chatbot::Viewer=serde_json::from_value(json!({"frame":"home-frame","mode":"3d","screen_right":[1,0,0],"camera_position":[3,4,5],"camera_target":[0,0,0]}))?;
+ let result=spatial_home::chatbot::chat(spatial_home::chatbot::Request{viewer:Some(viewer.clone()),scene:"local:home".into(),messages:vec![spatial_home::chatbot::Message{role:"user".into(),content:"Where is Dan's Phone?".into()}]},|name,args|match name{
+  "inspect_scenegraph"=>Ok(json!({"notes":[],"semantic_volumes":{"items":[]},"peers":[{"peer_id":"phone","alias":"Dan's Phone","status":"connected","location":{"position":[8,1,-3],"frame":"home-frame","received_age_ms":50}}],"peer_aliases":{"phone":"Dan's Phone"}})),
+  "move_camera"=>{let target:[f64;3]=serde_json::from_value(args["look_at"].clone())?;anyhow::ensure!(target==[8.,1.,-3.],"Must use live position: {args}");spatial_home::view_camera::action(args,"local:home","home-frame",Some(&viewer))},
+  _=>anyhow::bail!("Use current peer location, not attachment or scene edits"),
+ }).await?;
+ assert_eq!(result["ui_actions"][0]["type"],"move_camera","{result}");assert_eq!(result["changes"],json!([]));Ok(())
 }
