@@ -14,7 +14,7 @@ fn sample(session: &str, timestamp_ns: u64, x: f64) -> Sample {
         timestamp_ns,
         pose: auki_scenegraph::RigidTransform {
             from_frame_id: format!("phone-camera:{session}"),
-            to_frame_id: spatial_home::model::FRAME.into(),
+            to_frame_id: format!("phone-ar:{session}"),
             translation: [x, 1.5, 0.],
             // Within Home's tolerance, but not exactly unit length.
             rotation_wxyz: [1.0004, 0., 0., 0.],
@@ -60,21 +60,41 @@ async fn phone_pose_is_declared_with_frames_and_follows_the_ar_session() -> Resu
             .find(|c| c["manifest"]["component_id"] == COMPONENT)
             .expect("phone-pose component is in the catalog");
         let output = &component["current_outputs"]["poses"]["manifest"];
-        assert_eq!(output["payload"]["schema"], "auki.odometry-pose/v1");
+        assert_eq!(output["payload"]["schema"], spatial_home::compact_pose::SCHEMA);
         assert_eq!(output["payload"]["modality"], "pose");
-        assert_eq!(output["spatial_frame_id"], spatial_home::model::FRAME);
+        assert_eq!(output["spatial_frame_id"], format!("phone-ar:{first}"));
         let entry = product(&catalog, &product_id(&first)).expect("pose product is exported");
         assert_eq!(entry["state"]["Buffer"]["entries"], 2);
         let metadata = &entry["metadata"];
-        assert_eq!(metadata["schema"], "auki.odometry-product/v1");
+        assert_eq!(metadata["schema"], spatial_home::compact_pose::METADATA);
         assert_eq!(metadata["value"]["session_id"], first);
         assert_eq!(metadata["value"]["from_frame"]["peer_id"], phone);
         assert_eq!(
-            metadata["value"]["from_frame"]["frame_id"],
+            metadata["value"]["from_frame"]["id"],
             format!("phone-camera:{first}")
         );
-        assert_eq!(metadata["value"]["to_frame"]["peer_id"], home);
+        assert_eq!(metadata["value"]["to_frame"]["peer_id"], phone);
         assert_eq!(metadata["value"]["clock"]["id"], "arkit-capture");
+        let contract:spatial_home::compact_pose::Contract=serde_json::from_value(metadata["value"].clone())?;
+        let manifest:auki_components::OutputManifest=serde_json::from_value(output.clone())?;
+        contract.validate_output(&manifest)?;
+        let registries=auki_protocols::registry::RegistryClient::new(pair.a.protocols());
+        let route:auki_sdk::Multiaddr=routes[0].parse()?;
+        let from=registries.fetch_frame_exact(pair.b.peer_id(),route.clone(),&contract.from_frame.id,&contract.from_frame.hash).await?;
+        let to=registries.fetch_frame_exact(pair.b.peer_id(),route.clone(),&contract.to_frame.id,&contract.to_frame.hash).await?;
+        let clock=registries.fetch_clock_exact(pair.b.peer_id(),route.clone(),&contract.clock.id,&contract.clock.hash).await?;
+        assert_eq!(from.frame_id,format!("phone-camera:{first}"));
+        assert_eq!(to.frame_id,format!("phone-ar:{first}"));
+        assert_eq!(clock.hash(),contract.clock.hash);
+        let client=auki_component_protocol::ComponentProtocolClient::new(pair.a.protocols());
+        let observations=client.observations_exact::<spatial_home::compact_pose::Update>(pair.b.peer_id(),route,
+            auki_component_protocol::ObservationRequest{
+                product:auki_components::ProductReference{peer_id:phone.clone(),product_id:product_id(&first),manifest_hash:entry["manifest_hash"].as_str().unwrap().into()},
+                selection:auki_component_protocol::ObservationSelection::LatestExisting}).await?;
+        let value=serde_json::to_value(&observations.observations[0].payload)?;
+        assert!(value.get("contract").is_none());
+        assert_eq!(value["tracking"]["status"],"valid");
+        assert_eq!(value["tracking"]["pose"]["translation"][0],0.1);
 
         // Losing the pose is said once and retained as an observation.
         publisher.lost()?;

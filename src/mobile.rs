@@ -304,7 +304,7 @@ impl MobileClient {
     }
     pub fn update_pose(&self, mut sample: Option<crate::mobile_pose::Sample>) {
         if let Some(sample)=&mut sample {sample.camera_configuration_id=self.camera_configuration.borrow().as_ref().filter(|c|c.configuration.session==sample.session).map(|c|c.id.clone());}
-        // Preserve the phone's capture-time pose history as well as live presence.
+        // Capture-time compact pose history; no legacy Home presence push.
         let _ = self.pose_log.try_send(sample.clone());
         self.pose.send_replace(sample);
     }
@@ -538,7 +538,6 @@ impl MobileClient {
                         });
                     }
                 };
-                let mut poses = self.pose.subscribe();
                 let mut changes = self.change_receiver.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap();
                 let mut portal_reports = self.portal_receiver.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap();
                 let mut origin_reports=self.origin_receiver.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap();
@@ -802,27 +801,6 @@ impl MobileClient {
                         }
                     }
                 };
-                let pose_work = async {
-                    // Latest-only watch channel: send immediately, never queue old poses.
-                    loop {
-                        // While asleep, repeat the status so Home keeps the phone listed.
-                        let asleep = self.asleep.load(Ordering::Acquire);
-                        tokio::select! {
-                            changed = poses.changed() => if changed.is_err() { break },
-                            _ = tokio::time::sleep(Duration::from_secs(20)), if asleep => {}
-                        }
-                        let sample = poses.borrow_and_update().clone();
-                        let status = (sample.is_none() && self.asleep.load(Ordering::Acquire))
-                            .then(|| "asleep".to_string());
-                        let _ = tokio::time::timeout(
-                            Duration::from_secs(2),
-                            operations.invoke::<_,bool>(&home.scoped_component(crate::mobile_pose::COMPONENT),
-                                "update","phone-pose",&uuid::Uuid::new_v4().to_string(),Duration::from_secs(1),
-                                &crate::mobile_pose::Update { sample, status }),
-                        )
-                        .await;
-                    }
-                };
                 let mut depths = self.depth.subscribe();
                 // An older Home rejects the optional color field. Only repeated
                 // failures that are about color pause it, and it is offered again
@@ -941,7 +919,6 @@ impl MobileClient {
                     _ = name_work => Ok(()),
                     _ = geo_work => Ok(()),
                     result = local_work => result,
-                    _ = pose_work => Ok(()),
                     _ = pose_product_work => Ok(()),
                     _ = depth_image_work => Ok(()),
                     _ = depth_work => Ok(()),
@@ -964,19 +941,6 @@ impl MobileClient {
                 if let Some(publisher) = pose_publisher {
                     let _ = publisher.close();
                 }
-                let _ = tokio::time::timeout(
-                    Duration::from_secs(2),
-                    crate::mobile_pose::send(
-                        &peer,
-                        &home,
-                        // A phone that locks while asleep stays listed as asleep.
-                        &crate::mobile_pose::Update {
-                            sample: None,
-                            status: self.asleep.load(Ordering::Acquire).then(|| "asleep".to_string()),
-                        },
-                    ),
-                )
-                .await;
                 let cleanup = products.close().await;
                 work.and(cleanup)
                 }.await;

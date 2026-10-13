@@ -475,6 +475,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "auki-protocols"
+version = "0.1.0"
+source = "git+https://github.com/aukilabs/auki-sdk.git?rev=3342d589605846f5f45c1de5430dd22923555de2#3342d589605846f5f45c1de5430dd22923555de2"
+dependencies = [
+ "auki-hash",
+ "auki-registry",
+ "auki-sdk",
+ "futures",
+ "futures-timer",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "auki-qr-detector"
 version = "0.0.0"
 source = "git+https://github.com/aukilabs/auki-sdk.git?rev=3342d589605846f5f45c1de5430dd22923555de2#3342d589605846f5f45c1de5430dd22923555de2"
@@ -4400,6 +4415,7 @@ dependencies = [
  "auki-mappers",
  "auki-odometry",
  "auki-p2p",
+ "auki-protocols",
  "auki-qr-detector",
  "auki-qr-localizer",
  "auki-registry",

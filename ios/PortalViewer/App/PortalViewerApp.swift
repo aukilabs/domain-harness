@@ -1461,6 +1461,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private var cameraShareBusy = false
     private var cameraShareNext: TimeInterval = 0
     private var lastPosePublication: TimeInterval = 0
+    private var lastNativePosePublication: TimeInterval = 0
     @Published var placement: NotePlacement?
     private(set) var map: PortalMap?
     let view = ARSCNView(frame: .zero)
@@ -2670,6 +2671,13 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             // This frame, and any already on their way, are still in the compass's axes.
             if north != .searching { lastAttempt = frame.timestamp + 0.5; return }
         }
+        if case .normal = frame.camera.trackingState {
+            if frame.timestamp < lastNativePosePublication || frame.timestamp - lastNativePosePublication >= 0.2 {
+                lastNativePosePublication = frame.timestamp
+                onPose?(PhonePoseSample(session: poseSession, timestamp: frame.timestamp,
+                    cameraInAR: frame.camera.transform))
+            }
+        } else { onPose?(nil) }
         if map == nil { scanBeforeMap(frame); return }
         guard case .normal = frame.camera.trackingState else {
             volumes.invalidate()
@@ -2711,9 +2719,6 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                                          heading: heading.x.isFinite ? heading : SIMD2(0, -1))
                 selfInHome = cameraInHome
                 refreshDevices()
-                onPose?(PhonePoseSample(session: poseSession, timestamp: frame.timestamp,
-                    cameraInAR: frame.camera.transform, homeInAR: root.simdTransform,
-                    homeFrame: map.scenegraph.map.frame.id))
                 // The picture of this same frame, so a reader finds a pose with
                 // exactly the picture's capture time.
                 // An alignment restored from before a relaunch has no capture time of its own.
