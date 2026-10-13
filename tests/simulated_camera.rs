@@ -53,7 +53,8 @@ async fn discovered_camera_uses_real_catalog_and_subscription_demand() -> Result
     let stop = CancellationToken::new();
     let dir=tempfile::tempdir()?;
     let homes=spatial_home::local_scenes::LocalScenes::load(dir.path())?;
-    let serve = sensor_preview::serve(&pair.a, catalog_rx, rx, live, &frames, &homes, &stop);
+    let held = spatial_home::frame_alignment::HeldTransforms::default();
+    let serve = sensor_preview::serve(&pair.a, catalog_rx, rx, live, &frames, &homes, &held, &stop);
     let exercise = async {
         let listing = request(&tx, None).await?;
         let id = listing["sensors"][0]["id"].as_str().unwrap().to_owned();

@@ -235,13 +235,12 @@ async fn run(actual_publisher: bool) -> Result<()> {
         let frames=client.observations_exact::<VideoFrame>(pair.b.peer_id(),row["catalog_route"].as_str().unwrap().parse()?,auki_component_protocol::ObservationRequest{
             product:camera_capture.product().manifest.reference(),
             selection:auki_component_protocol::ObservationSelection::LatestExisting}).await?;
-        let ar=spatial_home::compact_ar::render(&client,&sensors[0],&row,&frames.observations[0],&frames.producer,&scenes,&home,true).await?;
-        assert_eq!(ar["picking"]["frame"],frame);
-        assert_eq!(ar["ar"]["voxel_count"],0);
         let (_tx, rx) =
-            tokio::sync::watch::channel(std::collections::BTreeMap::from([(phone, row)]));
+            tokio::sync::watch::channel(std::collections::BTreeMap::from([(phone, row.clone())]));
         let stop = tokio_util::sync::CancellationToken::new();
-        let consumer = spatial_home::declared_depth::serve(&pair.a, rx, &scenes, &stop);
+        let held = spatial_home::frame_alignment::HeldTransforms::default();
+        let subscriptions = held.serve(&pair.a, rx.clone(), &stop);
+        let consumer = spatial_home::declared_depth::serve(&pair.a, rx, &scenes, &held, &stop);
         let check = async {
             tokio::time::timeout(std::time::Duration::from_secs(8), async {
                 loop {
@@ -251,6 +250,9 @@ async fn run(actual_publisher: bool) -> Result<()> {
                     let view = scenes.view("humanoid-hub-conference")?;
                     if view["integrated_observations"].as_u64().unwrap_or(0) > 0 {
                         assert!(!view["voxels"].as_array().unwrap().is_empty());
+                        let ar=spatial_home::compact_ar::render(&client,&held,&sensors[0],&row,&frames.observations[0],&frames.producer,&scenes,&home,true).await?;
+                        assert_eq!(ar["picking"]["frame"],frame);
+                        assert_eq!(ar["ar"]["voxel_count"],0);
                         break Ok::<(), anyhow::Error>(());
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -258,8 +260,11 @@ async fn run(actual_publisher: bool) -> Result<()> {
             })
             .await?
         };
-        let checked = tokio::select! {_ = consumer=>anyhow::bail!("consumer stopped"),r=check=>r};
-        stop.cancel();
+        let (_, _, checked) = tokio::join!(subscriptions, consumer, async {
+            let result = check.await;
+            stop.cancel();
+            result
+        });
         checked
     }
     .await;

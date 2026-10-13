@@ -41,6 +41,7 @@ mod tests {
 }
 
 pub async fn render(client: &auki_component_protocol::ComponentProtocolClient,
+    held_cache: &crate::frame_alignment::HeldTransforms,
     sensor: &crate::sensor_preview::Sensor, row: &Value,
     image: &Observation<VideoFrame>, output: &OutputManifest,
     scenes: &crate::local_scenes::LocalScenes, home: &str, overlay: bool) -> Result<Value> {
@@ -82,7 +83,7 @@ pub async fn render(client: &auki_component_protocol::ComponentProtocolClient,
             if !catalog.products.iter().any(|p| p.metadata.as_ref().is_some_and(|m|
                 m.schema == crate::compact_pose::METADATA && serde_json::from_value::<Contract>(m.value.clone())
                     .is_ok_and(|c| crate::frame_alignment::validate_chain(&c, &contract, &sensor.reference.peer_id, home, frame).is_ok()))) { continue; }
-            let (held, _) = crate::frame_alignment::resolve(client, sensor, row, &contract, home, &json!({"frame":frame}), t).await?;
+            let (held, _) = crate::frame_alignment::resolve(held_cache, sensor, row, &contract, home, &json!({"frame":frame}), t)?;
             crate::local_mapper::compose(&held, &native)?
         };
         matches.push((id, frame, pose));

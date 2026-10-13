@@ -25,8 +25,30 @@ arrival time to capture time.
 
 Session-to-scene is held. Select the latest retained state at or before capture
 time, including lost. No age expiry and no walking backward past revocation.
-Home rereads retained history and fails closed on fetch failures. A missing
-older retained state means that capture cannot be placed.
+Home keeps one SDK continuing-observation subscription per exact held Product,
+shared by scene poses, depth and camera AR. `FromSequence(0)` streams the retained
+tail and continues with pushed changes, without a fetch/subscribe race or a
+network request for each pose. The SDK's imported `RetainedProduct` is the cache;
+Home does not maintain a separate pose queue. Idle held Products need no heartbeat
+and have no age expiry. A missing older retained state means that capture cannot
+be placed; future transformations never apply backward.
+
+Home validates each original Output, source sequence, timestamp and payload.
+An explicit gap discards the pre-gap state for lookup and resynchronizes from the
+available tail. A transport error invalidates the cache and reconnects with a
+bounded 1–8 second backoff (5 second connection deadline). Terminal Products remain
+unavailable until explicitly rediscovered/rebound; Catalog removal, changed
+definitions, routes or Product identities tear down the old subscription.
+Shutdown cancels and awaits workers. Retention is bounded to 1,024 states / 1 MiB
+per Product, with at most 128 subscriptions. Evicted history is unavailable,
+not extrapolated from a newer state.
+
+Catalog metadata remains discovery data, never the transform itself. If its
+advertised source sequence is ahead of the validated stream, reads fail closed
+until the stream catches up, so a known pending revocation cannot be ignored.
+Delivery is asynchronous: an idle subscription cannot immediately detect a
+silent network partition or a not-yet-received change. Home invalidates on SDK
+gap/error/closure events; it does not invent clock synchronization or liveness.
 
 ## Depth
 

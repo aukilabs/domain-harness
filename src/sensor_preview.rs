@@ -391,6 +391,7 @@ pub async fn serve(
     _home_live: tokio::sync::watch::Receiver<crate::scene_mirror::RemoteScene>,
     _ar_frames: &crate::ar_preview::Frames,
     local_scenes: &crate::local_scenes::LocalScenes,
+    held: &crate::frame_alignment::HeldTransforms,
     stop: &tokio_util::sync::CancellationToken,
 ) {
     let client = ComponentProtocolClient::new(peer.protocols());
@@ -449,7 +450,7 @@ pub async fn serve(
                     ensure!(sample.observation.output==sample.producer.reference(),"Pose output changed");
                     let home_pose=if let Some(target)=&request.home_frame {
                         let view=local_scenes.snapshots.keys().filter_map(|id|local_scenes.view(id).ok()).find(|v|v["frame"]==*target).ok_or_else(||anyhow!("Unknown Home scene frame"))?;
-                        let (alignment,after)=crate::frame_alignment::resolve(&client,sensor,&row,&contract,&peer.peer_id().to_string(),&view,sample.observation.timestamp_ns).await?;
+                        let (alignment,after)=crate::frame_alignment::resolve(held,sensor,&row,&contract,&peer.peer_id().to_string(),&view,sample.observation.timestamp_ns)?;
                         ensure!(sample.observation.timestamp_ns>=after,"Pose predates alignment");
                         let tracking=crate::frame_alignment::map_tracking(&sample.observation.payload,&alignment,sample.received.elapsed())?;
                         Some(json!({"frame":target,"tracking":tracking,"alignment_timestamp_ns":after.to_string()}))
@@ -535,7 +536,7 @@ pub async fn serve(
                 let attempt = async {
                     let row = catalogs.borrow().get(&sensor.reference.peer_id).cloned()
                         .ok_or_else(|| anyhow!("Camera peer no longer discovered"))?;
-                    crate::compact_ar::render(&client, sensor, &row, o, &observations.producer,
+                    crate::compact_ar::render(&client, held, sensor, &row, o, &observations.producer,
                         local_scenes, &peer.peer_id().to_string(), request.ar).await
                 }
                 ;

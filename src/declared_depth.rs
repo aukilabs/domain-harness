@@ -126,6 +126,7 @@ async fn read<T: ContractType + serde::de::DeserializeOwned>(
 
 async fn capture(
     client: &ComponentProtocolClient,
+    held_cache: &crate::frame_alignment::HeldTransforms,
     owner: &str,
     row: &serde_json::Value,
     home: &str,
@@ -269,15 +270,14 @@ async fn capture(
                 continue;
             }
             let (held, _) = crate::frame_alignment::resolve(
-                client,
+                held_cache,
                 &ps,
                 row,
                 pc,
                 home,
                 &serde_json::json!({"frame":target}),
                 t,
-            )
-            .await?;
+            )?;
             matched.push((
                 editor,
                 target.clone(),
@@ -311,6 +311,7 @@ pub async fn serve(
     peer: &auki_sdk::AukiPeer,
     catalogs: tokio::sync::watch::Receiver<crate::device_catalogs::Catalogs>,
     scenes: &crate::local_scenes::LocalScenes,
+    held_cache: &crate::frame_alignment::HeldTransforms,
     stop: &tokio_util::sync::CancellationToken,
 ) {
     let client = ComponentProtocolClient::new(peer.protocols());
@@ -323,7 +324,7 @@ pub async fn serve(
         tokio::select! {_ = stop.cancelled()=>break,_ = tick.tick()=>{}}
         let rows = catalogs.borrow().clone();
         for (owner, row) in rows {
-            let result = tokio::select! {_ = stop.cancelled()=>return,r=tokio::time::timeout(Duration::from_secs(2),capture(&client,&owner,&row,&home,scenes,&mut done))=>r.unwrap_or_else(|_|Err(anyhow!("Declared depth resolution timed out")))};
+            let result = tokio::select! {_ = stop.cancelled()=>return,r=tokio::time::timeout(Duration::from_secs(2),capture(&client,held_cache,&owner,&row,&home,scenes,&mut done))=>r.unwrap_or_else(|_|Err(anyhow!("Declared depth resolution timed out")))};
             match result {
                 Ok(()) => {
                     errors.remove(&owner);

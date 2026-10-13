@@ -55,7 +55,8 @@ async fn phone_camera_shares_sdk_catalog_and_home_consumes_only_on_demand() -> R
     let stop = CancellationToken::new();
     let dir=tempfile::tempdir()?;
     let homes=spatial_home::local_scenes::LocalScenes::load(dir.path())?;
-    let serve = sensor_preview::serve(&pair.a, catalog_rx, rx, live, &frames, &homes, &stop);
+    let held = spatial_home::frame_alignment::HeldTransforms::default();
+    let serve = sensor_preview::serve(&pair.a, catalog_rx, rx, live, &frames, &homes, &held, &stop);
     let exercise = async {
         let listing = preview(&tx, None).await?;
         let id = listing["sensors"][0]["id"].as_str().unwrap().to_owned();
@@ -289,7 +290,9 @@ async fn home_draws_over_a_phone_camera_without_a_phone_adapter() -> Result<()> 
     let (_live_tx, live) = watch::channel(spatial_home::scene_mirror::RemoteScene::default());
     let frames = spatial_home::ar_preview::Frames::default();
     let stop = CancellationToken::new();
-    let serve = sensor_preview::serve(&pair.a, catalog_rx, rx, live, &frames, &homes, &stop);
+    let held = spatial_home::frame_alignment::HeldTransforms::default();
+    let subscriptions = held.serve(&pair.a, catalog_rx.clone(), &stop);
+    let serve = sensor_preview::serve(&pair.a, catalog_rx, rx, live, &frames, &homes, &held, &stop);
     let exercise = async {
         let listing = preview(&tx, None).await?;
         let listed = listing["sensors"].as_array().unwrap().iter().find(|s| s["label"] == "phone-camera").unwrap();
@@ -321,7 +324,7 @@ async fn home_draws_over_a_phone_camera_without_a_phone_adapter() -> Result<()> 
         assert!((q[0].abs() - 1.).abs() < 1e-9 && q[1].abs() + q[2].abs() + q[3].abs() < 1e-9, "{q:?}");
         Ok::<_, anyhow::Error>(())
     };
-    let (_, result) = tokio::join!(serve, async {
+    let (_, _, result) = tokio::join!(serve, subscriptions, async {
         let r = exercise.await;
         stop.cancel();
         r

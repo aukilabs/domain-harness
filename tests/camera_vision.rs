@@ -37,7 +37,8 @@ async fn snapshot_waits_for_new_frame_and_releases_camera_without_calibration()-
     Ok(())
    }.await;stop.cancel();work
   };
-  let (_,result)=tokio::join!(sensor_preview::serve(&pair.a,crx,rx,lrx,&ar,&homes,&stop),exercise);
+  let held=spatial_home::frame_alignment::HeldTransforms::default();
+  let (_,result)=tokio::join!(sensor_preview::serve(&pair.a,crx,rx,lrx,&ar,&homes,&held,&stop),exercise);
   camera.close()?;products.close().await?;result
  }.await;
  pair.shutdown().await?;result
