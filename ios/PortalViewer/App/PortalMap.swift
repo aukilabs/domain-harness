@@ -236,6 +236,43 @@ struct NotePlacement: Identifiable, Encodable {
     private enum CodingKeys: String, CodingKey { case id, frame, origin, direction, text }
 }
 
+/// A path drawn on the scene with a finger, as Home's Crayon saves it: metres in Home's frame.
+struct CrayonStroke: Encodable, Equatable {
+    static let color = "#ffca55"
+    static let width: Float = 0.035
+    let id: String
+    let title: String
+    let color: String
+    let width_m: Float
+    let segments: [[[Float]]]
+}
+/// A stroke while it is being drawn. Home's rules: points at least 2 cm apart, at most
+/// 4096 of them, and a miss ends the segment so the line never jumps across a gap.
+struct CrayonDraft {
+    static let spacing: Float = 0.02, limit = 4096
+    private(set) var segments = [[SIMD3<Float>]]()
+    private var open = false
+    /// Takes the surface point under the finger, or nil where there was none.
+    /// Returns the piece of line this added, if any.
+    mutating func add(_ point: SIMD3<Float>?) -> (SIMD3<Float>, SIMD3<Float>)? {
+        guard let point else { open = false; return nil }
+        guard segments.reduce(0, { $0 + $1.count }) < Self.limit else { return nil }
+        guard open, let last = segments.last?.last else {
+            segments.append([point]); open = true; return nil
+        }
+        guard simd_distance(last, point) >= Self.spacing else { return nil }
+        segments[segments.count - 1].append(point)
+        return (last, point)
+    }
+    /// Nothing to save until some segment has two points.
+    func stroke(id: String) -> CrayonStroke? {
+        let drawn = segments.filter { $0.count >= 2 }
+        guard !drawn.isEmpty else { return nil }
+        return CrayonStroke(id: id, title: "Crayon path", color: CrayonStroke.color, width_m: CrayonStroke.width,
+                            segments: drawn.map { $0.map { [$0.x, $0.y, $0.z] } })
+    }
+}
+
 enum SceneRay {
     static func hit(origin: SIMD3<Float>, direction: SIMD3<Float>, scene: RenderScene?) -> SIMD3<Float>? {
         guard origin.x.isFinite, origin.y.isFinite, origin.z.isFinite,

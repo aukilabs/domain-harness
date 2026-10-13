@@ -81,6 +81,15 @@ struct ViewerScreen: View {
                             .shadow(color: Theme.glow, radius: 4, y: 2)
                     }
                     .accessibilityLabel(controller.showVoxels ? "Hide voxels" : "Show voxels")
+                    // Draw on the scene with a finger, as Home's Crayon does.
+                    Button { controller.drawing.toggle() } label: {
+                        Image(systemName: "scribble.variable").font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(controller.drawing ? Theme.accent : Theme.dim)
+                            .frame(width: 36, height: 36).background(Theme.paper, in: Circle())
+                            .shadow(color: Theme.glow, radius: 4, y: 2)
+                    }
+                    .padding(.top, 10)
+                    .accessibilityLabel(controller.drawing ? "Stop drawing" : "Draw on the scene")
                     }
                     .opacity(controller.snoozed ? 0 : 1).disabled(controller.snoozed)
                 }
@@ -1106,6 +1115,22 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     @Published var showVolumesInAR = UserDefaults.standard.object(forKey: "arVolumesVisible") as? Bool ?? true {
         didSet { UserDefaults.standard.set(showVolumesInAR, forKey: "arVolumesVisible"); applyVolumeVisibility() }
     }
+    /// Crayon: while on, a finger dragged over the camera view draws on the voxels or the floor.
+    @Published var drawing = false {
+        didSet {
+            guard drawing != oldValue else { return }
+            if drawing && !aligned { drawing = false; showToast("Scan a Portal before drawing.", good: false); return }
+            drawPan?.isEnabled = drawing
+            if drawing { showToast("Drag on voxels or the floor.", good: true) } else { abandonStroke() }
+        }
+    }
+    /// Saves a finished stroke to Home for a scene frame; answers whether Home took it.
+    var onStroke: ((CrayonStroke, String, @escaping (Bool) -> Void) -> Void)?
+    private var drawPan: UIPanGestureRecognizer?
+    /// Strokes drawn here that Home has not sent back yet. Survives Home's redraws.
+    private let crayonRoot = SCNNode()
+    private var crayonDraft = CrayonDraft()
+    private var crayonNode: SCNNode?
     /// Home's voxels in the AR view and the POV tab.
     @Published var showVoxels = UserDefaults.standard.object(forKey: "arVoxelsVisible") as? Bool ?? true {
         didSet {
@@ -1404,6 +1429,10 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         let press = UILongPressGestureRecognizer(target: self, action: #selector(longPress(_:)))
         press.minimumPressDuration = 0.35
         view.addGestureRecognizer(press)
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(draw(_:)))
+        pan.maximumNumberOfTouches = 1
+        pan.isEnabled = false
+        view.addGestureRecognizer(pan); drawPan = pan
     }
 
     func start() {
@@ -1568,7 +1597,11 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                                        ownFrame: "phone-camera:" + poseSession)
         // Everything is redrawn except the point still being carried: taking it out and putting it
         // back would restart its dust trail every time Home sends an update.
-        root.childNodes.filter { $0 !== floating }.forEach { $0.removeFromParentNode() }
+        root.childNodes.filter { $0 !== floating && $0 !== crayonRoot }.forEach { $0.removeFromParentNode() }
+        // A stroke drawn here is dropped once Home's own copy of it arrives.
+        let saved = Set(map.render?.paths?.items.map(\.id) ?? [])
+        crayonRoot.childNodes.filter { saved.contains($0.name ?? "") }.forEach { $0.removeFromParentNode() }
+        if crayonRoot.parent == nil { root.addChildNode(crayonRoot) }
         for portal in map.scenegraph.anchors.values.sorted(by: { $0.anchor_id < $1.anchor_id }) {
             let node = SCNNode()
             node.simdTransform = portal.pose_in_map.matrix
@@ -2038,6 +2071,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
 
     private func invalidate() {
         volumes.invalidate()
+        drawing = false
         onPose?(nil)
         onDepth?(nil)
         onLocalMap?(nil)
@@ -2091,6 +2125,67 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         fade.fillMode = .forwards; fade.isRemovedOnCompletion = false
         layer.add(fade, forKey: "fade")
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { layer.removeFromSuperlayer() }
+    }
+
+    /// The point of the scene under a finger: the nearest voxel or the floor, within 40 m.
+    private func surfacePoint(at point: CGPoint) -> SIMD3<Float>? {
+        guard aligned, let map, let frame = view.session.currentFrame,
+              case .normal = frame.camera.trackingState else { return nil }
+        let far = view.unprojectPoint(SCNVector3(Float(point.x), Float(point.y), 1))
+        let inverse = root.simdTransform.inverse
+        let localOrigin = inverse * frame.camera.transform.columns.3
+        let localFar = inverse * SIMD4(far.x, far.y, far.z, 1)
+        let origin = SIMD3(localOrigin.x, localOrigin.y, localOrigin.z)
+        return SceneRay.hit(origin: origin, direction: SIMD3(localFar.x, localFar.y, localFar.z) - origin, scene: map.render)
+    }
+
+    private static func crayonMaterial() -> SCNMaterial {
+        let material = SCNMaterial()
+        material.diffuse.contents = UIColor(red: 1, green: 0xca / 255, blue: 0x55 / 255, alpha: 1)
+        material.lightingModel = .constant
+        return material
+    }
+
+    private func abandonStroke() {
+        crayonNode?.removeFromParentNode(); crayonNode = nil
+        crayonDraft = CrayonDraft()
+    }
+
+    @objc private func draw(_ gesture: UIPanGestureRecognizer) {
+        guard drawing else { return }
+        switch gesture.state {
+        case .began:
+            abandonStroke()
+            let node = SCNNode(); node.name = UUID().uuidString.lowercased()
+            crayonRoot.addChildNode(node); crayonNode = node
+            fallthrough
+        case .changed, .ended:
+            if let (start, end) = crayonDraft.add(surfacePoint(at: gesture.location(in: view))), let node = crayonNode {
+                let length = simd_length(end - start)
+                let cylinder = SCNCylinder(radius: CGFloat(CrayonStroke.width / 2), height: CGFloat(length))
+                cylinder.radialSegmentCount = 8
+                cylinder.materials = [node.childNodes.first?.geometry?.firstMaterial ?? Self.crayonMaterial()]
+                let piece = SCNNode(geometry: cylinder)
+                piece.simdPosition = (start + end) / 2
+                piece.simdOrientation = simd_quatf(from: SIMD3<Float>(0, 1, 0), to: (end - start) / length)
+                node.addChildNode(piece)
+            }
+            guard gesture.state == .ended else { return }
+            guard let node = crayonNode, let frame = map?.scenegraph.map.frame.id,
+                  let stroke = crayonDraft.stroke(id: node.name ?? "") else { abandonStroke(); return }
+            // The drawn line stays up until Home sends its own copy back, or refuses it.
+            crayonNode = nil; crayonDraft = CrayonDraft()
+            guard let onStroke else {
+                node.removeFromParentNode(); showToast("Home is not connected, so the path was not saved.", good: false); return
+            }
+            onStroke(stroke, frame) { [weak self] saved in
+                guard !saved else { return }
+                node.removeFromParentNode()
+                self?.showToast("Home did not save that path.", good: false)
+            }
+        default:
+            abandonStroke()
+        }
     }
 
     /// Explicit user scan of the QR code under the finger: gives visible feedback
