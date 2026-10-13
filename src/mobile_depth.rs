@@ -234,6 +234,12 @@ pub fn localize(
 }
 
 /// Actual SDK Product identity accompanies the bounded pushed observation.
+/// Whether a failed send was refused because of the color field itself: an
+/// older Home names the field it does not know, and a current one names color.
+pub fn rejects_color(error: &anyhow::Error) -> bool {
+    format!("{error:#}").to_lowercase().contains("color")
+}
+
 /// The same raw phone-local samples are also available as an exported Product.
 pub struct Publisher {
     pub session: String,

@@ -36,6 +36,39 @@ impl ContractType for Report {
     const DATATYPE: &'static str = "spatial.phone-portal-report/v1";
 }
 
+/// What the phone's app hands to its own core: a `Report`, or, with no
+/// `alignment`, the first Portal seen in a scene that has none. Home never
+/// receives this; the core sends a `Report` to `add` or a `FirstPortal` to
+/// `establish_origin`.
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Sighting {
+    pub session: String,
+    pub timestamp_ns: u64,
+    pub code: String,
+    pub side_length_m: f64,
+    pub portal_to_session: RigidTransform,
+    #[serde(default)]
+    pub alignment: Option<crate::mobile_depth::Alignment>,
+    #[serde(default)]
+    pub replace: bool,
+}
+
+/// What a phone sends to Home's `establish_origin` for a scene with no Portals.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct FirstPortal {
+    /// The scene the phone last received, so Home can refuse a stale claim.
+    pub expected_scene: MapSnapshot,
+    pub code: String,
+    pub side_length_m: f64,
+    pub timestamp_ns: u64,
+    /// Measured pose of the Portal in the phone's AR session.
+    pub portal_to_native: RigidTransform,
+}
+impl ContractType for FirstPortal {
+    const DATATYPE: &'static str = "spatial.first-portal-observation/v1";
+}
+
 fn valid_pose(p: &RigidTransform) -> bool {
     p.translation
         .iter()

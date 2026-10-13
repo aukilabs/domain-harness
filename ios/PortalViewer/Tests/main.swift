@@ -165,6 +165,24 @@ for invalid: Float in [0, -1, 6, .nan, .infinity] {
 }
 print("Phone depth projection checks passed")
 
+var ownMap = PhoneLocalVoxels()
+ownMap.add(SIMD3(1, -2, 3)); ownMap.add(SIMD3(1, -2, 3)); ownMap.add(SIMD3(0, 0, 10_001))
+check(ownMap.cells == [[1, -2, 3]], "a cell is kept once, and cells Home would refuse are left out")
+for x in 0..<Int32(PhoneLocalVoxels.limit) { ownMap.add(SIMD3(x, 5, 0)) }
+check(ownMap.cells.count == PhoneLocalVoxels.limit && ownMap.cells[1] == [0, 5, 0], "a full map takes no new cells")
+let ownJSON = try JSONSerialization.jsonObject(with: JSONEncoder().encode(
+    PhoneLocalMap(session: "s", timestamp_ns: 7, cells: [[1, -2, 3]]))) as! [String: Any]
+check(Set(ownJSON.keys) == ["session", "timestamp_ns", "cells"], "Home refuses a local map with any other field")
+print("Phone own map checks passed")
+
+let firstPortal = try JSONSerialization.jsonObject(with: JSONEncoder().encode(PortalReport(
+    session: "s", timestamp_ns: 7, code: "NV16FWJ9G2X", side_length_m: PortalReport.assumedSide,
+    portal_to_session: .transform(matrix_identity_float4x4, from: "portal:NV16FWJ9G2X:local", to: "phone-ar:s"),
+    alignment: nil))) as! [String: Any]
+check(firstPortal["alignment"] == nil && firstPortal["replace"] == nil && firstPortal["code"] as? String == "NV16FWJ9G2X",
+      "a scene's first Portal is reported with no alignment at all")
+print("First Portal report checks passed")
+
 func deviceNote(_ x: Float, frame: String = "home", phone: String? = nil, state: String? = nil, peer: String = "p1") -> RenderScene.Note {
     let key = phone == nil ? "robot_pose" : "phone_pose"
     let from = phone.map { "phone-camera:" + $0 } ?? "robot.base"
@@ -206,3 +224,42 @@ check(DeviceTrails.color(age: 0).z > DeviceTrails.color(age: 0).x && DeviceTrail
 let oldNote = try JSONDecoder().decode(RenderScene.Note.self, from: Data("{\"id\":\"n\",\"text\":\"t\",\"position\":[0,0,0]}".utf8))
 check(oldNote.robot_pose == nil && oldNote.phone_pose == nil, "notes without a pose still decode")
 print("Device trail checks passed")
+
+let fix = GeoFix(latitude: 37, longitude: -122, altitude: 10, accuracy: 5)
+let heading = GeoReference(origin: fix, north: SIMD2(0, -1))
+let northward = heading.coordinate(of: SIMD3(0, 2, -111.3195))
+check(abs(northward.latitude - 37.001) < 1e-7 && abs(northward.longitude + 122) < 1e-9 && northward.altitude == 12,
+      "a heading-aligned frame has north along -Z and height along Y")
+let eastward = heading.coordinate(of: SIMD3(100, 0, 0))
+check(abs(eastward.longitude - (-122 + 100 / (111_319.49 * cos(37 * Double.pi / 180)))) < 1e-7 && eastward.latitude == 37,
+      "east is +X, and a degree of longitude shrinks with latitude")
+check(heading.bearing(of: SIMD2(0, -1)) == 0 && abs(heading.bearing(of: SIMD2(1, 0)) - 90) < 1e-4
+      && abs(heading.bearing(of: SIMD2(-1, 0)) - 270) < 1e-4, "bearings run clockwise from north")
+let held = GeoReference(fix: fix, at: SIMD3(3, 1, -4), north: SIMD2(0, -1)).coordinate(of: SIMD3(3, 1, -4))
+check(abs(held.latitude - 37) < 1e-9 && abs(held.longitude + 122) < 1e-9 && abs(held.altitude - 10) < 1e-5,
+      "a fix taken away from the origin is still the coordinate of where it was taken")
+var room = simd_float4x4(simd_quatf(angle: 1.1, axis: SIMD3(0, 1, 0)))
+room.columns.3 = SIMD4(7, 0.5, -3, 1)
+let inRoom = heading.expressed(in: room)
+let spot = SIMD4<Float>(2, 1, 5, 1), seen = room * spot
+let geoDirect = heading.coordinate(of: SIMD3(seen.x, seen.y, seen.z)), geoThrough = inRoom.coordinate(of: SIMD3(spot.x, spot.y, spot.z))
+check(abs(geoDirect.latitude - geoThrough.latitude) < 1e-9 && abs(geoDirect.longitude - geoThrough.longitude) < 1e-9
+      && abs(geoDirect.altitude - geoThrough.altitude) < 1e-4, "a point has one coordinate, whichever frame it is measured in")
+let back = inRoom.expressed(in: room.inverse)
+check(simd_distance(back.north, heading.north) < 1e-5 && abs(back.origin.latitude - 37) < 1e-9 && abs(back.origin.longitude + 122) < 1e-9,
+      "a reference carried into a frame and back is unchanged")
+var gate = HeadingGate()
+check(gate.step(at: 0, tracking: true, headingError: 10, hasFix: true) == .waiting
+      && gate.step(at: 1.9, tracking: true, headingError: 10, hasFix: true) == .waiting
+      && gate.step(at: 2, tracking: true, headingError: 10, hasFix: true) == .established, "north is taken once the compass has held steady")
+gate = HeadingGate()
+_ = gate.step(at: 0, tracking: true, headingError: 10, hasFix: true)
+_ = gate.step(at: 1.5, tracking: true, headingError: 45, hasFix: true)
+check(gate.step(at: 3, tracking: true, headingError: 10, hasFix: true) == .waiting
+      && gate.step(at: 5, tracking: true, headingError: 10, hasFix: true) == .established, "a compass that wavers starts the wait again")
+gate = HeadingGate()
+check(gate.step(at: 0, tracking: true, headingError: nil, hasFix: true) == .waiting
+      && gate.step(at: 14, tracking: false, headingError: 5, hasFix: true) == .waiting
+      && gate.step(at: 14.5, tracking: true, headingError: 5, hasFix: false) == .waiting
+      && gate.step(at: 15, tracking: true, headingError: 90, hasFix: true) == .gaveUp, "without a compass, tracking and a fix, the search gives up")
+print("Geo reference checks passed")

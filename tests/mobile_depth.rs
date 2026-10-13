@@ -323,6 +323,12 @@ async fn one_phone_catalog_serves_both_products_across_ar_resets() -> Result<()>
 
 #[test]
 fn colors_are_optional_counted_and_wire_compatible() -> anyhow::Result<()> {
+    use spatial_home::mobile_depth::rejects_color;
+    assert!(rejects_color(&anyhow::anyhow!("instruction rejected: unknown field `colors`")));
+    assert!(rejects_color(&anyhow::anyhow!("instruction rejected: Depth color/point count differs")));
+    assert!(!rejects_color(&anyhow::anyhow!(
+        "instruction rejected: Depth alignment disagrees with Portal observation"
+    )));
     use spatial_home::mobile_depth::Sample;
     let old = r#"{"session":"s","timestamp_ns":1,"camera_to_session":{"from_frame_id":"a","to_frame_id":"b","translation":[0.0,0.0,0.0],"rotation_wxyz":[1.0,0.0,0.0,0.0]},"alignment":{"timestamp_ns":1,"portal_id":"P","portal_to_session":{"from_frame_id":"a","to_frame_id":"b","translation":[0.0,0.0,0.0],"rotation_wxyz":[1.0,0.0,0.0,0.0]},"session_to_home":{"from_frame_id":"a","to_frame_id":"b","translation":[0.0,0.0,0.0],"rotation_wxyz":[1.0,0.0,0.0,0.0]}},"points":[[0.0,0.0,-1.0]]}"#;
     let mut sample: Sample = serde_json::from_str(old)?;

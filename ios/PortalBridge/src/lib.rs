@@ -73,6 +73,58 @@ pub unsafe extern "C" fn spatial_mobile_camera(timestamp: u64, jpeg: *const u8, 
         client.update_camera(timestamp, unsafe { std::slice::from_raw_parts(jpeg, length) }.to_vec());
     }
 }
+/// A camera frame with the AR session that took it and the pinhole intrinsics
+/// of the image as sent (pixels, origin top-left). `rotation_deg` is how far
+/// the image was already turned clockwise from the camera's own orientation:
+/// a 4:3 image 640 to 1280 on its long side, on its side for 90 or 270.
+/// `alignment_timestamp_ns` is the capture time of the Portal alignment in
+/// use, or 0 when the phone is not aligned.
+/// # Safety
+/// `jpeg` must point to `length` readable bytes and `session` must be
+/// NUL-terminated UTF-8, both for the duration of this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spatial_mobile_camera_calibrated(
+    timestamp: u64, jpeg: *const u8, length: usize, session: *const c_char,
+    fx: f64, fy: f64, cx: f64, cy: f64, rotation_deg: i32, alignment_timestamp_ns: u64,
+) {
+    if jpeg.is_null() || session.is_null() || length == 0 || length > spatial_home::mobile_camera::MAX_JPEG || timestamp == 0 { return; }
+    let Ok(session) = unsafe { CStr::from_ptr(session) }.to_str() else { return };
+    if session.len() > 64 { return; }
+    if let Some(client) = CLIENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        client.update_camera_calibrated(
+            timestamp,
+            unsafe { std::slice::from_raw_parts(jpeg, length) }.to_vec(),
+            spatial_home::mobile_camera::Geometry { session: session.into(), fx, fy, cx, cy, rotation_deg: rotation_deg.rem_euclid(360) as u16, alignment_timestamp_ns },
+        );
+    }
+}
+/// The LiDAR depth image of the camera frame with the same `timestamp`: not
+/// turned, row-major from the top-left pixel, depths in millimetres (0 = none)
+/// and confidence 0..2, with the pinhole intrinsics of the depth image.
+/// # Safety
+/// `depth_mm` and `confidence` must each point to `width * height` readable
+/// elements and `session` must be NUL-terminated UTF-8, for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spatial_mobile_depth_image(
+    timestamp: u64, session: *const c_char, width: u32, height: u32,
+    depth_mm: *const u16, confidence: *const u8,
+    fx: f64, fy: f64, cx: f64, cy: f64, alignment_timestamp_ns: u64,
+) {
+    let side = 1..=spatial_home::mobile_depth_image::MAX_SIDE;
+    if depth_mm.is_null() || confidence.is_null() || session.is_null() || timestamp == 0
+        || !side.contains(&width) || !side.contains(&height) { return; }
+    let Ok(session) = unsafe { CStr::from_ptr(session) }.to_str() else { return };
+    let pixels = width as usize * height as usize;
+    let (depth_mm, confidence) = unsafe {
+        (std::slice::from_raw_parts(depth_mm, pixels), std::slice::from_raw_parts(confidence, pixels))
+    };
+    let Ok(image) = spatial_home::mobile_depth_image::DepthImage::new(
+        session, timestamp, (width, height), depth_mm, confidence, [fx, fy, cx, cy], alignment_timestamp_ns,
+    ) else { return };
+    if let Some(client) = CLIENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        client.update_depth_image(image);
+    }
+}
 static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
 /// Pure local detection. Caller frees the result with spatial_mobile_string_free.
@@ -289,6 +341,23 @@ pub unsafe extern "C" fn spatial_mobile_name(name: *const c_char) {
         if name.len() > 256 { return; }
         if let Some(client) = CLIENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
             client.set_name(name.to_owned());
+        }
+    });
+}
+
+/// Tell Home where the scene is on the Earth: a `spatial.phone-geo/v1` JSON reference.
+/// # Safety
+/// A non-null `reference` must be a NUL-terminated UTF-8 string for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spatial_mobile_geo(reference: *const c_char) {
+    let _ = std::panic::catch_unwind(|| {
+        if reference.is_null() { return; }
+        let bytes = unsafe { CStr::from_ptr(reference) }.to_bytes();
+        if bytes.len() > 4096 { return; }
+        let Ok(reference) = serde_json::from_slice::<spatial_home::mobile_geo::Reference>(bytes) else { return };
+        if reference.validate(&reference.frame).is_err() { return; }
+        if let Some(client) = CLIENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            client.set_geo(reference);
         }
     });
 }

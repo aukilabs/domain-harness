@@ -151,6 +151,8 @@ struct RenderScene: Decodable, Equatable {
     let objects: [ObjectLabel]
     let notes: [Note]
     var volumes: [SemanticVolume]? = nil
+    /// Where Home places this scene on the Earth, once any phone has told it.
+    var geo: HomeGeo? = nil
     let local_mapping: Mapping?
     struct Voxel: Decodable, Equatable {
         let center: [Float]
@@ -293,7 +295,8 @@ struct PortalReport: Encodable {
     let code: String
     let side_length_m: Float
     let portal_to_session: Portal.Pose
-    let alignment: DepthAlignment
+    /// Left out for the first Portal of a scene that has none; Home makes it the origin.
+    let alignment: DepthAlignment?
     /// True moves a Portal the scene already has; left out, the Portal is new.
     var replace: Bool? = nil
 }
@@ -305,6 +308,25 @@ struct PhoneDepthSample: Encodable {
     let points: [[Float]]
     /// sRGB camera color per point; omitted from the JSON when nil.
     var colors: [[UInt8]]? = nil
+}
+/// The phone's own map: every 10 cm cell this AR session has measured, in the
+/// session's own frame. Home shows it by itself and never merges it.
+struct PhoneLocalMap: Encodable {
+    let session: String
+    let timestamp_ns: UInt64
+    let cells: [[Int32]]
+}
+struct PhoneLocalVoxels {
+    /// Home accepts at most this many cells, each within this many cells of the origin.
+    static let limit = 10_000, reach: Int32 = 10_000
+    private var seen = Set<SIMD3<Int32>>()
+    /// In the order first measured. A full map takes no new cells.
+    private(set) var cells = [[Int32]]()
+    mutating func add(_ cell: SIMD3<Int32>) {
+        guard cells.count < Self.limit, all(abs(cell) .<= SIMD3(repeating: Self.reach)),
+              seen.insert(cell).inserted else { return }
+        cells.append([cell.x, cell.y, cell.z])
+    }
 }
 enum DepthProjection {
     // ARKit's depth image uses camera-image coordinates. Rescale intrinsics to

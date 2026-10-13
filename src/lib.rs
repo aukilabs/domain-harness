@@ -45,13 +45,16 @@ pub mod notes;
 pub mod picking;
 
 pub mod mobile_notes;
+pub mod mobile_odometry;
 
 pub mod mobile_portal;
 pub mod mobile_pose;
 
+pub mod mobile_geo;
 pub mod mobile_geometry;
 
 pub mod mobile_depth;
+pub mod mobile_depth_image;
 pub mod mobile_drive;
 pub mod mobile_calibration;
 

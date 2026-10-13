@@ -58,6 +58,11 @@ final class HomePeer: ObservableObject {
         guard !trimmed.isEmpty else { return }
         trimmed.withCString { spatial_mobile_name($0) }
     }
+    /// Where this phone places the scene on the Earth. The bridge sends it on connect and when it changes.
+    func setGeo(_ geo: HomeGeo) {
+        guard let data = try? JSONEncoder().encode(geo), let json = String(data: data, encoding: .utf8) else { return }
+        json.withCString { spatial_mobile_geo($0) }
+    }
     /// Hold the joystick for one robot, or release it with a nil target. The
     /// bridge repeats the held value and sends explicit stops on release.
     func drive(target: String?, forward: Float = 0, turn: Float = 0) {
@@ -78,6 +83,13 @@ final class HomePeer: ObservableObject {
         guard running, state == "live", let data = try? JSONEncoder().encode(sample),
               let json = String(data: data, encoding: .utf8) else { return }
         json.withCString { spatial_mobile_depth($0) }
+    }
+    /// Share the phone's own map with Home; nil stops sharing it.
+    func publishLocalMap(_ map: PhoneLocalMap?) {
+        guard let map else { _ = spatial_mobile_local_map(nil); return }
+        guard running, state == "live", let data = try? JSONEncoder().encode(map),
+              let json = String(data: data, encoding: .utf8) else { return }
+        json.withCString { _ = spatial_mobile_local_map($0) }
     }
     var onMap: ((PortalMap) -> Void)?
     /// Home's answer to a new-Portal report, for the user to see.

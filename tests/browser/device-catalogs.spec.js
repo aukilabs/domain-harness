@@ -15,9 +15,9 @@ test('Maps lists a phone-owned Catalog map once, independently of the push cache
  const network=page.locator('#map-select optgroup[label="Network"] option');
  await expect(network).toHaveCount(1);
  await expect(network).toHaveAttribute('value',id);
- await expect(network).toContainText('Android · local map');
+ await expect(network).toContainText('Phone · local map');
  await page.selectOption('#map-select',id,{force:true});
- await expect(page.locator('#scene-title')).toHaveText('Android · local voxel map');
+ await expect(page.locator('#scene-title')).toHaveText('Phone · local voxel map');
  await expect(page.locator('#scene-badge')).toHaveText('PHONE-LOCAL MAP');
  await expect(page.locator('#voxel-count')).toHaveText('1');
  const before=requests;
@@ -47,14 +47,14 @@ test('Devices groups types and puts camera feeds first',async({page})=>{
 });
 test('normal Devices shows local and remote catalogs and clears unavailable entries',async({page})=>{
  const peer={peer_id:'android-peer',status:'connected',catalog_status:'loading'};
- const catalog={components:[{manifest:{component_id:'android-local-mapper'}}],products:[{manifest:{product_id:'phone-local-voxels'}}]};
+ const catalog={components:[{manifest:{component_id:'phone-local-mapper'}}],products:[{manifest:{product_id:'phone-local-voxels'}}]};
  let peers=[peer];
  await page.route('**/api/peer',r=>r.fulfill({json:{enabled:true,status:'Ready',connection:{peer_id:'home-peer'},catalog:{components:[{manifest:{component_id:'home-phone-local-scenes'}}],products:[]},peers}}));
  await page.goto('/');await page.getByRole('button',{name:'Devices',exact:true}).click();
  const phone=page.locator('#fleet-sensors > details[data-peer="android-peer"]');
  await phone.locator('summary').first().click();await expect(phone).toContainText('Loading component catalog');
  peer.catalog_status='ready';peer.catalog=catalog;
- await expect(phone).toContainText('Component · android-local-mapper');await expect(phone).toContainText('Product · phone-local-voxels');
+ await expect(phone).toContainText('Component · phone-local-mapper');await expect(phone).toContainText('Product · phone-local-voxels');
  peer.catalog_cached=true;peer.catalog_refresh_status='unavailable';
  await expect(phone).toContainText('Catalog refresh delayed');
  await expect(phone).toContainText('Product · phone-local-voxels');

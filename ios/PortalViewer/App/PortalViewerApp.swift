@@ -5,6 +5,7 @@ import Vision
 import CoreMotion
 import UniformTypeIdentifiers
 import PhotosUI
+import SpatialPortalBridge
 
 @main
 struct PortalViewerApp: App {
@@ -64,6 +65,10 @@ struct ViewerScreen: View {
                             .frame(width: 44, height: 44).clipShape(Circle())
                             .overlay(Circle().stroke(showDetails ? Theme.accent : Theme.paper, lineWidth: 3))
                             .shadow(color: Theme.glow, radius: 6, y: 3)
+                            // A compass wrapped round the logo once north has been found.
+                            .background {
+                                if let turn = controller.northTurn { CompassRing(turn: turn) }
+                            }
                     }
                     .padding()
                     .accessibilityLabel(showDetails ? "Hide scene details" : "Show scene details")
@@ -137,6 +142,9 @@ struct ViewerScreen: View {
                         } else {
                             Text(peer.detail).themeText(12, .semibold)
                             Text(controller.status).themeText(11).foregroundStyle(Theme.dim)
+                            if !controller.geoStatus.isEmpty {
+                                Text(controller.geoStatus).themeText(10).foregroundStyle(Theme.dim)
+                            }
                             HStack(spacing: 10) {
                                 Text("Name").themeLabel().foregroundStyle(Theme.dim)
                                 TextField("How Home labels this phone", text: $phoneName)
@@ -176,9 +184,11 @@ struct ViewerScreen: View {
             peer.onMap = { controller.load($0) }
             controller.onPose = { peer.publishPose($0) }
             controller.onDepth = { peer.publishDepth($0) }
+            controller.onLocalMap = { peer.publishLocalMap($0) }
             peer.onDisconnect = { controller.clear() }
             controller.onSleep = { peer.setAsleep($0) }
             controller.onNewPortal = { peer.reportPortal($0) }
+            controller.onGeo = { peer.setGeo($0) }
             peer.onPortalResult = { controller.showPortalResult($0) }
             // A Portal seen before Home's map has arrived offers sign-in once.
             controller.onPortalSeen = { _ in
@@ -1246,10 +1256,13 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     }
     @Published var status = "Connect to Home to receive its scene"
     @Published var shareDepth = true {
-        didSet { if !shareDepth { onDepth?(nil); depthStatus = "Depth sharing off" } }
+        didSet { if !shareDepth { onDepth?(nil); onLocalMap?(nil); depthStatus = "Depth sharing off" } }
     }
     @Published var depthStatus = "Scan a Portal to share depth"
     var onDepth: ((PhoneDepthSample?) -> Void)?
+    /// The phone's own map, apart from what Home merges into the scene.
+    var onLocalMap: ((PhoneLocalMap?) -> Void)?
+    private var localVoxels = PhoneLocalVoxels()
     private let depthQueue = DispatchQueue(label: "home.phone.depth")
     private var depthBusy = false
     private var lastDepthCapture: TimeInterval = 0
@@ -1296,6 +1309,11 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private var restSince: TimeInterval = 0
     private let motion = CMMotionManager()
     private let poseSession = UUID().uuidString
+    // Home's camera feed. Frames are made only while a reader is asking for them.
+    private let cameraShareQueue = DispatchQueue(label: "camera-share", qos: .utility)
+    private let cameraShareContext = CIContext()
+    private var cameraShareBusy = false
+    private var cameraShareNext: TimeInterval = 0
     private var lastPosePublication: TimeInterval = 0
     @Published var placement: NotePlacement?
     private(set) var map: PortalMap?
@@ -1307,9 +1325,36 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private var generation = 0
     private var lastAttempt: TimeInterval = 0
     private var cooldown = CalibrationCooldown()
+    // North is found once per launch with a heading-aligned session. Tracking then
+    // drops back to gravity alone: a live compass keeps turning the world under the map.
+    private enum NorthSearch { case pending, asking, searching, done }
+    private var north = NorthSearch.pending
+    private var headingGate = HeadingGate()
+    private let locator = GeoLocator()
+    /// Pinned to the room where the heading-aligned session had its axes, so north survives the switch to gravity.
+    private var northAnchor: UUID?
+    private var geoAtNorth: GeoReference?
+    private var northError = HeadingGate.worstError
+    /// Home's frame on the Earth as this phone measured it. It outlives the AR session.
+    private var homeGeo: HomeGeo?
+    /// Told to Home, which keeps the best it hears and shares it with every device.
+    var onGeo: ((HomeGeo) -> Void)?
+    private var sentGeo: HomeGeo?
+    private var lastGeoUpdate: TimeInterval = 0
+    private var geoInAR: GeoReference?
+    private var lastCompassUpdate: TimeInterval = 0
+    /// Degrees from the top of the screen round to north. Never wrapped, so the marker takes the short way.
+    @Published private(set) var northTurn: Double?
+    @Published private(set) var geoStatus = ""
 
     override init() {
         super.init()
+        locator.onPermission = { [weak self] in
+            // The answer to the permission prompt; a refusal is handled by the next start.
+            guard let self, self.north == .asking, self.locator.permission != .undecided else { return }
+            self.north = .pending
+            if UIApplication.shared.applicationState != .background { self.start() }
+        }
         view.scene = SCNScene()
         view.scene.rootNode.addChildNode(root)
         // Soft light from everywhere and a key light from above, for the things in the scene that are lit.
@@ -1349,8 +1394,24 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         guard ARWorldTrackingConfiguration.isSupported else {
             status = "AR requires a supported physical iPhone"; return
         }
+        if north == .pending {
+            switch locator.permission {
+            case .granted:
+                north = .searching
+                headingGate = HeadingGate()
+                locator.start(heading: true)
+                // Turning on the compass turns the world, so nothing aligned before it holds.
+                if aligned { resetAlignment() }
+            case .refused:
+                north = .done
+                geoStatus = "Location is off for Annotator, so the map has no GPS position."
+            case .undecided:
+                north = .asking
+                locator.requestPermission()
+            }
+        }
         let config = ARWorldTrackingConfiguration()
-        config.worldAlignment = .gravity
+        config.worldAlignment = north == .searching ? .gravityAndHeading : .gravity
         // Surfaces are placed on detected floors, tables, walls and screens.
         config.planeDetection = [.horizontal, .vertical]
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
@@ -1366,6 +1427,107 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     func pause() {
         view.session.pause()
         invalidate()
+        worldLost()
+    }
+
+    /// Take north from the heading-aligned session once the compass has settled, then switch it off.
+    private func searchNorth(_ frame: ARFrame) {
+        var tracking = false
+        if case .normal = frame.camera.trackingState { tracking = true }
+        let fix = locator.fix
+        switch headingGate.step(at: frame.timestamp, tracking: tracking, headingError: locator.headingError, hasFix: fix != nil) {
+        case .waiting: return
+        case .established:
+            guard let fix else { return }
+            // The session's axes are east, up and south at this moment. Pin them to the room.
+            let anchor = ARAnchor(name: "north", transform: matrix_identity_float4x4)
+            view.session.add(anchor: anchor)
+            northAnchor = anchor.identifier
+            let camera = frame.camera.transform.columns.3
+            geoAtNorth = GeoReference(fix: fix, at: SIMD3(camera.x, camera.y, camera.z), north: SIMD2(0, -1))
+            northError = locator.headingError ?? HeadingGate.worstError
+            print("[geo] north established, compass ±\(Int(locator.headingError ?? -1))°, fix ±\(Int(fix.accuracy)) m")
+        case .gaveUp:
+            geoStatus = "No reliable compass here, so the map has no GPS position."
+            print("[geo] \(geoStatus)")
+        }
+        north = .done
+        locator.stopHeading()
+        start()
+    }
+
+    /// The AR world can no longer be trusted, so neither can a north pinned to it.
+    private func worldLost() {
+        // An interrupted search is simply started again.
+        if north == .searching { headingGate = HeadingGate() }
+        geoInAR = nil
+        northTurn = nil
+        guard geoAtNorth != nil else { return }
+        geoAtNorth = nil
+        northAnchor = nil
+        geoStatus = sharedGeo(map?.scenegraph.map.frame.id) == nil ? "GPS position lost with camera tracking. Relaunch to find north again."
+                                   : "GPS position is kept with Home's map. Scan a Portal to restore it."
+    }
+
+    private func updateCompass(_ frame: ARFrame) {
+        guard frame.timestamp - lastCompassUpdate >= 0.1 else { return }
+        lastCompassUpdate = frame.timestamp
+        guard let geoInAR else {
+            if northTurn != nil { northTurn = nil }
+            return
+        }
+        let camera = frame.camera.transform
+        let forward = SIMD2(-camera.columns.2.x, -camera.columns.2.z)
+        // Lying flat there is no forward; the top edge of the screen stands in, as on the mini map.
+        let top = SIMD2(-camera.columns.0.x, -camera.columns.0.z)
+        let target = -geoInAR.bearing(of: simd_length(forward) > 0.3 ? forward : top)
+        let previous = northTurn ?? target
+        northTurn = previous + (target - previous).remainder(dividingBy: 360)
+    }
+
+    /// The scene's place on the Earth: what Home shares, else what this phone last measured.
+    private func sharedGeo(_ homeFrame: String?) -> HomeGeo? {
+        [map?.render?.geo, homeGeo].compactMap { $0 }.first { $0.frame == homeFrame }
+    }
+
+    private func updateGeo(_ frame: ARFrame) {
+        guard frame.timestamp - lastGeoUpdate >= 1 else { return }
+        lastGeoUpdate = frame.timestamp
+        let homeFrame = map?.scenegraph.map.frame.id
+        let world: GeoReference
+        if var pinned = geoAtNorth, let id = northAnchor,
+           let anchor = frame.anchors.first(where: { $0.identifier == id }) {
+            // A better fix than the one north was taken with re-places the reference.
+            if let fix = locator.fix, fix.accuracy < pinned.origin.accuracy - 1 {
+                let camera = anchor.transform.inverse * frame.camera.transform.columns.3
+                pinned = GeoReference(fix: fix, at: SIMD3(camera.x, camera.y, camera.z), north: pinned.north)
+                geoAtNorth = pinned
+            }
+            world = pinned.expressed(in: anchor.transform.inverse)
+            if aligned, let homeFrame {
+                let measured = HomeGeo(frame: homeFrame, reference: world.expressed(in: root.simdTransform), headingError: northError)
+                homeGeo = measured
+                // Each realignment nudges the numbers; Home only needs to hear of a new scene or a better fix.
+                if sentGeo?.frame != homeFrame || measured.accuracy_m < (sentGeo?.accuracy_m ?? .infinity) - 1 {
+                    sentGeo = measured
+                    onGeo?(measured)
+                }
+            }
+        } else if aligned, let shared = sharedGeo(homeFrame)?.reference {
+            // No north of this phone's own: take the scene's, from Home or from before tracking was lost.
+            world = shared.expressed(in: root.simdTransform.inverse)
+        } else { geoInAR = nil; return }
+        geoInAR = world
+        let camera = frame.camera.transform
+        let here = world.coordinate(of: SIMD3(camera.columns.3.x, camera.columns.3.y, camera.columns.3.z))
+        let forward = SIMD2(-camera.columns.2.x, -camera.columns.2.z)
+        var text = String(format: "GPS %.6f, %.6f ±%.0f m", here.latitude, here.longitude, here.accuracy)
+        if simd_length(forward) > 0.3 { text += String(format: " · facing %.0f°", world.bearing(of: forward)) }
+        if let scene = sharedGeo(homeFrame)?.reference {
+            text += String(format: "\nHome origin %.6f, %.6f · its −Z bears %.0f°", scene.origin.latitude, scene.origin.longitude,
+                           scene.bearing(of: SIMD2(0, -1)))
+        }
+        geoStatus = text
     }
 
     func load(_ map: PortalMap) {
@@ -1401,6 +1563,10 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 line.geometry?.firstMaterial?.diffuse.contents = Theme.uiAccent
                 line.geometry?.firstMaterial?.lightingModel = .constant
                 line.geometry?.firstMaterial?.isDoubleSided = true
+                // Drawn last and without depth, so voxels and models never hide it.
+                line.geometry?.firstMaterial?.readsFromDepthBuffer = false
+                line.geometry?.firstMaterial?.writesToDepthBuffer = false
+                line.renderingOrder = 200
                 line.position = SCNVector3(Float(px), Float(py), 0.002)
                 node.addChildNode(line)
             }
@@ -1830,6 +1996,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         volumes.invalidate()
         onPose?(nil)
         onDepth?(nil)
+        onLocalMap?(nil)
         depthAlignment = nil
         alignedThrough = [:]
         depthStatus = shareDepth ? "Scan a Portal to share depth" : "Depth sharing off"
@@ -1935,7 +2102,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 }
                 guard map.matching(payload) != nil else {
                     // A long-press on an unknown Portal asks Home to add it right away.
-                    guard self.aligned, self.depthAlignment != nil else {
+                    guard map.scenegraph.anchors.isEmpty || (self.aligned && self.depthAlignment != nil) else {
                         self.showOutline(corners, good: false)
                         UINotificationFeedbackGenerator().notificationOccurred(.warning)
                         self.showToast("Portal \(code) is new. Scan a Portal this scene already knows first, then long-press this one again.", good: false)
@@ -2006,7 +2173,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     /// Report an unknown Portal once two measurements a moment apart agree, so
-    /// one noisy read cannot place it. Needs an alignment from a known Portal.
+    /// one noisy read cannot place it. Needs an alignment from a known Portal,
+    /// unless the scene has no Portals: then this one is offered as its origin.
     func showPortalResult(_ text: String) {
         let good = text.contains("added to Home") || text.contains("moved in Home")
         UINotificationFeedbackGenerator().notificationOccurred(good ? .success : .error)
@@ -2015,18 +2183,23 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     private func offerNewPortal(_ code: String, portalInAR: simd_float4x4, at time: TimeInterval, confirmed: Bool = false) {
-        guard aligned, let alignment = depthAlignment, map?.scenegraph.anchors[code] == nil else {
-            if aligned, depthAlignment == nil { status = "Scan a known Portal first, then Portal \(code) can be added." }
+        guard let map, map.scenegraph.anchors[code] == nil else { return }
+        let first = map.scenegraph.anchors.isEmpty
+        let alignment = first ? nil : depthAlignment
+        guard first || (aligned && alignment != nil) else {
+            if aligned { status = "Scan a known Portal first, then Portal \(code) can be added." }
             return
         }
-        if !confirmed, let last = portalReported[code], time - last < 6 { return }
+        // A Home that cannot take a first Portal yet is not asked every few seconds.
+        if !confirmed, let last = portalReported[code], time - last < (first ? 20 : 6) { return }
         let position = SIMD3(portalInAR.columns.3.x, portalInAR.columns.3.y, portalInAR.columns.3.z)
         // An explicit long-press sends at once; passive sightings need two agreeing reads.
         if confirmed { portalCandidates[code] = (position, time) }
         guard let previous = portalCandidates[code], confirmed || (time - previous.time < 3 &&
               simd_distance(previous.position, position) < 0.03) else {
             portalCandidates[code] = (position, time)
-            status = "New Portal \(code) seen. Hold still to add it."
+            status = first ? "First Portal \(code) seen. Hold still to make it this scene's origin."
+                           : "New Portal \(code) seen. Hold still to add it."
             return
         }
         portalCandidates[code] = nil
@@ -2037,7 +2210,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             alignment: alignment)
         if onNewPortal?(report) == true {
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-            showToast("New Portal \(code) found. Asking Home to add it at 15 cm…", good: true)
+            showToast(first ? "First Portal \(code) found. Asking Home to make it this scene's origin…"
+                            : "New Portal \(code) found. Asking Home to add it at 15 cm…", good: true)
         } else {
             showToast("New Portal \(code) found, but Home is not connected.", good: false)
         }
@@ -2060,10 +2234,12 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private func snooze() {
         guard !snoozed else { return }
         snoozed = true
+        _ = spatial_mobile_camera_demand(0)   // a paused camera has no feed to offer
         // Report sleep before withdrawing the pose so Home keeps the last one.
         onSleep?(true)
         view.session.pause()
         invalidate()
+        worldLost()
         restReference = nil
         status = "Asleep · camera off. Pick up the phone or tap to wake."
         guard motion.isDeviceMotionAvailable else { return }
@@ -2107,10 +2283,116 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         }
     }
 
+    /// Send a camera frame if someone is reading them, with the LiDAR depth
+    /// image of the same capture. The sensor image is landscape, so the picture
+    /// is turned upright for how the phone is held before it is sent, and its
+    /// intrinsics are turned and scaled with it. The depth image is not turned.
+    /// `alignment` is the capture time of the Portal alignment in use, or 0.
+    private func shareCamera(_ frame: ARFrame, alignment: UInt64, withPose: Bool) {
+        guard spatial_mobile_camera_demand(1) != 0, !cameraShareBusy,
+              withPose || frame.timestamp >= cameraShareNext else { return }
+        let buffer = frame.capturedImage
+        let width = Double(CVPixelBufferGetWidth(buffer)), height = Double(CVPixelBufferGetHeight(buffer))
+        guard width > 0, height > 0, abs(width / height - 4.0 / 3.0) < 0.01 else { return }
+        cameraShareBusy = true
+        cameraShareNext = frame.timestamp + 0.2
+        let timestamp = UInt64(frame.timestamp * 1_000_000_000)
+        let k = frame.camera.intrinsics
+        let fx = Double(k[0][0]), fy = Double(k[1][1]), cx = Double(k[2][0]), cy = Double(k[2][1])
+        // Clockwise turn that makes the image upright, and the same turn applied to the intrinsics.
+        let turn: Int32, orientation: CGImagePropertyOrientation
+        let turned: (fx: Double, fy: Double, cx: Double, cy: Double, width: Double, height: Double)
+        switch view.window?.windowScene?.interfaceOrientation ?? .portrait {
+        case .landscapeRight:
+            turn = 0; orientation = .up
+            turned = (fx, fy, cx, cy, width, height)
+        case .landscapeLeft:
+            turn = 180; orientation = .down
+            turned = (fx, fy, width - cx, height - cy, width, height)
+        case .portraitUpsideDown:
+            turn = 270; orientation = .left
+            turned = (fy, fx, cy, width - cx, height, width)
+        default:
+            turn = 90; orientation = .right
+            turned = (fy, fx, height - cy, cx, height, width)
+        }
+        let sideways = turn == 90 || turn == 270
+        let long = Self.cameraShareLongSide, short = long * 3 / 4
+        let sentWidth = sideways ? short : long, sentHeight = sideways ? long : short
+        let sx = sentWidth / turned.width, sy = sentHeight / turned.height
+        let session = poseSession
+        let context = cameraShareContext
+        let depth = frame.sceneDepth
+        cameraShareQueue.async { [weak self] in
+            if let depth, let confidence = depth.confidenceMap {
+                Self.shareDepthImage(depth.depthMap, confidence, timestamp: timestamp, session: session,
+                                     intrinsics: (fx, fy, cx, cy), imageSize: (width, height), alignment: alignment)
+            }
+            let upright = CIImage(cvPixelBuffer: buffer).oriented(orientation)
+            let image = upright
+                .transformed(by: CGAffineTransform(translationX: -upright.extent.minX, y: -upright.extent.minY))
+                .transformed(by: CGAffineTransform(scaleX: sx, y: sy))
+                .cropped(to: CGRect(x: 0, y: 0, width: sentWidth, height: sentHeight))
+            if let space = CGColorSpace(name: CGColorSpace.sRGB),
+               let jpeg = context.jpegRepresentation(of: image, colorSpace: space,
+                    options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.7]) {
+                jpeg.withUnsafeBytes { bytes in
+                    if let base = bytes.bindMemory(to: UInt8.self).baseAddress {
+                        session.withCString {
+                            spatial_mobile_camera_calibrated(timestamp, base, jpeg.count, $0,
+                                                             turned.fx * sx, turned.fy * sy, turned.cx * sx, turned.cy * sy,
+                                                             turn, alignment)
+                        }
+                    }
+                }
+            }
+            DispatchQueue.main.async { self?.cameraShareBusy = false }
+        }
+    }
+    /// Long side of the picture sent, in pixels. The short side is three quarters of it.
+    private static let cameraShareLongSide = 960.0
+    /// The LiDAR depth map as 16-bit millimetres with its confidence map, as the
+    /// sensor gave it. Its intrinsics are the camera's, scaled to the depth map.
+    private static func shareDepthImage(_ depth: CVPixelBuffer, _ confidence: CVPixelBuffer, timestamp: UInt64, session: String,
+                                        intrinsics: (fx: Double, fy: Double, cx: Double, cy: Double),
+                                        imageSize: (width: Double, height: Double), alignment: UInt64) {
+        let width = CVPixelBufferGetWidth(depth), height = CVPixelBufferGetHeight(depth)
+        guard width > 0, height > 0, width <= 1024, height <= 1024,
+              CVPixelBufferGetPixelFormatType(depth) == kCVPixelFormatType_DepthFloat32,
+              CVPixelBufferGetWidth(confidence) == width, CVPixelBufferGetHeight(confidence) == height else { return }
+        CVPixelBufferLockBaseAddress(depth, .readOnly); CVPixelBufferLockBaseAddress(confidence, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(depth, .readOnly); CVPixelBufferUnlockBaseAddress(confidence, .readOnly) }
+        guard let depthBase = CVPixelBufferGetBaseAddress(depth), let confidenceBase = CVPixelBufferGetBaseAddress(confidence) else { return }
+        let depthRow = CVPixelBufferGetBytesPerRow(depth), confidenceRow = CVPixelBufferGetBytesPerRow(confidence)
+        var millimetres = [UInt16](repeating: 0, count: width * height)
+        var levels = [UInt8](repeating: 0, count: width * height)
+        for y in 0..<height {
+            let metres = (depthBase + y * depthRow).assumingMemoryBound(to: Float32.self)
+            let level = (confidenceBase + y * confidenceRow).assumingMemoryBound(to: UInt8.self)
+            for x in 0..<width {
+                let value = metres[x] * 1000
+                // 0 means no measurement: not finite, not positive, or beyond 65 m.
+                millimetres[y * width + x] = value.isFinite && value >= 1 && value < 65535 ? UInt16(value) : 0
+                levels[y * width + x] = min(level[x], 2)
+            }
+        }
+        let sx = Double(width) / imageSize.width, sy = Double(height) / imageSize.height
+        session.withCString {
+            spatial_mobile_depth_image(timestamp, $0, UInt32(width), UInt32(height), millimetres, levels,
+                                       intrinsics.fx * sx, intrinsics.fy * sy, intrinsics.cx * sx, intrinsics.cy * sy, alignment)
+        }
+    }
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
         if snoozed { return }
         checkRest(frame)
         if snoozed { return }
+        // Aligned frames are shared below, together with their pose.
+        if !aligned { shareCamera(frame, alignment: 0, withPose: false) }
+        if north == .searching {
+            searchNorth(frame)
+            // This frame, and any already on their way, are still in the compass's axes.
+            if north != .searching { lastAttempt = frame.timestamp + 0.5; return }
+        }
         if map == nil { scanBeforeMap(frame); return }
         guard case .normal = frame.camera.trackingState else {
             volumes.invalidate()
@@ -2129,6 +2411,14 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             }
             return
         }
+        // The compass is still turning the world; an alignment made now would not hold.
+        if north == .searching {
+            let message = "Finding north. Hold the phone up and move it slowly."
+            if status != message { status = message }
+            return
+        }
+        updateGeo(frame)
+        updateCompass(frame)
         if aligned {
             root.isHidden = false
             captureDepth(frame)
@@ -2147,6 +2437,10 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 onPose?(PhonePoseSample(session: poseSession, timestamp: frame.timestamp,
                     cameraInAR: frame.camera.transform, homeInAR: root.simdTransform,
                     homeFrame: map.scenegraph.map.frame.id))
+                // The picture of this same frame, so a reader finds a pose with
+                // exactly the picture's capture time.
+                // An alignment restored from before a relaunch has no capture time of its own.
+                shareCamera(frame, alignment: depthAlignment?.timestamp_ns ?? 1, withPose: true)
             }
         }
         guard placement == nil, let map, !busy, cooldown.canScan(at: frame.timestamp),
@@ -2254,10 +2548,17 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         let capturedGeneration = generation
         let session = poseSession
         depthQueue.async {
-            let sample = PhoneDepthCapture.read(frame, alignment: alignment, session: session)
+            var measured = [SIMD3<Int32>]()
+            let sample = PhoneDepthCapture.read(frame, alignment: alignment, session: session, measured: &measured)
             DispatchQueue.main.async {
                 self.depthBusy = false
                 guard self.generation == capturedGeneration, self.aligned, self.shareDepth else { return }
+                measured.forEach { self.localVoxels.add($0) }
+                // Sent on every capture, changed or not, so Home keeps listing it.
+                if !self.localVoxels.cells.isEmpty {
+                    self.onLocalMap?(PhoneLocalMap(session: session, timestamp_ns: UInt64(frame.timestamp * 1_000_000_000),
+                                                   cells: self.localVoxels.cells))
+                }
                 guard let sample else { self.depthStatus = "No reliable depth here. Aim at nearby surfaces."; return }
                 self.depthStatus = "LiDAR active · \(sample.points.count) \(sample.colors == nil ? "" : "colored ")voxels per capture"
                 self.onDepth?(sample)
@@ -2278,16 +2579,26 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         default:
             // Relocalizing or unavailable: the world may have moved under us.
             invalidate()
+            worldLost()
             status = "Tracking lost. Scan a known Portal again."
         }
     }
     func sessionWasInterrupted(_ session: ARSession) {
         if snoozed { return }
-        invalidate(); status = "AR interrupted. Rescan a Portal when the camera returns."
+        invalidate(); worldLost(); status = "AR interrupted. Rescan a Portal when the camera returns."
     }
     func sessionInterruptionEnded(_ session: ARSession) { if snoozed { return }; realign(); start() }
     func session(_ session: ARSession, didFailWithError error: Error) {
-        invalidate(); status = error.localizedDescription
+        invalidate(); worldLost()
+        // A heading-aligned session that cannot run must not cost the app its camera.
+        if north == .searching {
+            north = .done
+            locator.stopHeading()
+            geoStatus = "Could not find north (\(error.localizedDescription)), so the map has no GPS position."
+            start()
+            return
+        }
+        status = error.localizedDescription
     }
 }
 
@@ -2398,7 +2709,10 @@ enum PhoneDepthCapture {
     /// cells; each cell's camera color is averaged in linear light. The result
     /// is one colored point per occupied voxel (its center), expressed back in
     /// this capture's camera frame so Home can still validate pose and rays.
-    static func read(_ frame: ARFrame, alignment: DepthAlignment, session: String) -> PhoneDepthSample? {
+    /// `measured` receives the same capture as cells of the phone's own AR
+    /// session frame, for the phone's own map.
+    static func read(_ frame: ARFrame, alignment: DepthAlignment, session: String,
+                     measured: inout [SIMD3<Int32>]) -> PhoneDepthSample? {
         guard let depth = frame.sceneDepth, let confidence = depth.confidenceMap else { return nil }
         let buffer = depth.depthMap
         guard CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_DepthFloat32,
@@ -2443,6 +2757,7 @@ enum PhoneDepthCapture {
         let cameraFromHome = homeFromCamera.inverse
         struct Cell { var samples: Float = 0; var color = SIMD3<Float>(repeating: 0); var colored: Float = 0 }
         var cells = [SIMD3<Int32>: Cell]()
+        var own = [SIMD3<Int32>: Int]()
         // Every second pixel is under 4 cm apart at 5 m, finer than a voxel.
         for y in stride(from: 0, to: height, by: 2) {
             let depths = base.advanced(by: y * rowBytes).assumingMemoryBound(to: Float32.self)
@@ -2458,9 +2773,13 @@ enum PhoneDepthCapture {
                 cell.samples += 1
                 if let rgb = linearColor(x: x, y: y) { cell.color += rgb; cell.colored += 1 }
                 cells[key] = cell
+                let world = frame.camera.transform * SIMD4(point[0], point[1], point[2], 1)
+                own[SIMD3(Int32((world.x / voxelSize).rounded(.down)), Int32((world.y / voxelSize).rounded(.down)),
+                          Int32((world.z / voxelSize).rounded(.down))), default: 0] += 1
             }
         }
         // One stray depth pixel does not make a voxel.
+        measured = own.compactMap { $0.value >= 2 ? $0.key : nil }
         var voxels = cells.compactMap { key, cell -> (point: SIMD3<Float>, color: [UInt8]?)? in
             guard cell.samples >= 2 else { return nil }
             let center = (SIMD3(Float(key.x), Float(key.y), Float(key.z)) + 0.5) * voxelSize
@@ -2487,5 +2806,37 @@ enum PhoneDepthCapture {
             camera_to_session: .transform(frame.camera.transform, from: "phone-camera:\(session)", to: "phone-ar:\(session)"),
             alignment: alignment, points: voxels.map { [$0.point.x, $0.point.y, $0.point.z] },
             colors: colors.count == voxels.count ? colors : nil)
+    }
+}
+
+/// A glass dial of ticks that turns with the phone, with a red triangle at north.
+struct CompassRing: View {
+    let turn: Double
+    var body: some View {
+        ZStack {
+            // The glass stays put; only the markings turn.
+            if #available(iOS 26.0, *) {
+                Color.clear.glassEffect(.regular, in: Circle())
+            } else {
+                Circle().fill(.ultraThinMaterial)
+            }
+            ZStack {
+                ForEach(1..<24, id: \.self) { tick in
+                    Capsule().fill(Color.white.opacity(tick % 6 == 0 ? 0.9 : 0.4))
+                        .frame(width: 2, height: 6).offset(y: -27).rotationEffect(.degrees(Double(tick) * 15))
+                }
+                Path { path in
+                    path.move(to: CGPoint(x: 4.5, y: 0))
+                    path.addLine(to: CGPoint(x: 9, y: 8))
+                    path.addLine(to: CGPoint(x: 0, y: 8))
+                    path.closeSubpath()
+                }
+                .fill(Color.red).frame(width: 9, height: 8).offset(y: -27)
+            }
+            .rotationEffect(.degrees(turn))
+            .animation(.linear(duration: 0.12), value: turn)
+        }
+        .frame(width: 68, height: 68)
+        .accessibilityHidden(true)
     }
 }
