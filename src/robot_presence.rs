@@ -15,6 +15,48 @@ pub struct Sample {
     pub clock: ClockReference,
     pub native_pose: RigidTransform,
     pub alignment: crate::frame_transform::FrameTransform,
+    /// URDF joint positions for the viewer's robot model, when the robot has
+    /// them. Presentation only. A Home without this field rejects samples
+    /// that carry it, so update Home and runners together.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub joints: Option<Joints>,
+    /// Joint temperatures/currents and battery, same caveat as `joints`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health: Option<Health>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Joints {
+    pub timestamp_ns: u64,
+    pub positions: BTreeMap<String, f64>,
+}
+/// Motor health for the viewer: per-joint temperature and current, keyed by
+/// URDF joint name like `Joints`, and the battery. Presentation only.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Health {
+    pub timestamp_ns: u64,
+    #[serde(default)]
+    pub joints: BTreeMap<String, JointHealth>,
+    #[serde(default)]
+    pub battery: Option<Battery>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JointHealth { pub temperature_c: f64, pub current_a: f64 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Battery { pub voltage: f64, pub percent: f64 }
+impl Health {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(self.joints.len() <= 64 && self.joints.iter().all(|(name, j)|
+            !name.is_empty() && name.len() <= 64 && j.temperature_c.is_finite() && j.current_a.is_finite()),
+            "Invalid joint health");
+        if let Some(b) = &self.battery {
+            ensure!(b.voltage.is_finite() && b.voltage >= 0. && (0. ..=100.).contains(&b.percent), "Invalid battery");
+        }
+        Ok(())
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -44,6 +86,12 @@ impl Presence {
             "Robot presence identity/frame mismatch");
         ensure!(!sample.name.trim().is_empty() && sample.name.len() <= 120 && sample.timestamp_ns > 0,
             "Invalid robot name/timestamp");
+        if let Some(joints) = &sample.joints {
+            ensure!(joints.positions.len() <= 64
+                && joints.positions.iter().all(|(name, v)| !name.is_empty() && name.len() <= 64 && v.is_finite()),
+                "Invalid robot joints");
+        }
+        if let Some(health) = &sample.health { health.validate()?; }
         for pose in [&sample.native_pose, t] {
             ensure!(pose.translation.iter().chain(pose.rotation_wxyz.iter()).all(|v|v.is_finite())
                 && (pose.rotation_wxyz.iter().map(|v|v*v).sum::<f64>()-1.).abs() < 1e-6,
@@ -69,7 +117,7 @@ impl Presence {
         let poses: Vec<_> = self.entries.iter().filter(|(_,(_,_,received))|
             now.duration_since(*received) < Duration::from_secs(3)).map(|(peer,(s,pose,received))|
             json!({"peer_id":peer,"name":crate::peer_aliases::name(peer,&s.name),"pose":pose,"native_pose":s.native_pose,
-                "clock":s.clock,"capture_timestamp_ns":s.timestamp_ns,
+                "clock":s.clock,"capture_timestamp_ns":s.timestamp_ns,"joints":s.joints,"health":s.health,
                 "received_age_ms":now.duration_since(*received).as_millis()})).collect();
         json!({"frame":frame,"poses":poses,"transforms":self.relationships.values().collect::<Vec<_>>()})
     }
@@ -95,6 +143,13 @@ pub fn from_live(value: &Value, name: &str) -> Result<Update> {
     let raw: auki_odometry::Pose = serde_json::from_value(p["pose"].clone())?;
     let frame = p["frame"].as_str().ok_or_else(||anyhow::anyhow!("Missing robot frame"))?;
     ensure!(p["from_frame"]["frame_id"] == "robot.base", "Not a base pose");
+    let j = &r["local_mapping"]["robot_joints"];
+    let joints = if j.is_null() { None } else {
+        Some(Joints { timestamp_ns: j["capture_timestamp_ns"].as_u64().ok_or_else(||anyhow::anyhow!("Missing joints time"))?,
+            positions: serde_json::from_value(j["positions"].clone())? })
+    };
+    let h = &r["local_mapping"]["robot_health"];
+    let health = if h.is_null() { None } else { Some(serde_json::from_value::<Health>(h.clone())?) };
     Ok(Update { sample: Some(Sample { name:name.into(), timestamp_ns:p["capture_timestamp_ns"].as_u64().ok_or_else(||anyhow::anyhow!("Missing capture time"))?,
-        clock:serde_json::from_value(p["clock"].clone())?, native_pose:crate::local_mapper::rigid(&raw,"robot.base",frame), alignment:a }) })
+        clock:serde_json::from_value(p["clock"].clone())?, native_pose:crate::local_mapper::rigid(&raw,"robot.base",frame), alignment:a, joints, health }) })
 }

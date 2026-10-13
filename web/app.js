@@ -10,6 +10,8 @@ import { createNoteBubble } from './note-bubble.js';
 import { createPipWindow } from './pip-window.js';
 import { moveMapCamera } from './view-camera.js';
 import { createAttachedCamera } from './attached-camera.js';
+import { createRobotModel } from './robot-model.js';
+import { applyRobotHealth } from './robot-health.js';
 const $=id=>document.getElementById(id);
 const chatForm=$('scene-chat-form'),chatInput=$('scene-chat-input'),chatStatus=$('scene-chat-status');
 chatForm.querySelector('button').disabled=true;
@@ -510,6 +512,37 @@ function usesBodyVolume(key){
 const poseColors=['#e49b32','#985cdb','#219b96'];
 let runner=null,runnerBusy=false,lastRunnerReply=0;
 function hideRobots(){for(const glyph of robots.values())glyph.group.visible=false;}
+// Robot models drawn instead of the pose box, by the robot's native map family.
+function robotModel(frame){return frame?.startsWith('bracketbot-local:')?'bracketbot':null;}
+// Swap the box glyph for the robot's URDF model. The model's root is in ROS body
+// axes like the glyph; the box stays as the fallback while loading, on failure,
+// and for robots without a model.
+function setGlyphModel(glyph,model){
+ if(glyph.model===model)return;
+ glyph.model=model;
+ if(glyph.robot){glyph.group.remove(glyph.robot.root);glyph.robot=null;}
+ glyph.body.visible=true;
+ if(model!=='bracketbot')return;
+ createRobotModel().then(robot=>{
+  if(glyph.model!=='bracketbot'||glyph.robot)return;
+  glyph.robot=robot;glyph.group.add(robot.root);glyph.body.visible=false;applyJoints(glyph);applyRobotHealth(glyph,glyph.health);
+ }).catch(e=>console.warn('Robot model unavailable; keeping pose glyph',e));
+}
+// URDF joint positions published next to the pose; joints left out keep their last value.
+function applyJoints(glyph){
+ if(!glyph.robot||!glyph.joints)return;
+ for(const [name,value] of Object.entries(glyph.joints))glyph.robot.setJoint(name,value);
+}
+// A Home robot presence entry (robot.base pose in the scene) as a glyph pose in
+// ROS body axes. Bracketbot declares robot.base Z-up/X-right/Y-forward, so its
+// ROS body (URDF root, X forward) is robot.base turned +90 degrees about Z.
+const BRACKETBOT_BASE_FROM_ROS=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1),Math.PI/2);
+function presenceGlyphPose(robot){
+ const p=robot?.pose;if(!p?.translation||!p?.rotation_wxyz)return null;
+ const [w,x,y,z]=p.rotation_wxyz,q=new THREE.Quaternion(x,y,z,w);
+ if(robotModel(robot.native_pose?.to_frame_id)==='bracketbot')q.multiply(BRACKETBOT_BASE_FROM_ROS);
+ return {translation:p.translation,rotation_xyzw:[q.x,q.y,q.z,q.w]};
+}
 function glyphFor(key,name){
  let glyph=robots.get(key);
  if(!glyph){
@@ -519,7 +552,7 @@ function glyphFor(key,name){
   // Robot-local ROS body axes: +X forward, +Y left, +Z up; illustrative pose glyph.
   const body=new THREE.Mesh(new THREE.BoxGeometry(.42,.32,.18),material);body.position.z=.11;body.renderOrder=5;group.add(body);
   const arrow=new THREE.ArrowHelper(new THREE.Vector3(1,0,0),new THREE.Vector3(0,0,.25),.8,color,.2,.12);arrow.traverse(o=>{if(o.material){o.material.depthTest=false;o.renderOrder=6;}});group.add(arrow);
-  glyph={group,material,arrow,color};robots.set(key,glyph);
+  glyph={group,material,arrow,color,body};robots.set(key,glyph);
  }
  if(glyph.name!==name){
   if(glyph.tag){glyph.group.remove(glyph.tag);glyph.tag.material.map.dispose();glyph.tag.material.dispose();}
@@ -544,9 +577,12 @@ function renderRunners(entries){
  }
  entries.forEach((entry,i)=>{
   const glyph=glyphFor(entry.key,entry.name),state=entry.state;
-  glyph.tag.visible=activeMap!=='home-live';
+  glyph.tag.visible=activeMap!=='home-live'&&!isLocalScene();  // local scenes name robots with a note bubble
   glyph.state=state;glyph.group.visible=Boolean(state.pose)&&$('runner-layer').checked&&!usesBodyVolume(entry.key);
   if(state.pose){glyph.group.position.fromArray(state.pose.translation);glyph.group.quaternion.fromArray(state.pose.rotation_xyzw);}
+  setGlyphModel(glyph,state.model||null);
+  if(state.joints&&state.joints!==glyph.joints){glyph.joints=state.joints;applyJoints(glyph);}
+  glyph.health=state.health||null;applyRobotHealth(glyph,glyph.health);
   glyph.material.color.set(state.status==='live'?glyph.color:'#84908f');glyph.material.opacity=state.status==='live'?.82:.35;glyph.arrow.setColor(state.status==='live'?glyph.color:'#84908f');
   const row=list.children[i];row.dataset.status=state.status;row.dataset.visible=String(glyph.group.visible);
   row.dataset.position=state.pose?JSON.stringify(glyph.group.position.toArray()):'';row.dataset.rotation=state.pose?JSON.stringify(glyph.group.quaternion.toArray()):'';
@@ -597,10 +633,18 @@ function showHomeRunners(local,fresh){
 }
 $('runner-layer').onchange=()=>{refreshRunner();};
 async function refreshRunner(){
- if(isLocalScene()){hideRobots();$('runner-status').textContent='No robot aligned to this scene';return;}
+ if(isLocalScene()){
+  // Robots aligned to this scene, from Home's authenticated robot presence.
+  const present=(current?.notes||[]).map(n=>n.robot_pose).filter(r=>r?.pose&&r.peer_id);
+  if(!present.length){hideRobots();$('runner-status').textContent='No robot aligned to this scene';return;}
+  renderRunners(present.map(r=>({key:'presence:'+r.peer_id,name:r.name||'Robot '+r.peer_id.slice(-6),
+   state:{status:(r.received_age_ms??0)<3000?'live':'stale',pose:presenceGlyphPose(r),model:robotModel(r.native_pose?.to_frame_id),joints:r.joints?.positions,health:r.health}})));
+  $('runner-status').textContent=present.length+' robot(s) aligned to this scene';
+  return;
+ }
  if(activeMap.startsWith('peer-scene:')){
   const pose=robotGlyphPose(current?.local_mapping?.robot_pose);
-  showRunner({status:pose&&performance.now()-(current?.receivedAt||0)<5000?'live':'stale',pose:pose||null,detail:'Pose in the publishing robot’s map frame'});return;
+  showRunner({status:pose&&performance.now()-(current?.receivedAt||0)<5000?'live':'stale',pose:pose||null,model:robotModel(current?.frame),joints:current?.local_mapping?.robot_joints?.positions,health:current?.local_mapping?.robot_health,detail:'Pose in the publishing robot’s map frame'});return;
  }
  if(isSimulation()){
   const local=current?.local_mapping;
@@ -616,7 +660,7 @@ async function refreshRunner(){
   const local=current?.local_mapping, remote=current?.remote_status;
   const fresh=remote?.status==='connected' && remote.age_ms<10000 && performance.now()-(current?.receivedAt||0)<5000;
   if(activeMap==='home-live'&&local?.runners){showHomeRunners(local,fresh);return;}
-  showRunner({status:fresh&&local?.robot_pose?'live':'stale',pose:robotGlyphPose(local?.robot_pose),detail:local?(activeMap==='home-live'?'Pose in Home’s observed portal frame':current?.display_alignment?'Display pose uses the Catalog transform; robot pose remains native':'Pose in the robot boot frame'):'Waiting for independent robot pose'});return;
+  showRunner({status:fresh&&local?.robot_pose?'live':'stale',pose:robotGlyphPose(local?.robot_pose),model:robotModel(current?.frame),joints:local?.robot_joints?.positions,health:local?.robot_health,detail:local?(activeMap==='home-live'?'Pose in Home’s observed portal frame':current?.display_alignment?'Display pose uses the Catalog transform; robot pose remains native':'Pose in the robot boot frame'):'Waiting for independent robot pose'});return;
  }
  if(runnerBusy)return;runnerBusy=true;try{const state=await api('/api/runner-pose');lastRunnerReply=performance.now();if(!(isLocalScene()||isRunner()||isSimulation()||activeMap==='home-live'||activeMap.startsWith('peer-scene:')))showRunner(state);}catch{if(!(isLocalScene()||isRunner()||isSimulation()||activeMap==='home-live'||activeMap.startsWith('peer-scene:')))showRunner({...runner,status:'unavailable',pose:null,detail:'Home telemetry connection lost'});}finally{runnerBusy=false;}}
 runnerCatalog();refreshRunner();setInterval(refreshRunner,250);

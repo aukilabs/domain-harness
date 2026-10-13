@@ -35,6 +35,19 @@
       },
       "portal_poses": null,
       "portal_sizes": "config/humanoid-hub-conference/portals.json"
+    },
+    {
+      "id": "bb-lab",
+      "name": "BB Lab",
+      "status": "portal_reference",
+      "origin": {
+        "portal_code": "280UO1U1RPC",
+        "translation_m": [0.0, 0.0, 0.0],
+        "rotation_wxyz": [0.7071067811865476, -0.7071067811865476, 0.0, 0.0],
+        "frame_description": "280UO1U1RPC center at Y=0 on a table about 0.7 m above the floor; printed face points +Y; Portal right is +X and top is -Z"
+      },
+      "portal_poses": null,
+      "portal_sizes": "config/bb-lab/portals.json"
     }
   ]
 }

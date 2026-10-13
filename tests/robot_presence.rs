@@ -5,7 +5,7 @@ use std::time::{Duration,Instant};
 fn sample(owner:&str, home:&str, frame:&str) -> Sample {
     let clock = spatial_home::model::clock_ref(&spatial_home::model::clock_entry(owner,"session"));
     let dir=tempfile::tempdir().unwrap();
-    let scenes=spatial_home::local_scenes::LocalScenes::load(dir.path()).unwrap();
+    let scenes=support::seeded_local_scenes(dir.path()).unwrap();
     let reference = scenes.snapshot("humanoid-hub-conference").unwrap();
     let anchor = reference.scenegraph.anchors.values().next().unwrap().clone();
     let native = "bracketbot-local:00000000-0000-4000-8000-000000000000:zup";
@@ -16,12 +16,31 @@ fn sample(owner:&str, home:&str, frame:&str) -> Sample {
             target_frame:Some(reference.scenegraph.map.frame.clone()),validity:Validity::Valid,reason:"aligned".into(),
             transform:Some(auki_scenegraph::RigidTransform {from_frame_id:native.into(),to_frame_id:frame.into(),translation:[10.,0.,0.],rotation_wxyz:[1.,0.,0.,0.]}),
             evidence:Some(Evidence {portal:anchor.anchor_id.clone(),capture_timestamp_ns:10,clock,
-                provenance:Default::default(),reference_peer_id:home.into(),reference_anchor:anchor})} }
+                provenance:Default::default(),reference_peer_id:home.into(),reference_anchor:anchor})}, joints:None, health:None }
+}
+#[test]
+fn robot_joints_ride_along_with_presence_and_must_be_finite() -> Result<()> {
+    let dir=tempfile::tempdir()?;
+    let scenes=support::seeded_local_scenes(dir.path())?;
+    let reference=scenes.snapshot("humanoid-hub-conference")?;
+    let frame=&reference.scenegraph.map.frame.id;
+    let now=Instant::now(); let mut presence=Presence::default();
+    let mut s=sample("robot","home",frame);
+    s.joints=Some(spatial_home::robot_presence::Joints {timestamp_ns:19,
+        positions:[("right_j5".to_string(),0.25),("left_lift".to_string(),-0.1)].into()});
+    presence.accept("robot","home",frame,Update {sample:Some(s.clone())},now)?;
+    let joints=&presence.snapshot(now,frame)["poses"][0]["joints"];
+    assert_eq!(joints["positions"]["right_j5"],0.25);
+    assert_eq!(joints["timestamp_ns"],19);
+    let mut bad=s.clone(); bad.timestamp_ns=21;
+    bad.joints.as_mut().unwrap().positions.insert("right_j6".into(),f64::NAN);
+    assert!(presence.accept("robot","home",frame,Update {sample:Some(bad)},now).is_err());
+    Ok(())
 }
 #[test]
 fn fresh_authenticated_robot_pose_is_transformed_and_expires() -> Result<()> {
     let dir=tempfile::tempdir()?;
-    let scenes=spatial_home::local_scenes::LocalScenes::load(dir.path())?;
+    let scenes=support::seeded_local_scenes(dir.path())?;
     let reference=scenes.snapshot("humanoid-hub-conference")?;
     let frame=&reference.scenegraph.map.frame.id;
     let now=Instant::now(); let mut presence=Presence::default();
@@ -47,7 +66,7 @@ async fn robot_presence_arrives_without_a_geometry_contribution() -> Result<()> 
     let pair=support::LocalPair::start().await?;
     let result=async {
         let dir=tempfile::tempdir()?;
-        let scenes=std::sync::Arc::new(spatial_home::local_scenes::LocalScenes::load(dir.path())?);
+        let scenes=std::sync::Arc::new(support::seeded_local_scenes(dir.path())?);
         let server=spatial_home::network::ScenePublisher::mount(&pair.a)?;
         let owner=pair.a.peer_id().to_string();
         let clock=spatial_home::model::clock_entry(&owner,&uuid::Uuid::new_v4().to_string());
@@ -70,4 +89,27 @@ async fn robot_presence_arrives_without_a_geometry_contribution() -> Result<()> 
     }.await;
     pair.shutdown().await?;
     result
+}
+#[test]
+fn robot_health_rides_along_with_presence_and_must_be_sane() -> Result<()> {
+    use spatial_home::robot_presence::{Battery,Health,JointHealth};
+    let dir=tempfile::tempdir()?;
+    let scenes=support::seeded_local_scenes(dir.path())?;
+    let reference=scenes.snapshot("humanoid-hub-conference")?;
+    let frame=&reference.scenegraph.map.frame.id;
+    let now=Instant::now(); let mut presence=Presence::default();
+    let mut s=sample("robot","home",frame);
+    s.health=Some(Health {timestamp_ns:19,
+        joints:[("lj0".to_string(),JointHealth {temperature_c:45.,current_a:2.04})].into(),
+        battery:Some(Battery {voltage:18.48,percent:32.2})});
+    presence.accept("robot","home",frame,Update {sample:Some(s.clone())},now)?;
+    let health=&presence.snapshot(now,frame)["poses"][0]["health"];
+    assert_eq!(health["joints"]["lj0"]["temperature_c"],45.);
+    assert_eq!(health["battery"]["percent"],32.2);
+    for bad in [|h:&mut Health| h.battery.as_mut().unwrap().percent=140.,
+                |h:&mut Health| h.joints.get_mut("lj0").unwrap().current_a=f64::NAN] {
+        let mut b=s.clone(); b.timestamp_ns=21; bad(b.health.as_mut().unwrap());
+        assert!(presence.accept("robot","home",frame,Update {sample:Some(b)},now).is_err());
+    }
+    Ok(())
 }
