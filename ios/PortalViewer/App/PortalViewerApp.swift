@@ -5,6 +5,7 @@ import Vision
 import CoreMotion
 import UniformTypeIdentifiers
 import PhotosUI
+import UserNotifications
 import SpatialPortalBridge
 
 @main
@@ -1426,6 +1427,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             ownTexts.remove(at: sent)
             ownNotes.insert(note.id)
         }
+        messages.asleep = snoozed
         messages.record(scene.notes, frame: scene.frame, mine: ownNotes)
     }
     /// The trail of crumbs to the message being looked for. Survives Home's redraws.
@@ -3005,6 +3007,8 @@ final class MessageCenter: ObservableObject {
     /// The next spot to head for along the way there, which is not always
     /// straight at the message. Nil until a way has been found.
     @Published var way: MessageAim?
+    /// The phone is lying asleep with the app open, so nobody is looking at the screen.
+    var asleep = false
     private var shown = 0
 
     func record(_ notes: [RenderScene.Note], frame: String, mine: Set<String>) {
@@ -3016,7 +3020,9 @@ final class MessageCenter: ObservableObject {
             self.target = inbox.messages.first { $0.id == target.id }
             if self.target == nil { aim = nil }
         }
+        MessageAlert.allow()
         guard !arrived.isEmpty else { return }
+        MessageAlert.post(arrived, asleep: asleep)
         UINotificationFeedbackGenerator().notificationOccurred(.success)
         shown += 1
         let showing = shown
@@ -3034,6 +3040,40 @@ final class MessageCenter: ObservableObject {
         target = inbox.messages.first { $0.id == message.id }
     }
     func stop() { target = nil; aim = nil; way = nil }
+}
+
+/// A notification from iOS itself for a new message, for when nobody is looking at the app:
+/// the phone asleep on a table with the app open, or the app just put away. It is raised by
+/// the phone when it hears of the message from Home, so it cannot arrive once iOS has
+/// suspended the app; that would take a push sent from outside.
+enum MessageAlert {
+    private final class Presenter: NSObject, UNUserNotificationCenterDelegate {
+        var asleep = false
+        // With the app in front and awake, its own banner is enough.
+        func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+                                    withCompletionHandler done: @escaping (UNNotificationPresentationOptions) -> Void) {
+            done(asleep ? [.banner, .list, .sound] : [])
+        }
+    }
+    private static let presenter = Presenter()
+    private static var asked = false
+    /// Ask once, the first time there are messages to hear about.
+    static func allow() {
+        guard !asked else { return }
+        asked = true
+        UNUserNotificationCenter.current().delegate = presenter
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+    static func post(_ messages: [MessageInbox.Message], asleep: Bool) {
+        guard let first = messages.first else { return }
+        presenter.asleep = asleep
+        guard asleep || UIApplication.shared.applicationState != .active else { return }
+        let content = UNMutableNotificationContent()
+        content.title = messages.count == 1 ? "New message" : "\(messages.count) new messages"
+        content.body = first.text
+        content.sound = .default
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: first.id, content: content, trigger: nil))
+    }
 }
 
 /// A new message, across the top. Tapping it points the way to the message.
