@@ -26,8 +26,8 @@ class ScanMapperTest {
         assertEquals(100,raw.getLong("timestamp_ns"))
         assertEquals(-1.0,raw.getJSONArray("points").getJSONArray(0).getDouble(2),0.000001)
         assertEquals(1.0,raw.getJSONObject("camera_to_session").getJSONArray("translation").getDouble(0),0.0)
-        val presence = JSONObject(String(encodePhonePose("a",100,pose,aligned)))
-        assertEquals("home",presence.getJSONObject("pose").getString("to_frame_id"))
+        val presence = JSONObject(String(encodePhonePose("a",100,pose)))
+        assertEquals("phone-ar:a",presence.getJSONObject("pose").getString("to_frame_id"))
         assertEquals(1.0,presence.getJSONObject("pose").getJSONArray("translation").getDouble(0),0.0)
         val repeated = mapper.process(ScanInput("a",200,pose,null,null,"retained",true))
         assertSame(result.centers,repeated.centers) // No new buffer for an unchanged map.

@@ -79,10 +79,9 @@ internal class ScanMapper {
     }
 }
 
-internal fun encodePhonePose(session: String, timestamp: Long, pose: Pose, alignment: JSONObject): ByteArray {
-    val transform = alignment.getJSONObject("session_to_home")
+internal fun encodePhonePose(session: String, timestamp: Long, pose: Pose): ByteArray {
     return JSONObject().put("session",session).put("timestamp_ns",timestamp)
-        .put("pose",poseJson(poseFromJson(transform).compose(pose),"phone-camera:$session",transform.getString("to_frame_id")))
+        .put("pose",poseJson(pose,"phone-camera:$session","phone-ar:$session"))
         .toString().toByteArray()
 }
 

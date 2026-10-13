@@ -133,11 +133,10 @@ var poseHomeInAR = simd_float4x4(simd_quatf(angle: .pi/2, axis: SIMD3(0,1,0)))
 poseHomeInAR.columns.3 = SIMD4(8,0,3,1)
 var expectedCameraHome = matrix_identity_float4x4
 expectedCameraHome.columns.3 = SIMD4(1,1.5,2,1)
-let phonePose = PhonePoseSample(session: "test", timestamp: 2, cameraInAR: poseHomeInAR * expectedCameraHome,
-                               homeInAR: poseHomeInAR, homeFrame: "home")
-check(simd_distance(phonePose.pose.matrix.columns.3, expectedCameraHome.columns.3) < 0.00001,
-      "published phone pose converts from AR into calibrated Home coordinates")
-check(phonePose.timestamp_ns == 2_000_000_000 && phonePose.pose.to_frame_id == "home", "capture clock and explicit destination survive encoding")
+let phonePose = PhonePoseSample(session: "test", timestamp: 2, cameraInAR: poseHomeInAR * expectedCameraHome)
+check(simd_distance(phonePose.pose.matrix.columns.3, (poseHomeInAR * expectedCameraHome).columns.3) < 0.00001,
+      "published phone pose stays in native AR coordinates")
+check(phonePose.timestamp_ns == 2_000_000_000 && phonePose.pose.to_frame_id == "phone-ar:test", "capture clock and native destination survive encoding")
 print("Phone pose publication checks passed")
 
 var robotScene = fullScene

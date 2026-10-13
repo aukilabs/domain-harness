@@ -321,7 +321,6 @@ class ArScanner(private val activity: Activity, private val session: Session, pr
         } catch (e: Exception) { work.finish(); throw e }
     }
     private fun schedulePose(frame: Frame) {
-        val aligned = alignment ?: return
         if (!poseCadence.due(frame.timestamp)) return
         val token = poseWork.acquire() ?: return
         val timestamp = frame.timestamp; val pose = frame.camera.pose; val sessionId = mapId
@@ -330,7 +329,7 @@ class ArScanner(private val activity: Activity, private val session: Session, pr
         try {
             poseWorker.execute {
                 try {
-                    val encoded = encodePhonePose(sessionId,timestamp,pose,aligned)
+                    val encoded = encodePhonePose(sessionId,timestamp,pose)
                     poseWork.commit(token) {
                         if (System.nanoTime()-captured < 500_000_000L) NativeBridge.pose(encoded)
                     }

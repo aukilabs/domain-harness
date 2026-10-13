@@ -1,4 +1,5 @@
 pub mod conventions;
+pub mod compact_pose;
 pub mod catalog_chat;
 pub mod scene_geometry;
 pub mod peer_aliases;
