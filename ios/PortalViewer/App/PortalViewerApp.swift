@@ -1400,7 +1400,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         let tap = UITapGestureRecognizer(target: self, action: #selector(doubleTap(_:)))
         tap.numberOfTapsRequired = 2
         view.addGestureRecognizer(tap)
-        // Long-press means "look for a Portal here, now".
+        // Long-press on a QR code means "use this Portal, now". Anywhere else it does nothing.
         let press = UILongPressGestureRecognizer(target: self, action: #selector(longPress(_:)))
         press.minimumPressDuration = 0.35
         view.addGestureRecognizer(press)
@@ -2093,16 +2093,14 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { layer.removeFromSuperlayer() }
     }
 
-    /// Explicit user scan: always gives visible feedback, and forces the next
-    /// alignment attempt instead of waiting for the cooldown.
+    /// Explicit user scan of the QR code under the finger: gives visible feedback
+    /// and forces the next alignment attempt instead of waiting for the cooldown.
+    /// A press that is not on a QR code is left alone, silently, so it stays
+    /// free for other gestures such as drawing.
     @objc private func longPress(_ gesture: UILongPressGestureRecognizer) {
         guard volumes.draft == nil else { return }
-        guard gesture.state == .began else { return }
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-        guard let frame = view.session.currentFrame else {
-            showToast("Camera is not ready yet", good: false); return
-        }
-        showToast("Looking for a Portal…", good: true)
+        guard gesture.state == .began, let frame = view.session.currentFrame else { return }
+        let pressed = gesture.location(in: view)
         let size = view.bounds.size
         let orientation = view.window?.windowScene?.interfaceOrientation ?? .portrait
         let display = frame.displayTransform(for: orientation, viewportSize: size)
@@ -2126,11 +2124,19 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 return (code.payloadStringValue, corners, pose.map { frame.camera.transform * $0 }, pixels)
             }
             DispatchQueue.main.async {
-                guard let (payload, corners, portalInAR, pixels) = codes.first(where: { $0.0.flatMap(PortalMap.portalCode) != nil }) ?? codes.first else {
-                    UINotificationFeedbackGenerator().notificationOccurred(.warning)
-                    self.showToast("No QR code in view. Get the whole code in frame and hold still.", good: false)
-                    return
-                }
+                // The code under the finger, with a margin of a quarter of its size all round.
+                guard let (payload, corners, portalInAR, pixels) = codes.first(where: { code in
+                    let corners = code.1
+                    let center = CGPoint(x: corners.map(\.x).reduce(0, +) / 4, y: corners.map(\.y).reduce(0, +) / 4)
+                    let outline = UIBezierPath()
+                    for (i, c) in corners.enumerated() {
+                        let p = CGPoint(x: center.x + (c.x - center.x) * 1.5, y: center.y + (c.y - center.y) * 1.5)
+                        if i == 0 { outline.move(to: p) } else { outline.addLine(to: p) }
+                    }
+                    outline.close()
+                    return outline.contains(pressed)
+                }) else { return }
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                 guard let payload, let code = PortalMap.portalCode(payload) else {
                     self.showOutline(corners, good: false)
                     UINotificationFeedbackGenerator().notificationOccurred(.warning)
