@@ -23,6 +23,8 @@ pub struct DetectorStatus {
     processed_frames: u64,
     decoded_qrs: u64,
     portal_observations: u64,
+    /// Portal observations that only the upscaled retry decoded.
+    upscaled_portals: u64,
     errors: u64,
     last_timestamp_ns: Option<u64>,
     last_portal_timestamp_ns: Option<u64>,
@@ -114,7 +116,8 @@ impl PortalCameraDetector {
                 drop(state);
                 let started = Instant::now();
                 let result = (|| -> anyhow::Result<()> {
-                    let (decoded, landmarks) = detect(&mut detector, &observation.payload.bytes)?;
+                    let Detection { decoded, landmarks, upscaled } =
+                        detect(&mut detector, &observation.payload.bytes)?;
                     let identities = landmarks
                         .iter()
                         .map(|l| l.recognition.identity.clone())
@@ -138,6 +141,7 @@ impl PortalCameraDetector {
                     status.processed_frames += 1;
                     status.decoded_qrs += decoded as u64;
                     status.portal_observations += (identities.len() / 4) as u64;
+                    status.upscaled_portals += if upscaled { (identities.len() / 4) as u64 } else { 0 };
                     status.last_timestamp_ns = last;
                     status.last_error = None;
                     if !identities.is_empty() {
@@ -180,41 +184,165 @@ impl PortalCameraDetector {
         self.pending.1.notify_one();
     }
 }
+/// Retry scale for frames whose Portals do not decode at native resolution.
+/// A 15 cm Portal a few metres from a 1280-px head eye spans under 2 px per
+/// module and the scanner's own small-code rungs do not fire in cluttered
+/// scenes. On live BB Lab frames 2× decoded 14 of 24 eye images where 1.5×
+/// managed 5 and native none.
+pub const UPSCALE_RETRY: Upscale = Upscale::X2;
+
+/// Catmull-Rom upscales with fixed integer taps. Output pixel o samples
+/// source position (o+0.5)/f-0.5, so the tap pattern repeats every period.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Upscale {
+    X1_5,
+    X2,
+}
+impl Upscale {
+    pub fn factor(self) -> f64 {
+        match self {
+            Upscale::X1_5 => 1.5,
+            Upscale::X2 => 2.,
+        }
+    }
+    /// (outputs per period, source pixels per period, per-phase (first tap
+    /// offset, weights), weight sum).
+    fn kernel(self) -> (usize, usize, &'static [(isize, [i32; 4])], i32) {
+        match self {
+            // Phases sample t=2/3 from 2k-1, t=1/3 from 2k, and 2k+1 exactly.
+            Upscale::X1_5 => (3, 2, &[(-2, [-1, 9, 21, -2]), (-1, [-2, 21, 9, -1]), (1, [27, 0, 0, 0])], 27),
+            // Phases sample t=3/4 from k-1 and t=1/4 from k.
+            Upscale::X2 => (2, 1, &[(-2, [-3, 29, 111, -9]), (-1, [-9, 111, 29, -3])], 128),
+        }
+    }
+}
+
+/// Separable integer upscale; ~5× faster than the generic resizer, which also
+/// clips the intermediate pass.
+pub fn upscale(gray: &image::GrayImage, scale: Upscale) -> image::GrayImage {
+    let (period, step, phases, sum) = scale.kernel();
+    let taps = |o: usize, len: usize| -> [(usize, i32); 4] {
+        let (offset, weights) = phases[o%period];
+        let first = ((o/period)*step) as isize+offset;
+        std::array::from_fn(|i| ((first+i as isize).clamp(0, len as isize-1) as usize, weights[i]))
+    };
+    let (w, h) = (gray.width() as usize, gray.height() as usize);
+    let (ow, oh) = (w*period/step, h*period/step);
+    let src = gray.as_raw();
+    let columns: Vec<_> = (0..ow).map(|o| taps(o, w)).collect();
+    let mut rows = vec![0i32; ow*h]; // horizontal pass, scaled by `sum`
+    for y in 0..h {
+        let row = &src[y*w..(y+1)*w];
+        for (out, t) in rows[y*ow..(y+1)*ow].iter_mut().zip(&columns) {
+            *out = t.iter().map(|&(x, wt)| wt*i32::from(row[x])).sum();
+        }
+    }
+    let (norm, half) = (sum*sum, sum*sum/2);
+    let mut out = vec![0u8; ow*oh];
+    for o in 0..oh {
+        let t = taps(o, h);
+        for (x, px) in out[o*ow..(o+1)*ow].iter_mut().enumerate() {
+            let v: i32 = t.iter().map(|&(y, wt)| wt*rows[y*ow+x]).sum();
+            *px = ((v+half).div_euclid(norm)).clamp(0, 255) as u8;
+        }
+    }
+    image::GrayImage::from_raw(ow as u32, oh as u32, out).expect("sized buffer")
+}
+
 fn detect(
     detector: &mut auki_qr_detector::QrDetector,
     jpeg: &[u8],
-) -> anyhow::Result<(usize, Vec<ImageLandmark>)> {
+) -> anyhow::Result<Detection> {
     let gray = image::load_from_memory_with_format(jpeg, image::ImageFormat::Jpeg)?.to_luma8();
-    let codes = detector.detect_luma(
+    detect_portals(detector, &gray)
+}
+
+pub struct Detection {
+    pub decoded: usize,
+    pub landmarks: Vec<ImageLandmark>,
+    /// Found only on the upscaled retry; pixels are mapped back to `gray`.
+    pub upscaled: bool,
+}
+
+/// One decoded QR code with corners in the scanned image's own pixels.
+#[derive(Clone, Debug)]
+pub struct Code {
+    pub payload: String,
+    pub mirrored: bool,
+    /// Top-left, top-right, bottom-right, bottom-left (refined when available).
+    pub corners_px: [[f64; 2]; 4],
+}
+impl Code {
+    pub fn portal(&self) -> Option<&str> {
+        (!self.mirrored).then(|| crate::local_mapper::portal_code(&self.payload)).flatten()
+    }
+}
+
+/// Every QR code in `gray`. When `retry` is set and no Portal decodes at
+/// native resolution, scans once more on an [`UPSCALE_RETRY`] copy and keeps
+/// that result if it holds a Portal. Returns (codes, decoded on the retry).
+pub fn detect_codes(
+    detector: &mut auki_qr_detector::QrDetector,
+    gray: &image::GrayImage,
+    retry: bool,
+) -> anyhow::Result<(Vec<Code>, bool)> {
+    let native = scan(detector, gray, 1.)?;
+    if !retry || native.iter().any(|c| c.portal().is_some()) {
+        return Ok((native, false));
+    }
+    let larger = upscale(gray, UPSCALE_RETRY);
+    let retried = scan(detector, &larger, UPSCALE_RETRY.factor())?;
+    Ok(if retried.iter().any(|c| c.portal().is_some()) { (retried, true) } else { (native, false) })
+}
+
+/// Portal corners in `gray`'s pixels, with the upscaled retry.
+pub fn detect_portals(
+    detector: &mut auki_qr_detector::QrDetector,
+    gray: &image::GrayImage,
+) -> anyhow::Result<Detection> {
+    let (codes, upscaled) = detect_codes(detector, gray, true)?;
+    let landmarks = codes
+        .iter()
+        .filter_map(|c| c.portal().map(|id| (id, c.corners_px)))
+        .flat_map(|(id, corners)| {
+            CORNERS.into_iter().zip(corners).map(move |(corner, pixel)| ImageLandmark {
+                recognition: Recognition {
+                    landmark_type: PORTAL.into(),
+                    identity: format!("{id}/{corner}"),
+                },
+                pixel,
+            })
+        })
+        .collect();
+    Ok(Detection { decoded: codes.len(), landmarks, upscaled })
+}
+
+fn scan(
+    detector: &mut auki_qr_detector::QrDetector,
+    gray: &image::GrayImage,
+    scale: f64,
+) -> anyhow::Result<Vec<Code>> {
+    let found = detector.detect_luma(
         gray.as_raw(),
         gray.width() as usize,
         gray.height() as usize,
         gray.width() as usize,
     )?;
-    Ok((
-        codes.codes.len(),
-        codes
-            .codes
-            .iter()
-            .filter(|c| !c.mirrored)
-            .filter_map(|c| {
-                crate::local_mapper::portal_code(&c.payload)
-                    .map(|id| (id, c.refined_corners_px.as_ref().unwrap_or(&c.corners_px)))
-            })
-            .flat_map(|(id, corners)| {
-                CORNERS
-                    .into_iter()
-                    .zip(corners)
-                    .map(move |(corner, p)| ImageLandmark {
-                        recognition: Recognition {
-                            landmark_type: PORTAL.into(),
-                            identity: format!("{id}/{corner}"),
-                        },
-                        pixel: [p.x, p.y],
-                    })
-            })
-            .collect(),
-    ))
+    // Pixel centres: x_source = (x_scaled + 0.5) / scale - 0.5.
+    let source = |v: f64| (v+0.5)/scale-0.5;
+    Ok(found
+        .codes
+        .iter()
+        .map(|c| Code {
+            payload: c.payload.clone(),
+            mirrored: c.mirrored,
+            corners_px: c
+                .refined_corners_px
+                .as_ref()
+                .unwrap_or(&c.corners_px)
+                .map(|p| [source(p.x), source(p.y)]),
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -328,11 +456,37 @@ mod tests {
         bytes
     }
     #[test]
+    fn upscale_keeps_flat_images_flat_and_sizes_exact() {
+        let flat = image::GrayImage::from_pixel(7, 5, image::Luma([123]));
+        for (scale, (w, h)) in [(Upscale::X1_5, (10, 7)), (Upscale::X2, (14, 10))] {
+            let up = upscale(&flat, scale);
+            assert_eq!((up.width(), up.height()), (w, h));
+            assert!(up.pixels().all(|p| p.0[0] == 123));
+        }
+    }
+    #[test]
+    fn small_portal_decodes_only_on_the_upscaled_retry_in_source_pixels() {
+        // 128×128 crop of a live BB Lab head-eye frame: the 15 cm Portal at
+        // about 1.5 px per module, which the native pass cannot read.
+        let jpeg = include_bytes!("../tests/fixtures/bb-lab-portal-280UO1U1RPC-small.jpg");
+        let gray = image::load_from_memory(jpeg).unwrap().to_luma8();
+        let mut detector = auki_qr_detector::QrDetector::new(Default::default());
+        assert!(scan(&mut detector, &gray, 1.).unwrap().iter().all(|c| c.portal().is_none()), "fixture must fail natively");
+        let found = detect(&mut detector, jpeg).unwrap();
+        assert!(found.upscaled);
+        assert_eq!(found.landmarks.len(), 4);
+        assert_eq!(found.landmarks[0].recognition.identity, "280UO1U1RPC/top_left");
+        // Corners are reported in the crop's own pixels, not the upscaled copy's.
+        let tl = found.landmarks[0].pixel;
+        assert!((tl[0]-72.).abs() < 3. && (tl[1]-36.).abs() < 3., "{tl:?}");
+    }
+    #[test]
     fn wrist_jpeg_yields_four_named_corners_without_calibration() {
         let mut detector = auki_qr_detector::QrDetector::new(Default::default());
-        let (decoded, found) =
+        let Detection { decoded, landmarks: found, upscaled } =
             detect(&mut detector, &jpeg(Some("https://r8.hr/2ZWHV5L6I04"))).unwrap();
         assert_eq!(decoded, 1);
+        assert!(!upscaled);
         assert_eq!(found.len(), 4);
         for (landmark, corner) in found.iter().zip(CORNERS) {
             assert_eq!(
@@ -342,11 +496,11 @@ mod tests {
             assert_eq!(landmark.recognition.landmark_type, PORTAL);
             assert!(landmark.pixel.iter().all(|p| p.is_finite()));
         }
-        assert!(detect(&mut detector, &jpeg(None)).unwrap().1.is_empty());
+        assert!(detect(&mut detector, &jpeg(None)).unwrap().landmarks.is_empty());
         assert!(
             detect(&mut detector, &jpeg(Some("not a portal")))
                 .unwrap()
-                .1
+                .landmarks
                 .is_empty()
         );
         assert!(detect(&mut detector, b"invalid jpeg").is_err());

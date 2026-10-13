@@ -85,5 +85,11 @@ opt-level = 2
 opt-level = 2
 [profile.dev.package.auki-geometry]
 opt-level = 2
+# Portal detectors decode every camera JPEG and resize frames for the
+# small-code retry; unoptimized, these dominate the robot's detector time.
+[profile.dev.package.image]
+opt-level = 2
+[profile.dev.package.zune-jpeg]
+opt-level = 2
 [profile.dev.package.pnp-core]
 opt-level = 2
