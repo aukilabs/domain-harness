@@ -35,7 +35,7 @@ test('Devices groups types and puts camera feeds first',async({page})=>{
  await page.goto('/');await page.getByRole('button',{name:'Devices',exact:true}).click();
  const robot=page.locator('#fleet-sensors > details[data-peer="robot"]');await robot.locator(':scope > summary').click();
  const feeds=robot.getByRole('region',{name:'Camera feeds',exact:true});await expect(feeds.getByRole('button',{name:'Front camera',exact:true})).toBeVisible();
- expect(await robot.locator(':scope > section').evaluateAll(nodes=>nodes.map(n=>n.getAttribute('aria-label')))).toEqual(['Camera feeds','Cameras','Maps','Poses & odometry','Other']);
+ expect(await robot.locator(':scope > section').evaluateAll(nodes=>nodes.map(n=>n.getAttribute('aria-label')))).toEqual(['Camera feeds','Pose logs','Cameras','Maps','Poses & odometry','Other']);
  const cameras=robot.getByRole('region',{name:'Cameras',exact:true});
  expect(await cameras.locator('summary').allTextContents()).toEqual(['Component · a-camera','Product · camera-history','Component · z-camera']);
  await expect(robot.getByRole('region',{name:'Other',exact:true})).toContainText('camera-name-only');

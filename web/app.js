@@ -906,7 +906,7 @@ function renderFleetRows(){
   for(const option of options.sort((a,b)=>a.textContent.localeCompare(b.textContent))){const button=uiButton(option.textContent+($('sensor-select').value===option.value?' · PiP ●':''),()=>{$('sensor-select').value=$('sensor-select').value===option.value?'':option.value;$('sensor-select').dispatchEvent(new Event('change'));});button.setAttribute('aria-pressed',String($('sensor-select').value===option.value));feeds.append(button);}
   if(!options.length){const empty=document.createElement('p');empty.className='panel-hint';empty.textContent='No camera feeds available';feeds.append(empty);}group.append(feeds);
   const catalog=peer.catalog||{},entries=[...(catalog.components||[]).map(entry=>({kind:'component',entry})),...(catalog.products||[]).map(entry=>({kind:'product',entry}))];
-  const poseLogs=document.createElement('section'),poseHeading=document.createElement('h3');poseHeading.textContent='Pose logs';poseLogs.append(poseHeading);
+  const poseLogs=document.createElement('section'),poseHeading=document.createElement('h3');poseLogs.setAttribute('aria-label','Pose logs');poseHeading.textContent='Pose logs';poseLogs.append(poseHeading);
   const poses=(catalog.products||[]).filter(p=>p.metadata?.schema==='spatial-harness.compact-pose-contract/v1');
   for(const product of poses)poseLogs.append(uiButton('Inspect '+product.manifest.product_id,()=>inspectPose(peer.peer_id,product,(peer.name||peer.peer_id)+' / '+product.manifest.product_id)));
   if(!poses.length){const hint=document.createElement('p');hint.className='panel-hint';hint.textContent='No compact pose Product advertised';poseLogs.append(hint);}group.append(poseLogs);
