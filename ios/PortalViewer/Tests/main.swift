@@ -118,6 +118,36 @@ check(decodedScene.render?.notes.first?.text == "Hello", "scene note preserved")
 check(decodedScene.scenegraph == matchingMap.scenegraph, "geometry updates preserve calibration reference")
 print("Full scene decoding checks passed")
 
+func note(_ id: String, _ text: String = "Hi") -> RenderScene.Note {
+    RenderScene.Note(id: id, text: text, position: [1, 0, -2], phone_pose: nil)
+}
+var inbox = MessageInbox()
+check(inbox.record([note("a"), note("b")], frame: "home").isEmpty && inbox.unread == 0 && inbox.messages.map(\.id) == ["a", "b"],
+      "what a scene already holds is listed in order and is not news")
+check(inbox.record([note("a"), note("b"), note("c"), note("d")], frame: "home", mine: ["d"]).map(\.id) == ["c"] && inbox.unread == 1,
+      "a note from someone else is news; this phone's own is not")
+check(inbox.record([note("a"), note("b"), note("c", "Edited"), note("d")], frame: "home").isEmpty && inbox.unread == 1
+      && inbox.messages[2].text == "Edited", "a message stays unread, and follows Home's edits, until it is opened")
+inbox.open("c")
+check(inbox.unread == 0 && inbox.record([note("b"), note("c")], frame: "home").isEmpty && inbox.messages.map(\.id) == ["b", "c"],
+      "an opened message is read and a deleted one leaves the list")
+check(inbox.record([note("z")], frame: "other").isEmpty && inbox.unread == 0, "another scene starts again with nothing new")
+let phoneLabel = RenderScene.Note(id: "p", text: "Phone", position: [0, 0, 0],
+    phone_pose: RenderScene.PhonePose(peer_id: "p", name: nil, state: nil, pose: decodedScene.scenegraph.anchors.values.first!.pose_in_map))
+check(inbox.record([note("z"), phoneLabel], frame: "other").isEmpty && inbox.messages.count == 1, "Home's device labels are not messages")
+// A 90 degree lens on a square screen.
+let lens = simd_float4x4(SIMD4(1, 0, 0, 0), SIMD4(0, 1, 0, 0), SIMD4(0, 0, -1, -1), SIMD4(0, 0, -0.02, 0))
+let ahead = MessageAim(spot: SIMD3(0.5, 0.5, -2), lens: lens)
+check(ahead.screen == SIMD2(0.625, 0.375) && ahead.hint == "Here", "a spot in view is marked on the screen, up being towards the top")
+check(MessageAim(spot: SIMD3(3, 0, -1), lens: lens).hint == "Turn right" && MessageAim(spot: SIMD3(-3, 0, -1), lens: lens).hint == "Turn left"
+      && MessageAim(spot: SIMD3(0, 3, -1), lens: lens).hint == "Tilt up" && MessageAim(spot: SIMD3(0, -3, -1), lens: lens).hint == "Tilt down",
+      "a spot out of view says which way to turn")
+let behind = MessageAim(spot: SIMD3(-0.2, 0.1, 2), lens: lens)
+check(behind.screen == nil && behind.hint == "Turn around" && behind.turn < 0, "a spot behind is never on screen, and turns the nearer way")
+check(abs(MessageAim(spot: SIMD3(3, 0, -1), lens: lens).turn - .pi / 2) < 0.001 && abs(MessageAim(spot: SIMD3(0, 0, 4), lens: lens).distance - 4) < 0.001,
+      "the arrow points across the screen and the distance is in metres")
+print("Message checks passed")
+
 let floorHit = SceneRay.hit(origin: SIMD3(0,2,0), direction: SIMD3(0,-1,0), scene: nil)
 check(floorHit == SIMD3(0,0,0), "empty scene still intersects Home floor")
 check(SceneRay.hit(origin: SIMD3(0,2,0), direction: SIMD3(1,0,0), scene: nil) == nil, "parallel ray misses floor")

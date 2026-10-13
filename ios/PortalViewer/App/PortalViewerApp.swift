@@ -28,6 +28,7 @@ struct ViewerScreen: View {
     /// Off by default: most people only need the Components bar.
     @AppStorage("showDetails") private var showDetails = false
     @State private var promptedForLogin = false
+    @State private var showMessages = false
     @Environment(\.scenePhase) private var phase
     /// Whether voxels are reaching Home right now: ink sending, orange failing, grey idle.
     private var sending: Bool {
@@ -59,7 +60,9 @@ struct ViewerScreen: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             CameraView(controller: controller).ignoresSafeArea()
-            VStack {
+            if !controller.snoozed { MessageMarker(center: controller.messages) }
+            VStack(spacing: 0) {
+                MessageBanner(center: controller.messages) { withAnimation { showMessages = true } }
                 HStack(alignment: .top) {
                     VolumeControls(editor: controller.volumes, peer: peer)
                     Spacer(minLength: 0)
@@ -94,8 +97,14 @@ struct ViewerScreen: View {
                     .padding(.top, 10)
                     .accessibilityLabel(controller.drawing ? "Stop drawing" : "Draw on the scene")
                     if controller.drawing { CrayonTools(controller: controller).padding(.top, 10) }
+                    MessageButton(center: controller.messages, open: $showMessages).padding(.top, 10)
                     }
                     .opacity(controller.snoozed ? 0 : 1).disabled(controller.snoozed)
+                }
+                if showMessages && !controller.snoozed {
+                    MessageList(center: controller.messages) { withAnimation { showMessages = false } }
+                        .padding(.horizontal).frame(maxWidth: .infinity, alignment: .trailing)
+                        .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .topTrailing)))
                 }
                 Spacer()
             }
@@ -121,6 +130,7 @@ struct ViewerScreen: View {
                 .onTapGesture { controller.wake() }
             }
             VStack(spacing: 12) {
+                if !controller.snoozed { MessageGuide(center: controller.messages) }
                 // Naming a point takes the bar's place, so the field sits just above the keyboard.
                 if let placement = controller.placement {
                     AnnotationEditor(controller: controller, peer: peer, placement: placement, close: { controller.clearPlacement() })
@@ -1371,7 +1381,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private var unsynced = [(id: String, frame: String, text: String, position: [Float])]()
     /// The locked point stays where it is, whether or not Home can be reached right now.
     func keepPoint(_ placement: NotePlacement, text: String) {
-        guard let at = placement.at else { return }
+        ownNotes.insert(placement.id)
+        guard let at = placement.at else { ownTexts.append(text); return }
         unsynced.append((placement.id, placement.frame, text, at))
         photos[placement.id] = floatingPhoto
         // No longer the preview, so closing the editor leaves it in the room.
@@ -1402,6 +1413,32 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         fade.values = [0, 1, 0]; fade.keyTimes = [0, 0.15, 1]
         dust.propertyControllers = [.opacity: SCNParticlePropertyController(animation: fade)]
         return dust
+    }
+    /// Notes other people leave in the scene, as messages to be told about and led to.
+    let messages = MessageCenter()
+    /// Notes this phone wrote, which are not news to it. One placed by a tap comes back
+    /// under an id of Home's choosing, so it is known by its words.
+    private var ownNotes = Set<String>()
+    private var ownTexts = [String]()
+    private func recordMessages(_ scene: RenderScene) {
+        for note in scene.notes where !ownNotes.contains(note.id) && !messages.inbox.messages.contains(where: { $0.id == note.id }) {
+            guard let sent = ownTexts.firstIndex(of: note.text) else { continue }
+            ownTexts.remove(at: sent)
+            ownNotes.insert(note.id)
+        }
+        messages.record(scene.notes, frame: scene.frame, mine: ownNotes)
+    }
+    /// Where the message being looked for is from the phone, on every camera frame.
+    private func aimAtMessage(_ frame: ARFrame) {
+        guard let target = messages.target else { return }
+        var aim: MessageAim?
+        if aligned, case .normal = frame.camera.trackingState, view.bounds.width > 0 {
+            let inRoom = root.simdTransform * SIMD4(target.position.x, target.position.y, target.position.z, 1)
+            let spot = frame.camera.viewMatrix(for: .portrait) * inRoom
+            aim = MessageAim(spot: SIMD3(spot.x, spot.y, spot.z),
+                             lens: frame.camera.projectionMatrix(for: .portrait, viewportSize: view.bounds.size, zNear: 0.01, zFar: 100))
+        }
+        if aim != messages.aim { messages.aim = aim }
     }
     @Published var status = "Connect to Home to receive its scene"
     @Published var shareDepth = true {
@@ -1701,6 +1738,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             }
         }
         self.map = map
+        if let scene = map.render, scene.frame == map.scenegraph.map.frame.id { recordMessages(scene) }
         miniMap = MiniMapData(map)
         trackedDevices = trails.record(map.render?.notes ?? [], frame: map.scenegraph.map.frame.id,
                                        ownFrame: "phone-camera:" + poseSession)
@@ -2669,6 +2707,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         sampleCrayon()
         // Aligned frames are shared below, together with their pose.
         if !aligned { shareCamera(frame, alignment: 0, withPose: false) }
+        aimAtMessage(frame)
         if north == .searching {
             searchNorth(frame)
             // This frame, and any already on their way, are still in the compass's axes.
@@ -2889,6 +2928,198 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
 
 
 /// A small card for naming a new point. The camera stays in view behind it.
+/// Messages left in the scene: the list, the banner for a new one, and the way to the one being looked for.
+final class MessageCenter: ObservableObject {
+    @Published private(set) var inbox = MessageInbox()
+    /// Just arrived. Shown across the top for a few seconds.
+    @Published var banner = [MessageInbox.Message]()
+    /// The message being looked for.
+    @Published private(set) var target: MessageInbox.Message?
+    /// Nil while the phone does not know where it is in the scene.
+    @Published var aim: MessageAim?
+    private var shown = 0
+
+    func record(_ notes: [RenderScene.Note], frame: String, mine: Set<String>) {
+        var next = inbox
+        let arrived = next.record(notes, frame: frame, mine: mine)
+        if next != inbox { inbox = next }
+        // The one being looked for follows Home's edits, and ends if Home no longer has it.
+        if let target, target != inbox.messages.first(where: { $0.id == target.id }) {
+            self.target = inbox.messages.first { $0.id == target.id }
+            if self.target == nil { aim = nil }
+        }
+        guard !arrived.isEmpty else { return }
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        shown += 1
+        let showing = shown
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { banner = arrived }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+            guard let self, self.shown == showing else { return }
+            withAnimation { self.banner = [] }
+        }
+    }
+    /// Open a message and start pointing the way to it.
+    func find(_ message: MessageInbox.Message) {
+        inbox.open(message.id)
+        banner = []
+        aim = nil
+        target = inbox.messages.first { $0.id == message.id }
+    }
+    func stop() { target = nil; aim = nil }
+}
+
+/// A new message, across the top. Tapping it points the way to the message.
+struct MessageBanner: View {
+    @ObservedObject var center: MessageCenter
+    let openList: () -> Void
+    var body: some View {
+        if let first = center.banner.first {
+            let one = center.banner.count == 1
+            Button {
+                if one { withAnimation { center.find(first) } }
+                else { withAnimation { center.banner = [] }; openList() }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "bubble.left.fill").font(.system(size: 18, weight: .semibold)).foregroundStyle(Theme.accent)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(one ? "New message" : "\(center.banner.count) new messages").themeLabel(12, .bold)
+                        Text(one ? first.text : "Tap to see them, first to last").themeText(11).foregroundStyle(Theme.dim)
+                            .lineLimit(2).multilineTextAlignment(.leading)
+                    }
+                    Spacer(minLength: 0)
+                    Text(one ? "Find it" : "List").themeLabel(10, .bold).foregroundStyle(Theme.accent)
+                }
+                .foregroundStyle(Theme.ink).themeBubble()
+            }
+            .buttonStyle(SquishButtonStyle())
+            .padding(.horizontal).padding(.top, 8)
+            .transition(.move(edge: .top).combined(with: .opacity))
+        }
+    }
+}
+
+/// Opens the list of messages. The number is how many have not been opened.
+struct MessageButton: View {
+    @ObservedObject var center: MessageCenter
+    @Binding var open: Bool
+    var body: some View {
+        if !center.inbox.messages.isEmpty {
+            let unread = center.inbox.unread
+            Button { withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { open.toggle() } } label: {
+                Image(systemName: "bubble.left.fill").font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(open ? Theme.accent : Theme.ink).themeDot()
+                    .overlay(alignment: .topTrailing) {
+                        if unread > 0 {
+                            Text("\(unread)").themeLabel(9, .bold).foregroundStyle(Theme.onAccent)
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(Theme.accent, in: Capsule()).offset(x: 8, y: -6)
+                        }
+                    }
+            }
+            .frame(width: 44)
+            .accessibilityLabel(unread > 0 ? "Messages, \(unread) new" : "Messages")
+        }
+    }
+}
+
+/// Every message in the scene, first to last. Tapping one points the way to it.
+struct MessageList: View {
+    @ObservedObject var center: MessageCenter
+    let close: () -> Void
+    var body: some View {
+        let unread = center.inbox.unread
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Messages").themeLabel(15, .bold)
+                Spacer()
+                Text(unread > 0 ? "\(unread) new" : "First to last").themeLabel(10, .semibold)
+                    .foregroundStyle(unread > 0 ? Theme.accent : Theme.dim)
+            }
+            // Only a long list scrolls.
+            ViewThatFits(in: .vertical) {
+                rows
+                ScrollView { rows }
+            }
+            .frame(maxHeight: 300)
+            Text("Tap a message to be shown where it is.").themeText(10).foregroundStyle(Theme.dim)
+        }
+        .themePanel(padding: 14).frame(maxWidth: 300)
+    }
+    private var rows: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(Array(center.inbox.messages.enumerated()), id: \.element.id) { index, message in
+                Button { center.find(message); close() } label: {
+                    HStack(spacing: 8) {
+                        Text("\(index + 1)").themeLabel(10, .semibold).foregroundStyle(Theme.dim).frame(width: 22, alignment: .trailing)
+                        Text(message.text).themeText(12, message.unread ? .bold : .regular)
+                            .lineLimit(2).multilineTextAlignment(.leading)
+                        Spacer(minLength: 0)
+                        if message.unread { Circle().fill(Theme.accent).frame(width: 8, height: 8) }
+                    }
+                    .themeRow(selected: message.id == center.target?.id)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Message \(index + 1)\(message.unread ? ", new" : ""): \(message.text)")
+            }
+        }
+    }
+}
+
+/// Over the camera: brackets round the message when it is in view, or an arrow the way to turn when it is not.
+struct MessageMarker: View {
+    @ObservedObject var center: MessageCenter
+    var body: some View {
+        GeometryReader { area in
+            if center.target != nil, let aim = center.aim {
+                if let spot = aim.screen {
+                    Brackets(arm: 14).stroke(Theme.accent, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                        .frame(width: 84, height: 84).shadow(color: .black.opacity(0.35), radius: 3)
+                        .position(x: CGFloat(spot.x) * area.size.width, y: CGFloat(spot.y) * area.size.height)
+                } else {
+                    let reach = min(area.size.width, area.size.height) * 0.3
+                    Image(systemName: "arrow.up").font(.system(size: 34, weight: .heavy)).foregroundStyle(Theme.onAccent)
+                        .frame(width: 68, height: 68).background(Theme.accent, in: Circle())
+                        .overlay(Circle().stroke(Theme.paper, lineWidth: 3))
+                        .shadow(color: .black.opacity(0.35), radius: 4)
+                        .rotationEffect(.radians(Double(aim.turn)))
+                        .position(x: area.size.width / 2 + reach * CGFloat(sin(aim.turn)),
+                                  y: area.size.height * 0.4 - reach * CGFloat(cos(aim.turn)))
+                }
+            }
+        }
+        .ignoresSafeArea().allowsHitTesting(false)
+    }
+}
+
+/// The message being looked for, and in words which way to point the phone.
+struct MessageGuide: View {
+    @ObservedObject var center: MessageCenter
+    var body: some View {
+        if let target = center.target {
+            HStack(spacing: 10) {
+                Image(systemName: center.aim == nil ? "qrcode.viewfinder" : center.aim?.screen == nil ? "arrow.up" : "scope")
+                    .font(.system(size: 18, weight: .bold)).foregroundStyle(Theme.accent)
+                    .rotationEffect(.radians(Double(center.aim?.turn ?? 0))).frame(width: 26)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(target.text).themeLabel(12, .bold).lineLimit(1)
+                    Text(way).themeText(11).foregroundStyle(Theme.dim).lineLimit(2)
+                }
+                Spacer(minLength: 0)
+                Button { withAnimation { center.stop() } } label: {
+                    Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).foregroundStyle(Theme.ink)
+                        .frame(width: 30, height: 30).background(Theme.well, in: Circle())
+                }.accessibilityLabel("Stop looking for this message")
+            }
+            .foregroundStyle(Theme.ink).themeBubble()
+        }
+    }
+    private var way: String {
+        guard let aim = center.aim else { return "Scan a Portal so the phone knows where it is." }
+        let far = String(format: "%.1f m away", aim.distance)
+        return aim.screen == nil ? "\(aim.hint) · \(far)" : "It is here · \(far)"
+    }
+}
+
 struct AnnotationEditor: View {
     let controller: ViewerController
     @ObservedObject var peer: HomePeer

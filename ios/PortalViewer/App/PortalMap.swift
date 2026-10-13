@@ -545,3 +545,71 @@ struct DeviceTrails {
         return seen.values.sorted { $0.id < $1.id }
     }
 }
+
+/// People's notes as messages, in Home's order from first to last, and which have not been opened on this phone.
+struct MessageInbox: Equatable {
+    struct Message: Identifiable, Equatable {
+        let id: String
+        var text: String
+        var position: SIMD3<Float>
+        var unread = false
+    }
+    private(set) var messages = [Message]()
+    private var frame: String?
+    var unread: Int { messages.filter(\.unread).count }
+
+    /// Take Home's latest notes and return the ones that are news. What a scene already holds
+    /// when it is first seen is not news, and neither is a note this phone wrote.
+    mutating func record(_ notes: [RenderScene.Note], frame: String, mine: Set<String> = []) -> [Message] {
+        let first = self.frame != frame
+        let before = first ? [:] : Dictionary(messages.map { ($0.id, $0.unread) }, uniquingKeysWith: { a, _ in a })
+        self.frame = frame
+        var arrived = [Message](), listed = Set<String>()
+        messages = notes.compactMap { note in
+            // Home's own labels for phones and robots are not messages.
+            guard note.phone_pose == nil, note.robot_pose == nil, note.position.count == 3,
+                  note.position.allSatisfy(\.isFinite), listed.insert(note.id).inserted else { return nil }
+            let message = Message(id: note.id, text: note.text,
+                                  position: SIMD3(note.position[0], note.position[1], note.position[2]),
+                                  unread: before[note.id] ?? (!first && !mine.contains(note.id)))
+            if before[note.id] == nil && message.unread { arrived.append(message) }
+            return message
+        }
+        return arrived
+    }
+    mutating func open(_ id: String) {
+        if let index = messages.firstIndex(where: { $0.id == id }) { messages[index].unread = false }
+    }
+}
+
+/// Where a spot in the room is from the phone: on the screen, or which way to turn to bring it there.
+struct MessageAim: Equatable {
+    /// Across and down the screen from its top left corner, each 0 to 1. Nil when the spot is out of view.
+    let screen: SIMD2<Float>?
+    /// The way to the spot, clockwise from the top of the screen, in radians.
+    let turn: Float
+    let hint: String
+    let distance: Float
+
+    /// `spot` is in the camera's axes as the screen is held: +X right, +Y up, looking along -Z.
+    /// `lens` is the projection for that same view.
+    init(spot: SIMD3<Float>, lens: simd_float4x4) {
+        distance = simd_length(spot)
+        let clip = lens * SIMD4(spot.x, spot.y, spot.z, 1)
+        let across = clip.x / clip.w, up = clip.y / clip.w
+        // A little in from the edges, so the marker is never half off the screen.
+        if clip.w > 0, abs(across) < 0.8, abs(up) < 0.8 {
+            screen = SIMD2((across + 1) / 2, (1 - up) / 2)
+            turn = 0
+            hint = "Here"
+            return
+        }
+        screen = nil
+        let side = atan2(spot.x, -spot.z), rise = atan2(spot.y, hypot(spot.x, spot.z))
+        // Straight behind has no nearer side; turning right gets there.
+        turn = hypot(spot.x, spot.y) > 0.0001 ? atan2(spot.x, spot.y) : .pi / 2
+        if abs(side) > 2 * .pi / 3 && abs(rise) < .pi / 4 { hint = "Turn around" }
+        else if abs(side) >= abs(rise) { hint = side > 0 ? "Turn right" : "Turn left" }
+        else { hint = rise > 0 ? "Tilt up" : "Tilt down" }
+    }
+}
