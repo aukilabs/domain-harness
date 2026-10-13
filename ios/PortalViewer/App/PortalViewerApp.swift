@@ -1563,6 +1563,10 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 line.geometry?.firstMaterial?.diffuse.contents = Theme.uiAccent
                 line.geometry?.firstMaterial?.lightingModel = .constant
                 line.geometry?.firstMaterial?.isDoubleSided = true
+                // Drawn last and without depth, so voxels and models never hide it.
+                line.geometry?.firstMaterial?.readsFromDepthBuffer = false
+                line.geometry?.firstMaterial?.writesToDepthBuffer = false
+                line.renderingOrder = 200
                 line.position = SCNVector3(Float(px), Float(py), 0.002)
                 node.addChildNode(line)
             }
