@@ -862,6 +862,7 @@ function renderFleetRows(){
   const feeds=document.createElement('section');feeds.setAttribute('aria-label','Camera feeds');const feedsHeading=document.createElement('h3');feedsHeading.textContent=`Camera feeds (${options.length})`;feeds.append(feedsHeading);
   for(const option of options.sort((a,b)=>a.textContent.localeCompare(b.textContent))){const button=uiButton(option.textContent+($('sensor-select').value===option.value?' · PiP ●':''),()=>{$('sensor-select').value=$('sensor-select').value===option.value?'':option.value;$('sensor-select').dispatchEvent(new Event('change'));});button.setAttribute('aria-pressed',String($('sensor-select').value===option.value));feeds.append(button);}
   if(!options.length){const empty=document.createElement('p');empty.className='panel-hint';empty.textContent='No camera feeds available';feeds.append(empty);}group.append(feeds);
+  if(!peer.self)group.append(operationsSection(peer));
   const catalog=peer.catalog||{},entries=[...(catalog.components||[]).map(entry=>({kind:'component',entry})),...(catalog.products||[]).map(entry=>({kind:'product',entry}))];
   for(const type of ['Cameras','Maps','Poses & odometry','Detections','Sensors & observations','Other']){
    const matching=entries.filter(item=>catalogType(item.entry,item.kind,catalog)===type).sort((a,b)=>a.entry.manifest[a.kind+'_id'].localeCompare(b.entry.manifest[b.kind+'_id'])||a.kind.localeCompare(b.kind));
@@ -876,6 +877,48 @@ function renderFleetRows(){
   if(peer.self&&selfId){const identity=document.createElement('p');identity.className='panel-hint';identity.textContent=selfId;group.append(identity);}
   fleetList.append(group);
  }
+}
+// Operables a peer's catalog advertises. Home invokes them over P2P on the
+// viewer's behalf; only point_at has a form so far.
+function operationsSection(peer){
+ const section=document.createElement('section');section.dataset.operations='';section.setAttribute('aria-label','Operations');
+ const operations=(peer.catalog?.components||[]).flatMap(c=>(c.manifest.operables||[]).map(o=>({component:c.manifest.component_id,...o})));
+ const heading=document.createElement('h3');heading.textContent=`Operations (${operations.length})`;section.append(heading);
+ if(!operations.length){const empty=document.createElement('p');empty.className='panel-hint';empty.textContent=peer.catalog_status==='ready'?'This peer offers no operations':'Catalog not loaded yet';section.append(empty);}
+ for(const op of operations.sort((a,b)=>(a.component+a.name).localeCompare(b.component+b.name))){
+  const row=document.createElement('div');row.className='operation-row';
+  const title=document.createElement('strong');title.textContent=op.component+' · '+op.name;
+  const types=document.createElement('small');types.className='panel-hint';types.textContent=`${op.instruction} → ${op.result} · ${op.exposure}`;
+  row.append(title,types);
+  if(op.component==='arm-pointer'&&op.name==='point_at')row.append(uiButton('Point at…',()=>openPointAt(peer)));
+  section.append(row);
+ }
+ return section;
+}
+function openPointAt(peer){
+ let dialog=$('point-at-dialog');
+ if(!dialog){dialog=document.createElement('dialog');dialog.id='point-at-dialog';document.body.append(dialog);dialog.addEventListener('click',e=>{if(e.target===dialog)dialog.close();});}
+ dialog.replaceChildren();
+ const title=document.createElement('h3');title.textContent='Point at · '+(peer.name||peerNames.get(peer.peer_id)||peer.peer_id.slice(-8));
+ const hint=document.createElement('p');hint.className='panel-hint';hint.textContent='The robot resolves the point into its own frame, points once and holds 3 s. Busy robots reject new requests.';
+ const form=document.createElement('form');form.method='dialog';
+ const field=(caption,input)=>{const label=document.createElement('label');label.textContent=caption;label.append(input);form.append(label);return input;};
+ const frame=field('Frame',document.createElement('select'));
+ for(const [value,text] of [[current?.frame,'This scene · '+(current?.environment_name||current?.frame||'')],['robot.base','Robot body (X right, Y forward, Z up)']])if(value)frame.append(new Option(text,value));
+ const xyz=['X','Y','Z'].map(axis=>{const input=document.createElement('input');input.type='number';input.step='0.01';input.required=true;input.value='0';return field(axis+' (m)',input);});
+ const arm=field('Arm',document.createElement('select'));for(const a of ['auto','left','right'])arm.append(new Option(a,a));
+ const targets=[...(current?.portals||[]).map(p=>['Portal '+p.anchor_id,p.pose_in_map.translation]),...(current?.notes||[]).filter(n=>n.position).map(n=>['Note · '+(n.text||n.id),n.position])];
+ if(targets.length&&current?.frame){const pick=field('Targets in this scene',document.createElement('select'));pick.append(new Option('Choose…',''));targets.forEach(([name],i)=>pick.append(new Option(name,String(i))));
+  pick.onchange=()=>{const t=targets[Number(pick.value)];if(!t)return;frame.value=current.frame;t[1].forEach((v,i)=>xyz[i].value=v.toFixed(3));};}
+ const status=document.createElement('p');status.className='panel-hint';status.setAttribute('role','status');
+ const send=uiButton('Point',async()=>{
+  send.disabled=true;status.textContent='Asking the robot…';
+  try{const r=await api('/api/robots/point-at',{peer_id:peer.peer_id,frame:frame.value,point_m:xyz.map(i=>Number(i.value)),arm:arm.value});
+   status.textContent=`Accepted · ${r.arm} arm · ${r.distance_m.toFixed(2)} m · bearing ${r.bearing_deg.toFixed(0)}° · elevation ${r.elevation_deg.toFixed(0)}° · hold ${r.hold_s} s`+(r.executes?'':' · not executed yet (milestone 1)');}
+  catch(e){status.textContent='Rejected · '+e.message;}
+  finally{send.disabled=false;}
+ });send.type='button';
+ dialog.append(title,hint,form,send,uiButton('Close',()=>dialog.close()),status);dialog.showModal();
 }
 new MutationObserver(renderFleetRows).observe($('sensor-select'),{childList:true});$('sensor-select').addEventListener('change',renderFleetRows);renderFleetRows();
 let noteView='list',sidebarNoteId=null,noteSignature='';

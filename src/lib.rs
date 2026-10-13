@@ -1,3 +1,4 @@
+pub mod arm_pointer;
 pub mod conventions;
 pub mod compact_pose;
 pub mod catalog_chat;

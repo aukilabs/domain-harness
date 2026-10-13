@@ -130,6 +130,12 @@ pub async fn run(hardware: Hardware) -> Result<()> {
     let sensors: Inbox = Default::default();
     let mapping: Inbox = Default::default();
     let live = Arc::new(Mutex::new(live::LiveState::new(hardware == Hardware::Bracketbot)));
+    // Any peer may ask the robot to point; requests resolve against the same
+    // live control snapshot the arm controller reads (robot-control.json).
+    let _arm_pointer = crate::arm_pointer::ArmPointer::mount(&publisher.runtime, &publisher.endpoint, {
+        let live = live.clone();
+        move || live.lock().ok()?.snapshot()
+    })?;
     let stop = Arc::new(AtomicBool::new(false));
     let disk = Arc::new(Mutex::new(None::<DiskState>));
     let sensor_status = Arc::new(Mutex::new(serde_json::json!({})));

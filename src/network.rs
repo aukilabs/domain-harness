@@ -564,6 +564,7 @@ pub async fn serve_scene(
     _runner_state: tokio::sync::watch::Sender<crate::runner_pose::RunnerState>,
     mapping: crate::runner_voxels::MappingTarget,
     previews: tokio::sync::mpsc::Receiver<crate::sensor_preview::Request>,
+    operations: tokio::sync::mpsc::Receiver<crate::arm_pointer::Request>,
     occupancy: crate::robot_occupancy::Cache,
     ar_frames: crate::ar_preview::Frames,
     shutdown: tokio_util::sync::CancellationToken,
@@ -621,6 +622,7 @@ pub async fn serve_scene(
     let catalogs =
         crate::device_catalogs::monitor(&running.peer, &catalog_targets, catalog_tx, &monitor_stop);
     let preview_catalogs = catalog_rx.clone();
+    let operation_catalogs = catalog_rx.clone();
     let publish = async {
         let publisher = ScenePublisher::mount(&running.peer);
         let result = match publisher {
@@ -711,10 +713,12 @@ pub async fn serve_scene(
         &local_scenes,
         &monitor_stop,
     );
-    let (result, _, _, _, _, _, _) = tokio::join!(
+    let operations = crate::arm_pointer::serve(&running.peer, operation_catalogs, operations, &monitor_stop);
+    let (result, _, _, _, _, _, _, _) = tokio::join!(
         publish,
         remote,
         previews,
+        operations,
         home_mapper,
         extra_monitors,
         robot_occupancy,

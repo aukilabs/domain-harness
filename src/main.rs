@@ -31,6 +31,7 @@ struct AppState {
     occupancy: spatial_home::robot_occupancy::Cache,
     ar_frames: spatial_home::ar_preview::Frames,
     previews: tokio::sync::mpsc::Sender<spatial_home::sensor_preview::Request>,
+    operations: tokio::sync::mpsc::Sender<spatial_home::arm_pointer::Request>,
     store: Arc<Mutex<Store>>,
     changes: tokio::sync::watch::Sender<()>,
     peer: tokio::sync::watch::Receiver<Value>,
@@ -691,6 +692,34 @@ async fn fiducial_print(
         marker.id,
     )))
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PointAtBody {
+    peer_id: String,
+    frame: String,
+    point_m: [f64; 3],
+    #[serde(default)]
+    arm: spatial_home::arm_pointer::ArmChoice,
+}
+/// Ask a robot to point at a point; the robot validates and resolves it.
+async fn robot_point_at(State(s): State<Shared>, headers: HeaderMap, Json(body): Json<PointAtBody>) -> ApiResult {
+    local_write(&headers)?;
+    let (reply, receive) = tokio::sync::oneshot::channel();
+    let instruction = spatial_home::arm_pointer::PointAt {
+        request_id: uuid::Uuid::new_v4().to_string(),
+        frame: body.frame,
+        point_m: body.point_m,
+        arm: body.arm,
+    };
+    s.operations
+        .try_send(spatial_home::arm_pointer::Request { peer_id: body.peer_id, instruction, reply })
+        .map_err(|_| anyhow::anyhow!("Home peer unavailable"))?;
+    let result = tokio::time::timeout(std::time::Duration::from_secs(8), receive)
+        .await
+        .map_err(|_| anyhow::anyhow!("Robot did not answer"))?
+        .map_err(|_| anyhow::anyhow!("Home peer stopped"))?;
+    Ok(Json(serde_json::to_value(result.map_err(|e| anyhow::anyhow!(e))?).map_err(anyhow::Error::from)?))
+}
 async fn catalog(State(s): State<Shared>) -> ApiResult {
     Ok(Json(lock(&s)?.built.catalog.clone()))
 }
@@ -1212,6 +1241,7 @@ async fn main() -> anyhow::Result<()> {
     let (home_live_tx, home_live_rx) =
         tokio::sync::watch::channel(spatial_home::scene_mirror::RemoteScene::default());
     let (preview_tx, preview_rx) = tokio::sync::mpsc::channel(4);
+    let (operation_tx, operation_rx) = tokio::sync::mpsc::channel(4);
     let occupancy = spatial_home::robot_occupancy::Cache::default();
     let ar_frames = spatial_home::ar_preview::Frames::default();
     let shutdown = tokio_util::sync::CancellationToken::new();
@@ -1296,6 +1326,7 @@ async fn main() -> anyhow::Result<()> {
                 status: mapping_tx,
             },
             preview_rx,
+            operation_rx,
             occupancy.clone(),
             ar_frames.clone(),
             shutdown.clone(),
@@ -1312,6 +1343,7 @@ async fn main() -> anyhow::Result<()> {
         occupancy,
         ar_frames,
         previews: preview_tx,
+        operations: operation_tx,
         store,
         changes,
         peer: peer_rx,
@@ -1365,6 +1397,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/vendor/{name}", get(vendor))
         .route("/api/sensors", get(sensor_preview))
+        .route("/api/robots/point-at", post(robot_point_at))
         .route("/api/robot-occupancy", get(robot_occupancy))
         .route("/api/scene", get(scene))
         .route("/api/semantic-volumes", get(get_volumes).post(create_volume))
