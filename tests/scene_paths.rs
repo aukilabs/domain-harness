@@ -19,6 +19,22 @@ fn malformed_paths_are_rejected(){
     assert!(paths.validate("frame").is_err());
 }
 #[test]
+fn live_updates_append_idempotently_and_never_recreate_deleted_paths()->anyhow::Result<()> {
+    let dir=tempfile::tempdir()?;let storage=Storage::new(dir.path().into());let mut s=stroke();
+    assert!(storage.extend("room","frame",s.clone()).is_err());
+    storage.change("room","frame",&s.id,Some(s.clone()))?;
+    let old=s.clone();s.segments[0].push([2.,0.,1.]);
+    let saved=storage.extend("room","frame",s.clone())?;
+    assert_eq!(saved.items,vec![s.clone()]);
+    assert_eq!(storage.extend("room","frame",s.clone())?,saved);
+    assert!(storage.extend("room","frame",old).is_err());
+    let mut changed=s.clone();changed.segments[0][0]=[99.,0.,0.];
+    assert!(storage.extend("room","frame",changed).is_err());
+    storage.change("room","frame",&s.id,None)?;
+    assert!(storage.extend("room","frame",s).is_err());
+    assert!(storage.get("room","frame")?.items.is_empty());Ok(())
+}
+#[test]
 fn teleoperator_projects_paths_without_voxels_and_rejects_wrong_frame()->anyhow::Result<()> {
     let mut s=stroke();s.segments=vec![vec![[-0.1,0.,1.],[0.1,0.,1.]]];
     let paths=Paths {items:vec![s],..Paths::empty("frame")};

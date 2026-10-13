@@ -57,16 +57,30 @@ impl Storage {
         }
     }
     pub fn change(&self, scene: &str, frame: &str, id: &str, stroke: Option<Stroke>) -> Result<Paths> {
+        self.write(scene,frame,id,stroke,false)
+    }
+    /// Extend a live stroke without allowing delayed updates to recreate a deleted path.
+    pub fn extend(&self, scene: &str, frame: &str, stroke: Stroke) -> Result<Paths> {
+        let id=stroke.id.clone();self.write(scene,frame,&id,Some(stroke),true)
+    }
+    fn write(&self, scene: &str, frame: &str, id: &str, stroke: Option<Stroke>, extend:bool) -> Result<Paths> {
         use std::io::Write;
         let _guard=self.writer.lock().map_err(|_|anyhow!("Path storage unavailable"))?;
         let mut paths=self.get(scene,frame)?;
         if let Some(stroke)=stroke {
             ensure!(stroke.id==id, "Path identity mismatch");
-            if let Some(existing)=paths.items.iter().find(|s|s.id==id) {
-                ensure!(existing==&stroke,"Path already exists with different content");
-                return Ok(paths);
+            if let Some(existing)=paths.items.iter_mut().find(|s|s.id==id) {
+                if existing==&stroke { return Ok(paths); }
+                ensure!(extend,"Path already exists with different content");
+                ensure!(existing.title==stroke.title && existing.color==stroke.color && existing.width_m==stroke.width_m,"Live path metadata changed");
+                ensure!(stroke.segments.len()>=existing.segments.len() && existing.segments.iter().enumerate().all(|(i,s)| {
+                    if i+1<existing.segments.len() {stroke.segments[i]==*s} else {stroke.segments[i].starts_with(s)}
+                }),"Live path updates must append points");
+                *existing=stroke;
+            } else {
+                ensure!(!extend,"Path no longer exists");
+                paths.items.push(stroke);
             }
-            paths.items.push(stroke);
         } else {
             ensure!(paths.items.iter().any(|s|s.id==id), "Path not found");
             paths.items.retain(|s|s.id!=id);

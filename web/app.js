@@ -5,7 +5,7 @@ import { createPhoneTrails, cameraShape } from './phone-trails.js';
 import { createSemanticVolumes, legacyVolumesForView } from './semantic-volumes.js';
 import { createMap2D } from './map-2d.js';
 import { createCrayon } from './crayon.js';
-import { createGhostCamera } from './ghost-camera.js';
+import { createGhostCamera, isEditing } from './ghost-camera.js';
 import { createNoteBubble } from './note-bubble.js';
 import { createPipWindow } from './pip-window.js';
 import { moveMapCamera } from './view-camera.js';
@@ -83,7 +83,7 @@ $('canvas').append(renderer.domElement);renderer.domElement.setAttribute('aria-l
 const controls=new OrbitControls(camera,renderer.domElement);controls.enableDamping=true;controls.minDistance=1.2;controls.maxDistance=60;controls.maxPolarAngle=Math.PI*.49;
 let crayon=null;
 const ghostCamera=createGhostCamera({camera,controls,canvas:renderer.domElement,enabled:()=>!map2D.isActive()&&!crayon?.isActive(),onMove:()=>{if(attachedCamera.isActive())attachedCamera.detach();}});
-let activeMap='demo',current=null,busy=false,refreshing=false,lastScene=null,selectable=[],selectedNoteId=null,deletingNoteId=null,selectedSpatialNode=null,spatialSignature='';
+let activeMap='demo',current=null,busy=false,refreshing=false,lastScene=null,selectable=[],selectedNoteId=null,selectedPathId=null,deletingPathId=null,deletingNoteId=null,selectedSpatialNode=null,spatialSignature='';
 let homeOffline=false,catalogInitialized=false;
 function isLocalScene(map=activeMap){return map.startsWith('local:');}
 function localSceneUrl(map=activeMap){return '/api/local-scenes/'+encodeURIComponent(map.slice(6));}
@@ -162,7 +162,7 @@ const grid=new THREE.GridHelper(6,30,0x4f8ef7,0x24242b);grid.position.y=-.14;gri
 const groups=Object.fromEntries(['voxels','portals','objects','rays','notes'].map(k=>[k,new THREE.Group()]));Object.values(groups).forEach(g=>scene.add(g));
 crayon=createCrayon({button:$('crayon'),canvas:renderer.domElement,camera,controls,scene,voxels:groups.voxels,
  state:()=>({map:activeMap,frame:current?.frame,paths:current?.paths,editable:isLocalScene()&&!!current&&!map2D.isActive()}),
- save:async(context,stroke)=>{const result=await api('/api/paths?scene='+encodeURIComponent(context.map),{frame:context.frame,stroke});if(activeMap===context.map&&current?.frame===context.frame)current.paths=result;lastScene=null;return result;},
+ save:async(context,stroke,extend=false)=>{const result=await api('/api/paths'+(extend?'/'+encodeURIComponent(stroke.id):'')+'?scene='+encodeURIComponent(context.map),{frame:context.frame,stroke},extend?'PATCH':'POST');if(activeMap===context.map&&current?.frame===context.frame)current.paths=result;lastScene=null;return result;},
  remove:async(context,id)=>{const result=await api('/api/paths/'+encodeURIComponent(id)+'?scene='+encodeURIComponent(context.map),undefined,'DELETE');if(activeMap===context.map&&current?.frame===context.frame)current.paths=result;lastScene=null;return result;}});
 for(const input of document.querySelectorAll('[data-layer]'))input.onchange=()=>{groups[input.dataset.layer].visible=input.checked;};
 
@@ -172,7 +172,7 @@ function label(text,color='#36594a'){
  const c=document.createElement('canvas');c.width=384;c.height=96;const ctx=c.getContext('2d');ctx.fillStyle='#fcfdf6';ctx.beginPath();ctx.roundRect(4,8,376,76,18);ctx.fill();ctx.font='500 30px system-ui';ctx.textAlign='center';ctx.fillStyle=color;ctx.fillText(text,192,56,356);const tex=new THREE.CanvasTexture(c);tex.colorSpace=THREE.SRGBColorSpace;const sprite=new THREE.Sprite(new THREE.SpriteMaterial({map:tex,depthTest:false}));sprite.scale.set(.65,.1625,1);return sprite;
 }
 const phoneTrails=createPhoneTrails(scene,text=>createNoteBubble(text,{peer:true}),peer=>cameraShape(fleetNetwork?.peers?.find(p=>p.peer_id===peer)?.catalog));
-const semanticVolumes=createSemanticVolumes({scene,camera,renderer,controls,panel:panelBodies.volumes,api,label,clear,openPanel,priorityPickObjects:()=>selectable.filter(o=>o.userData.kind==='note')});
+const semanticVolumes=createSemanticVolumes({scene,camera,renderer,controls,panel:panelBodies.volumes,api,label,clear,openPanel,priorityPickObjects:()=>[...selectable.filter(o=>o.userData.kind==='note'),...crayon.objects()]});
 $('map-select').addEventListener('change',()=>semanticVolumes.reset());
 let phonePresenceBusy=false;
 async function refreshPhonePresence(){
@@ -246,10 +246,66 @@ function build(data){
  $('load').innerHTML=data.integrated_observations?'Reload test contributions <span>↗</span>':'Load two test peers <span>↗</span>';
  $('project').disabled=busy||!data.voxels.length;$('replay').disabled=busy||!data.sources.iphone;
  if(selectedSpatialNode){const {kind,id}=selectedSpatialNode;const node=data.landmarks?.[kind==='anchor'?'anchors':'landmarks']?.[id];if(node)showSpatialSelection(kind,node);else{selectedSpatialNode=null;$('selection').hidden=true;}}
- else if(selectedNoteId){const note=(data.notes||[]).find(n=>n.id===selectedNoteId);if(note){if($('selection').dataset.noteId!==note.id)showNoteSelection(note);}else{selectedNoteId=null;$('selection').hidden=true;}}else $('selection').hidden=true;if(!selectedNoteId&&!selectedSpatialNode&&data.objects.length){const o=data.objects[0];showSelection(o.label,`[${o.position.map(v=>v.toFixed(2)).join(', ')}] m`,'Projected onto occupied voxel surface');}
+ else if(selectedPathId){const path=data.paths?.items.find(p=>p.id===selectedPathId);if(path){if($('selection').dataset.pathId!==path.id)showPathSelection(path);}else{selectedPathId=null;crayon.select(null);$('selection').hidden=true;}}else if(selectedNoteId){const note=(data.notes||[]).find(n=>n.id===selectedNoteId);if(note){if($('selection').dataset.noteId!==note.id)showNoteSelection(note);}else{selectedNoteId=null;$('selection').hidden=true;}}else $('selection').hidden=true;if(!selectedNoteId&&!selectedPathId&&!selectedSpatialNode&&data.objects.length){const o=data.objects[0];showSelection(o.label,`[${o.position.map(v=>v.toFixed(2)).join(', ')}] m`,'Projected onto occupied voxel surface');}
  updateMapUI();if(data.occupancy_tiles){$('empty').hidden=data.occupancy_tiles.length>0;$('voxel-count').textContent=data.occupancy_tiles.length.toLocaleString();}if(first)fit();
 }
-function focusNote(note){const p=new THREE.Vector3(...note.position);controls.target.copy(p);camera.position.copy(p).add(new THREE.Vector3(.5,.4,2));controls.update();showNoteSelection(note);}
+function showPathSelection(path){
+ showSelection(path.title,'Crayon path · '+path.segments.reduce((n,s)=>n+s.length,0)+' points','Shared scene path');
+ selectedPathId=path.id;crayon.select(path.id);$('selection').dataset.pathId=path.id;
+ if(isLocalScene())$('selection').append(pathDeleteButton(path));
+}
+function focusPath(path){
+ const box=new THREE.Box3().setFromPoints(path.segments.flat().map(p=>new THREE.Vector3(...p))),center=box.getCenter(new THREE.Vector3());
+ const distance=Math.max(2,box.getSize(new THREE.Vector3()).length());
+ if(attachedCamera.isActive())attachedCamera.detach();
+ camera.position.copy(center).add(new THREE.Vector3(distance*.4,distance,distance));controls.target.copy(center);controls.update();showPathSelection(path);
+}
+function pathDeleteButton(path){
+ const map=activeMap,frame=current?.frame;
+ const button=uiButton('Delete path',()=>deletePath(path,map,frame,button));
+ button.dataset.deletePath=path.id;button.disabled=!!deletingPathId;return button;
+}
+async function deletePath(path,map=activeMap,frame=current?.frame,button=null){
+  if(deletingPathId||activeMap!==map||current?.frame!==frame)return false;
+  deletingPathId=path.id;if(button)button.disabled=true;
+  const index=(current.paths?.items||[]).findIndex(p=>p.id===path.id);
+  const status=document.createElement('div');status.setAttribute('role','status');if(button)button.after(status);else $('selection').append(status);status.textContent='Deleting…';
+  try{
+   const result=await api('/api/paths/'+encodeURIComponent(path.id)+'?scene='+encodeURIComponent(map),undefined,'DELETE');
+   if(activeMap!==map||current?.frame!==frame)return false;
+   current.paths=result;crayon.update();
+   const stillSelected=selectedPathId===path.id;
+   if(stillSelected){
+    const next=result.items[Math.min(Math.max(index,0),result.items.length-1)];
+    if(next){showPathSelection(next);}
+    else{selectedPathId=null;crayon.select(null);$('selection').hidden=true;if(noteView==='path')noteView='list';}
+   }
+   renderNotes();lastScene=null;hideAr();return stillSelected;
+  }catch(e){status.textContent=e.message;return false;}finally{
+   deletingPathId=null;document.querySelectorAll('[data-delete-path]').forEach(b=>b.disabled=false);
+  }
+}
+let backspaceQueue=0,backspaceDeleting=false;
+window.addEventListener('keydown',async e=>{
+ if(e.key!=='Backspace'||e.defaultPrevented||e.isComposing||e.ctrlKey||e.metaKey||e.altKey||isEditing(e.target)||isEditing(document.activeElement)||document.querySelector('dialog[open]')||!selectedPathId||!isLocalScene()||crayon.isActive())return;
+ e.preventDefault();if(e.repeat)return;
+ if(deletingPathId&&!backspaceDeleting)return;
+ backspaceQueue++;if(backspaceDeleting)return;
+ backspaceDeleting=true;const map=activeMap,frame=current?.frame;
+ try{while(backspaceQueue>0){
+  backspaceQueue--;if(map!==activeMap||frame!==current?.frame)break;
+  const path=current?.paths?.items.find(p=>p.id===selectedPathId);
+  if(!path||!await deletePath(path,map,frame))break;
+ }}finally{backspaceQueue=0;backspaceDeleting=false;}
+});
+function closeUp(point){
+ if(attachedCamera.isActive())attachedCamera.detach();
+ const target=new THREE.Vector3(...point),direction=camera.position.clone().sub(target);
+ if(direction.lengthSq()<1e-8)direction.set(0,.3,1);
+ const position=target.clone().addScaledVector(direction.normalize(),2);
+ moveMapCamera({type:'move_camera',scene:activeMap,frame:current?.frame,position:position.toArray(),look_at:point},{scene:activeMap,frame:current?.frame,camera,controls,map2D});
+}
+function focusNote(note){closeUp(note.position);showNoteSelection(note);}
 function showNoteSelection(note){
  showSelection(noteTitle(note),`[${note.position.map(v=>v.toFixed(2)).join(', ')}] m`,note.robot_pose?'Live robot position':note.phone_pose?'Live phone position':note.anchor_surface?'Placed in Home':`${note.height_m} m above ${note.anchor_robot?note.text+' base':note.anchor_portal} · Home up axis`);
  selectedNoteId=note.id;$('selection').dataset.noteId=note.id;
@@ -399,8 +455,8 @@ function updateMapUI(){
   grid.position.x=0;grid.position.z=0;
  }
 }
-$('map-select').onchange=async()=>{activeMap=$('map-select').value;selectedNoteId=null;selectedSpatialNode=null;lastScene=null;current=null;hideRobots();selectable=[];Object.values(groups).forEach(clear);$('selection').hidden=true;updateMapUI();$('scene-title').textContent='Loading selected scene…';$('voxel-count').textContent='—';$('observation-count').textContent='—';$('object-count').textContent='—';try{await refresh();}catch{$('scene-title').textContent=isRunner()?'Waiting for Galbot scenegraph':'Scene unavailable';}};
-function showSelection(title,body,note){selectedNoteId=null;selectedSpatialNode=null;updateSpatialSelection();const el=$('selection');delete el.dataset.noteId;delete el.dataset.spatialId;delete el.dataset.spatialKind;el.replaceChildren();const strong=document.createElement('strong');strong.textContent=title;const line=document.createElement('div');line.textContent=body;const small=document.createElement('small');small.textContent=note;el.append(strong,line,small);el.hidden=false;}
+$('map-select').onchange=async()=>{activeMap=$('map-select').value;selectedPathId=null;crayon.select(null);selectedNoteId=null;selectedSpatialNode=null;lastScene=null;current=null;crayon.update();hideRobots();selectable=[];Object.values(groups).forEach(clear);$('selection').hidden=true;updateMapUI();$('scene-title').textContent='Loading selected scene…';$('voxel-count').textContent='—';$('observation-count').textContent='—';$('object-count').textContent='—';try{await refresh();}catch{$('scene-title').textContent=isRunner()?'Waiting for Galbot scenegraph':'Scene unavailable';}};
+function showSelection(title,body,note){selectedPathId=null;crayon?.select(null);delete $('selection').dataset.pathId;selectedNoteId=null;selectedSpatialNode=null;updateSpatialSelection();const el=$('selection');delete el.dataset.noteId;delete el.dataset.spatialId;delete el.dataset.spatialKind;el.replaceChildren();const strong=document.createElement('strong');strong.textContent=title;const line=document.createElement('div');line.textContent=body;const small=document.createElement('small');small.textContent=note;el.append(strong,line,small);el.hidden=false;}
 let pointerStart;
 renderer.domElement.addEventListener('pointerdown',e=>{pointerStart=[e.clientX,e.clientY];});
 renderer.domElement.addEventListener('pointerup',e=>{
@@ -408,13 +464,24 @@ renderer.domElement.addEventListener('pointerup',e=>{
  if(e.button!==0)return;
  if(!current||!pointerStart||Math.hypot(e.clientX-pointerStart[0],e.clientY-pointerStart[1])>4)return;
  const r=renderer.domElement.getBoundingClientRect(), ray=new THREE.Raycaster();ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),camera);
- const hits=ray.intersectObjects(selectable.filter(o=>{for(let p=o;p;p=p.parent){if(!p.visible)return false;}return true;}));if(!hits.length){selectedNoteId=null;selectedSpatialNode=null;updateSpatialSelection();$('selection').hidden=true;return;}const h=hits.find(h=>h.object.userData.kind==='note')||hits.find(h=>h.object.userData.kind==='portal')||hits[0],d=h.object.userData;
+ const hits=ray.intersectObjects([...selectable,...crayon.objects()].filter(o=>{for(let p=o;p;p=p.parent){if(!p.visible)return false;}return true;}));if(!hits.length){selectedPathId=null;crayon.select(null);selectedNoteId=null;selectedSpatialNode=null;updateSpatialSelection();$('selection').hidden=true;return;}const h=hits.find(h=>h.object.userData.kind==='note')||hits.find(h=>h.object.userData.kind==='path')||hits.find(h=>h.object.userData.kind==='portal')||hits[0],d=h.object.userData;
  if(d.kind==='voxels'){const v=current.voxels[h.instanceId];showSelection('Occupied voxel',`[${v.center.map(n=>n.toFixed(2)).join(', ')}] m`,`Evidence ${v.evidence} · 10 cm cell`);}
  if(d.kind==='occupancy'){const t=current.occupancy_tiles[h.instanceId];showSelection('Occupancy · '+(t.value===100?'occupied':t.value===0?'free':'unknown'),`[${t.center.map(n=>n.toFixed(2)).join(', ')}] m`,`Value ${t.value} · 10 cm sample · retrieved in 2 m cells`);}
- if(d.kind==='note')focusNote(d.note);
+ if(d.kind==='path'){showPathSelection(d.path);noteView='path';openPanel('notes');renderNotes();return;}
+ if(d.kind==='note')showNoteSelection(d.note);
  if(d.kind==='object'){const o=d.object;showSelection(o.label,`[${o.position.map(n=>n.toFixed(2)).join(', ')}] m`,`Source: ${o.source_peer}`);}
  if(d.kind==='portal'&&(d.portal.anchor_id.length===11||d.portal.anchor_id.startsWith('home:'))){focusPortal(d.portal);return;}
  if(d.kind==='portal')showSelection(`Portal ${d.portal.payload.split(':').at(-1)}`,`${d.portal.side_length_m.toFixed(2)} m encoded size`,'Manually supplied · no backend lookup');
+});
+renderer.domElement.addEventListener('dblclick',e=>{
+ if(e.button!==0||!current||crayon.isActive()||map2D.isActive())return;
+ const r=renderer.domElement.getBoundingClientRect(),ray=new THREE.Raycaster();
+ ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,1-(e.clientY-r.top)/r.height*2),camera);
+ const hits=ray.intersectObjects(selectable.filter(o=>{for(let p=o;p;p=p.parent)if(!p.visible)return false;return true;}));
+ const note=hits.find(h=>h.object.userData.kind==='note');
+ if(note){focusNote(note.object.userData.note);return;}
+ const volume=semanticVolumes.pick(ray);if(volume){closeUp(volume.point.toArray());return;}
+ const voxel=hits.find(h=>h.object.userData.kind==='voxels');if(voxel)closeUp(voxel.point.toArray());
 });
 async function api(path,body,method){if(path==='/api/chat'&&body){camera.updateMatrixWorld();const right=map2D.isActive()?[1,0,0]:new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld,0).toArray();body={...body,viewer:{frame:current?.frame||'',mode:map2D.isActive()?'2d':'3d',screen_right:right,camera_position:camera.position.toArray(),camera_target:controls.target.toArray()}};}const r=await fetch(path,body?{method:method||'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:method?{method}:undefined);const text=await r.text();let result;try{result=JSON.parse(text);}catch{throw new Error(text);}if(!r.ok){const error=new Error(result.error||text);error.status=r.status;throw error;}return result;}
 function peerSceneUrl(map){return '/api/sensors?scene=true&sensor='+encodeURIComponent(map.slice(11));}
@@ -837,6 +904,15 @@ function noteFields(container,note){
 function renderNotes(){
  if(noteView==='edit')return;
  notesBody.replaceChildren();const notes=current?.notes||[];const selected=notes.find(n=>n.id===sidebarNoteId);
+ const paths=current?.paths?.items||[],path=paths.find(p=>p.id===selectedPathId);
+ if(noteView==='path'&&path){
+  notesBody.append(uiButton('‹ All notes',()=>{noteView='list';renderNotes();}));
+  const title=document.createElement('h3');title.textContent=path.title;notesBody.append(title);
+  noteMessage('Crayon path · '+path.segments.length+' segment(s)');
+  notesBody.append(uiButton('Focus in scene',()=>focusPath(path)));
+  if(isLocalScene())notesBody.append(pathDeleteButton(path));
+  return;
+ }
  if(noteView==='detail'&&selected){
   notesBody.append(uiButton('‹ All notes',()=>{noteView='list';renderNotes();}));
   const title=document.createElement('h3');title.textContent=noteTitle(selected);notesBody.append(title);noteMessage('Pose · '+selected.position.map(v=>v.toFixed(2)).join(', ')+' m');
@@ -850,7 +926,11 @@ function renderNotes(){
  }
  notesBody.append(uiButton('+ New note',()=>editSidebarNote(null),'primary'));
  if(!notes.length)noteMessage('No notes in this scenegraph.');
- for(const note of notes){const row=uiButton(noteTitle(note),()=>{sidebarNoteId=note.id;noteView='detail';focusNote(note);renderNotes();});if(note.details?.thumbnail){const image=document.createElement('img');image.src=note.details.thumbnail;image.alt='';image.className='note-list-thumbnail';row.prepend(image);}notesBody.append(row);}
+ if(paths.length){
+  const heading=document.createElement('h3');heading.textContent='Crayon paths';notesBody.append(heading);
+  paths.forEach((path,i)=>{const row=uiButton(`${path.title} · ${i+1}`,()=>{noteView='path';focusPath(path);renderNotes();});row.dataset.pathId=path.id;notesBody.append(row);});
+ }
+ for(const note of notes){const row=uiButton(noteTitle(note),()=>{sidebarNoteId=note.id;noteView='detail';showNoteSelection(note);renderNotes();});if(note.details?.thumbnail){const image=document.createElement('img');image.src=note.details.thumbnail;image.alt='';image.className='note-list-thumbnail';row.prepend(image);}notesBody.append(row);}
 }
 async function editSidebarNote(note){
  const editingMap=activeMap;
@@ -873,7 +953,7 @@ async function editSidebarNote(note){
   lastScene=null;await refresh();renderNotes();
  }catch(e){error.textContent=e.message;save.disabled=false;}};
 }
-setInterval(()=>{const signature=JSON.stringify(current?.notes||[]);if(signature!==noteSignature){noteSignature=signature;renderNotes();}},500);renderNotes();
+setInterval(()=>{const signature=JSON.stringify([activeMap,current?.notes||[],current?.paths]);if(signature!==noteSignature){noteSignature=signature;renderNotes();}},500);renderNotes();
 function applyTheme(light){document.documentElement.dataset.theme=light?'light':'dark';scene.background.set(light?'#e8e8f0':'#0d0d0f');scene.fog?.color.copy(scene.background);ground.material.color.set(light?'#e0e3e8':'#101014');themeButton.textContent=light?'☾':'☼';themeButton.title=light?'Switch to dark theme':'Switch to light theme';themeButton.setAttribute('aria-label',themeButton.title);}
 themeButton.onclick=()=>{const light=document.documentElement.dataset.theme!=='light';applyTheme(light);try{localStorage.setItem('spatial-theme',light?'light':'dark');}catch{}};
 try{applyTheme(localStorage.getItem('spatial-theme')==='light');}catch{}

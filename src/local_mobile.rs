@@ -694,6 +694,9 @@ impl Publisher {
         Ok(publisher)
     }
     pub fn tick(&mut self) -> Result<()> {
+        // Paths are lightweight: publish incremental strokes independently of the map's 1 Hz rebuild.
+        let frame=self.reference.read().map_err(|_|anyhow!("Scene unavailable"))?.scenegraph.map.frame.id.clone();
+        self.paths_publisher.publish(self.started.elapsed().as_nanos() as u64,self.scenes.paths.get(&self.id,&frame)?)?;
         if self
             .last_tick
             .is_some_and(|t| t.elapsed() < Duration::from_secs(1))

@@ -393,6 +393,13 @@ async fn delete_path(State(s):State<Shared>,headers:HeaderMap,axum::extract::Pat
     let (key,frame)=volume_context(&s,&q.scene)?;
     Ok(Json(json!(s.local_scenes.paths.change(&key,&frame,&id,None)?)))
 }
+async fn extend_path(State(s):State<Shared>,headers:HeaderMap,axum::extract::Path(id):axum::extract::Path<String>,axum::extract::Query(q):axum::extract::Query<VolumeQuery>,Json(value):Json<PathWrite>)->ApiResult {
+    local_write(&headers)?;
+    if !q.scene.starts_with("local:") { return Err(anyhow::anyhow!("Choose a local Home scene").into()); }
+    let (key,frame)=volume_context(&s,&q.scene)?;
+    if frame!=value.frame || id!=value.stroke.id { return Err(anyhow::anyhow!("Path frame or identity changed").into()); }
+    Ok(Json(json!(s.local_scenes.paths.extend(&key,&frame,value.stroke)?)))
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct VolumeWrite {
@@ -1390,7 +1397,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/fixtures", get(fixture))
         .route("/api/portal-sizes", get(portal_sizes))
         .route("/api/paths", get(get_paths).post(create_path))
-        .route("/api/paths/{id}", axum::routing::delete(delete_path))
+        .route("/api/paths/{id}", axum::routing::delete(delete_path).patch(extend_path))
         .route("/api/landmarks", get(landmark_catalog))
         .route(
             "/api/fiducials",
