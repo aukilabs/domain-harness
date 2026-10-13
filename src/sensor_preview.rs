@@ -281,6 +281,7 @@ struct Frame<T = VideoFrame> {
 struct Preview<T = VideoFrame> {
     history: Arc<std::sync::Mutex<std::collections::VecDeque<Arc<Frame<T>>>>>,
     resolved_pose: Option<Value>,
+    presentation: Option<(u64,Value)>,
     reference: ProductReference,
     used: Instant,
     frames: watch::Receiver<Option<Arc<Frame<T>>>>,
@@ -365,6 +366,7 @@ fn start_preview<T: ContractType + serde::de::DeserializeOwned + Send + Sync + '
     Preview {
         history,
         resolved_pose: None,
+        presentation: None,
         reference,
         used: Instant::now(),
         frames,
@@ -530,6 +532,11 @@ pub async fn serve(
                 f.encoding
             );
             let mut pick_error = None;
+            let row={catalogs.borrow().get(&sensor.reference.peer_id).cloned()};
+            let presentation=if let Some((_,value))=preview.presentation.as_ref().filter(|(sequence,_)|*sequence==o.sequence) {value.clone()}else if let Some(row)=row {
+                crate::video_presentation::resolve(&client,sensor,&row,&observations.producer,o.timestamp_ns).await
+            }else{json!({"source":"unavailable","detail":"Peer catalog unavailable"})};
+            preview.presentation=Some((o.sequence,presentation.clone()));
             if request.ar || (request.pick && sensor.pose.is_some()) {
                 let deadline = tokio::time::Instant::now() + POSE_WAIT;
                 let calibrated = loop {
@@ -551,13 +558,13 @@ pub async fn serve(
                 }
                 };
                 match calibrated {
-                    Ok(frame) => return Ok(frame),
+                    Ok(mut frame) => {frame["presentation"]=presentation.clone();return Ok(frame);},
                     Err(e) if request.ar => return Err(e),
                     Err(e) => pick_error = Some(e.to_string()),
                 }
             }
             Ok(
-                json!({"pick_error":pick_error,"spatial_frame":observations.producer.spatial_frame,"metadata":sensor.metadata,"sequence":o.sequence,"capture_timestamp_ns":o.timestamp_ns,"clock":observations.producer.clock,"width":f.width,"height":f.height,"encoding":f.encoding,"data":STANDARD.encode(&f.bytes)}),
+                json!({"presentation":presentation,"pick_error":pick_error,"spatial_frame":observations.producer.spatial_frame,"metadata":sensor.metadata,"sequence":o.sequence,"capture_timestamp_ns":o.timestamp_ns,"clock":observations.producer.clock,"width":f.width,"height":f.height,"encoding":f.encoding,"data":STANDARD.encode(&f.bytes)}),
             )
         };
         let result = tokio::select! {_ = stop.cancelled()=>break,r=tokio::time::timeout(Duration::from_secs(8),work)=>r.unwrap_or_else(|_|Err(anyhow!("Sensor peer timed out")))};

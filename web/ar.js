@@ -13,12 +13,19 @@ export function createArOverlay(canvas){
  renderer.setClearColor(0,0);renderer.autoClear=false;renderer.outputColorSpace=THREE.SRGBColorSpace;
  const labels=new THREE.Scene(),labelCamera=new THREE.OrthographicCamera(-1,1,1,-1,0,2);labelCamera.position.z=1;
  const paths=new THREE.Group(),pathCamera=new THREE.Camera();
+ let rotation=0;
+ function setRotation(degrees){rotation=degrees*Math.PI/180;for(const label of labels.children)label.material.rotation=rotation;
+  if(!canvas.hidden){renderer.clear();renderer.render(paths,pathCamera);renderer.clearDepth();renderer.render(labels,labelCamera);}}
  function clearPaths(){for(const child of [...paths.children]){child.geometry.dispose();child.material.dispose();paths.remove(child);}}
  function clearLabels(){for(const child of [...labels.children]){labels.remove(child);child.material.map.dispose();child.material.dispose();}}
  function hide(){canvas.hidden=true;canvas.dataset.voxelCount='0';canvas.dataset.noteCount='0';canvas.dataset.pathCount='0';clearPaths();clearLabels();renderer.clear();}
- function show(frame){
+ function show(frame,displayRotation=0){
   const ar=frame.ar;if(ar?.status!=='ready')throw Error('Calibrated AR frame unavailable');
   renderer.setSize(frame.width,frame.height,false);renderer.clear();clearPaths();
+  rotation=displayRotation*Math.PI/180;
+  // Pixel-space projection keeps a counter-rotated label's proportions correct
+  // on non-square images. Only the glyph rotates; its projected anchor does not.
+  labelCamera.left=0;labelCamera.right=frame.width;labelCamera.top=frame.height;labelCamera.bottom=0;labelCamera.updateProjectionMatrix();
   // PiP shows annotations only. Screen-space ribbons remain legible regardless
   // of camera distance, and a dark outline separates them from the camera image.
   const pixelScale=frame.width/(canvas.clientWidth||frame.width);
@@ -36,16 +43,16 @@ export function createArOverlay(canvas){
    ctx.fillStyle='#142b24';ctx.beginPath();ctx.roundRect(2,2,c.width-4,60,12);ctx.fill();ctx.strokeStyle='#f8df7b';ctx.lineWidth=3;ctx.stroke();
    ctx.fillStyle='#fff4bb';ctx.font='600 32px system-ui';ctx.textAlign='center';ctx.fillText(note.text,c.width/2,43,c.width-24);
    const texture=new THREE.CanvasTexture(c);texture.colorSpace=THREE.SRGBColorSpace;
-   const sprite=new THREE.Sprite(new THREE.SpriteMaterial({map:texture,depthTest:false,depthWrite:false}));
-   sprite.position.set(2*note.pixel[0]/frame.width-1,1-2*note.pixel[1]/frame.height,0);
+   const sprite=new THREE.Sprite(new THREE.SpriteMaterial({map:texture,depthTest:false,depthWrite:false,rotation}));
+   sprite.position.set(note.pixel[0],frame.height-note.pixel[1],0);
    const height=Math.max(22,frame.height*.07),width=Math.min(frame.width*.8,height*c.width/64);
-   sprite.scale.set(2*width/frame.width,2*height/frame.height,1);labels.add(sprite);
+   sprite.scale.set(width,height,1);labels.add(sprite);
   }
   renderer.clearDepth();renderer.render(labels,labelCamera);
   canvas.dataset.noteCount=String((ar.notes||[]).length);
   canvas.hidden=false;canvas.dataset.voxelCount='0';canvas.dataset.pathCount=String((ar.path_segments||[]).length);canvas.dataset.frame=ar.frame;canvas.dataset.sequence=String(frame.sequence);
  }
- return {show,hide};
+ return {show,hide,setRotation};
 }
 
 // A ribbon, rather than WebGL lineWidth (usually fixed to one pixel).
