@@ -165,6 +165,16 @@ for invalid: Float in [0, -1, 6, .nan, .infinity] {
 }
 print("Phone depth projection checks passed")
 
+var ownMap = PhoneLocalVoxels()
+ownMap.add(SIMD3(1, -2, 3)); ownMap.add(SIMD3(1, -2, 3)); ownMap.add(SIMD3(0, 0, 10_001))
+check(ownMap.cells == [[1, -2, 3]], "a cell is kept once, and cells Home would refuse are left out")
+for x in 0..<Int32(PhoneLocalVoxels.limit) { ownMap.add(SIMD3(x, 5, 0)) }
+check(ownMap.cells.count == PhoneLocalVoxels.limit && ownMap.cells[1] == [0, 5, 0], "a full map takes no new cells")
+let ownJSON = try JSONSerialization.jsonObject(with: JSONEncoder().encode(
+    PhoneLocalMap(session: "s", timestamp_ns: 7, cells: [[1, -2, 3]]))) as! [String: Any]
+check(Set(ownJSON.keys) == ["session", "timestamp_ns", "cells"], "Home refuses a local map with any other field")
+print("Phone own map checks passed")
+
 func deviceNote(_ x: Float, frame: String = "home", phone: String? = nil, state: String? = nil, peer: String = "p1") -> RenderScene.Note {
     let key = phone == nil ? "robot_pose" : "phone_pose"
     let from = phone.map { "phone-camera:" + $0 } ?? "robot.base"

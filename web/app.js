@@ -96,7 +96,7 @@ async function runnerCatalog(){
     if(activeMap===map.id){activeMap=runner&&!runner.primary?'runner:'+runner.peer_id:'runner';lastScene=null;}
     continue;
    }
-   const label=map.name==='phone-local-voxels'?'Android · local map':map.name;
+   const label=map.name==='phone-local-voxels'?'Phone · local map':map.name;
    const option=new Option(map.peer_alias||label+' · '+map.peer_id.slice(-8),map.id);
    option.title=label+' · '+map.peer_id;
    network.append(option);
@@ -324,7 +324,7 @@ function updateMapUI(){
   $('mapping-status').textContent=(current.integrated_observations||0)+' scans integrated';
   $('mapping-detail').textContent='Latest retained map from the publishing peer';
   if(current.product_id==='phone-local-voxels'){
-   $('scene-title').textContent='Android · local voxel map';
+   $('scene-title').textContent='Phone · local voxel map';
    $('scene-badge').textContent='PHONE-LOCAL MAP';
    $('portal-info').textContent='Independent phone AR session frame · not merged into Home';
    $('scene-note').textContent='Phone-owned 10 cm voxels · read directly from its SDK Catalog Product';
@@ -341,12 +341,12 @@ function updateMapUI(){
   }
  }
  if(activeMap.startsWith('phone:')) {
-  $('scene-title').textContent='Android · local voxel map';
-  $('map-authority').textContent='Android peer · ARCore depth';
+  $('scene-title').textContent='Phone · local voxel map';
+  $('map-authority').textContent='Phone peer · AR depth';
   $('scene-badge').textContent='UNALIGNED PHONE MAP';
   $('frame-info').textContent='Phone AR session · OpenGL · Y up · meters';
   $('portal-info').textContent='No Portal calibration. Not merged into Home.';
-  $('scene-note').textContent='Real ARCore depth hits accumulated into 10 cm voxels on the phone. Tracking loss starts a new map. Unknown space is not free space.';
+  $('scene-note').textContent='Real depth hits accumulated into 10 cm voxels on the phone. Tracking loss starts a new map. Unknown space is not free space.';
   $('mapping-status').textContent='Phone-local depth mapping';
   $('mapping-detail').textContent='Unaligned · read-only · removed after 10 seconds without updates';
   document.querySelector('#inspect-snapshot').href=document.querySelector('.export').href='/api/phone-local-scene?peer='+encodeURIComponent(activeMap.slice(6));

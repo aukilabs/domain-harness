@@ -84,6 +84,13 @@ final class HomePeer: ObservableObject {
               let json = String(data: data, encoding: .utf8) else { return }
         json.withCString { spatial_mobile_depth($0) }
     }
+    /// Share the phone's own map with Home; nil stops sharing it.
+    func publishLocalMap(_ map: PhoneLocalMap?) {
+        guard let map else { _ = spatial_mobile_local_map(nil); return }
+        guard running, state == "live", let data = try? JSONEncoder().encode(map),
+              let json = String(data: data, encoding: .utf8) else { return }
+        json.withCString { _ = spatial_mobile_local_map($0) }
+    }
     var onMap: ((PortalMap) -> Void)?
     /// Home's answer to a new-Portal report, for the user to see.
     var onPortalResult: ((String) -> Void)?

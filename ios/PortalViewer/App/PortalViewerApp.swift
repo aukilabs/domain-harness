@@ -184,6 +184,7 @@ struct ViewerScreen: View {
             peer.onMap = { controller.load($0) }
             controller.onPose = { peer.publishPose($0) }
             controller.onDepth = { peer.publishDepth($0) }
+            controller.onLocalMap = { peer.publishLocalMap($0) }
             peer.onDisconnect = { controller.clear() }
             controller.onSleep = { peer.setAsleep($0) }
             controller.onNewPortal = { peer.reportPortal($0) }
@@ -1255,10 +1256,13 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     }
     @Published var status = "Connect to Home to receive its scene"
     @Published var shareDepth = true {
-        didSet { if !shareDepth { onDepth?(nil); depthStatus = "Depth sharing off" } }
+        didSet { if !shareDepth { onDepth?(nil); onLocalMap?(nil); depthStatus = "Depth sharing off" } }
     }
     @Published var depthStatus = "Scan a Portal to share depth"
     var onDepth: ((PhoneDepthSample?) -> Void)?
+    /// The phone's own map, apart from what Home merges into the scene.
+    var onLocalMap: ((PhoneLocalMap?) -> Void)?
+    private var localVoxels = PhoneLocalVoxels()
     private let depthQueue = DispatchQueue(label: "home.phone.depth")
     private var depthBusy = false
     private var lastDepthCapture: TimeInterval = 0
@@ -1988,6 +1992,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         volumes.invalidate()
         onPose?(nil)
         onDepth?(nil)
+        onLocalMap?(nil)
         depthAlignment = nil
         alignedThrough = [:]
         depthStatus = shareDepth ? "Scan a Portal to share depth" : "Depth sharing off"
@@ -2532,10 +2537,17 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         let capturedGeneration = generation
         let session = poseSession
         depthQueue.async {
-            let sample = PhoneDepthCapture.read(frame, alignment: alignment, session: session)
+            var measured = [SIMD3<Int32>]()
+            let sample = PhoneDepthCapture.read(frame, alignment: alignment, session: session, measured: &measured)
             DispatchQueue.main.async {
                 self.depthBusy = false
                 guard self.generation == capturedGeneration, self.aligned, self.shareDepth else { return }
+                measured.forEach { self.localVoxels.add($0) }
+                // Sent on every capture, changed or not, so Home keeps listing it.
+                if !self.localVoxels.cells.isEmpty {
+                    self.onLocalMap?(PhoneLocalMap(session: session, timestamp_ns: UInt64(frame.timestamp * 1_000_000_000),
+                                                   cells: self.localVoxels.cells))
+                }
                 guard let sample else { self.depthStatus = "No reliable depth here. Aim at nearby surfaces."; return }
                 self.depthStatus = "LiDAR active · \(sample.points.count) \(sample.colors == nil ? "" : "colored ")voxels per capture"
                 self.onDepth?(sample)
@@ -2686,7 +2698,10 @@ enum PhoneDepthCapture {
     /// cells; each cell's camera color is averaged in linear light. The result
     /// is one colored point per occupied voxel (its center), expressed back in
     /// this capture's camera frame so Home can still validate pose and rays.
-    static func read(_ frame: ARFrame, alignment: DepthAlignment, session: String) -> PhoneDepthSample? {
+    /// `measured` receives the same capture as cells of the phone's own AR
+    /// session frame, for the phone's own map.
+    static func read(_ frame: ARFrame, alignment: DepthAlignment, session: String,
+                     measured: inout [SIMD3<Int32>]) -> PhoneDepthSample? {
         guard let depth = frame.sceneDepth, let confidence = depth.confidenceMap else { return nil }
         let buffer = depth.depthMap
         guard CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_DepthFloat32,
@@ -2731,6 +2746,7 @@ enum PhoneDepthCapture {
         let cameraFromHome = homeFromCamera.inverse
         struct Cell { var samples: Float = 0; var color = SIMD3<Float>(repeating: 0); var colored: Float = 0 }
         var cells = [SIMD3<Int32>: Cell]()
+        var own = [SIMD3<Int32>: Int]()
         // Every second pixel is under 4 cm apart at 5 m, finer than a voxel.
         for y in stride(from: 0, to: height, by: 2) {
             let depths = base.advanced(by: y * rowBytes).assumingMemoryBound(to: Float32.self)
@@ -2746,9 +2762,13 @@ enum PhoneDepthCapture {
                 cell.samples += 1
                 if let rgb = linearColor(x: x, y: y) { cell.color += rgb; cell.colored += 1 }
                 cells[key] = cell
+                let world = frame.camera.transform * SIMD4(point[0], point[1], point[2], 1)
+                own[SIMD3(Int32((world.x / voxelSize).rounded(.down)), Int32((world.y / voxelSize).rounded(.down)),
+                          Int32((world.z / voxelSize).rounded(.down))), default: 0] += 1
             }
         }
         // One stray depth pixel does not make a voxel.
+        measured = own.compactMap { $0.value >= 2 ? $0.key : nil }
         var voxels = cells.compactMap { key, cell -> (point: SIMD3<Float>, color: [UInt8]?)? in
             guard cell.samples >= 2 else { return nil }
             let center = (SIMD3(Float(key.x), Float(key.y), Float(key.z)) + 0.5) * voxelSize
