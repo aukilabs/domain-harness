@@ -90,6 +90,7 @@ struct ViewerScreen: View {
                     }
                     .padding(.top, 10)
                     .accessibilityLabel(controller.drawing ? "Stop drawing" : "Draw on the scene")
+                    if controller.drawing { CrayonTools(controller: controller).padding(.top, 10) }
                     }
                     .opacity(controller.snoozed ? 0 : 1).disabled(controller.snoozed)
                 }
@@ -274,6 +275,48 @@ struct ViewerScreen: View {
             // Leaving the foreground always lets go of the joystick.
             if value != .active { peer.drive(target: nil) }
             if value == .background { peer.disconnect(background: true) }
+        }
+    }
+}
+
+/// What a finger does while drawing is on.
+enum CrayonTool { case surface, spray, erase }
+
+/// The drawing tools, shown under the draw button while drawing is on.
+struct CrayonTools: View {
+    @ObservedObject var controller: ViewerController
+    @State private var sizing = false
+    private func icon(_ name: String, on: Bool) -> some View {
+        Image(systemName: name).font(.system(size: 16, weight: .semibold))
+            .foregroundStyle(on ? Theme.accent : Theme.dim)
+            .frame(width: 36, height: 36).background(Theme.paper, in: Circle())
+            .shadow(color: Theme.glow, radius: 4, y: 2)
+    }
+    private func tool(_ name: String, _ tool: CrayonTool, _ label: String) -> some View {
+        Button { controller.crayonTool = tool } label: { icon(name, on: controller.crayonTool == tool) }
+            .accessibilityLabel(label)
+    }
+    var body: some View {
+        VStack(spacing: 10) {
+            tool("pencil.tip", .surface, "Draw on voxels or the floor")
+            tool("aqi.medium", .spray, "Spray in the air")
+            tool("eraser.fill", .erase, "Erase a path")
+            ColorPicker("Color", selection: $controller.crayonColor, supportsOpacity: false)
+                .labelsHidden().frame(width: 36, height: 36)
+            Button { sizing.toggle() } label: { icon("lineweight", on: sizing) }
+                .accessibilityLabel("Line size")
+                .overlay(alignment: .trailing) {
+                    if sizing {
+                        HStack(spacing: 8) {
+                            Slider(value: $controller.crayonWidth, in: 0.01...0.15).frame(width: 150).tint(Theme.accent)
+                            Text(String(format: "%.0f cm", controller.crayonWidth * 100)).themeText(11)
+                                .foregroundStyle(Theme.dim).frame(width: 40, alignment: .trailing)
+                        }
+                        .padding(.horizontal, 12).frame(height: 36).background(Theme.paper, in: Capsule())
+                        .shadow(color: Theme.glow, radius: 4, y: 2)
+                        .fixedSize().offset(x: -46)
+                    }
+                }
         }
     }
 }
@@ -1121,12 +1164,24 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             guard drawing != oldValue else { return }
             if drawing && !aligned { drawing = false; showToast("Scan a Portal before drawing.", good: false); return }
             drawPan?.isEnabled = drawing
-            if drawing { showToast("Drag on voxels or the floor.", good: true) } else { abandonStroke() }
+            if drawing { showToast("Drag on voxels or the floor.", good: true) } else { crayonTouch = nil; abandonStroke() }
         }
     }
+    /// Surface: on the nearest voxel or the floor. Spray: in the air, half a metre
+    /// ahead, so moving the phone draws. Erase: touch a path to remove it.
+    @Published var crayonTool = CrayonTool.surface { didSet { abandonStroke(); crayonTouch = nil } }
+    @Published var crayonColor = Color(red: 1, green: 0xca / 255.0, blue: 0x55 / 255.0)
+    @Published var crayonWidth = CrayonStroke.width
     /// Saves a finished stroke to Home for a scene frame; answers whether Home took it.
     var onStroke: ((CrayonStroke, String, @escaping (Bool) -> Void) -> Void)?
-    private var drawPan: UIPanGestureRecognizer?
+    /// Removes a saved path from Home by its ID; answers whether Home did.
+    var onErase: ((String, @escaping (Bool) -> Void) -> Void)?
+    private var drawPan: UILongPressGestureRecognizer?
+    /// Where the finger is while it is down. The line is sampled from here every
+    /// frame, so a still finger on a moving phone draws too.
+    private var crayonTouch: CGPoint?
+    /// Paths asked to be removed, hidden until Home agrees or refuses.
+    private var erasing = Set<String>()
     /// Strokes drawn here that Home has not sent back yet. Survives Home's redraws.
     private let crayonRoot = SCNNode()
     private var crayonDraft = CrayonDraft()
@@ -1429,8 +1484,9 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         let press = UILongPressGestureRecognizer(target: self, action: #selector(longPress(_:)))
         press.minimumPressDuration = 0.35
         view.addGestureRecognizer(press)
-        let pan = UIPanGestureRecognizer(target: self, action: #selector(draw(_:)))
-        pan.maximumNumberOfTouches = 1
+        // No wait and no movement needed: drawing starts where the finger lands.
+        let pan = UILongPressGestureRecognizer(target: self, action: #selector(draw(_:)))
+        pan.minimumPressDuration = 0
         pan.isEnabled = false
         view.addGestureRecognizer(pan); drawPan = pan
     }
@@ -1634,27 +1690,15 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         }
         renderScene(map.render)
         if let paths = map.render?.paths, paths.frame == map.scenegraph.map.frame.id {
-            for stroke in paths.items where stroke.width_m.isFinite && stroke.width_m >= 0.005 && stroke.width_m <= 0.25 {
+            for stroke in paths.items where CrayonStroke.widths.contains(stroke.width_m) && !erasing.contains(stroke.id) {
                 let color = UInt32(stroke.color.dropFirst(), radix: 16) ?? 0xffca55
-                let material = SCNMaterial()
-                material.diffuse.contents = UIColor(red: CGFloat((color >> 16) & 255)/255,
-                    green: CGFloat((color >> 8) & 255)/255, blue: CGFloat(color & 255)/255, alpha: 1)
-                material.lightingModel = .constant
+                let material = Self.crayonMaterial(UIColor(red: CGFloat((color >> 16) & 255)/255,
+                    green: CGFloat((color >> 8) & 255)/255, blue: CGFloat(color & 255)/255, alpha: 1))
                 for segment in stroke.segments {
-                    for (a, b) in zip(segment, segment.dropFirst()) where a.count == 3 && b.count == 3 {
-                        guard (a+b).allSatisfy({ $0.isFinite }) else { continue }
-                        let start = SIMD3<Float>(a[0], a[1], a[2]), end = SIMD3<Float>(b[0], b[1], b[2])
-                        let length = simd_length(end-start)
-                        guard length > 0.00001 else { continue }
-                        let cylinder = SCNCylinder(radius: CGFloat(stroke.width_m/2), height: CGFloat(length))
-                        cylinder.radialSegmentCount = 8
-                        cylinder.materials = [material]
-                        let node = SCNNode(geometry: cylinder)
-                        node.name = "scene-path:" + stroke.id
-                        node.simdPosition = (start+end)/2
-                        node.simdOrientation = simd_quatf(from: SIMD3<Float>(0,1,0), to: (end-start)/length)
-                        root.addChildNode(node)
-                    }
+                    let points = segment.filter { $0.count == 3 }.map { SIMD3<Float>($0[0], $0[1], $0[2]) }
+                    guard let node = Self.pathNode(points, width: stroke.width_m, material: material) else { continue }
+                    node.name = "scene-path:" + stroke.id
+                    root.addChildNode(node)
                 }
             }
         }
@@ -2020,7 +2064,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     @objc private func doubleTap(_ gesture: UITapGestureRecognizer) {
-        guard volumes.draft == nil else { return }
+        guard volumes.draft == nil, !drawing else { return }
         if aligned, let map {
             let hits = view.hitTest(gesture.location(in: view), options: [:])
             if let name = hits.first(where: { $0.node.name?.hasPrefix("semantic-volume:") == true })?.node.name,
@@ -2127,23 +2171,35 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { layer.removeFromSuperlayer() }
     }
 
-    /// The point of the scene under a finger: the nearest voxel or the floor, within 40 m.
-    private func surfacePoint(at point: CGPoint) -> SIMD3<Float>? {
-        guard aligned, let map, let frame = view.session.currentFrame,
+    /// The ray through a finger, in Home's frame.
+    private func sceneRay(at point: CGPoint) -> (origin: SIMD3<Float>, direction: SIMD3<Float>)? {
+        guard aligned, let frame = view.session.currentFrame,
               case .normal = frame.camera.trackingState else { return nil }
         let far = view.unprojectPoint(SCNVector3(Float(point.x), Float(point.y), 1))
         let inverse = root.simdTransform.inverse
         let localOrigin = inverse * frame.camera.transform.columns.3
         let localFar = inverse * SIMD4(far.x, far.y, far.z, 1)
         let origin = SIMD3(localOrigin.x, localOrigin.y, localOrigin.z)
-        return SceneRay.hit(origin: origin, direction: SIMD3(localFar.x, localFar.y, localFar.z) - origin, scene: map.render)
+        let direction = SIMD3(localFar.x, localFar.y, localFar.z) - origin
+        guard simd_length(direction) > 0.000001 else { return nil }
+        return (origin, simd_normalize(direction))
     }
 
-    private static func crayonMaterial() -> SCNMaterial {
+    private static func crayonMaterial(_ color: UIColor) -> SCNMaterial {
         let material = SCNMaterial()
-        material.diffuse.contents = UIColor(red: 1, green: 0xca / 255, blue: 0x55 / 255, alpha: 1)
+        material.diffuse.contents = color
         material.lightingModel = .constant
         return material
+    }
+
+    /// One smooth tube through a segment's points.
+    private static func pathNode(_ points: [SIMD3<Float>], width: Float, material: SCNMaterial) -> SCNNode? {
+        guard let mesh = CrayonTube.mesh(points, radius: width / 2) else { return nil }
+        let geometry = SCNGeometry(sources: [SCNGeometrySource(vertices: mesh.vertices.map { SCNVector3($0.x, $0.y, $0.z) })],
+                                   elements: [SCNGeometryElement(indices: mesh.indices, primitiveType: .triangles)])
+        material.isDoubleSided = true
+        geometry.materials = [material]
+        return SCNNode(geometry: geometry)
     }
 
     private func abandonStroke() {
@@ -2151,28 +2207,69 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         crayonDraft = CrayonDraft()
     }
 
-    @objc private func draw(_ gesture: UIPanGestureRecognizer) {
+    /// Add the point under the finger to the line being drawn, and redraw the piece it changed.
+    private func sampleCrayon() {
+        guard let touch = crayonTouch, let node = crayonNode, crayonTool != .erase else { return }
+        let ray = sceneRay(at: touch)
+        let point = crayonTool == .spray ? ray.map { $0.origin + $0.direction * 0.5 }
+                                         : ray.flatMap { SceneRay.hit(origin: $0.origin, direction: $0.direction, scene: map?.render) }
+        guard crayonDraft.add(point) != nil else { return }
+        let index = crayonDraft.segments.count - 1
+        let material = node.childNodes.first?.geometry?.firstMaterial ?? Self.crayonMaterial(UIColor(crayonColor))
+        node.childNode(withName: String(index), recursively: false)?.removeFromParentNode()
+        if let piece = Self.pathNode(crayonDraft.segments[index], width: crayonWidth, material: material) {
+            piece.name = String(index)
+            node.addChildNode(piece)
+        }
+    }
+
+    /// Remove the saved path nearest the finger, if one is within a fingertip of it.
+    private func erase(at point: CGPoint) {
+        guard aligned, let paths = map?.render?.paths else { return }
+        var nearest: (id: String, distance: CGFloat)?
+        for stroke in paths.items where !erasing.contains(stroke.id) {
+            for position in stroke.segments.joined() where position.count == 3 {
+                let shown = view.projectPoint(root.convertPosition(SCNVector3(position[0], position[1], position[2]), to: nil))
+                guard shown.z > 0, shown.z < 1 else { continue }
+                let distance = hypot(CGFloat(shown.x) - point.x, CGFloat(shown.y) - point.y)
+                if distance < 28, distance < nearest?.distance ?? .infinity { nearest = (stroke.id, distance) }
+            }
+        }
+        guard let id = nearest?.id else { return }
+        guard let onErase else { showToast("Home is not connected, so the path was not erased.", good: false); return }
+        erasing.insert(id)
+        let shown = (root.childNodes + povRoot.childNodes).filter { $0.name == "scene-path:" + id }
+        shown.forEach { $0.isHidden = true }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        onErase(id) { [weak self] erased in
+            self?.erasing.remove(id)
+            guard !erased else { return }
+            shown.forEach { $0.isHidden = false }
+            self?.showToast("Home did not erase that path.", good: false)
+        }
+    }
+
+    @objc private func draw(_ gesture: UILongPressGestureRecognizer) {
         guard drawing else { return }
+        let point = gesture.location(in: view)
         switch gesture.state {
-        case .began:
+        case .began where crayonTool != .erase:
             abandonStroke()
             let node = SCNNode(); node.name = UUID().uuidString.lowercased()
             crayonRoot.addChildNode(node); crayonNode = node
-            fallthrough
-        case .changed, .ended:
-            if let (start, end) = crayonDraft.add(surfacePoint(at: gesture.location(in: view))), let node = crayonNode {
-                let length = simd_length(end - start)
-                let cylinder = SCNCylinder(radius: CGFloat(CrayonStroke.width / 2), height: CGFloat(length))
-                cylinder.radialSegmentCount = 8
-                cylinder.materials = [node.childNodes.first?.geometry?.firstMaterial ?? Self.crayonMaterial()]
-                let piece = SCNNode(geometry: cylinder)
-                piece.simdPosition = (start + end) / 2
-                piece.simdOrientation = simd_quatf(from: SIMD3<Float>(0, 1, 0), to: (end - start) / length)
-                node.addChildNode(piece)
-            }
-            guard gesture.state == .ended else { return }
-            guard let node = crayonNode, let frame = map?.scenegraph.map.frame.id,
-                  let stroke = crayonDraft.stroke(id: node.name ?? "") else { abandonStroke(); return }
+            crayonTouch = point
+            sampleCrayon()
+        case .began, .changed:
+            crayonTouch = point
+            if crayonTool == .erase { erase(at: point) } else { sampleCrayon() }
+        case .ended where crayonTool != .erase:
+            crayonTouch = point
+            sampleCrayon()
+            crayonTouch = nil
+            let rgb = UIColor(crayonColor).cgColor.converted(to: CGColorSpace(name: CGColorSpace.sRGB)!, intent: .defaultIntent, options: nil)?.components ?? [1, 0.79, 0.33]
+            let hex = "#" + rgb.prefix(3).map { String(format: "%02x", Int((max(0, min(1, $0)) * 255).rounded())) }.joined()
+            guard let node = crayonNode, let frame = map?.scenegraph.map.frame.id, hex.count == 7,
+                  let stroke = crayonDraft.stroke(id: node.name ?? "", color: hex, width: crayonWidth) else { abandonStroke(); return }
             // The drawn line stays up until Home sends its own copy back, or refuses it.
             crayonNode = nil; crayonDraft = CrayonDraft()
             guard let onStroke else {
@@ -2184,6 +2281,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 self?.showToast("Home did not save that path.", good: false)
             }
         default:
+            crayonTouch = nil
             abandonStroke()
         }
     }
@@ -2193,7 +2291,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     /// A press that is not on a QR code is left alone, silently, so it stays
     /// free for other gestures such as drawing.
     @objc private func longPress(_ gesture: UILongPressGestureRecognizer) {
-        guard volumes.draft == nil else { return }
+        guard volumes.draft == nil, !drawing else { return }
         guard gesture.state == .began, let frame = view.session.currentFrame else { return }
         let pressed = gesture.location(in: view)
         let size = view.bounds.size
@@ -2531,6 +2629,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         if snoozed { return }
         checkRest(frame)
         if snoozed { return }
+        sampleCrayon()
         // Aligned frames are shared below, together with their pose.
         if !aligned { shareCamera(frame, alignment: 0, withPose: false) }
         if north == .searching {
