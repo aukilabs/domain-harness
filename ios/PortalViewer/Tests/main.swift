@@ -238,6 +238,13 @@ check(MessageRoute.plan(from: SIMD3(0, 1, 0), to: SIMD3(900, 1, 0), voxels: wall
 let crumbTrail = MessageRoute.crumbs([SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(1, 0, 1)], every: 0.4)
 check(crumbTrail.count == 5 && abs(crumbTrail[0].x - 0.4) < 0.0001 && abs(crumbTrail[2].z - 0.2) < 0.0001 && crumbTrail.last == SIMD3(1, 0, 1), "crumbs are evenly spaced round a corner and end on the spot")
 check(MessageRoute.ahead([SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(1, 0, 1)], by: 1.5) == SIMD3(1, 0, 0.5) && MessageRoute.ahead([SIMD3(0, 0, 0), SIMD3(1, 0, 0)], by: 9) == SIMD3(1, 0, 0), "the next spot to head for is along the way, not past its end")
+let corner = [SIMD3<Float>(0, 0, 0), SIMD3(2, 0, 0), SIMD3(2, 0, 2)]
+check(abs(MessageRoute.stray(SIMD3(1, 1.4, 0.5), from: corner) - 0.5) < 0.0001 && abs(MessageRoute.stray(SIMD3(3, 0, 3), from: corner) - 1.4142) < 0.001,
+      "how far off the way a spot is, across the floor, ignoring its height")
+let shared = MessageRoute.path(corner, id: "a", to: " the printer ")!
+check(shared.title == "Way to the printer" && shared.segments.count == 1 && shared.segments[0].first == [0, 0, 0] && shared.segments[0].last == [2, 0, 2]
+      && CrayonStroke.widths.contains(shared.width_m), "a way is a path like any drawn one, from its start to its end")
+check(MessageRoute.path([SIMD3(0, 0, 0), SIMD3(0.01, 0, 0)], id: "a", to: "x") == nil, "already there: nothing to draw")
 print("Message route checks passed")
 
 let firstPortal = try JSONSerialization.jsonObject(with: JSONEncoder().encode(PortalReport(

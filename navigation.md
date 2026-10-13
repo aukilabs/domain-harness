@@ -5,7 +5,7 @@ Status: proposal. Nothing here is built except the phone's own stand-in planner.
 ## Why
 
 A phone can now lead its user to a note: it plans a way across the floor and
-lays a trail of crumbs in AR. That planner lives inside the iPhone app. Nothing
+draws it in AR. That planner lives inside the iPhone app. Nothing
 else can ask for a route, Android and robots would each write their own, and the
 phone plans on the copy of the map Home last sent it, not on what Home knows.
 
@@ -43,7 +43,7 @@ Result `spatial-harness.route/v1`:
 | --- | --- | --- |
 | `frame` | string | The frame the points are in; equals the request's. |
 | `status` | string | `found`, `direct` (nothing known in the way) or `unreachable`. |
-| `points` | list of `[x, y, z]` | Corners of the route, both ends included, on the floor. Empty when unreachable. |
+| `path` | scene-paths `Stroke` | The route as a path: ID, title, color, width and one segment of points on the floor, both ends included. Absent when unreachable. |
 | `length_m` | number | Length along the route. |
 | `map_timestamp_ns`, `clock` | | Capture time and clock of the map the route was planned on. |
 
@@ -55,6 +55,28 @@ Rules, from `AGENTS.md`:
   caller tell a fresh plan from a stale one.
 - Unknown floor is not free floor. The planner may cross unknown floor at a
   cost, and says so with `status`; it never reports it as clear.
+
+## A route is a path
+
+A route is a line of points in the scene frame, which is what a Crayon stroke
+is. It is a path drawn without a crayon. So the result carries a scene-paths
+`Stroke`, every viewer draws it with the code that draws drawn paths, and it
+is shared the way they are.
+
+- **Seen by everyone.** `plan` saves the route into the scene's paths, so
+  Home's page and every phone show it. A request may say `"share": false` to
+  get the route back without saving it.
+- **One route per caller.** A caller's new route replaces its previous one, so
+  re-planning while walking does not pile up stale routes. Scene paths can only
+  be appended to, so replacing means removing the old path and adding the new.
+- **`clear`.** A second Operable removes the caller's route when it arrives or
+  gives up. Home also drops a route whose caller has gone.
+- **Over the peer link only.** Like `scene-paths` `add` and `remove`, this is
+  a Component operation between authenticated peers, not a web request.
+
+Today the phone does this itself: it plans locally, saves the route with
+`scene-paths` `add`, keeps it while the user stays within a metre of it, and
+removes it with `remove` when it re-plans or stops.
 
 ## One request, not a stream
 
@@ -77,7 +99,8 @@ change when the engine does.
 ## What the phone does
 
 1. Look for `scene-navigation:<scene id>` in Home's Catalog.
-2. If it is there, call `plan` and draw the returned points.
+2. If it is there, call `plan`. The route comes back as a path and arrives in
+   the scene's paths like any other.
 3. If it is not, or the call fails, use the local planner. A Home built before
    this exists keeps working.
 

@@ -1430,58 +1430,71 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         messages.asleep = snoozed
         messages.record(scene.notes, frame: scene.frame, mine: ownNotes)
     }
-    /// The trail of crumbs to the message being looked for. Survives Home's redraws.
+    /// The way to the message being looked for, drawn as a path. It is saved to Home like a
+    /// drawn path so everyone in the scene sees it; this holds the phone's own copy until
+    /// Home's arrives. Survives Home's redraws.
     private let guideRoot = SCNNode()
     private var guideRoute = [SIMD3<Float>]()
     private var guidePlanned: (id: String, at: TimeInterval)?
     private var guidePlanning = false
     private let guideQueue = DispatchQueue(label: "home.phone.route")
-    private static let crumb: SCNGeometry = {
-        let dot = SCNSphere(radius: 0.035)
-        dot.segmentCount = 12
-        dot.firstMaterial?.diffuse.contents = Theme.uiAccent
-        dot.firstMaterial?.lightingModel = .constant
-        // Seen through the voxels: the trail is what the user is following.
-        dot.firstMaterial?.readsFromDepthBuffer = false
-        dot.firstMaterial?.writesToDepthBuffer = false
-        return dot
-    }()
+    /// The way everyone can see now: its path in Home, where it leads, and the frame it is in.
+    private var guideShared: (id: String, route: [SIMD3<Float>], goal: SIMD3<Float>, frame: String)?
     private func endGuide() {
-        guard guidePlanned != nil || !guideRoute.isEmpty || messages.way != nil else { return }
+        guard guidePlanned != nil || !guideRoute.isEmpty || messages.way != nil || guideShared != nil else { return }
         guideRoot.childNodes.forEach { $0.removeFromParentNode() }
         guideRoute = []; guidePlanned = nil
         if messages.way != nil { messages.way = nil }
+        // Nobody is being led any more, so the way comes off everyone's map.
+        if let shared = guideShared { onErase?(shared.id, shared.frame) { _ in } }
+        guideShared = nil
     }
-    /// Plan the way to the message across the floor, round what the map shows, lay crumbs
-    /// along it, and say which way to head next. Planned again as the phone moves and the
+    /// Show a freshly planned way to everyone. A way already shown is kept while the phone is
+    /// still on it and it still leads to the right place, so the map is not redrawn at every step.
+    private func share(_ route: [SIMD3<Float>], to target: MessageInbox.Message, from phone: SIMD3<Float>, frame: String) {
+        if let shared = guideShared, shared.frame == frame, simd_distance(shared.goal, target.position) < 0.3,
+           MessageRoute.stray(phone, from: shared.route) < 1 { return }
+        if let old = guideShared { onErase?(old.id, old.frame) { _ in } }
+        guideRoot.childNodes.forEach { $0.removeFromParentNode() }
+        guideShared = nil
+        let id = UUID().uuidString.lowercased()
+        guard let path = MessageRoute.path(route, id: id, to: target.text) else { return }
+        let color = UInt32(path.color.dropFirst(), radix: 16) ?? 0xff5fa8
+        let material = Self.crayonMaterial(UIColor(red: CGFloat((color >> 16) & 255) / 255, green: CGFloat((color >> 8) & 255) / 255,
+                                                   blue: CGFloat(color & 255) / 255, alpha: 1))
+        if let node = Self.pathNode(path.segments[0].map { SIMD3($0[0], $0[1], $0[2]) }, width: path.width_m, material: material) {
+            node.name = id
+            guideRoot.addChildNode(node)
+        }
+        guideShared = (id, route, target.position, frame)
+        // If Home cannot take it, the phone still shows its own copy.
+        onStroke?(path, frame) { _ in }
+    }
+    /// Plan the way to the message across the floor, round what the map shows, draw it for
+    /// everyone, and say which way to head next. Planned again as the phone moves and the
     /// map fills in.
     private func guideToMessage(_ frame: ARFrame) {
-        guard let target = messages.target, aligned, case .normal = frame.camera.trackingState,
-              let scene = map?.render, view.bounds.width > 0 else { endGuide(); return }
+        guard let target = messages.target else { endGuide(); return }
+        // A moment without tracking is not the end of the way.
+        guard aligned, case .normal = frame.camera.trackingState, let map, let scene = map.render,
+              scene.frame == map.scenegraph.map.frame.id, view.bounds.width > 0 else {
+            if messages.way != nil { messages.way = nil }
+            return
+        }
         let inHome = root.simdTransform.inverse * frame.camera.transform.columns.3
         let phone = SIMD3(inHome.x, inHome.y, inHome.z)
         if !guidePlanning, guidePlanned?.id != target.id || frame.timestamp - (guidePlanned?.at ?? 0) > 1.5 {
             guidePlanning = true
-            if guidePlanned?.id != target.id { guideRoot.childNodes.forEach { $0.removeFromParentNode() }; guideRoute = [] }
-            let voxels = scene.voxels, size = scene.voxel_size, time = frame.timestamp
+            let voxels = scene.voxels, size = scene.voxel_size, time = frame.timestamp, home = scene.frame
             guideQueue.async {
                 let centers = voxels.compactMap { $0.center.count == 3 ? SIMD3($0.center[0], $0.center[1], $0.center[2]) : nil }
                 let route = MessageRoute.plan(from: phone, to: target.position, voxels: centers, size: size)
-                let crumbs = MessageRoute.crumbs(route).suffix(240)
                 DispatchQueue.main.async {
                     self.guidePlanning = false
-                    guard self.messages.target?.id == target.id else { return }
+                    guard self.messages.target?.id == target.id, self.map?.scenegraph.map.frame.id == home else { return }
                     self.guidePlanned = (target.id, time)
                     self.guideRoute = route
-                    self.guideRoot.childNodes.forEach { $0.removeFromParentNode() }
-                    for (index, spot) in crumbs.enumerated() {
-                        let node = SCNNode(geometry: Self.crumb)
-                        node.simdPosition = spot
-                        node.renderingOrder = 150
-                        // The last crumb is the spot itself, and stands out.
-                        if index == crumbs.count - 1 { node.simdScale = SIMD3(repeating: 2.2) }
-                        self.guideRoot.addChildNode(node)
-                    }
+                    self.share(route, to: target, from: phone, frame: home)
                 }
             }
         }
@@ -1811,6 +1824,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         // back would restart its dust trail every time Home sends an update.
         root.childNodes.filter { $0 !== floating && $0 !== crayonRoot && $0 !== guideRoot }.forEach { $0.removeFromParentNode() }
         if guideRoot.parent == nil { root.addChildNode(guideRoot) }
+        let listed = Set(map.render?.paths?.items.map(\.id) ?? [])
+        guideRoot.childNodes.filter { listed.contains($0.name ?? "") }.forEach { $0.removeFromParentNode() }
         // A stroke drawn here is dropped once Home's own copy of it arrives.
         let saved = Set(map.render?.paths?.items.map(\.id) ?? [])
         crayonRoot.childNodes.filter { $0.isHidden }.forEach { $0.removeFromParentNode() }
@@ -3186,7 +3201,7 @@ struct MessageMarker: View {
                 } else if let way = center.way ?? Optional(aim), way.screen == nil {
                     // Out of view: an arrow at the edge of the screen, on the side to move
                     // toward. It points along the way there, which may be round something.
-                    // Once that way is in view the crumbs on the floor take over.
+                    // Once that way is in view the line on the floor takes over.
                     let box = CGRect(x: 44, y: 120, width: area.size.width - 88, height: max(1, area.size.height - 120 - 230))
                     let across = CGFloat(sin(way.turn)), down = CGFloat(-cos(way.turn))
                     let scale = min(box.width / 2 / max(abs(across), 0.0001), box.height / 2 / max(abs(down), 0.0001))
@@ -3236,7 +3251,7 @@ struct MessageGuide: View {
         guard aim.screen == nil else { return "It is here · \(far)" }
         // With a way planned, the words follow it and not the straight line through a wall.
         guard let way = center.way else { return "\(aim.hint) · \(far)" }
-        return "\(way.screen == nil ? way.hint : "Follow the dots") · \(far)"
+        return "\(way.screen == nil ? way.hint : "Follow the line") · \(far)"
     }
 }
 

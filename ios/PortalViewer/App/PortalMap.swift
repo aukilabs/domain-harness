@@ -714,6 +714,31 @@ enum MessageRoute {
         return crumbs
     }
 
+    /// How far a spot is from the route, across the floor.
+    static func stray(_ spot: SIMD3<Float>, from route: [SIMD3<Float>]) -> Float {
+        let p = SIMD2(spot.x, spot.z)
+        var nearest = Float.infinity
+        for (a3, b3) in zip(route, route.dropFirst()) {
+            let a = SIMD2(a3.x, a3.z), b = SIMD2(b3.x, b3.z), along = b - a
+            let t = simd_length_squared(along) > 0.000001 ? max(0, min(1, simd_dot(p - a, along) / simd_length_squared(along))) : 0
+            nearest = min(nearest, simd_distance(p, a + along * t))
+        }
+        if route.count == 1, let only = route.first { nearest = simd_distance(p, SIMD2(only.x, only.z)) }
+        return nearest
+    }
+
+    /// The route as a path for everyone in the scene to see: a line drawn without a crayon.
+    static func path(_ route: [SIMD3<Float>], id: String, to name: String) -> CrayonStroke? {
+        guard let start = route.first else { return nil }
+        // Closely spaced points keep the smooth line on the route round corners.
+        let points = [start] + crumbs(route, every: 0.3)
+        guard points.count >= 2, simd_distance(start, points[points.count - 1]) > 0.05 else { return nil }
+        let title = String(("Way to " + name.trimmingCharacters(in: .whitespacesAndNewlines)).prefix(120))
+        return CrayonStroke(id: id, title: title, color: color, width_m: width, segments: [points.map { [$0.x, $0.y, $0.z] }])
+    }
+    static let color = "#ff5fa8"
+    static let width: Float = 0.05
+
     /// The spot `distance` along the route from its start: where to head next.
     static func ahead(_ route: [SIMD3<Float>], by distance: Float) -> SIMD3<Float>? {
         guard var spot = route.first else { return nil }
