@@ -66,6 +66,9 @@ fn lock(state: &Shared) -> Result<std::sync::MutexGuard<'_, Store>, ApiError> {
 
 #[derive(Deserialize)]
 struct PreviewQuery {
+    home_frame: Option<String>,
+    #[serde(default)]
+    debug_pose: bool,
     #[serde(default)]
     follow: bool,
     expected_manifest: Option<String>,
@@ -82,8 +85,15 @@ async fn sensor_preview(
     axum::extract::Query(q): axum::extract::Query<PreviewQuery>,
 ) -> ApiResult {
     let (reply, receive) = tokio::sync::oneshot::channel();
+    // AR and picking validate compact contracts in compact_ar. Following has
+    // not been migrated and must remain disabled independently.
+    if q.follow {
+        spatial_home::home_pose_policy::unsupported("Home camera following")?;
+    }
     s.previews
         .try_send(spatial_home::sensor_preview::Request {
+            home_frame: q.home_frame,
+            debug_pose: q.debug_pose,
             sensor: q.sensor,
             scene: q.scene,
             ar: q.ar,
@@ -280,7 +290,7 @@ async fn scene_sources(State(s): State<Shared>) -> ApiResult {
     // Catalog listing opens no scene subscriptions or sensor streams.
     status["scenes"] = json!([]);
     let (reply, receive) = tokio::sync::oneshot::channel();
-    if s.previews.try_send(spatial_home::sensor_preview::Request {sensor:None, scene:true, ar:false, pick:false, follow:false, capture:false, expected_manifest:None, reply}).is_ok() {
+    if s.previews.try_send(spatial_home::sensor_preview::Request {home_frame:None,debug_pose:false,sensor:None, scene:true, ar:false, pick:false, follow:false, capture:false, expected_manifest:None, reply}).is_ok() {
         if let Ok(Ok(Ok(value))) = tokio::time::timeout(std::time::Duration::from_secs(2), receive).await {
             status["scenes"] = value["scenes"].clone();
         }
@@ -967,6 +977,7 @@ async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Jso
         #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Edit {id:String,expected_description:String,description:String}
         match name {
             "raycast_peer_camera"=>{
+                spatial_home::home_pose_policy::unsupported("Home peer-camera raycasting")?;
                 let a:spatial_home::scene_geometry::CameraRay=serde_json::from_value(args)?;
                 let view=if scene.starts_with("local:"){s.local_scenes.view(&key)?}else{serde_json::to_value(&lock(&s).map_err(|e|e.0)?.built.view)?};
                 let id=format!("phone-name:{}",a.peer_id);
@@ -1365,6 +1376,8 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/vendor/{name}", get(vendor))
         .route("/api/sensors", get(sensor_preview))
+        .route("/pose-inspector.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/pose-inspector.js")) }))
+        .route("/compact-pose-trail.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/compact-pose-trail.js")) }))
         .route("/api/robot-occupancy", get(robot_occupancy))
         .route("/api/scene", get(scene))
         .route("/api/semantic-volumes", get(get_volumes).post(create_volume))

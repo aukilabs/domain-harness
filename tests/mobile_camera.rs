@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 async fn preview(tx: &mpsc::Sender<Request>, sensor: Option<String>) -> Result<serde_json::Value> {
     let (reply, answer) = oneshot::channel();
     tx.send(Request {
+        home_frame: None, debug_pose: false,
         scene: false,
         sensor,
         ar: false,
@@ -288,7 +289,7 @@ async fn home_draws_over_a_phone_camera_without_a_phone_adapter() -> Result<()> 
         let drawn = tokio::time::timeout(Duration::from_secs(8), async {
             loop {
                 let (reply, answer) = oneshot::channel();
-                tx.send(Request { scene: false, sensor: Some(id.clone()), ar: true, pick: false, follow: false,
+                tx.send(Request { home_frame: None, debug_pose: false, scene: false, sensor: Some(id.clone()), ar: true, pick: false, follow: false,
                     capture: false, expected_manifest: None, reply }).await?;
                 match answer.await? {
                     Ok(frame) => break Ok::<_, anyhow::Error>(frame),

@@ -361,6 +361,7 @@ impl ScenePublisher {
             "ingest",
             |context| !context.caller_peer_id.is_empty(),
             move |context, envelope: crate::mobile_depth::Envelope| {
+                crate::home_pose_policy::unsupported("Home depth fusion").map_err(|e| InvocationError::Rejected(e.to_string()))?;
                 inbox
                     .lock()
                     .map_err(|_| InvocationError::TargetUnavailable)?
@@ -396,6 +397,7 @@ impl ScenePublisher {
             "update",
             |context| !context.caller_peer_id.is_empty(),
             move |context, update: crate::mobile_pose::Update| {
+                crate::home_pose_policy::unsupported("Home phone presence").map_err(|e| InvocationError::Rejected(e.to_string()))?;
                 let mut cache = cache
                     .lock()
                     .map_err(|_| InvocationError::TargetUnavailable)?;
@@ -618,14 +620,18 @@ pub async fn serve_scene(
         .map(|p| (p.peer_id.clone(), p.routes.clone()))
         .chain(runner.iter().map(|r| (r.peer_id.clone(), r.routes.clone())))
         .collect();
+    let registry_definitions=crate::product_registry::Definitions::default();
+    for snapshot in local_scenes.snapshots.values(){crate::product_registry::frame(&registry_definitions,&crate::conventions::registry(&running.peer.peer_id().to_string(),&snapshot.scenegraph.map.frame.id)?)?;}
     let catalogs =
-        crate::device_catalogs::monitor(&running.peer, &catalog_targets, catalog_tx, &monitor_stop);
+        crate::device_catalogs::monitor(&running.peer, &registry_definitions, &local_scenes, &catalog_targets, catalog_tx, &monitor_stop);
     let preview_catalogs = catalog_rx.clone();
     let publish = async {
         let publisher = ScenePublisher::mount(&running.peer);
         let result = match publisher {
             Err(error) => Err(error),
             Ok(mut publisher) => {
+                crate::product_registry::clock(&registry_definitions,&publisher.clock)?;
+                let _registry=crate::product_registry::mount(&running.peer,publisher.runtime.clone(),registry_definitions.clone())?;
                 let work = async {
                 publisher.enable_home_live()?;
                 let _local_scene_components = local_scenes.mount(
@@ -702,6 +708,7 @@ pub async fn serve_scene(
         monitor_stop.cancel();
         result
     };
+    let declared_depth = crate::declared_depth::serve(&running.peer, preview_catalogs.clone(), &local_scenes, &monitor_stop);
     let previews = crate::sensor_preview::serve(
         &running.peer,
         preview_catalogs,
@@ -711,14 +718,15 @@ pub async fn serve_scene(
         &local_scenes,
         &monitor_stop,
     );
-    let (result, _, _, _, _, _, _) = tokio::join!(
+    let (result, _, _, _, _, _, _, _) = tokio::join!(
         publish,
         remote,
         previews,
         home_mapper,
         extra_monitors,
         robot_occupancy,
-        catalogs
+        catalogs,
+        declared_depth
     );
     shutdown.cancel();
     status.send_replace(serde_json::json!({"enabled":true,"status":"Stopped"}));

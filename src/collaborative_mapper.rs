@@ -196,7 +196,7 @@ impl CollaborativeMap {
     /// Robot-local clocks are not comparable. De-duplicate independently per
     /// exact Product and clock; serialize accepted arrivals into one map writer.
     pub fn integrate(&mut self, scan: LocalizedScan) -> Result<bool> {
-        let mut o = scan.observation;
+        let o = scan.observation;
         let peer = scan.binding.sensor_product.peer_id.clone();
         ensure!(
             scan.origin.kind == "canonical_portals",
@@ -245,8 +245,31 @@ impl CollaborativeMap {
             },
             "unexpected localization basis"
         );
+        self.integrate_localized(o, scan.binding, scan.colors)
+    }
+    /// Internal sink for measurements already resolved through declared frames.
+    /// Network consumers must validate contracts, registries and time before here.
+    pub(crate) fn integrate_declared(&mut self, scan: crate::declared_depth::Localized) -> Result<bool> {
+        ensure!(scan.target == self.frame, "Scene origin changed during depth resolution");
+        let clock = scan.binding.observation_clock.clone();
+        let from = scan.binding.sensor_frame.frame_id.clone();
+        let [x,y,z,w] = scan.pose.rotation_xyzw;
+        let o = DepthObservation {
+            source: scan.binding.sensor_product.clone(), sequence: scan.sequence,
+            timestamp_ns: scan.timestamp, clock: clock.clone(), sensor_frame_id: from.clone(),
+            hit_points_m: scan.points.points,
+            pose: auki_voxel_map::TimedSensorPose { timestamp_ns: scan.timestamp, clock,
+                sensor_to_map: auki_scenegraph::RigidTransform { from_frame_id: from,
+                    to_frame_id: self.frame.clone(), translation: scan.pose.translation, rotation_wxyz: [w,x,y,z] },
+                portal_snapshot: self.map.snapshot_reference() },
+        };
+        let colors = (0..o.hit_points_m.len()).map(|i|scan.points.colors.as_ref().map(|c|c[i])).collect();
+        self.integrate_localized(o, scan.binding, colors)
+    }
+    fn integrate_localized(&mut self, mut o: DepthObservation, binding: SensorBinding, colors: Vec<Option<[u8;3]>>) -> Result<bool> {
+        let peer = binding.sensor_product.peer_id.clone();
         ensure!(
-            scan.colors.len() == o.hit_points_m.len(),
+            colors.len() == o.hit_points_m.len(),
             "color/point count differs"
         );
         let key = serde_json::to_string(&(o.source.clone(), o.clock.clone()))?;
@@ -268,7 +291,7 @@ impl CollaborativeMap {
                 &portals,
                 crate::conventions::registry(&self.owner, &self.frame)?,
                 o.source.clone(),
-                scan.binding.sensor_frame.clone(),
+                binding.sensor_frame.clone(),
                 o.clock.clone(),
                 HOME_VOXEL_SIZE,
             )?;
@@ -284,21 +307,22 @@ impl CollaborativeMap {
                 latest_observation: None,
             }
         };
-        if let Some(binding) = saved
+        if let Some(existing) = saved
             .definition
             .sources
             .iter()
             .find(|b| b.sensor_product == o.source)
         {
             ensure!(
-                binding == &scan.binding,
+                existing == &binding,
                 "source binding changed without a new Product"
             );
         } else {
-            saved.definition.sources.push(scan.binding);
+            saved.definition.sources.push(binding);
         }
-        // Both localization frames use canonical portal poses converted by the SDK.
-        // Their different measured markers establish the same physical origin and axes.
+        // Upstream localization established this destination. This internal
+        // mapper record binds the capture to the current map snapshot; it is
+        // not portal evidence supplied by the remote publisher.
         o.pose.sensor_to_map.to_frame_id = self.frame.clone();
         o.pose.portal_snapshot = saved.definition.portal_snapshot.clone();
         let p = from_rigid(&o.pose.sensor_to_map);
@@ -307,7 +331,7 @@ impl CollaborativeMap {
         // Colors and endpoints use the complete capture, including measurements
         // omitted from free-space tracing. RecentVoxels gives hits precedence
         // over crossing free rays and counts each cell once per capture.
-        crate::voxel_color::add(&mut rays, &o.hit_points_m, &scan.colors, &transform, HOME_VOXEL_SIZE)?;
+        crate::voxel_color::add(&mut rays, &o.hit_points_m, &colors, &transform, HOME_VOXEL_SIZE)?;
         let endpoints = auki_mappers::Voxelizer::new(HOME_VOXEL_SIZE, 16)?.map_sensor_points(
             o.hit_points_m.iter().map(|p| auki_datatypes::pose::Vec3 {
                 x: p[0],

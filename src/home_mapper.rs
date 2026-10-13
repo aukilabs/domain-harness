@@ -42,6 +42,9 @@ async fn subscribe<
     reference: ProductReference,
     history: usize,
 ) -> Result<RemoteProductSubscription<T>> {
+    if T::DATATYPE == auki_odometry::PoseUpdate::DATATYPE {
+        crate::home_pose_policy::unsupported("Home runner mapping")?;
+    }
     Ok(client
         .subscribe_product_exact(
             expected,

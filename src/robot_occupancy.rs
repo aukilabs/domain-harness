@@ -149,6 +149,7 @@ pub fn render(
     scene: &crate::network::CanonicalScene,
     home: bool,
 ) -> Result<Value> {
+    crate::home_pose_policy::unsupported("Home posed robot volume rendering")?;
     ensure!(
         sample.received.elapsed() < Duration::from_secs(3),
         "Robot volume expired"
