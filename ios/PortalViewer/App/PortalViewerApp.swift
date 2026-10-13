@@ -31,6 +31,8 @@ struct ViewerScreen: View {
     @AppStorage("showDetails") private var showDetails = false
     @State private var promptedForLogin = false
     @State private var showMessages = false
+    /// The panel for leaving a note, surface or box. Out of the way until asked for.
+    @State private var showNotes = false
     @Environment(\.scenePhase) private var phase
     /// Whether voxels are reaching Home right now: ink sending, orange failing, grey idle.
     private var sending: Bool {
@@ -105,6 +107,18 @@ struct ViewerScreen: View {
                     .padding(.top, 10)
                     .accessibilityLabel(controller.drawing ? "Stop drawing" : "Draw on the scene")
                     if controller.drawing { CrayonTools(controller: controller).padding(.top, 10) }
+                    // Leave a note, surface or box. One thing at a time: it and drawing take turns.
+                    Button {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { showNotes.toggle() }
+                        if showNotes { controller.drawing = false } else { controller.volumes.cancel() }
+                    } label: {
+                        Image(systemName: "square.and.pencil").font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(showNotes ? Theme.accent : Theme.dim)
+                            .frame(width: 36, height: 36).background(Theme.paper, in: Circle())
+                            .shadow(color: Theme.glow, radius: 4, y: 2)
+                    }
+                    .padding(.top, 10)
+                    .accessibilityLabel(showNotes ? "Close notes" : "Leave a note")
                     MessageButton(center: controller.messages, open: $showMessages).padding(.top, 10)
                     }
                     .opacity(controller.snoozed ? 0 : 1).disabled(controller.snoozed)
@@ -143,8 +157,9 @@ struct ViewerScreen: View {
                 if let placement = controller.placement {
                     AnnotationEditor(controller: controller, peer: peer, placement: placement, close: { controller.clearPlacement() })
                         .id(placement.id)
-                } else if !controller.snoozed {
+                } else if showNotes && !controller.snoozed {
                     ComponentsBar(controller: controller, editor: controller.volumes, peer: peer, connect: { connecting = true })
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
                 // The scene panel is more than most people need; the Auki button brings it up.
                 if (showDetails && controller.placement == nil) || controller.snoozed {
@@ -234,13 +249,16 @@ struct ViewerScreen: View {
             controller.onGeo = { peer.setGeo($0) }
             controller.onStroke = { peer.saveStroke($0, frame: $1, done: $2) }
             controller.onErase = { peer.eraseStroke($0, frame: $1, done: $2) }
-            controller.onFound = { peer.saveAnnotation($0, text: $1) }
             peer.onPortalResult = { controller.showPortalResult($0) }
             // A Portal seen before Home's map has arrived offers sign-in once.
             controller.onPortalSeen = { _ in
                 guard !peer.running, !connecting, !promptedForLogin else { return }
                 promptedForLogin = true; connecting = true
             }
+        }
+        .onChange(of: controller.drawing) { _, drawing in
+            // Drawing takes the screen: the notes panel, and anything half made in it, goes.
+            if drawing, showNotes { withAnimation { showNotes = false }; controller.volumes.cancel() }
         }
         .sheet(isPresented: $connecting) {
             NavigationStack {
@@ -1477,10 +1495,6 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private var guideSaved: Date?
     /// When a way was last offered to Home, so a Home that cannot take one is not asked constantly.
     private var guideOffered = Date.distantPast
-    /// Tells whoever left a message that this phone reached it: a note in reply, at the same spot.
-    var onFound: ((NotePlacement, String) -> Bool)?
-    /// Messages already answered, so walking past one again says nothing new.
-    private var answered = Set<String>()
     private func endGuide() {
         guard guidePlanned != nil || !guideRoute.isEmpty || messages.way != nil || guideShared != nil else { return }
         guideRoot.childNodes.forEach { $0.removeFromParentNode() }
@@ -1518,19 +1532,10 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             if saved { self.guideSaved = Date() } else { self.guideShared = nil }
         }
     }
-    /// The phone has reached the message: reward the user, take the way off the map, and
-    /// leave a note in reply so whoever sent it hears too.
-    private func arrive(at phone: SIMD3<Float>, frame: String) {
-        guard let reached = messages.arrive() else { return }
+    /// The phone has reached the message: reward the user and take the way off the map.
+    private func arrive() {
+        guard messages.arrive() != nil else { return }
         endGuide()
-        guard !ownNotes.contains(reached.id), answered.insert(reached.id).inserted else { return }
-        let name = UserDefaults.standard.string(forKey: "phoneName")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let text = String("✓ \(name.isEmpty ? "Someone" : name) got “\(reached.text)”".prefix(120))
-        // Just above the message, so both can be read.
-        let at = reached.position + SIMD3(0, 0.25, 0)
-        let reply = NotePlacement(id: UUID().uuidString.lowercased(), frame: frame, origin: [phone.x, phone.y, phone.z],
-                                  direction: [at.x - phone.x, at.y - phone.y, at.z - phone.z], at: [at.x, at.y, at.z])
-        if onFound?(reply, text) == true { ownNotes.insert(reply.id) }
     }
     /// Plan the way to the message across the floor, round what the map shows, draw it for
     /// everyone, and say which way to head next. Planned again as the phone moves and the
@@ -1547,7 +1552,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         let phone = SIMD3(inHome.x, inHome.y, inHome.z)
         // Within a pace of it across the floor is there.
         if simd_distance(SIMD2(phone.x, phone.z), SIMD2(target.position.x, target.position.z)) < 0.8 {
-            arrive(at: phone, frame: scene.frame); return
+            arrive(); return
         }
         if !guidePlanning, guidePlanned?.id != target.id || frame.timestamp - (guidePlanned?.at ?? 0) > 1.5 {
             guidePlanning = true
