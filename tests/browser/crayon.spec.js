@@ -1,0 +1,22 @@
+import {test,expect} from '@playwright/test';
+test('draw floor path, persist across reload, isolate scenes, undo',async({page,request})=>{
+ const errors=[];page.on('pageerror',e=>errors.push(e.message));
+ await page.goto('/');await page.getByRole('button',{name:'Maps',exact:true}).click();
+ await page.locator('[data-map="local:humanoid-hub-conference"]').click();
+ await expect(page.locator('#scene-title')).toHaveText('Humanoid Hub Conference');
+ await page.locator('#crayon').click();await expect(page.locator('#crayon')).toHaveAttribute('aria-pressed','true');
+ const canvas=page.locator('#canvas > canvas'),rect=await canvas.boundingBox();
+ await page.mouse.move(rect.x+rect.width*.4,rect.y+rect.height*.7);await page.mouse.down();
+ await page.mouse.move(rect.x+rect.width*.6,rect.y+rect.height*.7,{steps:20});await page.mouse.up();
+ await expect(page.locator('.crayon-panel [role=status]')).toHaveText('Path saved to Home.');
+ const url='/api/paths?scene=local:humanoid-hub-conference';const saved=await (await request.get(url)).json();
+ expect(saved.items).toHaveLength(1);expect(saved.items[0].segments[0].length).toBeGreaterThan(1);
+ expect(saved.items[0].segments.flat().every(p=>Math.abs(p[1])<1e-6)).toBeTruthy();
+ await page.reload();await page.getByRole('button',{name:'Maps',exact:true}).click();await page.locator('[data-map="local:humanoid-hub-conference"]').click();
+ expect((await (await request.get(url)).json()).items).toEqual(saved.items);
+ expect((await (await request.get('/api/paths?scene=local:nacs')).json()).items).toEqual([]);
+ await page.locator('#crayon').click();await page.getByRole('button',{name:'Undo last path'}).click();
+ await expect(page.locator('.crayon-panel [role=status]')).toHaveText('Last path removed.');
+ expect((await (await request.get(url)).json()).items).toEqual([]);
+ expect(errors).toEqual([]);
+});

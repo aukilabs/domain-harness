@@ -38,6 +38,10 @@ pub struct Scene {
     pub presence: Value,
     #[serde(default)]
     pub robot_presence: Value,
+    #[serde(default, skip_serializing_if="Option::is_none")]
+    pub paths: Option<crate::scene_paths::Paths>,
+    #[serde(default, skip_serializing_if="Option::is_none")]
+    pub paths_product: Option<ProductReference>,
 }
 impl ContractType for Scene {
     const DATATYPE: &'static str = SCHEMA;
@@ -76,6 +80,10 @@ impl Scene {
             "Mobile scene/profile mismatch"
         );
         self.notes.validate(frame)?;
+        if let Some(paths)=&self.paths { paths.validate(frame)?; }
+        if let Some(product)=&self.paths_product {
+            ensure!(product.peer_id==peer && product.product_id==format!("local-scene:{}:paths",self.portals.scenegraph.map.map_id),"Path Product authority mismatch");
+        }
         let mut volume_layer=Notes::empty(frame);
         volume_layer.volumes=self.volumes.clone();
         volume_layer.validate(frame)?;
@@ -109,6 +117,8 @@ impl Scene {
                 "landmarks":crate::landmarks::portal_map(&self.portals,None,&Default::default())?})
         };
         view["notes"] = json!(self.notes.items);
+        view["paths"] = json!(self.paths);
+        view["paths_product"] = json!(self.paths_product);
         view["volumes"] = json!(self.volumes);
         let mut collection=self.semantic_volumes.clone().unwrap_or_else(|| {
             let mut collection=crate::semantic_volumes::Volumes::empty(&self.portals.scenegraph.map.frame.id);
@@ -228,6 +238,7 @@ pub struct Publisher {
     scenes: Arc<LocalScenes>,
     output: ConfiguredObservable<Scene>,
     capture: BufferProductCapture<Scene>,
+    paths_publisher: crate::scene_paths::Publisher,
     voxel_layers: [crate::voxel_layers::Publisher; 2],
     geometry_output: ConfiguredObservable<CanonicalScene>,
     _geometry_capture: BufferProductCapture<CanonicalScene>,
@@ -657,6 +668,7 @@ impl Publisher {
         endpoint.export_operable(&snapshot_op)?;
         endpoint.export_operable(&name_op)?;
         components.push(presence);
+        let paths_publisher=crate::scene_paths::Publisher::mount(runtime,endpoint,id,&owner,&reference.read().map_err(|_|anyhow!("Scene unavailable"))?.scenegraph.map.frame.id,crate::model::clock_ref(&clock))?;
         let mut publisher = Self {
             id: id.into(),
             reference,
@@ -666,6 +678,7 @@ impl Publisher {
             scenes,
             output,
             capture,
+            paths_publisher,
             voxel_layers,
             geometry_output,
             _geometry_capture: geometry_capture,
@@ -722,6 +735,8 @@ impl Publisher {
         let scene = Scene {
             schema: SCHEMA.into(),
             authority_peer_id: self.owner.clone(),
+            paths: Some(self.scenes.paths.get(&self.id,&reference.scenegraph.map.frame.id)?),
+            paths_product: Some(self.paths_publisher.reference()),
             publication_clock: self.clock.clone(),
             portals: reference.clone(),
             geometry: state.map.scene()?,
@@ -736,6 +751,7 @@ impl Publisher {
                 .snapshot(Instant::now(), &reference.scenegraph.map.frame.id),
         };
         scene.validate(&self.owner, &reference.scenegraph.map.frame.id)?;
+        self.paths_publisher.publish(self.started.elapsed().as_nanos() as u64,scene.paths.clone().unwrap())?;
         let content = serde_json::to_vec(&scene)?;
         if self.last_content.as_ref() == Some(&content) {
             self.occupancy.tick()?;
