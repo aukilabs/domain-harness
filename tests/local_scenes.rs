@@ -6,7 +6,7 @@ use spatial_home::{local_scenes::LocalScenes, model};
 #[test]
 fn saved_scenes_are_independent_and_existing_data_is_authoritative() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let scenes = LocalScenes::load(dir.path())?;
+    let scenes = support::seeded_local_scenes(dir.path())?;
     let nacs = scenes.snapshot("nacs")?;
     assert_eq!(nacs.scenegraph.map.name.as_deref(), Some("NACS"));
     assert_ne!(nacs.scenegraph.map.frame.id, model::FRAME);
@@ -162,7 +162,7 @@ fn conference_origin_registers_an_independent_phone_session() -> Result<()> {
     use auki_odometry::Pose;
     use spatial_home::local_mapper::{compose, identity, inverse};
     let dir = tempfile::tempdir()?;
-    let scenes = LocalScenes::load(dir.path())?;
+    let scenes = support::seeded_local_scenes(dir.path())?;
     assert_eq!(
         scenes.preferred_id().as_deref(),
         Some("local:humanoid-hub-conference")

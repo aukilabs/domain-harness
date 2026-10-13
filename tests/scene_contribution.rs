@@ -2,7 +2,6 @@ mod support;
 use anyhow::Result;
 use spatial_home::{
     local_mapper::identity,
-    local_scenes::LocalScenes,
     scene_contribution::{Contribution, Inbox},
 };
 use std::{
@@ -46,8 +45,25 @@ fn sample(peer: &str, reference: &auki_scenegraph::MapSnapshot) -> Contribution 
 }
 
 #[test]
+fn contribution_localization_preserves_all_surface_points_and_colors() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let scenes = support::seeded_local_scenes(dir.path())?;
+    let reference = scenes.snapshot("humanoid-hub-conference")?;
+    let mut contribution = sample("bracketbot", reference);
+    contribution.points = (0..2048).map(|i| [i as f64 / 1000., 0., 4.]).collect();
+    contribution.colors = (0..2048).map(|i| Some([i as u8, 80, 120])).collect();
+    let snapshot = auki_scenegraph::component::SnapshotReference {
+        product: contribution.source.clone(), sequence: 1,
+    };
+    let localized = contribution.clone().localize(reference, snapshot)?;
+    assert_eq!(localized.observation.hit_points_m, contribution.points);
+    assert_eq!(localized.colors, contribution.colors);
+    Ok(())
+}
+
+#[test]
 fn home_retains_latest_native_relationship_without_replaying_samples() -> Result<()> {
-    let dir=tempfile::tempdir()?;let scenes=LocalScenes::load(dir.path())?;
+    let dir=tempfile::tempdir()?;let scenes=support::seeded_local_scenes(dir.path())?;
     let reference=scenes.snapshot("humanoid-hub-conference")?;
     let mut map=spatial_home::collaborative_mapper::CollaborativeMap::for_scene("home","session",reference)?;
     let first=sample("bracketbot",reference);
@@ -67,7 +83,7 @@ fn home_retains_latest_native_relationship_without_replaying_samples() -> Result
 #[test]
 fn different_devices_share_one_scene_without_changing_native_data() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let scenes = LocalScenes::load(dir.path())?;
+    let scenes = support::seeded_local_scenes(dir.path())?;
     let reference = scenes.snapshot("humanoid-hub-conference")?;
     let mut map = spatial_home::collaborative_mapper::CollaborativeMap::for_scene(
         "home", "session", reference,
@@ -91,7 +107,7 @@ fn different_devices_share_one_scene_without_changing_native_data() -> Result<()
 #[test]
 fn measured_portal_frame_alias_is_explicitly_bound_to_reference() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let scenes = LocalScenes::load(dir.path())?;
+    let scenes = support::seeded_local_scenes(dir.path())?;
     let reference = scenes.snapshot("humanoid-hub-conference")?;
     let anchor = &reference.scenegraph.anchors["HNY3JGNLRAE"];
     let mut measured = anchor.clone();
@@ -115,7 +131,7 @@ fn measured_portal_frame_alias_is_explicitly_bound_to_reference() -> Result<()> 
 #[test]
 fn translated_native_alignment_is_accepted_without_mutating_source() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let scenes = LocalScenes::load(dir.path())?;
+    let scenes = support::seeded_local_scenes(dir.path())?;
     let reference = scenes.snapshot("humanoid-hub-conference")?;
     let mut c = sample("bracketbot", reference);
     c.native_to_scene.translation = [2., 0., 0.];
@@ -137,7 +153,7 @@ fn translated_native_alignment_is_accepted_without_mutating_source() -> Result<(
 #[test]
 fn rejects_wrong_owner_scene_clock_transform_and_stale_sequence() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let scenes = LocalScenes::load(dir.path())?;
+    let scenes = support::seeded_local_scenes(dir.path())?;
     let reference = scenes.snapshot("humanoid-hub-conference")?;
     let c = sample("robot", reference);
     assert!(c.validate("other", reference).is_err());
@@ -171,7 +187,7 @@ async fn generic_receiver_is_scene_scoped_and_phone_api_remains_advertised() -> 
     let pair = support::LocalPair::start().await?;
     let result = async {
         let dir = tempfile::tempdir()?;
-        let scenes = Arc::new(LocalScenes::load(dir.path())?);
+        let scenes = Arc::new(support::seeded_local_scenes(dir.path())?);
         let server = spatial_home::network::ScenePublisher::mount(&pair.a)?;
         let clock = spatial_home::model::clock_entry(&pair.a.peer_id().to_string(), "home-session");
         let mut publishers = spatial_home::local_mobile::Publisher::mount_all(

@@ -118,8 +118,12 @@ h3{font-size:13px;font-weight:600;letter-spacing:0;margin:8px 0 5px;color:var(--
 .main-footer{border-top:1px solid var(--line-soft);padding:8px 12px;display:flex;justify-content:space-between;font-size:8px;letter-spacing:.08em;color:var(--label);background:#0f0f12}
 [hidden]{display:none!important}
 #sensor-pip{position:absolute;left:auto;right:12px;bottom:42px;width:320px;max-width:calc(100% - 24px);background:#111116;border:1px solid #4f8ef766;border-radius:5px;overflow:hidden;box-shadow:0 8px 28px #0008;color:#fff;z-index:5}
-.sensor-pip-heading{display:flex;align-items:center;justify-content:space-between;padding:6px 8px;font-size:10px;border-bottom:1px solid #4f8ef733}
-.sensor-pip-heading strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sensor-pip-heading{display:flex;align-items:center;justify-content:space-between;padding:6px 8px;font-size:10px;border-bottom:1px solid #4f8ef733;cursor:grab;touch-action:none;user-select:none}
+.sensor-pip-heading strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+.pip-interacting .sensor-pip-heading{cursor:grabbing}
+.pip-resize{position:absolute;right:0;bottom:0;width:24px;height:24px;border:0;background:transparent;cursor:nwse-resize;touch-action:none;color:#9da6b8;padding:0}
+.pip-resize::after{content:'';position:absolute;right:5px;bottom:5px;width:10px;height:10px;border-right:2px solid currentColor;border-bottom:2px solid currentColor}
+#sensor-pip #sensor-feed-status{padding-right:28px}
 #sensor-close{background:transparent;border:0;color:#ffffff99;font-size:18px}
 #sensor-stage{position:relative}
 #sensor-image{display:block;width:100%;aspect-ratio:16/9;object-fit:contain;background:#09090b}
@@ -246,7 +250,7 @@ main{min-height:0;background:var(--app);grid-template-rows:minmax(0,1fr)}
 .page-heading,.stats{display:none}
 .viewport{background:var(--app)}
 .main-footer,.viewport-footer,.view-controls button,.empty,.selection{background:var(--panel);color:var(--muted)}
-#sensor-pip{resize:both;overflow:auto;min-width:200px;min-height:180px;max-height:85%}
+#sensor-pip{resize:none;box-sizing:border-box;max-width:none;overflow:hidden;z-index:100}
 button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 @media(max-width:720px){body{overflow:hidden}.shell{min-height:0}.viewport-heading small{display:none}.main-footer{letter-spacing:0;font-size:7px}.viewport-footer>span:first-child{max-width:75%;overflow:hidden;white-space:nowrap}.empty{min-width:0;width:90%;padding:10px}}
 @media(max-width:720px){.shell:not(.panel-collapsed) .selection[data-spatial-kind]{display:none}}

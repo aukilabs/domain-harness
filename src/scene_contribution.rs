@@ -147,22 +147,7 @@ impl Contribution {
             &from_rigid(&self.portal_to_native),
             &reference.scenegraph.anchors[&self.portal_id],
         )?;
-        // Reuse the SDK's bounded ray budget, retaining actual measured points.
-        let steps = self
-            .points
-            .iter()
-            .map(|p| 3 * (p[0].hypot(p[1]).hypot(p[2]) / 0.1).ceil() as usize + 3)
-            .max()
-            .unwrap_or(1);
-        let count = self
-            .points
-            .len()
-            .min(auki_voxel_map::MAX_POINTS)
-            .min(auki_voxel_map::MAX_RAY_SAMPLES / steps);
-        ensure!(count > 0, "Contribution exceeds ray budget");
-        let indices = (0..count)
-            .map(|i| i * self.points.len() / count)
-            .collect::<Vec<_>>();
+        // Keep all surface measurements. The Home mapper limits only free rays.
         Ok(crate::collaborative_mapper::LocalizedScan {
             observation: auki_voxel_map::DepthObservation {
                 source: self.source.clone(),
@@ -170,7 +155,7 @@ impl Contribution {
                 timestamp_ns: self.timestamp_ns,
                 clock: clock.clone(),
                 sensor_frame_id: self.sensor_frame.frame_id.clone(),
-                hit_points_m: indices.iter().map(|i| self.points[*i]).collect(),
+                hit_points_m: self.points,
                 pose: auki_voxel_map::TimedSensorPose {
                     timestamp_ns: self.timestamp_ns,
                     clock: clock.clone(),
@@ -183,7 +168,7 @@ impl Contribution {
                 sensor_frame: self.sensor_frame,
                 observation_clock: clock,
             },
-            colors: indices.iter().map(|i| self.colors[*i]).collect(),
+            colors: self.colors,
             origin,
         })
     }

@@ -56,7 +56,7 @@ impl Config {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Cell {
     pub index: [i32; 2],
-    /// Row-major: v * 20 + u. -1 unknown, 0 free, 100 occupied.
+    /// Row-major: v * (cell_size_m / resolution_m) + u.
     pub values: Vec<i8>,
 }
 
@@ -74,6 +74,14 @@ pub struct OccupancyGrid {
     pub origin_uv_m: [f64; 2],
     /// Sparse cells; absent cells are unknown, never free. Full replacement map.
     pub cells: Vec<Cell>,
+}
+
+/// A separate scene with only an occupancy layer. No scene/layer/cell revisions.
+pub fn cell_width(grid: &OccupancyGrid)->Result<usize> {
+    ensure!(grid.resolution_m.is_finite() && (0.01..=0.1).contains(&grid.resolution_m),"Invalid occupancy resolution");
+    let width=grid.cell_size_m/grid.resolution_m;
+    ensure!(width.is_finite() && (1. ..=256.).contains(&width) && (width-width.round()).abs()<1e-6,"Invalid occupancy tile dimensions");
+    Ok(width.round() as usize)
 }
 
 /// A separate scene with only an occupancy layer. No scene/layer/cell revisions.
@@ -113,11 +121,11 @@ pub fn render_scene(scene: &OccupancyScene, owner: &str) -> Result<serde_json::V
         .ok_or_else(|| anyhow::anyhow!("Waiting for occupancy grid"))?;
     ensure!(
         grid.schema == "spatial-harness.occupancy-2d/v1"
-            && grid.resolution_m == 0.1
-            && grid.cell_size_m == 2.
+            && grid.resolution_m.is_finite() && (0.01..=0.1).contains(&grid.resolution_m)
             && grid.obstacle_height_m == 1.,
         "Unsupported occupancy grid geometry"
     );
+    let width=cell_width(grid)?;
     ensure!(
         grid.floor_m.is_finite()
             && grid.origin_uv_m.iter().all(|v| v.is_finite())
@@ -150,7 +158,7 @@ pub fn render_scene(scene: &OccupancyScene, owner: &str) -> Result<serde_json::V
     let mut counts = [0usize; 3];
     for cell in &grid.cells {
         ensure!(
-            indices.insert(cell.index) && cell.values.len() == 400,
+            indices.insert(cell.index) && cell.values.len() == width*width,
             "Invalid occupancy cell"
         );
         for (i, value) in cell.values.iter().enumerate() {
@@ -164,9 +172,9 @@ pub fn render_scene(scene: &OccupancyScene, owner: &str) -> Result<serde_json::V
             let mut center = [0.; 3];
             center[up] = grid.floor_m;
             center[horizontal[0]] = grid.origin_uv_m[0]
-                + (f64::from(cell.index[0]) * 20. + (i % 20) as f64 + 0.5) * grid.resolution_m;
+                + (f64::from(cell.index[0]) * width as f64 + (i % width) as f64 + 0.5) * grid.resolution_m;
             center[horizontal[1]] = grid.origin_uv_m[1]
-                + (f64::from(cell.index[1]) * 20. + (i / 20) as f64 + 0.5) * grid.resolution_m;
+                + (f64::from(cell.index[1]) * width as f64 + (i / width) as f64 + 0.5) * grid.resolution_m;
             let center = crate::conventions::point(center, &grid.frame, &target)?;
             tiles.push(json!({"center":center,"value":value}));
         }
@@ -207,13 +215,14 @@ pub fn select_cells(scene: &OccupancyScene, request: ReadCells) -> Result<CellSe
     let keys: std::collections::BTreeSet<_> = request.cells.into_iter().collect();
     let mut result = scene.clone();
     if let Some(grid) = &mut result.layers.occupancy_2d {
+        let width=cell_width(grid)?;
         let cells: BTreeMap<_, _> = grid.cells.drain(..).map(|c| (c.index, c)).collect();
         grid.cells = keys
             .iter()
             .map(|index| {
                 cells.get(index).cloned().unwrap_or_else(|| Cell {
                     index: *index,
-                    values: vec![UNKNOWN; 400],
+                    values: vec![UNKNOWN; width*width],
                 })
             })
             .collect();
@@ -225,16 +234,14 @@ pub fn select_cells(scene: &OccupancyScene, request: ReadCells) -> Result<CellSe
     })
 }
 
-/// Center rule: 0 < center height above floor <= 1m. All ten samples must be
+/// Center rule: 0 < center height above floor <= 1m. All source samples must be
 /// explicitly negative to call a column free. Zero evidence remains unknown.
 pub fn project(voxels: &VoxelSnapshot, floor_m: f64) -> Result<OccupancyGrid> {
     Config::new(floor_m).validate()?;
     let layers = crate::voxel_layers::split(voxels)?;
     let d = &voxels.definition;
-    ensure!(
-        (d.grid().voxel_size_m.0 - 0.1).abs() < 1e-9,
-        "occupancy mapper requires 10 cm voxels"
-    );
+    let resolution = d.grid().voxel_size_m.0;
+    ensure!(resolution.is_finite() && (0.01..=0.1).contains(&resolution), "unsupported source voxel resolution");
     let axes = [d.frame.axes.x, d.frame.axes.y, d.frame.axes.z];
     let up = axes
         .iter()
@@ -242,34 +249,31 @@ pub fn project(voxels: &VoxelSnapshot, floor_m: f64) -> Result<OccupancyGrid> {
         .ok_or_else(|| anyhow::anyhow!("source needs a positive up axis"))?;
     let horizontal: Vec<_> = (0..3).filter(|i| *i != up).collect();
     let horizontal_axes = [horizontal[0], horizontal[1]];
-    let bottom = ((floor_m - d.grid_origin_m[up]) / 0.1 - 0.5 + 1e-8).floor() as i64 + 1;
-    let top = ((floor_m + 1. - d.grid_origin_m[up]) / 0.1 - 0.5 + 1e-8).floor() as i64;
-    ensure!(top - bottom + 1 == 10, "invalid vertical sampling band");
-    // (occupied, bit mask of observed free heights). Dedup via bit mask.
-    let mut columns = BTreeMap::<[i32; 2], (bool, u16)>::new();
+    let bottom = ((floor_m - d.grid_origin_m[up]) / resolution - 0.5 + 1e-8).floor() as i64 + 1;
+    let top = ((floor_m + 1. - d.grid_origin_m[up]) / resolution - 0.5 + 1e-8).floor() as i64;
+    // Keep source resolution. Every height in the one-metre band must be
+    // explicitly observed free; an occupied height blocks the column.
+    let mut columns = BTreeMap::<[i32; 2], (bool, std::collections::BTreeSet<[i64;3]>)>::new();
     for layer in &layers {
         for sample in layer.cells.iter().flat_map(|cell| &cell.voxels) {
             let p = sample.index.map(i64::from);
             if p[up] < bottom || p[up] > top {
                 continue;
             }
-            let key = [
-                i32::try_from(p[horizontal[0]])?,
-                i32::try_from(p[horizontal[1]])?,
-            ];
-            let entry = columns.entry(key).or_default();
-            if layer.kind == crate::voxel_layers::Kind::Occupied {
-                entry.0 = true;
-            } else {
-                entry.1 |= 1 << (p[up] - bottom);
-            }
+            let u=i32::try_from(p[horizontal[0]])?;
+            let v=i32::try_from(p[horizontal[1]])?;
+                let entry = columns.entry([u,v]).or_default();
+                if layer.kind == crate::voxel_layers::Kind::Occupied { entry.0 = true; }
+                else { entry.1.insert(p); }
         }
     }
     let mut cells = BTreeMap::<[i32; 2], Vec<i8>>::new();
+    let width=(2./resolution).ceil() as i32;
     for ([u, v], (hit, free)) in columns {
+        let required=(top-bottom+1) as usize;
         let value = if hit {
             OCCUPIED
-        } else if free == 1023 {
+        } else if free.len() == required {
             FREE
         } else {
             UNKNOWN
@@ -277,15 +281,15 @@ pub fn project(voxels: &VoxelSnapshot, floor_m: f64) -> Result<OccupancyGrid> {
         if value == UNKNOWN {
             continue;
         }
-        let cell_index = [u.div_euclid(20), v.div_euclid(20)];
+        let cell_index = [u.div_euclid(width), v.div_euclid(width)];
         ensure!(
             cells.contains_key(&cell_index) || cells.len() < MAX_CELLS,
             "occupancy map exceeds 8192 spatial cells"
         );
         let values = cells
             .entry(cell_index)
-            .or_insert_with(|| vec![UNKNOWN; 400]);
-        values[(v.rem_euclid(20) * 20 + u.rem_euclid(20)) as usize] = value;
+            .or_insert_with(|| vec![UNKNOWN; (width*width) as usize]);
+        values[(v.rem_euclid(width) * width + u.rem_euclid(width)) as usize] = value;
     }
     Ok(OccupancyGrid {
         schema: "spatial-harness.occupancy-2d/v1".into(),
@@ -294,8 +298,8 @@ pub fn project(voxels: &VoxelSnapshot, floor_m: f64) -> Result<OccupancyGrid> {
         up_axis: up,
         floor_m,
         obstacle_height_m: 1.,
-        resolution_m: 0.1,
-        cell_size_m: 2.,
+        resolution_m: resolution,
+        cell_size_m: f64::from(width)*resolution,
         origin_uv_m: [
             d.grid_origin_m[horizontal[0]],
             d.grid_origin_m[horizontal[1]],
@@ -496,6 +500,10 @@ impl OccupancyMapper {
     /// Explicit operator clear, unlike unknown cells in ordinary observations.
     pub fn clear_geometry(&mut self) {
         self.state.layers.occupancy_2d = None;
+        if let Ok(mut inbox)=self.inbox.lock(){inbox.take();}
+        self.state.status="waiting".into();
+        self.state.detail="Geometry cleared; waiting for new observations".into();
+        self.last_received=None;
         self.last_cycle = None;
     }
 

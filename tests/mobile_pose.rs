@@ -8,6 +8,7 @@ fn sample(session: &str, timestamp_ns: u64) -> Sample {
     Sample {
         session: session.into(),
         timestamp_ns,
+        camera_configuration_id:None,
         pose: auki_scenegraph::RigidTransform {
             from_frame_id: format!("phone-camera:{session}"),
             to_frame_id: FRAME.into(),
@@ -154,7 +155,26 @@ async fn calibrated_pose_reaches_home_over_p2p() -> anyhow::Result<()> {
             sample: Some(sample(&uuid::Uuid::new_v4().to_string(), 100)),
             status: None,
         };
-        spatial_home::mobile_pose::send(&pair.b, &home, &update).await?;
+        let mut sender = spatial_home::mobile_pose::PresenceSender::default();
+        sender.send(&pair.b, &home, spatial_home::mobile_pose::COMPONENT, &update).await?;
+        let initial_lookups = sender.catalog_requests();
+        assert!(initial_lookups > 0);
+        // A different component must not reuse the cached presence receiver.
+        assert!(sender.send(&pair.b, &home, "missing-presence", &update).await.is_err());
+        let mut fresh = update.clone();
+        fresh.sample.as_mut().unwrap().timestamp_ns = 200;
+        sender.send(&pair.b, &home, spatial_home::mobile_pose::COMPONENT, &fresh).await?;
+        let rediscovered = sender.catalog_requests();
+        assert!(rediscovered > initial_lookups);
+        fresh.sample.as_mut().unwrap().timestamp_ns = 300;
+        sender.send(&pair.b, &home, spatial_home::mobile_pose::COMPONENT, &fresh).await?;
+        assert_eq!(sender.catalog_requests(), rediscovered, "steady-state poses must not fetch Catalog");
+        let mut invalid = fresh.clone();
+        invalid.sample.as_mut().unwrap().pose.to_frame_id = "wrong-home".into();
+        assert!(sender.send(&pair.b, &home, spatial_home::mobile_pose::COMPONENT, &invalid).await.is_err());
+        fresh.sample.as_mut().unwrap().timestamp_ns = 400;
+        sender.send(&pair.b, &home, spatial_home::mobile_pose::COMPONENT, &fresh).await?;
+        assert!(sender.catalog_requests() > rediscovered, "failed sends must invalidate discovery");
         let registry = store.lock().unwrap().built.registries["mobile_presence"].clone();
         assert_eq!(
             registry["poses"][0]["peer_id"],
@@ -167,9 +187,10 @@ async fn calibrated_pose_reaches_home_over_p2p() -> anyhow::Result<()> {
             view["notes"][0]["position"],
             serde_json::json!([1., 1.5, 2.])
         );
-        spatial_home::mobile_pose::send(
+        sender.send(
             &pair.b,
             &home,
+            spatial_home::mobile_pose::COMPONENT,
             &Update {
                 sample: None,
                 status: None,

@@ -274,9 +274,71 @@ pub struct Offset {
     pub ground: bool,
 }
 pub fn tools() -> Vec<Value> {
-    serde_json::from_str(include_str!("../config/scene-geometry-tools.json"))
-        .expect("validated geometry schemas")
+    let mut tools:Vec<Value>=serde_json::from_str(include_str!("../config/scene-geometry-tools.json"))
+        .expect("validated geometry schemas");
+    tools.push(json!({"type":"function","function":{"name":"raycast_peer_camera","description":"Read-only: raycast where a phone peer is looking against occupied voxels or Y=0 floor, nearest hit within 40m. Optional pixel=[x,y], top-left origin in reported camera dimensions. Omit pixel for optical axis. Use returned position with create_note/move_note; no hit means no placement.","parameters":{"type":"object","properties":{"peer_id":{"type":"string"},"pixel":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2}},"required":["peer_id"],"additionalProperties":false}}}));
+    tools.push(json!({"type":"function","function":{"name":"point_relative_to_peer","description":"Read-only: offset in CURRENT peer orientation, not viewer. Resolve alias to peer_id. Set elevation_y=0 for ground/Y=0; otherwise preserves elevation. Use returned position with move_note/create_note. Missing orientation fails.","parameters":{"type":"object","properties":{"peer_id":{"type":"string"},"direction":{"type":"string","enum":["in_front","behind","left","right"]},"distance_m":{"type":"number","minimum":0},"elevation_y":{"type":"number","description":"Optional absolute scene Y in meters; ground is 0."}},"required":["peer_id","direction","distance_m"],"additionalProperties":false}}}));tools
 }
+/// Resolve a current peer pose, not its billboard (robot labels are above its base).
+pub fn peer_relative_point(view:&Value,peer:&str,direction:&str,distance:f64,frame:&str)->Result<[f64;3]>{
+ ensure!(distance.is_finite()&&distance>=0.&&distance<=1000.,"Invalid peer offset distance");
+ let phone_id=format!("phone-name:{peer}");
+ let phone=view["notes"].as_array().and_then(|notes|notes.iter().find(|n|n["id"]==phone_id));
+ let (pose,local)=if let Some(phone)=phone {
+  ensure!(phone["phone_pose"]["state"]!="asleep","Peer is asleep; current orientation unavailable");
+  (&phone["phone_pose"]["pose"],match direction{"in_front"=>[0.,0.,-1.],"behind"=>[0.,0.,1.],"left"=>[-1.,0.,0.],"right"=>[1.,0.,0.],_=>anyhow::bail!("Invalid peer direction")})
+ }else{
+  let robot_id=format!("robot-name:{peer}");
+  ensure!(view["notes"].as_array().is_some_and(|notes|notes.iter().any(|n|n["id"]==robot_id)),"Peer has no current localized pose");
+  let robot=&view["local_mapping"]["runners"][peer]["robot_pose"];
+  let robot=if robot.is_null(){let candidate=&view["local_mapping"]["robot_pose"];ensure!(candidate["clock"]["peer_id"]==peer,"Peer has no current localized pose");candidate}else{robot};
+  ensure!(robot["frame"]==frame,"Peer pose belongs to another scene");
+  // glyph_pose explicitly converts the declared robot body to ROS axes:
+  // +X forward, +Y left. Never assume body axes from the map convention.
+  (&robot["glyph_pose"],match direction{"in_front"=>[1.,0.,0.],"behind"=>[-1.,0.,0.],"left"=>[0.,1.,0.],"right"=>[0.,-1.,0.],_=>anyhow::bail!("Invalid peer direction")})
+ };
+ ensure!(pose["to_frame_id"]==frame,"Peer orientation unavailable in selected scene");
+ let position:[f64;3]=serde_json::from_value(pose["translation"].clone())?;
+ let q:[f64;4]=serde_json::from_value(pose["rotation_wxyz"].clone()).map_err(|_|anyhow::anyhow!("Peer orientation unavailable"))?;
+ ensure!(position.iter().chain(q.iter()).all(|n|n.is_finite())&&(q.iter().map(|n|n*n).sum::<f64>()-1.).abs()<1e-3,"Invalid peer pose");
+ let rotation=SpatialTransform{translation:None,orientation:Some(Quat{w:q[0],x:q[1],y:q[2],z:q[3]})};
+ let mut delta=point(&rotation,local)?;delta[1]=0.;
+ let length=delta[0].hypot(delta[2]);ensure!(length>1e-6,"Peer direction has no ground-plane projection");
+ Ok([position[0]+delta[0]*distance/length,position[1],position[2]+delta[2]*distance/length])
+}
+/// An explicit user Y constraint takes precedence over inherited peer elevation.
+pub fn placement_elevation(mut position:[f64;3],elevation_y:Option<f64>,instruction:&str)->Result<[f64;3]>{
+ let compact=instruction.to_lowercase().chars().filter(|c|!c.is_whitespace()).collect::<String>();
+ let explicit=compact.split_once("y=").and_then(|(_,tail)|{
+  let number=tail.chars().take_while(|c|c.is_ascii_digit()||matches!(c,'-'|'+'|'.')).collect::<String>();
+  number.parse::<f64>().ok()
+ });
+ let ground=["on the ground","at ground level","on the floor"].iter().any(|s|instruction.to_lowercase().contains(s));
+ if let Some(y)=explicit.or(if ground{Some(0.)}else{elevation_y}) {ensure!(y.is_finite(),"Elevation must be finite");position[1]=y;}
+ Ok(position)
+}
+pub fn peer_camera_ray(view:&Value,peer:&str,pixel:Option<[f64;2]>,frame:&str,calibration:Option<&Value>)->Result<Value>{
+ let id=format!("phone-name:{peer}");
+ let camera=view["notes"].as_array().and_then(|notes|notes.iter().find(|n|n["id"]==id)).map(|n|&n["phone_pose"]).ok_or_else(||anyhow::anyhow!("Peer has no current localized camera pose"))?;
+ ensure!(camera["state"]=="live"&&camera["received_age_ms"].as_u64().is_some_and(|age|age<3000),"Camera pose is stale or asleep");
+ let pose:auki_scenegraph::RigidTransform=serde_json::from_value(camera["pose"].clone())?;
+ ensure!(pose.to_frame_id==frame&&pose.translation.iter().chain(pose.rotation_wxyz.iter()).all(|n|n.is_finite())&&(pose.rotation_wxyz.iter().map(|n|n*n).sum::<f64>()-1.).abs()<1e-3,"Invalid camera pose or frame");
+ let local=if let Some(pixel)=pixel {
+  let k=calibration.ok_or_else(||anyhow::anyhow!("Camera registry calibration unavailable"))?;
+  let width=k["width"].as_u64().filter(|n|*n>0&&*n<=8192).ok_or_else(||anyhow::anyhow!("Invalid camera width"))?;
+  let height=k["height"].as_u64().filter(|n|*n>0&&*n<=8192).ok_or_else(||anyhow::anyhow!("Invalid camera height"))?;
+  ensure!(pixel.iter().all(|x|x.is_finite())&&(0. ..width as f64).contains(&pixel[0])&&(0. ..height as f64).contains(&pixel[1]),"Pixel outside camera image");
+  let optical=crate::ar_preview::pixel_ray(k,pixel)?;
+  // Phone AR poses use OpenGL camera axes; pixel unprojection is OpenCV.
+  [optical[0],-optical[1],-optical[2]]
+ }else{[0.,0.,-1.]};
+ let [w,x,y,z]=pose.rotation_wxyz;
+ let direction=point(&SpatialTransform{translation:None,orientation:Some(Quat{w,x,y,z})},local)?;
+ Ok(json!({"origin":pose.translation,"direction":direction,"frame":frame,"capture_timestamp_ns":camera["capture_timestamp_ns"],"camera_configuration_id":camera["camera_configuration_id"],"calibration":calibration}))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CameraRay {pub peer_id:String,#[serde(default)]pub pixel:Option<[f64;2]>}
 /// Snap model-copied coordinates to the authoritative query result. One micron
 /// tolerates JSON/decimal round trips without accepting a guessed destination.
 pub fn resolve_calculated_point(requested:[f64;3],points:&[[f64;3]])->Result<[f64;3]>{

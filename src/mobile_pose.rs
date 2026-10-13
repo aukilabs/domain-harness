@@ -145,6 +145,15 @@ pub struct Sample {
     pub session: String,
     pub timestamp_ns: u64,
     pub pose: auki_scenegraph::RigidTransform,
+    #[serde(default, skip_serializing_if="Option::is_none")]
+    pub camera_configuration_id: Option<String>,
+}
+#[derive(Clone,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CameraIntrinsics {pub width:u32,pub height:u32,pub fx:f64,pub fy:f64,pub cx:f64,pub cy:f64}
+impl CameraIntrinsics {
+ pub fn validate(&self)->Result<()> {ensure!(self.width>0&&self.height>0&&self.width<=8192&&self.height<=8192&&[self.fx,self.fy,self.cx,self.cy].iter().all(|x|x.is_finite())&&self.fx>0.&&self.fy>0.,"Invalid phone camera intrinsics");Ok(())}
+ pub fn calibration(&self)->Value {json!({"width":self.width,"height":self.height,"K":[self.fx,0.,self.cx,0.,self.fy,self.cy,0.,0.,1.],"D":[],"distortion_model":"pinhole"})}
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -236,7 +245,7 @@ impl Presence {
         let poses: Vec<_> = self.entries.iter().filter(|(_, (_,received,state))| now.duration_since(*received) < match state { State::Live => Duration::from_secs(3), State::Asleep => ASLEEP_TTL, State::Withdrawn => Duration::ZERO }).map(|(peer,(s,received,state))| {
             let mut clock = crate::model::clock_entry(peer, &s.session);
             clock.clock_id = "arkit-capture".into();
-            json!({"peer_id":peer,"name":display_name(peer),"state":if *state == State::Asleep { "asleep" } else { "live" },"pose":s.pose,"capture_timestamp_ns":s.timestamp_ns,"clock":clock,"received_age_ms":now.duration_since(*received).as_millis()})
+            json!({"peer_id":peer,"name":display_name(peer),"state":if *state == State::Asleep { "asleep" } else { "live" },"pose":s.pose,"camera_configuration_id":s.camera_configuration_id,"capture_timestamp_ns":s.timestamp_ns,"clock":clock,"received_age_ms":now.duration_since(*received).as_millis()})
         }).collect();
         json!({"frame":frame,"poses":poses})
     }
@@ -282,11 +291,37 @@ pub async fn send_component<T: auki_components::ContractType + Serialize>(
     component: &str,
     update: &T,
 ) -> Result<()> {
+    PresenceSender::default().send(peer, home, component, update).await
+}
+
+/// Reuse discovery across pose updates, never the pose itself. A failed or
+/// cancelled invocation drops the reference so the next update rediscovers it.
+#[derive(Default)]
+pub struct PresenceSender {
+    target: Option<(String, auki_sdk::Multiaddr, auki_components::ComponentReference)>,
+    catalog_requests: u64,
+}
+impl PresenceSender {
+/// Total discovery requests for diagnostics; steady-state sends do not add any.
+pub fn catalog_requests(&self) -> u64 { self.catalog_requests }
+pub async fn send<T: auki_components::ContractType + Serialize>(
+    &mut self,
+    peer: &auki_sdk::AukiPeer,
+    home: &crate::network::HomeConnection,
+    component: &str,
+    update: &T,
+) -> Result<()> {
     use auki_component_protocol::{CatalogResponse, ComponentProtocolClient};
+    // Take before awaiting: outer timeouts cannot leave a failed target pinned.
+    let cached = self.target.take();
     let expected = home.validate(peer)?;
+    let key = serde_json::to_string(&(peer.peer_id().to_string(), home, component))?;
     let client = ComponentProtocolClient::new(peer.protocols());
+    let mut target = cached.filter(|(old, _, _)| old == &key);
+    if target.is_none() {
     for route in &home.routes {
         let route: auki_sdk::Multiaddr = route.parse()?;
+        self.catalog_requests += 1;
         let Ok(Ok(CatalogResponse::Snapshot { snapshot })) = tokio::time::timeout(
             Duration::from_secs(1),
             client.catalog_exact(expected, route.clone(), None),
@@ -299,12 +334,19 @@ pub async fn send_component<T: auki_components::ContractType + Serialize>(
             .components
             .iter()
             .find(|c| c.manifest.component_id == home.scoped_component(component))
-            .ok_or_else(|| anyhow::anyhow!("Home phone presence unavailable"))?;
-        client
+            .ok_or_else(|| anyhow::anyhow!("Home presence component unavailable"))?;
+        ensure!(entry.manifest.peer_id == home.peer_id, "Presence authority mismatch");
+        target = Some((key.clone(), route, entry.manifest.reference()));
+        break;
+    }
+    }
+    let (_, route, reference) = target.as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Home presence component unavailable"))?;
+    let reply = client
             .invoke_exact::<_, bool>(
                 expected,
-                route,
-                entry.manifest.reference(),
+                route.clone(),
+                reference.clone(),
                 "update",
                 "phone-pose",
                 uuid::Uuid::new_v4().to_string(),
@@ -312,7 +354,8 @@ pub async fn send_component<T: auki_components::ContractType + Serialize>(
                 update,
             )
             .await?;
-        return Ok(());
-    }
-    anyhow::bail!("Home phone presence unavailable")
+    ensure!(reply.result, "Home rejected pose update");
+    self.target = target;
+    Ok(())
+}
 }

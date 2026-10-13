@@ -137,6 +137,35 @@ fn occupied_x(map: &CollaborativeMap) -> Vec<(i32, f64)> {
         .collect()
 }
 #[test]
+fn dense_capture_retains_every_colored_surface_hit_under_ray_budget() -> Result<()> {
+    let canonical = canonical()?;
+    let mut map = CollaborativeMap::new("home", &uuid::Uuid::new_v4().to_string(), &canonical)?;
+    let mut input = scan(&canonical, "a", "UCOF1J40N7O", 1, 100, 4., [255, 0, 0])?;
+    // A dense measured plane: over both the SDK point limit and ray-step budget.
+    let size = spatial_home::collaborative_mapper::HOME_VOXEL_SIZE;
+    input.observation.hit_points_m = (0..2048)
+        .map(|i| [3., (i % 32) as f64 * size, (i / 32) as f64 * size]).collect();
+    input.colors = (0..2048).map(|i| Some(if i % 2 == 0 { [255, 0, 0] } else { [0, 0, 255] })).collect();
+    assert!(map.integrate(input.clone())?);
+    let update = auki_datatypes::map::MapUpdate::decode(map.voxels.as_ref().unwrap().checkpoint.as_slice())?;
+    let occupied: Vec<_> = update.checkpoint.unwrap().voxel_chunks.into_iter()
+        .flat_map(|c| c.voxels).filter(|v| v.occupancy_evidence > 0.).collect();
+    assert_eq!(occupied.len(), 2048, "Ray thinning must not discard any surface cell");
+    assert!(occupied.iter().all(|v| v.color.as_ref().is_some_and(|c| c.weight == 1.)));
+    assert_eq!(occupied.iter().filter(|v| v.color.as_ref().unwrap().red_sum > 0.9).count(), 1024);
+    assert_eq!(occupied.iter().filter(|v| v.color.as_ref().unwrap().blue_sum > 0.9).count(), 1024);
+    assert!(!map.integrate(input.clone())?, "A retained capture cannot be replayed");
+    // Invalid endpoints must be rejected even when ray subsampling would omit them.
+    input.observation.sequence = 2;
+    input.observation.timestamp_ns = 200;
+    input.observation.pose.timestamp_ns = 200;
+    input.observation.hit_points_m[1][0] = f64::NAN;
+    assert!(map.integrate(input).is_err());
+    assert_eq!(map.voxels.as_ref().unwrap().integrated_observations, 1);
+    Ok(())
+}
+
+#[test]
 fn explicit_clear_preserves_reference_and_rejects_old_observations() -> Result<()> {
     let canonical=canonical()?;
     let mut map=CollaborativeMap::new("home", &uuid::Uuid::new_v4().to_string(), &canonical)?;
@@ -175,6 +204,7 @@ fn different_markers_and_unsynchronized_clocks_fuse_and_clear_the_same_cells() -
     );
     assert!(map.integrate(a.clone())?);
     assert!(map.integrate(b)?);
+    assert_eq!(map.voxels.as_ref().unwrap().definition.grid().voxel_size_m.0,0.1);
     assert_eq!(occupied_x(&map), vec![(5, 2.)]);
     let checkpoint =
         auki_datatypes::map::MapUpdate::decode(map.voxels.as_ref().unwrap().checkpoint.as_slice())?;
@@ -698,8 +728,10 @@ fn sdk_fisheye_overlay_projects_voxels_and_rejects_behind_camera() -> Result<()>
     assert_eq!(overlay["notes"][0]["text"], "abc");
     let vertices = overlay["vertices"].as_array().unwrap();
     assert_eq!(vertices.len(), 36);
-    let radius = (2_f64).sqrt() * 0.05 / 1.95;
-    let expected = 35. - 80. * radius.atan() / (2_f64).sqrt();
+    // The first corner of the 10cm cell containing [0.55,0.05,0.05]
+    // is [0.5,0.,0.].
+    let radial=0.05_f64.hypot(0.05);
+    let expected = 35. - 80. * (radial/1.95).atan() * 0.05/radial;
     assert!((vertices[0][0].as_f64().unwrap() - expected).abs() < 1e-4);
     let behind = Pose {
         translation: [0.55, 0.05, 2.05],

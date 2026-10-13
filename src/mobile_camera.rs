@@ -132,6 +132,43 @@ fn capture(
         },
     )?)
 }
+pub fn registry_calibration(network:&serde_json::Value,peer:&str,id:&str,camera_frame:&str)->Result<serde_json::Value>{
+ let row=network["peers"].as_array().and_then(|peers|peers.iter().find(|p|p["peer_id"]==peer)).ok_or_else(||anyhow::anyhow!("Camera peer Catalog unavailable"))?;
+ let catalog:CatalogSnapshot=serde_json::from_value(row["catalog"].clone())?;
+ let product=catalog.products.iter().find(|p|p.manifest.peer_id==peer&&p.manifest.product_id==format!("phone-camera-calibration:{id}")).ok_or_else(||anyhow::anyhow!("Referenced camera configuration unavailable in peer Catalog; refresh or rebuild phone"))?;
+ let metadata=product.metadata.as_ref().ok_or_else(||anyhow::anyhow!("Camera configuration metadata missing"))?;
+ metadata.validate().map_err(anyhow::Error::msg)?;
+ ensure!(metadata.schema=="spatial.phone-camera-calibration/v1"&&metadata.value["configuration_id"]==id&&metadata.value["camera_frame_id"]==camera_frame,"Camera calibration reference mismatch");
+ ensure!(catalog.components.iter().flat_map(|c|c.current_outputs.values()).any(|o|o.manifest.peer_id==peer&&o.manifest.reference()==product.manifest.producer&&o.manifest.spatial_frame.as_ref().is_some_and(|f|f.definition==auki_registry::FrameRegistryEntry::opengl(peer,camera_frame))&&matches!(&o.manifest.payload,PayloadContract::Structured(c) if c.datatype==CalibrationReference::DATATYPE&&c.schema==CalibrationReference::DATATYPE)),"Camera calibration producer/frame contract mismatch");
+ crate::ar_preview::camera_model(&metadata.value["calibration"])?;
+ Ok(metadata.value["calibration"].clone())
+}
+#[derive(Clone,serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Configuration {pub session:String,pub camera:crate::mobile_pose::CameraIntrinsics}
+#[derive(Clone)]
+pub struct RegisteredConfiguration {pub id:String,pub configuration:Configuration}
+#[derive(Clone,serde::Serialize,serde::Deserialize)]
+pub struct CalibrationReference {pub configuration_id:String}
+impl ContractType for CalibrationReference {const DATATYPE:&'static str="spatial.camera-calibration-reference/v1";}
+/// Intrinsics live in Catalog metadata; the retained observation is only a reference.
+pub struct CalibrationPublisher {capture:BufferProductCapture<CalibrationReference>,endpoint:Arc<auki_component_protocol::ComponentProtocolEndpoint>,product:String,_component:Component}
+impl CalibrationPublisher {
+ pub fn new(products:&crate::mobile_products::MobileProducts,config:&RegisteredConfiguration)->Result<Self>{
+  config.configuration.camera.validate()?;uuid::Uuid::parse_str(&config.configuration.session)?;
+  let component=products.runtime.component(ComponentSpec::new("phone-camera-calibration").observable(ObservableContract{name:"configuration".into(),datatype:CalibrationReference::DATATYPE.into(),schema:CalibrationReference::DATATYPE.into(),access:vec![ObservationAccess::FollowNew],exposure:Exposure::Cluster}))?;
+  let owner=component.manifest().peer_id.clone();let clock=crate::model::clock_entry(&owner,&config.configuration.session);
+  let output=component.configured_observable(ConfiguredObservableSpec::new("configuration",config.id.clone(),crate::model::clock_ref(&clock),PayloadContract::Structured(StructuredPayloadContract{datatype:CalibrationReference::DATATYPE.into(),schema:CalibrationReference::DATATYPE.into(),modality:"calibration".into(),observes:"camera_configuration".into(),unit:None})).in_registered_frame(auki_registry::FrameRegistryEntry::opengl(&owner,format!("phone-camera:{}",config.configuration.session))))?;
+  component.expose()?;
+  let product=format!("phone-camera-calibration:{}",config.id);
+  let metadata=serde_json::json!({"configuration_id":config.id,"camera_frame_id":format!("phone-camera:{}",config.configuration.session),"calibration":config.configuration.camera.calibration()});
+  let capture=products.runtime.capture_buffer_with_metadata(&product,&output,BufferLimits{max_entries:Some(1),max_bytes:Some(4096),target_duration:None},|_:&CalibrationReference|256,move |o|Ok(Some(CatalogProductMetadata{schema:"spatial.phone-camera-calibration/v1".into(),source_sequence:o.sequence,value:metadata.clone()})))?;
+  products.endpoint.export_product(&capture.product())?;
+  output.publish(1,Arc::new(CalibrationReference{configuration_id:config.id.clone()}))?;
+  Ok(Self{capture,endpoint:products.endpoint.clone(),product,_component:component})
+ }
+ pub fn close(self)->Result<()>{self.endpoint.unexport_product(&self.product);self.capture.delete()?;Ok(())}
+}
 
 pub struct Camera {
     endpoint: Arc<auki_component_protocol::ComponentProtocolEndpoint>,

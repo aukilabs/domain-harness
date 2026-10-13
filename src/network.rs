@@ -708,6 +708,7 @@ pub async fn serve_scene(
         previews,
         home_live.subscribe(),
         &ar_frames,
+        &local_scenes,
         &monitor_stop,
     );
     let (result, _, _, _, _, _, _) = tokio::join!(

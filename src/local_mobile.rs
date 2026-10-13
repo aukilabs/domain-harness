@@ -104,7 +104,7 @@ impl Scene {
         let mut view = if let Some(scene) = &self.geometry {
             crate::scene_mirror::render_scene(scene)?
         } else {
-            json!({"frame":map.frame.id,"voxel_size":0.1,"voxels":[],"objects":[],"sources":{},"integrated_observations":0,
+            json!({"frame":map.frame.id,"voxel_size":crate::collaborative_mapper::HOME_VOXEL_SIZE,"voxels":[],"objects":[],"sources":{},"integrated_observations":0,
                 "portals":self.portals.scenegraph.anchors.values().collect::<Vec<_>>(),
                 "landmarks":crate::landmarks::portal_map(&self.portals,None,&Default::default())?})
         };
@@ -128,6 +128,7 @@ impl Scene {
         view["convention"] = json!("OpenGL · meters");
         view["authority"] = json!("Home · scene-specific peer mapper");
         view["mode"] = json!("Home-owned scenegraph");
+        view["origin"] = json!({"policy":"first_observed_portal","portal_id":crate::scene_origin::portal(&self.portals)?,"status":if self.portals.scenegraph.anchors.is_empty(){"waiting_for_first_portal"}else{"established"}});
         view["demo"] = json!(false);
         Ok(view)
     }
@@ -151,8 +152,32 @@ pub struct NoteEditor {
     state: Arc<Mutex<State>>,
     frame: String,
     path: std::path::PathBuf,
+    reference: Arc<std::sync::RwLock<MapSnapshot>>,
+    scene_path: std::path::PathBuf,
+    inbox: crate::mobile_depth::SharedInbox,
+    contributions: Arc<Mutex<crate::scene_contribution::Inbox>>,
+    owner: String,
+    session: String,
 }
 impl NoteEditor {
+    pub fn reset_mapping(&self, expected: &MapSnapshot) -> Result<Value> {
+        let mut state=self.state.lock().map_err(|_|anyhow!("Scene unavailable"))?;
+        let mut inbox=self.inbox.lock().map_err(|_|anyhow!("Depth inbox unavailable"))?;
+        let mut contributions=self.contributions.lock().map_err(|_|anyhow!("Contribution inbox unavailable"))?;
+        let mut reference=self.reference.write().map_err(|_|anyhow!("Scene reference unavailable"))?;
+        ensure!(&*reference==expected,"Scene Portals changed; inspect again before resetting");
+        let snapshot=crate::scene_origin::reset(&reference)?;
+        let map=crate::collaborative_mapper::CollaborativeMap::for_scene(&self.owner,&self.session,&snapshot)?;
+        // Save before touching any live state; notes/volumes are never rewritten.
+        save_scene(&self.scene_path,&snapshot)?;
+        let removed=reference.scenegraph.anchors.keys().cloned().collect::<Vec<_>>();
+        *reference=snapshot;state.map=map;state.voxels_cleared=true;
+        *inbox=Default::default();*contributions=Default::default();
+        *state.presence.lock().map_err(|_|anyhow!("Presence unavailable"))?=Default::default();
+        *state.robot_presence.lock().map_err(|_|anyhow!("Robot presence unavailable"))?=Default::default();
+        Ok(json!({"removed_portals":removed,"voxels_cleared":true,"notes_preserved":true,"volumes_preserved":true,"origin":"waiting_for_first_portal"}))
+    }
+    pub fn reference(&self)->Result<MapSnapshot>{Ok(self.reference.read().map_err(|_|anyhow!("Scene reference unavailable"))?.clone())}
     pub fn clear_voxels(&self) -> Result<Value> {
         let mut state=self.state.lock().map_err(|_|anyhow!("Scene unavailable"))?;
         state.map.clear_voxels()?;
@@ -168,7 +193,7 @@ impl NoteEditor {
     pub fn pick(&self,picks:&mut crate::picking::Picks,origin:[f64;3],direction:[f64;3]) -> Result<Value> {
         let state=self.state.lock().map_err(|_|anyhow!("Scene annotations unavailable"))?;
         let voxels=state.map.voxels.as_ref().map(crate::model::occupied).transpose()?.unwrap_or_default();
-        picks.pick_frame(origin,direction,&voxels,0.1,&self.frame)
+        picks.pick_frame(origin,direction,&voxels,crate::collaborative_mapper::HOME_VOXEL_SIZE,&self.frame)
     }
     pub fn create(&self, mut note:crate::notes::TextNote) -> Result<crate::notes::TextNote> {
         if let Some(anchor)=&note.anchor_surface { ensure!(anchor.frame==self.frame,"Annotation belongs to another scene"); }
@@ -283,8 +308,6 @@ impl Publisher {
             robot_presence: robot_presence.clone(),
         }));
         let inbox = Arc::new(Mutex::new(crate::mobile_depth::Inbox::default()));
-        scenes.note_editors.lock().map_err(|_|anyhow!("Scene annotations unavailable"))?
-            .insert(id.into(),NoteEditor{state:state.clone(),frame:frame.clone(),path:notes_path.clone()});
         let component = runtime.component(
             ComponentSpec::new(format!("mobile-scene:{id}")).observable(ObservableContract {
                 name: "scene".into(),
@@ -345,6 +368,10 @@ impl Publisher {
         let receiver = runtime.component(ComponentSpec::new(format!("{}:{id}",crate::scene_contribution::COMPONENT)).operable(
             OperableContract{name:"ingest".into(),instruction:crate::scene_contribution::Contribution::DATATYPE.into(),result:"bool".into(),exposure:Exposure::Cluster}))?;
         let reference = Arc::new(std::sync::RwLock::new(reference));
+        scenes.note_editors.lock().map_err(|_|anyhow!("Scene annotations unavailable"))?
+            .insert(id.into(),NoteEditor{state:state.clone(),frame:frame.clone(),path:notes_path.clone(),
+                reference:reference.clone(),scene_path:scenes.directory.join(format!("{id}.json")),
+                inbox:inbox.clone(),contributions:contributions.clone(),owner:owner.clone(),session:clock.session_id.clone()});
         let queue=contributions.clone();let reference_copy=reference.clone();
         let operation=receiver.operable("ingest",|ctx|!ctx.caller_peer_id.is_empty(),move |ctx,c:crate::scene_contribution::Contribution|{
             queue.lock().map_err(|_|InvocationError::TargetUnavailable)?.accept(&ctx.caller_peer_id,c,&*reference_copy.read().map_err(|_|InvocationError::TargetUnavailable)?).map_err(rejected)
@@ -551,11 +578,22 @@ impl Publisher {
                     result: "bool".into(),
                     exposure: Exposure::Cluster,
                 },
-            ),
+            ).operable(OperableContract{name:crate::scene_origin::OPERATION.into(),instruction:crate::scene_origin::Observation::DATATYPE.into(),result:"bool".into(),exposure:Exposure::Cluster}),
         )?;
         let portal_state = state.clone();
         let portal_reference = reference.clone();
         let scene_path = scenes.directory.join(format!("{id}.json"));
+        let origin_state=state.clone();let origin_reference=reference.clone();let origin_path=scene_path.clone();
+        let origin_owner=owner.clone();let origin_session=clock.session_id.clone();
+        let establish=portals.operable(crate::scene_origin::OPERATION,|ctx|!ctx.caller_peer_id.is_empty(),move |_, observation:crate::scene_origin::Observation|{
+            // Same writer lock as portal reports: exactly one empty-scene offer wins.
+            let mut state=origin_state.lock().map_err(|_|InvocationError::TargetUnavailable)?;
+            let mut reference=origin_reference.write().map_err(|_|InvocationError::TargetUnavailable)?;
+            let snapshot=crate::scene_origin::establish(&reference,&observation).map_err(rejected)?;
+            let map=crate::collaborative_mapper::CollaborativeMap::for_scene(&origin_owner,&origin_session,&snapshot).map_err(rejected)?;
+            save_scene(&origin_path,&snapshot).map_err(rejected)?;
+            state.map=map;*reference=snapshot;Ok(true)
+        })?;
         let add = portals.operable(
             "add",
             |ctx| !ctx.caller_peer_id.is_empty(),
@@ -577,6 +615,7 @@ impl Publisher {
             },
         )?;
         portals.expose()?;
+        endpoint.export_operable(&establish)?;
         endpoint.export_operable(&add)?;
         components.push(portals);
         // A phone names itself; it applies at once and is saved, with no restart.
@@ -649,17 +688,20 @@ impl Publisher {
             return Ok(());
         }
         self.last_tick = Some(Instant::now());
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("Scene unavailable"))?;
+        // Serialize draining with resets: never hold a pre-reset batch outside
+        // the scene writer lock and integrate it into a freshly reset map.
         let pending = self
             .inbox
             .lock()
             .map_err(|_| anyhow!("Depth inbox unavailable"))?
             .take();
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| anyhow!("Scene unavailable"))?;
         if state.voxels_cleared {
             self.occupancy.clear_geometry();
+            for layer in &self.voxel_layers {layer.clear(self.started.elapsed().as_nanos() as u64)?;}
             state.voxels_cleared=false;
         }
         for contribution in self.contributions.lock().map_err(|_|anyhow!("Contribution inbox unavailable"))?.take() {
@@ -768,7 +810,7 @@ fn place(
         .transpose()?
         .unwrap_or_default();
     let (hit, floor) =
-        crate::mobile_notes::intersection(&voxels, 0.1, request.origin, request.direction)?
+        crate::mobile_notes::intersection(&voxels, crate::collaborative_mapper::HOME_VOXEL_SIZE, request.origin, request.direction)?
             .ok_or_else(|| anyhow!("No floor or voxel within 40 metres"))?;
     let note = crate::notes::TextNote {
         id: request.id,

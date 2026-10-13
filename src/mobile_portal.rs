@@ -99,7 +99,7 @@ pub fn anchor(report: &Report, scene: &MapSnapshot) -> Result<QrAnchor> {
         ensure!(existing.is_some(), "Portal is not in this scene, so it cannot be moved");
         // The scene's frame is named after its origin Portal; everything else is placed from it.
         ensure!(
-            !frame.ends_with(&format!(":portal-{}", report.code)),
+            crate::scene_origin::portal(scene)? != Some(report.code.as_str()),
             "This Portal is the scene's origin and cannot be moved"
         );
         ensure!(
@@ -157,7 +157,13 @@ pub fn anchor(report: &Report, scene: &MapSnapshot) -> Result<QrAnchor> {
             && delta.rotation_xyzw[3].abs() > 0.9999,
         "Portal report alignment disagrees with its calibration Portal"
     );
-    let pose = compose(&expected, &from_rigid(&report.portal_to_session))?;
+    let mut pose = compose(&expected, &from_rigid(&report.portal_to_session))?;
+    // The authenticated alignment expresses this observation in Home's Y-up
+    // gravity frame. Classify here, independently of the observing phone UI.
+    let [x,y,z,w]=pose.rotation_xyzw;
+    let (_, [w,x,y,z])=crate::portal_mount::fit([w,x,y,z])?;
+    pose.rotation_xyzw=[x,y,z,w];
+    ensure!(pose.translation.iter().any(|v|v.abs()>=1e-8),"Another Portal cannot occupy the origin Portal's position");
     ensure!(
         pose.translation.iter().map(|v| v * v).sum::<f64>() <= 100. * 100.,
         "Portal is implausibly far from the scene origin"

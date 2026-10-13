@@ -4,6 +4,101 @@ use auki_odometry::Pose;
 use spatial_home::local_mapper::*;
 mod support;
 
+#[tokio::test(flavor="multi_thread", worker_threads=4)]
+async fn discovered_camera_ar_joins_sdk_products_without_configured_runner() -> Result<()> {
+    use auki_components::*;
+    use auki_odometry::{PoseUpdate, Tracking, PoseContract};
+    use spatial_home::{network::ScenePublisher, sensor_preview, discovered_ar};
+    use serde_json::json;
+    use std::sync::Arc;
+    let pair = support::LocalPair::start().await?;
+    let result = async {
+        let owner = pair.a.peer_id().to_string();
+        let home_owner = pair.b.peer_id().to_string();
+        let session = uuid::Uuid::new_v4().to_string();
+        let frame = format!("{BRACKETBOT_FAMILY}:{session}:zup");
+        let mut publisher = ScenePublisher::mount_in_frame(&pair.a, &frame)?;
+        let mut map = LocalMap::new_for_robot(&publisher.runtime, &owner, &session, BRACKETBOT_FAMILY,
+            spatial_home::rgbd::FRAME, serde_json::from_str(include_str!("../config/portals.json"))?)?;
+        let t = 1_000_000_000;
+        map.accept(SensorEvent::Odometry { timestamp_ns:t, pose:identity() })?;
+        map.accept(SensorEvent::Camera { sample:sample("HRIPLL40GL6", t) })?;
+        let mut reference = spatial_home::conventions::portals(&spatial_home::domain_portals::load()?, spatial_home::model::FRAME)?;
+        reference.scenegraph.map.map_id = "test-home".into();
+        let reference = auki_scenegraph::MapSnapshot::new(reference.scenegraph)?;
+        map.accept_home_portals(reference.clone(), home_owner.clone())?;
+        publisher.publish_local(&map)?.unwrap();
+        let history = map.ar_pose_history();
+        publisher.endpoint.export_product(&history.product)?;
+        let contract = PoseContract { from_frame: auki_registry::FrameRegistryEntry::ros_optical(&owner,"test-optical"),
+            to_frame:history.contract.from_frame.clone(), clock:history.contract.clock.clone(), session_id:session };
+        let camera = publisher.runtime.component(ComponentSpec::new("test-camera").observable(ObservableContract {
+            name:"image".into(), datatype:VideoFrame::DATATYPE.into(), schema:"auki.video-frame/v1".into(),
+            access:vec![ObservationAccess::FollowNew], exposure:Exposure::Cluster }))?;
+        let image_output = camera.configured_observable(ConfiguredObservableSpec::new("image","config",
+            contract.clock.clone(), PayloadContract::Camera(CameraPayloadContract { datatype:VideoFrame::DATATYPE.into(),
+                schema:"auki.video-frame/v1".into(), encoding:"luma8".into(), width:100,height:80, nominal_frame_rate_hz:Some(5),observes:"test-optical".into() }))
+            .in_registered_frame(contract.from_frame.clone()))?;
+        camera.expose()?;
+        let capture = publisher.runtime.capture_buffer("test-images", &image_output,
+            BufferLimits {max_entries:Some(1),max_bytes:Some(16384),target_duration:None}, |v:&VideoFrame|v.bytes.len())?;
+        let (image, _) = image_output.publish(t, Arc::new(VideoFrame{width:100,height:80,encoding:"luma8".into(),bytes:vec![0;8000].into()}))?;
+        let mut pose_output = image_output.manifest().clone();
+        pose_output.output_id = "test-pose".into();
+        pose_output.spatial_frame_id = Some(contract.to_frame.frame_id.clone());
+        pose_output.spatial_frame = Some(RegisteredFrame::new(contract.to_frame.clone()));
+        pose_output.payload = PayloadContract::Structured(StructuredPayloadContract {datatype:PoseUpdate::DATATYPE.into(),
+            schema:auki_odometry::POSE_SCHEMA.into(),modality:"pose".into(),observes:"camera".into(),unit:None});
+        let geometry = Observation {output:pose_output.reference(),sequence:0,timestamp_ns:t,
+            payload:Arc::new(PoseUpdate {contract,tracking:Tracking::Valid{pose:identity()}})};
+        let calibration = json!({"K":[100.,0.,50.,0.,100.,40.,0.,0.,1.],"D":[],"distortion_model":"none","width":100,"height":80});
+        let mut catalog = publisher.runtime.catalog().snapshot();
+        for p in &mut catalog.products {
+            if p.manifest.product_id == capture.product().manifest.product_id {
+                p.metadata = Some(CatalogProductMetadata{schema:"camera".into(),source_sequence:0,value:json!({"calibration":calibration})});
+            }
+            if p.manifest.product_id == history.product.manifest.product_id {
+                p.metadata = Some(CatalogProductMetadata{schema:"auki.odometry-product/v1".into(),source_sequence:0,value:serde_json::to_value(&history.contract)?});
+            }
+        }
+        let route = spatial_home::network::HomeConnection::direct(&pair.a).routes[0].clone();
+        let row = json!({"catalog_status":"ready","catalog":catalog,"catalog_route":route});
+        let rows = [(owner.clone(),row.clone())].into_iter().collect();
+        let sensors = sensor_preview::camera_sensors(&rows);
+        let index = sensor_preview::camera_choices(&rows).iter().position(|s|s["product_id"]=="test-images").unwrap();
+        let sensor = &sensors[index];
+        let dir = tempfile::tempdir()?;
+        let mut homes = spatial_home::local_scenes::LocalScenes::load(dir.path())?;
+        homes.snapshots.insert(reference.scenegraph.map.map_id.clone(),reference);
+        let client = auki_component_protocol::ComponentProtocolClient::new(pair.b.protocols());
+        let mut context = None;
+        let preview = discovered_ar::render(&client,sensor,&row,&image,image_output.manifest(),&geometry,&pose_output,
+            &homes,&home_owner,&mut context,true).await?;
+        assert_eq!(preview["ar"]["status"],"ready");
+        assert_eq!(preview["ar"]["frame"],spatial_home::model::FRAME);
+        assert_eq!(preview["ar"]["voxel_count"],0,"Home need not have ingested robot geometry");
+        let mut wrong = geometry.clone(); wrong.timestamp_ns += 1;
+        assert!(discovered_ar::render(&client,sensor,&row,&image,image_output.manifest(),&wrong,&pose_output,
+            &homes,&home_owner,&mut context,true).await.is_err());
+        // Also support a camera whose capture pose already ends in Home space,
+        // without any robot scene/transform Product or configured mapper.
+        let mut direct = (*geometry.payload).clone();
+        direct.contract.to_frame = spatial_home::conventions::registry(&home_owner,spatial_home::model::FRAME)?;
+        let mut direct_output = pose_output.clone();
+        direct_output.spatial_frame_id = Some(direct.contract.to_frame.frame_id.clone());
+        direct_output.spatial_frame = Some(RegisteredFrame::new(direct.contract.to_frame.clone()));
+        let direct = Observation {output:direct_output.reference(),payload:Arc::new(direct),..geometry.clone()};
+        let mut direct_row = row.clone(); direct_row["catalog"]["products"] = json!([]);
+        let preview = discovered_ar::render(&client,sensor,&direct_row,&image,image_output.manifest(),&direct,&direct_output,
+            &homes,&home_owner,&mut None,true).await?;
+        assert_eq!(preview["ar"]["status"],"ready");
+        publisher.close().await?;
+        Ok::<_,anyhow::Error>(())
+    }.await;
+    let cleanup = pair.shutdown().await;
+    result.and(cleanup)
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn portal_transform_is_separate_catalog_product_and_never_rebases_robot() -> Result<()> {
     use spatial_home::{frame_transform::{self, FrameTransform, Validity, Received}, network::{ScenePublisher, HomeConnection}};
@@ -42,6 +137,19 @@ async fn portal_transform_is_separate_catalog_product_and_never_rebases_robot() 
         o.payload.validate(&owner)?;
         let received = Received { value:(*o.payload).clone(), product:subscription.product().reference(), received:Instant::now() };
         assert!(received.usable(&scene));
+        // Discovered camera AR needs no configured Home runner or fused map.
+        let capture_clock = &map.origin.as_ref().unwrap().capture_clock;
+        spatial_home::discovered_ar::validate_alignment(&scene, &received, &reference, "home", capture_clock, t)?;
+        assert!(spatial_home::discovered_ar::validate_alignment(&scene, &received, &reference, "other-home", capture_clock, t).is_err());
+        assert!(spatial_home::discovered_ar::validate_alignment(&scene, &received, &reference, "home", capture_clock, t-1).is_err());
+        assert!(spatial_home::discovered_ar::validate_alignment(&scene, &received, &reference, "home", capture_clock, t+4_000_000_000).is_err());
+        let mut wrong_clock = capture_clock.clone(); wrong_clock.hash = "another-session".into();
+        assert!(spatial_home::discovered_ar::validate_alignment(&scene, &received, &reference, "home", &wrong_clock, t).is_err());
+        let mut moved_portal = reference.clone();
+        moved_portal.scenegraph.anchors.get_mut("HRIPLL40GL6").unwrap().side_length_m *= 2.;
+        assert!(spatial_home::discovered_ar::validate_alignment(&scene, &received, &moved_portal, "home", capture_clock, t).is_err());
+        let mut no_tracking = scene.clone(); no_tracking.registries["local_mapping"]["robot_pose"] = serde_json::Value::Null;
+        assert!(spatial_home::discovered_ar::validate_alignment(&no_tracking, &received, &reference, "home", capture_clock, t).is_err());
         let (state, mut updates)=tokio::sync::watch::channel(spatial_home::scene_mirror::RemoteScene::default());
         let stop=tokio_util::sync::CancellationToken::new();
         let (_, followed)=tokio::join!(frame_transform::follow(&pair.b,&connection,&state,&stop), async {

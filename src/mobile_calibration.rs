@@ -33,6 +33,7 @@ pub struct Capture {
 pub struct Report {
     pub detail: String,
     pub alignment: Option<crate::mobile_depth::Alignment>,
+    pub origin_observation: Option<crate::scene_origin::Observation>,
     pub diagnostics: DetectionDiagnostics,
 }
 
@@ -91,7 +92,7 @@ impl Capture {
         );
         ensure!(
             self.scenegraph.map.frame.meters_per_unit == 1.
-                && (1..=1024).contains(&self.scenegraph.anchors.len()),
+                && self.scenegraph.anchors.len() <= 1024,
             "Invalid Portal reference"
         );
         Ok(())
@@ -115,6 +116,7 @@ pub fn detect(luma: &[u8], capture: &Capture) -> Result<Report> {
     let mut report = Report {
         detail: "Show a Portal from the selected Home scene".into(),
         alignment: None,
+        origin_observation: None,
         diagnostics: DetectionDiagnostics {
             validation_us,
             decode_us: decoding.elapsed().as_micros() as u64,
@@ -124,6 +126,19 @@ pub fn detect(luma: &[u8], capture: &Capture) -> Result<Report> {
         },
     };
     for code in codes.codes.iter().filter(|c| !c.mirrored) {
+        if capture.scenegraph.anchors.is_empty() {
+            let Some(id)=crate::local_mapper::portal_code(&code.payload) else {continue};
+            let expected_scene=auki_scenegraph::MapSnapshot::new(capture.scenegraph.clone())?;
+            let mut provisional=Capture{session:capture.session.clone(),timestamp_ns:capture.timestamp_ns,width:capture.width,height:capture.height,fx:capture.fx,fy:capture.fy,cx:capture.cx,cy:capture.cy,camera_to_session:capture.camera_to_session.clone(),scenegraph:capture.scenegraph.clone()};
+            let anchor=crate::scene_origin::floor_anchor(id,crate::mobile_portal::DEFAULT_SIDE_M,&capture.scenegraph.map.frame.id)?;
+            provisional.scenegraph.anchors.insert(id.into(),anchor);
+            let corners=code.refined_corners_px.as_ref().unwrap_or(&code.corners_px).map(|p|[p.x,p.y]);
+            if let Ok(measured)=align(&provisional,id,corners) {
+                report.origin_observation=Some(crate::scene_origin::Observation{expected_scene,code:id.into(),side_length_m:crate::mobile_portal::DEFAULT_SIDE_M,timestamp_ns:capture.timestamp_ns,portal_to_native:measured.portal_to_session});
+                report.detail=format!("Observed {id}; waiting for Home to accept the origin");break;
+            }
+            continue;
+        }
         let Some(anchor) = capture
             .scenegraph
             .anchors

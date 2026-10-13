@@ -1,4 +1,5 @@
 pub mod conventions;
+pub mod catalog_chat;
 pub mod scene_geometry;
 pub mod peer_aliases;
 pub mod domain_portals;
@@ -38,6 +39,7 @@ pub mod collaborative_mapper;
 pub mod scene_contribution;
 
 pub mod ar_preview;
+pub mod discovered_ar;
 pub mod robot_occupancy;
 
 pub mod notes;
@@ -48,6 +50,9 @@ pub mod mobile_notes;
 pub mod mobile_odometry;
 
 pub mod mobile_portal;
+/// First-observed portal origin and explicit mapping reset contracts.
+pub mod scene_origin;
+pub mod portal_mount;
 pub mod mobile_pose;
 
 pub mod mobile_geo;
@@ -77,4 +82,6 @@ pub mod semantic_volumes;
 
 pub mod robot_runner;
 pub mod chatbot;
+pub mod view_camera; // Browser-local viewpoint controls; sensor attachments never move hardware.
+pub mod camera_vision;
 pub mod scene_tools;

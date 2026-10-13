@@ -37,6 +37,31 @@ pub struct Picks {
     cameras: VecDeque<(String, Instant, CameraGeometry)>,
     hits: VecDeque<(String, Instant, Contact)>,
 }
+
+#[cfg(test)]
+mod camera_tests {
+    use super::*;
+    #[test]
+    fn camera_click_keeps_local_home_frame_and_uses_capture_pose() -> Result<()> {
+        let mut picks = Picks::default();
+        let frame = "local-scene:humanoid-hub-conference:portal-HNY3JGNLRAE";
+        let token = picks.remember_camera(json!({"frame":frame,
+            "camera_to_map":{"translation":[1.,2.,3.],"rotation_xyzw":[0.,0.,0.,1.]},
+            "calibration":{"K":[100.,0.,50.,0.,100.,40.,0.,0.,1.],"D":[],"distortion_model":"none","width":100,"height":80}}))?;
+        let PickRequest::Scene {frame:actual,origin,direction} = picks.camera_ray(&token,[50.,40.])? else {panic!("not a ray")};
+        assert_eq!(actual,frame);assert_eq!(origin,[1.,2.,3.]);assert_eq!(direction,[0.,0.,1.]);
+        let hit = picks.pick_frame(origin,direction,&[crate::raycast::Voxel {center:[1.,2.,5.],evidence:1.,linear_rgb:None}],0.1,&actual)?;
+        let contact = picks.contact(hit["hit"]["token"].as_str().unwrap())?;
+        assert_eq!(contact.anchor.frame,frame);
+        assert!((contact.position[2]-4.95).abs()<1e-8);
+        assert!(picks.camera_ray("unknown",[50.,40.]).is_err());
+        assert!(picks.camera_ray(&token,[-1.,40.]).is_err());
+        assert!(picks.camera_ray(&token,[f64::NAN,40.]).is_err());
+        picks.cameras.front_mut().unwrap().1 = Instant::now()-Duration::from_secs(16);
+        assert!(picks.camera_ray(&token,[50.,40.]).is_err());
+        Ok(())
+    }
+}
 impl Picks {
     pub fn pick_canonical(
         &mut self,
@@ -81,6 +106,21 @@ impl Picks {
         self.cameras
             .push_back((token.clone(), Instant::now(), geometry));
         Ok(token)
+    }
+    /// Resolve only server-retained capture geometry; callers cannot substitute
+    /// a frame or a newer pose for the image they actually clicked.
+    pub fn camera_ray(&self, token: &str, pixel: [f64;2]) -> Result<PickRequest> {
+        let (_, received, g) = self.cameras.iter().find(|(id,_,_)| id == token)
+            .ok_or_else(|| anyhow!("Camera frame expired; try a fresh frame"))?;
+        ensure!(received.elapsed() < Duration::from_secs(15), "Camera frame expired; try a fresh frame");
+        let w = g.calibration["width"].as_f64().unwrap_or(0.);
+        let h = g.calibration["height"].as_f64().unwrap_or(0.);
+        ensure!((0. ..w).contains(&pixel[0]) && (0. ..h).contains(&pixel[1]), "Pixel outside camera image");
+        let ray = crate::ar_preview::pixel_ray(&g.calibration, pixel)?;
+        let endpoint = crate::local_mapper::compose(&g.camera_to_map,
+            &auki_odometry::Pose {translation:ray,rotation_xyzw:[0.,0.,0.,1.]})?;
+        Ok(PickRequest::Scene {frame:g.frame.clone(),origin:g.camera_to_map.translation,
+            direction:std::array::from_fn(|a|endpoint.translation[a]-g.camera_to_map.translation[a])})
     }
     pub fn pick(&mut self, request: PickRequest, scene: &CanonicalScene) -> Result<Value> {
         ensure!(

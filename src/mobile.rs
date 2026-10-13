@@ -140,6 +140,7 @@ pub struct MobileState {
 
 pub struct MobileClient {
     camera: tokio::sync::watch::Sender<Option<(u64, Vec<u8>, Instant, Option<crate::mobile_camera::Geometry>)>>,
+    camera_configuration:tokio::sync::watch::Sender<Option<crate::mobile_camera::RegisteredConfiguration>>,
     camera_active: AtomicBool,
     camera_demand: AtomicBool,
     local_map: tokio::sync::watch::Sender<Option<(crate::mobile_local::Snapshot, Instant)>>,
@@ -166,6 +167,8 @@ pub struct MobileClient {
     change_receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::mobile_notes::ChangeNote>>>,
     portal_reports: tokio::sync::mpsc::Sender<crate::mobile_portal::Sighting>,
     portal_receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::mobile_portal::Sighting>>>,
+    origin_reports: tokio::sync::mpsc::Sender<crate::scene_origin::Observation>,
+    origin_receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::scene_origin::Observation>>>,
     receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::mobile_notes::PlaceNote>>>,
 }
 impl Default for MobileClient {
@@ -174,15 +177,18 @@ impl Default for MobileClient {
         let (changes, change_receiver) = tokio::sync::mpsc::channel(1);
         let (portal_reports, portal_receiver) = tokio::sync::mpsc::channel(4);
         let (pose_log, pose_log_receiver) = tokio::sync::mpsc::channel(256);
+        let (origin_reports, origin_receiver) = tokio::sync::mpsc::channel(1);
         Self {
             pose_log,
             pose_log_receiver: Mutex::new(Some(pose_log_receiver)),
             depth_image: tokio::sync::watch::channel(None).0,
+            origin_reports, origin_receiver:Mutex::new(Some(origin_receiver)),
             changes,
             change_receiver: Mutex::new(Some(change_receiver)),
             portal_reports,
             portal_receiver: Mutex::new(Some(portal_receiver)),
             camera: tokio::sync::watch::channel(None).0,
+            camera_configuration:tokio::sync::watch::channel(None).0,
             camera_active: AtomicBool::new(false),
             camera_demand: AtomicBool::new(false),
             local_map: tokio::sync::watch::channel(None).0,
@@ -251,8 +257,16 @@ impl MobileClient {
             state.version += 1;
         }
     }
-    pub fn update_pose(&self, sample: Option<crate::mobile_pose::Sample>) {
-        // A full log means nothing is connected to drain it; the pose is dropped.
+    pub fn configure_camera(&self,configuration:crate::mobile_camera::Configuration)->Result<()> {
+        configuration.camera.validate()?;uuid::Uuid::parse_str(&configuration.session)?;
+        self.camera_configuration.send_if_modified(|current|{
+            if current.as_ref().is_some_and(|old|old.configuration.session==configuration.session&&serde_json::to_value(&old.configuration.camera).ok()==serde_json::to_value(&configuration.camera).ok()){return false;}
+            *current=Some(crate::mobile_camera::RegisteredConfiguration{id:uuid::Uuid::new_v4().to_string(),configuration:configuration.clone()});true
+        });Ok(())
+    }
+    pub fn update_pose(&self, mut sample: Option<crate::mobile_pose::Sample>) {
+        if let Some(sample)=&mut sample {sample.camera_configuration_id=self.camera_configuration.borrow().as_ref().filter(|c|c.configuration.session==sample.session).map(|c|c.id.clone());}
+        // Preserve the phone's capture-time pose history as well as live presence.
         let _ = self.pose_log.try_send(sample.clone());
         self.pose.send_replace(sample);
     }
@@ -294,6 +308,14 @@ impl MobileClient {
     /// Queue a newly seen Portal for Home to add to the scene.
     pub fn report_portal(&self, report: crate::mobile_portal::Sighting) -> bool {
         self.snapshot().state == "live" && self.portal_reports.try_send(report).is_ok()
+    }
+    pub fn report_origin(&self, observation:crate::scene_origin::Observation)->bool {
+        self.snapshot().state=="live" && self.origin_reports.try_send(observation).is_ok()
+    }
+    pub fn origin_reference(&self)->Result<auki_scenegraph::MapSnapshot>{
+        let state=self.snapshot();ensure!(state.state=="live","Home is not connected");
+        let snapshot:auki_scenegraph::MapSnapshot=serde_json::from_value(state.reference.ok_or_else(||anyhow::anyhow!("Home reference unavailable"))?)?;
+        snapshot.validate()?;ensure!(snapshot.scenegraph.anchors.is_empty(),"Home already has an origin");Ok(snapshot)
     }
     pub fn stop(&self) {
         self.stop.cancel();
@@ -418,11 +440,20 @@ impl MobileClient {
                 });
                 let declared = || declared.lock().unwrap_or_else(|e| e.into_inner());
                 let mut frames = self.camera.subscribe();
+                let mut configurations=self.camera_configuration.subscribe();
+                let mut calibration_publisher=None;
+                let mut published_configuration=None::<String>;
                 let camera_work = async {
                     let mut tick = tokio::time::interval(Duration::from_millis(100));
                     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                     loop {
                         tick.tick().await;
+                        let config=configurations.borrow_and_update().clone();
+                        if let Some(config)=config.filter(|c|Some(&c.id)!=published_configuration.as_ref()) {
+                            if let Some(old)=calibration_publisher.take(){let old:crate::mobile_camera::CalibrationPublisher=old;let _=old.close();}
+                            calibration_publisher=Some(crate::mobile_camera::CalibrationPublisher::new(&products,&config)?);
+                            published_configuration=Some(config.id);
+                        }
                         let active = self.camera_active.load(Ordering::Acquire);
                         // A reader of either the pictures or their depth images
                         // gets both: they are one capture.
@@ -472,6 +503,13 @@ impl MobileClient {
                 let mut poses = self.pose.subscribe();
                 let mut changes = self.change_receiver.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap();
                 let mut portal_reports = self.portal_receiver.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap();
+                let mut origin_reports=self.origin_receiver.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap();
+                let origin_work=async {
+                    while let Some(observation)=origin_reports.recv().await {
+                        let result=operations.invoke::<_,bool>(&home.scoped_component(crate::mobile_portal::COMPONENT),crate::scene_origin::OPERATION,"portal-observer",&uuid::Uuid::new_v4().to_string(),Duration::from_secs(3),&observation).await;
+                        self.local_status(match result {Ok(true)=>format!("Portal {} added to Home as its origin",observation.code),Ok(false)=>"Home refused origin observation".into(),Err(e)=>format!("Origin not set: {e}")});
+                    }
+                };
                 let portal_work = async {
                     while let Some(report) = portal_reports.recv().await {
                         let code = report.code.clone();
@@ -833,6 +871,7 @@ impl MobileClient {
                     result = camera_work => result,
                     _ = change_work => Ok(()),
                     _ = portal_work => Ok(()),
+                    _ = origin_work => Ok(()),
                     _ = drive_work => Ok(()),
                     _ = name_work => Ok(()),
                     _ = geo_work => Ok(()),
@@ -850,6 +889,7 @@ impl MobileClient {
                     &mut *declared(), Declared { camera: None, depth: None, depth_image: None, pose: None });
                 if let Some(publisher) = depth_image { let _ = publisher.close(); }
                 if let Some(camera) = camera { let _ = camera.close(); }
+                if let Some(calibration)=calibration_publisher {let _=calibration.close();}
                 if let Some(publisher) = local_publisher {
                     let _ = publisher.close().await;
                 }

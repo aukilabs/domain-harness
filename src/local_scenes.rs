@@ -3,7 +3,7 @@
 use anyhow::{Result, anyhow, ensure};
 use auki_components::{ClockReference, ComponentRuntime, InMemoryTransport, InvocationContext};
 use auki_scenegraph::{
-    CoordinateConvention, MapDefinition, MapFrame, MapSnapshot, QrAnchor, RigidTransform,
+    CoordinateConvention, MapDefinition, MapFrame, MapSnapshot,
     Scenegraph,
     component::{MapComponent, MapComponentConfig, UpsertQr},
 };
@@ -21,6 +21,7 @@ pub struct LocalScenes {
 
 /// Stable physical-origin identity, not a coordinate-convention alias.
 pub fn frame_scene_id(frame: &str) -> Option<&str> {
+    if let Some(id)=frame.strip_prefix("local-scene:").and_then(|s|s.strip_suffix(":origin")) {return valid_id(id).then_some(id);}
     let (id, portal) = frame.strip_prefix("local-scene:")?.split_once(":portal-")?;
     (valid_id(id)
         && portal.len() == 11
@@ -45,9 +46,10 @@ fn valid_id(id: &str) -> bool {
 impl LocalScenes {
     pub fn load(directory: &Path) -> Result<Self> {
         std::fs::create_dir_all(directory)?;
-        // Seed only genuinely configured origin portals. Never clone Xmart.
+        // Independent local scenes start uncalibrated. Historical origin entries
+        // identify configured scenes, but their short codes are never seeded.
         for env in &crate::environments::CATALOG.environments {
-            let Some(origin) = &env.origin else {
+            let Some(_legacy_origin) = &env.origin else {
                 continue;
             };
             ensure!(valid_id(&env.id), "Invalid local scene ID");
@@ -55,36 +57,18 @@ impl LocalScenes {
             if path.exists() {
                 continue;
             } // Existing saved scenes are authoritative.
-            let sizes = crate::portal_sizes::PortalSizes::load(&env.portal_sizes)?;
-            let size = sizes
-                .encoded_size_m(&origin.portal_code)?
-                .ok_or_else(|| anyhow!("Origin Portal size missing"))?;
-            let frame = format!("local-scene:{}:portal-{}", env.id, origin.portal_code);
-            let mut graph = Scenegraph::new(MapDefinition {
+            let frame = format!("local-scene:{}:origin", env.id);
+            let graph = Scenegraph::new(MapDefinition {
                 map_id: env.id.clone(),
                 name: Some(env.name.clone()),
                 domain_reference: None,
                 frame: MapFrame::in_convention(
                     &frame,
-                    &origin.frame_description,
+                    crate::scene_origin::DESCRIPTION,
                     CoordinateConvention::OpenGl,
                     1.,
                 )?,
             })?;
-            graph.anchors.insert(
-                origin.portal_code.clone(),
-                QrAnchor {
-                    anchor_id: origin.portal_code.clone(),
-                    payload: origin.portal_code.clone(),
-                    side_length_m: size,
-                    pose_in_map: RigidTransform {
-                        from_frame_id: format!("portal:{}:local", origin.portal_code),
-                        to_frame_id: frame,
-                        translation: origin.translation_m,
-                        rotation_wxyz: origin.rotation_wxyz,
-                    },
-                },
-            );
             let snapshot = MapSnapshot::new(graph)?;
             let temporary = directory.join(format!(".{}.{}.tmp", env.id, uuid::Uuid::new_v4()));
             let mut file = std::fs::OpenOptions::new()
@@ -173,7 +157,7 @@ impl LocalScenes {
         Ok(
             json!({"environment_name":map.name,"frame":map.frame.id,"local_reference":true,
             "frame_description":map.frame.origin_description,"convention":"OpenGL · meters",
-            "voxel_size":0.1,"voxels":[],"portals":snapshot.scenegraph.anchors.values().collect::<Vec<_>>(),
+            "voxel_size":crate::collaborative_mapper::HOME_VOXEL_SIZE,"voxels":[],"portals":snapshot.scenegraph.anchors.values().collect::<Vec<_>>(),
             "landmarks":landmarks,"semantic_volumes":self.volumes.get(id, &map.frame.id)?,"objects":[],"notes":[],"sources":{},"integrated_observations":0,"demo":false}),
         )
     }

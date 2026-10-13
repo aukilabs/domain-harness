@@ -19,6 +19,22 @@ pub struct LocalPair {
     pub b: AukiPeer,
 }
 
+/// Existing calibration tests explicitly author their historical references.
+/// Production now starts empty and must learn its first Portal from a peer.
+pub fn seeded_local_scenes(path:&std::path::Path)->Result<spatial_home::local_scenes::LocalScenes>{
+    let scenes=spatial_home::local_scenes::LocalScenes::load(path)?;
+    for env in &spatial_home::environments::CATALOG.environments {
+        let Some(origin)=&env.origin else{continue};
+        let Some(snapshot)=scenes.snapshots.get(&env.id) else{continue};
+        if !snapshot.scenegraph.anchors.is_empty(){continue;}
+        let mut graph=snapshot.scenegraph.clone();
+        let anchor=spatial_home::scene_origin::floor_anchor(&origin.portal_code,0.15,&graph.map.frame.id)?;
+        graph.anchors.insert(anchor.anchor_id.clone(),anchor);
+        std::fs::write(path.join(format!("{}.json",env.id)),serde_json::to_vec(&auki_scenegraph::MapSnapshot::new(graph)?)?)?;
+    }
+    spatial_home::local_scenes::LocalScenes::load(path)
+}
+
 impl LocalPair {
     pub async fn start() -> Result<Self> {
         let issuer = p256::SecretKey::random(&mut rand::rngs::OsRng);
