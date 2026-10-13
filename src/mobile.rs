@@ -717,8 +717,9 @@ impl MobileClient {
                 };
                 let mut depths = self.depth.subscribe();
                 // An older Home rejects the optional color field. Only repeated
-                // failures pause color, and it is offered again every minute, so a
-                // brief network error cannot switch color off for the session.
+                // failures that are about color pause it, and it is offered again
+                // every minute. A network error, or a capture Home refuses for its
+                // alignment, would fail without color too and must not strip it.
                 let mut send_colors = true;
                 let mut color_failures = 0u32;
                 let mut retry_color_at = Instant::now();
@@ -773,7 +774,7 @@ impl MobileClient {
                         if colored {
                             if result.is_ok() {
                                 color_failures = 0;
-                            } else {
+                            } else if result.as_ref().is_err_and(crate::mobile_depth::rejects_color) {
                                 color_failures += 1;
                                 if color_failures >= 3 {
                                     send_colors = false;
