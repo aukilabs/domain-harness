@@ -668,7 +668,10 @@ impl Publisher {
         endpoint.export_operable(&snapshot_op)?;
         endpoint.export_operable(&name_op)?;
         components.push(presence);
-        let paths_publisher=crate::scene_paths::Publisher::mount(runtime,endpoint,id,&owner,&reference.read().map_err(|_|anyhow!("Scene unavailable"))?.scenegraph.map.frame.id,crate::model::clock_ref(&clock))?;
+        let paths_frame=reference.read().map_err(|_|anyhow!("Scene unavailable"))?.scenegraph.map.frame.id.clone();
+        let (path_scenes,path_scene,path_frame)=(scenes.clone(),id.to_owned(),paths_frame.clone());
+        let paths_publisher=crate::scene_paths::Publisher::mount(runtime,endpoint,id,&owner,&paths_frame,crate::model::clock_ref(&clock),
+            move |path,stroke| path_scenes.paths.change(&path_scene,&path_frame,path,stroke))?;
         let mut publisher = Self {
             id: id.into(),
             reference,

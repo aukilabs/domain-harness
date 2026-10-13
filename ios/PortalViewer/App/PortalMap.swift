@@ -236,6 +236,106 @@ struct NotePlacement: Identifiable, Encodable {
     private enum CodingKeys: String, CodingKey { case id, frame, origin, direction, text }
 }
 
+/// A path drawn on the scene with a finger, as Home's Crayon saves it: metres in Home's frame.
+struct CrayonStroke: Encodable, Equatable {
+    static let color = "#ffca55"
+    static let width: Float = 0.035
+    /// The widths Home accepts.
+    static let widths: ClosedRange<Float> = 0.005...0.25
+    let id: String
+    let title: String
+    let color: String
+    let width_m: Float
+    let segments: [[[Float]]]
+}
+/// A stroke while it is being drawn. Home's rules: points at least 2 cm apart, at most
+/// 4096 of them, and a miss ends the segment so the line never jumps across a gap.
+struct CrayonDraft {
+    static let spacing: Float = 0.02, limit = 4096
+    private(set) var segments = [[SIMD3<Float>]]()
+    private var open = false
+    /// Takes the surface point under the finger, or nil where there was none.
+    /// Returns the piece of line this added, if any.
+    mutating func add(_ point: SIMD3<Float>?) -> (SIMD3<Float>, SIMD3<Float>)? {
+        guard let point else { open = false; return nil }
+        guard segments.reduce(0, { $0 + $1.count }) < Self.limit else { return nil }
+        guard open, let last = segments.last?.last else {
+            segments.append([point]); open = true; return nil
+        }
+        guard simd_distance(last, point) >= Self.spacing else { return nil }
+        segments[segments.count - 1].append(point)
+        return (last, point)
+    }
+    /// Nothing to save until some segment has two points.
+    func stroke(id: String, color: String = CrayonStroke.color, width: Float = CrayonStroke.width) -> CrayonStroke? {
+        let drawn = segments.filter { $0.count >= 2 }
+        guard !drawn.isEmpty else { return nil }
+        return CrayonStroke(id: id, title: "Crayon path", color: color, width_m: width,
+                            segments: drawn.map { $0.map { [$0.x, $0.y, $0.z] } })
+    }
+}
+/// A drawn line as one smooth tube: a curve through the sampled points, not a chain of straight rods.
+enum CrayonTube {
+    /// A Catmull-Rom curve through every point, with `steps` pieces between each pair.
+    static func smooth(_ points: [SIMD3<Float>], steps: Int = 4) -> [SIMD3<Float>] {
+        guard points.count > 2, steps > 1 else { return points }
+        var curve = [SIMD3<Float>]()
+        for i in 0..<(points.count - 1) {
+            let a = points[max(i - 1, 0)], b = points[i], c = points[i + 1], d = points[min(i + 2, points.count - 1)]
+            for step in 0..<steps {
+                let t = Float(step) / Float(steps), t2 = t * t, t3 = t2 * t
+                let p0 = 2 * b, p1 = (c - a) * t
+                let p2 = (2 * a - 5 * b + 4 * c - d) * t2
+                let p3 = (3 * b - a - 3 * c + d) * t3
+                curve.append((p0 + p1 + p2 + p3) * 0.5)
+            }
+        }
+        curve.append(points[points.count - 1])
+        return curve
+    }
+    /// Rings of `sides` vertices round the curve, joined into one closed skin with flat ends.
+    static func mesh(_ points: [SIMD3<Float>], radius: Float, sides: Int = 8) -> (vertices: [SIMD3<Float>], indices: [UInt32])? {
+        var path = [SIMD3<Float>]()
+        for p in smooth(points) where p.x.isFinite && p.y.isFinite && p.z.isFinite {
+            if let last = path.last, simd_distance(last, p) < 0.0005 { continue }
+            path.append(p)
+        }
+        guard path.count >= 2, radius > 0, sides >= 3 else { return nil }
+        var vertices = [SIMD3<Float>](), indices = [UInt32]()
+        // The ring's "up" is carried along the curve so the tube never twists or pinches.
+        var normal = SIMD3<Float>(0, 1, 0)
+        for i in path.indices {
+            let tangent = simd_normalize(path[min(i + 1, path.count - 1)] - path[max(i - 1, 0)])
+            var side = normal - tangent * simd_dot(normal, tangent)
+            if simd_length(side) < 0.001 {
+                let other: SIMD3<Float> = abs(tangent.x) < 0.9 ? SIMD3(1, 0, 0) : SIMD3(0, 0, 1)
+                side = other - tangent * simd_dot(other, tangent)
+            }
+            normal = simd_normalize(side)
+            let across = simd_cross(tangent, normal)
+            for k in 0..<sides {
+                let angle = Float(k) / Float(sides) * 2 * .pi
+                vertices.append(path[i] + (normal * cos(angle) + across * sin(angle)) * radius)
+            }
+        }
+        let n = UInt32(sides)
+        for i in 0..<UInt32(path.count - 1) {
+            for k in 0..<n {
+                let a = i * n + k, b = i * n + (k + 1) % n, c = a + n, d = b + n
+                indices.append(contentsOf: [a, b, c, b, d, c])
+            }
+        }
+        let first = UInt32(vertices.count); vertices.append(path[0])
+        let last = first + 1; vertices.append(path[path.count - 1])
+        let end = UInt32(path.count - 1) * n
+        for k in 0..<n {
+            indices.append(contentsOf: [first, (k + 1) % n, k])
+            indices.append(contentsOf: [last, end + k, end + (k + 1) % n])
+        }
+        return (vertices, indices)
+    }
+}
+
 enum SceneRay {
     static func hit(origin: SIMD3<Float>, direction: SIMD3<Float>, scene: RenderScene?) -> SIMD3<Float>? {
         guard origin.x.isFinite, origin.y.isFinite, origin.z.isFinite,
