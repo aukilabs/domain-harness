@@ -106,6 +106,13 @@ async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated(
         else { panic!("missing retained paths Product"); };
         assert_eq!(observation.payload.frame, home.frame);
         assert_eq!(observation.payload.items, vec![stroke.clone()]);
+        let mut extended=stroke.clone();extended.segments[0].push([2.,0.,1.]);
+        scenes.paths.extend("humanoid-hub-conference",&home.frame,extended.clone())?;
+        for publisher in &mut publishers {publisher.tick()?;}
+        let Some(auki_component_protocol::RemoteObservationEvent::Observation(update)) =
+            tokio::time::timeout(Duration::from_secs(10),subscription.next()).await??
+        else {panic!("missing live stroke update");};
+        assert_eq!(update.payload.items,vec![extended]);
         subscription.close().await?;
         assert!(read(&pair.b,&nacs).await?["render"]["paths"]["items"].as_array().unwrap().is_empty());
         assert_eq!(volume_view["render"]["volumes"].as_array().unwrap().len(), 2);
