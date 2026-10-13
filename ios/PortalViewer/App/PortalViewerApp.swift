@@ -298,9 +298,15 @@ struct CrayonTools: View {
     }
     var body: some View {
         VStack(spacing: 10) {
-            tool("pencil.tip", .surface, "Draw on voxels or the floor")
-            tool("aqi.medium", .spray, "Spray in the air")
+            // One button for the two ways to draw: the brush on surfaces, or the spray in the air.
+            Button { controller.crayonTool = controller.crayonTool == .surface ? .spray : .surface } label: {
+                icon(controller.sprays ? "ladybug.fill" : "paintbrush.fill", on: controller.crayonTool != .erase)
+            }
+            .accessibilityLabel(controller.sprays ? "Spraying in the air. Switch to the brush" : "Brush on voxels or the floor. Switch to spray")
             tool("eraser.fill", .erase, "Erase a path")
+            Button { controller.undoStroke() } label: { icon("arrow.uturn.backward", on: false) }
+                .opacity(controller.canUndoStroke ? 1 : 0.45).disabled(!controller.canUndoStroke)
+                .accessibilityLabel("Undo my last path")
             ColorPicker("Color", selection: $controller.crayonColor, supportsOpacity: false)
                 .labelsHidden().frame(width: 36, height: 36)
             Button { sizing.toggle() } label: { icon("lineweight", on: sizing) }
@@ -1169,7 +1175,29 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     }
     /// Surface: on the nearest voxel or the floor. Spray: in the air, half a metre
     /// ahead, so moving the phone draws. Erase: touch a path to remove it.
-    @Published var crayonTool = CrayonTool.surface { didSet { abandonStroke(); crayonTouch = nil } }
+    @Published var crayonTool = CrayonTool.surface {
+        didSet { abandonStroke(); crayonTouch = nil; if crayonTool != .erase { sprays = crayonTool == .spray } }
+    }
+    /// Which way of drawing the draw button shows, remembered while the eraser is out.
+    @Published private(set) var sprays = false
+    /// Paths this phone drew and Home saved, oldest first, for undo.
+    @Published private var drawn = [String]()
+    var canUndoStroke: Bool { !drawn.isEmpty }
+    func undoStroke() {
+        guard let id = drawn.popLast() else { return }
+        guard let onErase else { showToast("Home is not connected, so the path was not removed.", good: false); return }
+        erasing.insert(id)
+        let shown = (root.childNodes + povRoot.childNodes).filter { $0.name == "scene-path:" + id }
+            + crayonRoot.childNodes.filter { $0.name == id }
+        shown.forEach { $0.isHidden = true }
+        onErase(id) { [weak self] erased in
+            guard !erased else { return }
+            self?.erasing.remove(id)
+            shown.forEach { $0.isHidden = false }
+            self?.drawn.append(id)
+            self?.showToast("Home did not remove that path.", good: false)
+        }
+    }
     @Published var crayonColor = Color(red: 1, green: 0xca / 255.0, blue: 0x55 / 255.0)
     @Published var crayonWidth = CrayonStroke.width
     /// Saves a finished stroke to Home for a scene frame; answers whether Home took it.
@@ -1656,6 +1684,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         root.childNodes.filter { $0 !== floating && $0 !== crayonRoot }.forEach { $0.removeFromParentNode() }
         // A stroke drawn here is dropped once Home's own copy of it arrives.
         let saved = Set(map.render?.paths?.items.map(\.id) ?? [])
+        crayonRoot.childNodes.filter { $0.isHidden }.forEach { $0.removeFromParentNode() }
         erasing.formIntersection(saved)
         crayonRoot.childNodes.filter { saved.contains($0.name ?? "") }.forEach { $0.removeFromParentNode() }
         if crayonRoot.parent == nil { root.addChildNode(crayonRoot) }
@@ -2279,7 +2308,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 node.removeFromParentNode(); showToast("Home is not connected, so the path was not saved.", good: false); return
             }
             onStroke(stroke, frame) { [weak self] saved in
-                guard !saved else { return }
+                guard !saved else { self?.drawn.append(stroke.id); return }
                 node.removeFromParentNode()
                 self?.showToast("Home did not save that path.", good: false)
             }
