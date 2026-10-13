@@ -2267,14 +2267,17 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         }
     }
 
-    /// Send Home a camera frame if someone is watching. The sensor image is
-    /// landscape, so it is turned upright for how the phone is held before it
-    /// is sent, and the intrinsics are turned and scaled with it.
-    private func shareCamera(_ frame: ARFrame) {
-        guard spatial_mobile_camera_demand(1) != 0, !cameraShareBusy, frame.timestamp >= cameraShareNext else { return }
+    /// Send a camera frame if someone is reading them, with the LiDAR depth
+    /// image of the same capture. The sensor image is landscape, so the picture
+    /// is turned upright for how the phone is held before it is sent, and its
+    /// intrinsics are turned and scaled with it. The depth image is not turned.
+    /// `alignment` is the capture time of the Portal alignment in use, or 0.
+    private func shareCamera(_ frame: ARFrame, alignment: UInt64, withPose: Bool) {
+        guard spatial_mobile_camera_demand(1) != 0, !cameraShareBusy,
+              withPose || frame.timestamp >= cameraShareNext else { return }
         let buffer = frame.capturedImage
         let width = Double(CVPixelBufferGetWidth(buffer)), height = Double(CVPixelBufferGetHeight(buffer))
-        guard width > 0, height > 0, abs(width / height - 640.0 / 480.0) < 0.01 else { return }
+        guard width > 0, height > 0, abs(width / height - 4.0 / 3.0) < 0.01 else { return }
         cameraShareBusy = true
         cameraShareNext = frame.timestamp + 0.2
         let timestamp = UInt64(frame.timestamp * 1_000_000_000)
@@ -2298,11 +2301,17 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             turned = (fy, fx, height - cy, cx, height, width)
         }
         let sideways = turn == 90 || turn == 270
-        let sentWidth = sideways ? 480.0 : 640.0, sentHeight = sideways ? 640.0 : 480.0
+        let long = Self.cameraShareLongSide, short = long * 3 / 4
+        let sentWidth = sideways ? short : long, sentHeight = sideways ? long : short
         let sx = sentWidth / turned.width, sy = sentHeight / turned.height
         let session = poseSession
         let context = cameraShareContext
+        let depth = frame.sceneDepth
         cameraShareQueue.async { [weak self] in
+            if let depth, let confidence = depth.confidenceMap {
+                Self.shareDepthImage(depth.depthMap, confidence, timestamp: timestamp, session: session,
+                                     intrinsics: (fx, fy, cx, cy), imageSize: (width, height), alignment: alignment)
+            }
             let upright = CIImage(cvPixelBuffer: buffer).oriented(orientation)
             let image = upright
                 .transformed(by: CGAffineTransform(translationX: -upright.extent.minX, y: -upright.extent.minY))
@@ -2310,12 +2319,13 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 .cropped(to: CGRect(x: 0, y: 0, width: sentWidth, height: sentHeight))
             if let space = CGColorSpace(name: CGColorSpace.sRGB),
                let jpeg = context.jpegRepresentation(of: image, colorSpace: space,
-                    options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.6]) {
+                    options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.7]) {
                 jpeg.withUnsafeBytes { bytes in
                     if let base = bytes.bindMemory(to: UInt8.self).baseAddress {
                         session.withCString {
                             spatial_mobile_camera_calibrated(timestamp, base, jpeg.count, $0,
-                                                             turned.fx * sx, turned.fy * sy, turned.cx * sx, turned.cy * sy, turn)
+                                                             turned.fx * sx, turned.fy * sy, turned.cx * sx, turned.cy * sy,
+                                                             turn, alignment)
                         }
                     }
                 }
@@ -2323,11 +2333,45 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             DispatchQueue.main.async { self?.cameraShareBusy = false }
         }
     }
+    /// Long side of the picture sent, in pixels. The short side is three quarters of it.
+    private static let cameraShareLongSide = 960.0
+    /// The LiDAR depth map as 16-bit millimetres with its confidence map, as the
+    /// sensor gave it. Its intrinsics are the camera's, scaled to the depth map.
+    private static func shareDepthImage(_ depth: CVPixelBuffer, _ confidence: CVPixelBuffer, timestamp: UInt64, session: String,
+                                        intrinsics: (fx: Double, fy: Double, cx: Double, cy: Double),
+                                        imageSize: (width: Double, height: Double), alignment: UInt64) {
+        let width = CVPixelBufferGetWidth(depth), height = CVPixelBufferGetHeight(depth)
+        guard width > 0, height > 0, width <= 1024, height <= 1024,
+              CVPixelBufferGetPixelFormatType(depth) == kCVPixelFormatType_DepthFloat32,
+              CVPixelBufferGetWidth(confidence) == width, CVPixelBufferGetHeight(confidence) == height else { return }
+        CVPixelBufferLockBaseAddress(depth, .readOnly); CVPixelBufferLockBaseAddress(confidence, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(depth, .readOnly); CVPixelBufferUnlockBaseAddress(confidence, .readOnly) }
+        guard let depthBase = CVPixelBufferGetBaseAddress(depth), let confidenceBase = CVPixelBufferGetBaseAddress(confidence) else { return }
+        let depthRow = CVPixelBufferGetBytesPerRow(depth), confidenceRow = CVPixelBufferGetBytesPerRow(confidence)
+        var millimetres = [UInt16](repeating: 0, count: width * height)
+        var levels = [UInt8](repeating: 0, count: width * height)
+        for y in 0..<height {
+            let metres = (depthBase + y * depthRow).assumingMemoryBound(to: Float32.self)
+            let level = (confidenceBase + y * confidenceRow).assumingMemoryBound(to: UInt8.self)
+            for x in 0..<width {
+                let value = metres[x] * 1000
+                // 0 means no measurement: not finite, not positive, or beyond 65 m.
+                millimetres[y * width + x] = value.isFinite && value >= 1 && value < 65535 ? UInt16(value) : 0
+                levels[y * width + x] = min(level[x], 2)
+            }
+        }
+        let sx = Double(width) / imageSize.width, sy = Double(height) / imageSize.height
+        session.withCString {
+            spatial_mobile_depth_image(timestamp, $0, UInt32(width), UInt32(height), millimetres, levels,
+                                       intrinsics.fx * sx, intrinsics.fy * sy, intrinsics.cx * sx, intrinsics.cy * sy, alignment)
+        }
+    }
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
         if snoozed { return }
         checkRest(frame)
         if snoozed { return }
-        shareCamera(frame)
+        // Aligned frames are shared below, together with their pose.
+        if !aligned { shareCamera(frame, alignment: 0, withPose: false) }
         if north == .searching {
             searchNorth(frame)
             // This frame, and any already on their way, are still in the compass's axes.
@@ -2377,6 +2421,10 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 onPose?(PhonePoseSample(session: poseSession, timestamp: frame.timestamp,
                     cameraInAR: frame.camera.transform, homeInAR: root.simdTransform,
                     homeFrame: map.scenegraph.map.frame.id))
+                // The picture of this same frame, so a reader finds a pose with
+                // exactly the picture's capture time.
+                // An alignment restored from before a relaunch has no capture time of its own.
+                shareCamera(frame, alignment: depthAlignment?.timestamp_ns ?? 1, withPose: true)
             }
         }
         guard placement == nil, let map, !busy, cooldown.canScan(at: frame.timestamp),

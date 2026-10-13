@@ -145,6 +145,12 @@ pub struct MobileClient {
     local_map: tokio::sync::watch::Sender<Option<(crate::mobile_local::Snapshot, Instant)>>,
     depth: tokio::sync::watch::Sender<Option<(crate::mobile_depth::Sample, std::time::Instant)>>,
     pose: tokio::sync::watch::Sender<Option<crate::mobile_pose::Sample>>,
+    /// Every pose in order, for this phone's own pose Product. The watch above
+    /// keeps only the latest one, which is right for Home's presence push but
+    /// would drop the pose that belongs to a camera frame.
+    pose_log: tokio::sync::mpsc::Sender<Option<crate::mobile_pose::Sample>>,
+    pose_log_receiver: Mutex<Option<tokio::sync::mpsc::Receiver<Option<crate::mobile_pose::Sample>>>>,
+    depth_image: tokio::sync::watch::Sender<Option<(crate::mobile_depth_image::DepthImage, Instant)>>,
     asleep: AtomicBool,
     /// The name this phone asks Home to show for it. Empty means unset.
     name: tokio::sync::watch::Sender<String>,
@@ -167,7 +173,11 @@ impl Default for MobileClient {
         let (commands, receiver) = tokio::sync::mpsc::channel(1);
         let (changes, change_receiver) = tokio::sync::mpsc::channel(1);
         let (portal_reports, portal_receiver) = tokio::sync::mpsc::channel(4);
+        let (pose_log, pose_log_receiver) = tokio::sync::mpsc::channel(256);
         Self {
+            pose_log,
+            pose_log_receiver: Mutex::new(Some(pose_log_receiver)),
+            depth_image: tokio::sync::watch::channel(None).0,
             changes,
             change_receiver: Mutex::new(Some(change_receiver)),
             portal_reports,
@@ -242,12 +252,21 @@ impl MobileClient {
         }
     }
     pub fn update_pose(&self, sample: Option<crate::mobile_pose::Sample>) {
+        // A full log means nothing is connected to drain it; the pose is dropped.
+        let _ = self.pose_log.try_send(sample.clone());
         self.pose.send_replace(sample);
+    }
+    /// The LiDAR depth image of a camera frame. Kept only while a reader wants frames.
+    pub fn update_depth_image(&self, image: crate::mobile_depth_image::DepthImage) {
+        if self.camera_active.load(Ordering::Acquire) && self.camera_demand.load(Ordering::Acquire) {
+            self.depth_image.send_replace(Some((image, Instant::now())));
+        }
     }
     /// The phone paused its camera. Home keeps the last pose, marked asleep.
     pub fn set_asleep(&self, asleep: bool) {
         self.asleep.store(asleep, Ordering::Release);
         if asleep {
+            let _ = self.pose_log.try_send(None);
             self.pose.send_replace(None);
         }
     }
@@ -388,11 +407,13 @@ impl MobileClient {
                 struct Declared {
                     camera: Option<crate::mobile_camera::Camera>,
                     depth: Option<crate::mobile_depth::Publisher>,
+                    depth_image: Option<crate::mobile_depth_image::Publisher>,
                     pose: Option<crate::mobile_odometry::Publisher>,
                 }
                 let declared = std::sync::Mutex::new(Declared {
                     camera: Some(crate::mobile_camera::Camera::new(&products)?),
                     depth: None,
+                    depth_image: None,
                     pose: None,
                 });
                 let declared = || declared.lock().unwrap_or_else(|e| e.into_inner());
@@ -403,7 +424,13 @@ impl MobileClient {
                     loop {
                         tick.tick().await;
                         let active = self.camera_active.load(Ordering::Acquire);
-                        let demand = active && declared().camera.as_ref().is_some_and(|c| c.demanded());
+                        // A reader of either the pictures or their depth images
+                        // gets both: they are one capture.
+                        let demand = active && {
+                            let declared = declared();
+                            declared.camera.as_ref().is_some_and(|c| c.demanded())
+                                || declared.depth_image.as_ref().is_some_and(|d| d.demanded())
+                        };
                         self.camera_demand.store(demand, Ordering::Release);
                         if frames.has_changed().unwrap_or(false) {
                             let latest = frames.borrow_and_update().clone();
@@ -583,20 +610,13 @@ impl MobileClient {
                         });
                     }
                 };
-                let pose_work = async {
-                    // Latest-only watch channel: send immediately, never queue old poses.
-                    loop {
-                        // While asleep, repeat the status so Home keeps the phone listed.
-                        let asleep = self.asleep.load(Ordering::Acquire);
-                        tokio::select! {
-                            changed = poses.changed() => if changed.is_err() { break },
-                            _ = tokio::time::sleep(Duration::from_secs(20)), if asleep => {}
-                        }
-                        let sample = poses.borrow_and_update().clone();
-                        // The same pose is declared in this phone's own Catalog,
-                        // and the first one tells depth and the camera which AR
-                        // session they are in. A failure here must not stop
-                        // presence reaching Home.
+                // Every pose, in order, into this phone's own Catalog. It does
+                // not wait on Home, so the pose taken with a camera frame is
+                // there under that frame's exact capture time. The first pose
+                // also tells depth and the camera which AR session they are in.
+                let mut pose_log = self.pose_log_receiver.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap();
+                let pose_product_work = async {
+                    while let Some(sample) = pose_log.recv().await {
                         let result = {
                             let mut declared = declared();
                             let declared = &mut *declared;
@@ -613,6 +633,10 @@ impl MobileClient {
                                     if declared.depth.is_none() {
                                         declared.depth = Some(crate::mobile_depth::Publisher::new(&products, &sample.session)?);
                                     }
+                                    match declared.depth_image.as_mut() {
+                                        Some(publisher) => publisher.enter_session(&sample.session, sample.timestamp_ns)?,
+                                        None => declared.depth_image = Some(crate::mobile_depth_image::Publisher::new(&products, &sample.session)?),
+                                    }
                                     if let Some(camera) = declared.camera.as_mut() {
                                         camera.enter_session(&sample.session, sample.timestamp_ns)?;
                                     }
@@ -624,6 +648,43 @@ impl MobileClient {
                         if let Err(error) = result {
                             self.local_status(format!("Catalog not updated: {error}"));
                         }
+                    }
+                };
+                let mut depth_images = self.depth_image.subscribe();
+                let depth_image_work = async {
+                    while depth_images.changed().await.is_ok() {
+                        let Some((image, received)) = depth_images.borrow_and_update().clone() else { continue };
+                        if received.elapsed() > Duration::from_millis(500) {
+                            continue;
+                        }
+                        let result = {
+                            let mut declared = declared();
+                            match declared.depth_image.as_mut() {
+                                Some(publisher) => publisher.publish(image),
+                                None => crate::mobile_depth_image::Publisher::new(&products, &image.session)
+                                    .and_then(|mut publisher| {
+                                        publisher.publish(image)?;
+                                        declared.depth_image = Some(publisher);
+                                        Ok(())
+                                    }),
+                            }
+                        };
+                        // A bad image must not tear down mapping or the peer.
+                        if let Err(error) = result {
+                            self.local_status(format!("Depth image not shared: {error}"));
+                        }
+                    }
+                };
+                let pose_work = async {
+                    // Latest-only watch channel: send immediately, never queue old poses.
+                    loop {
+                        // While asleep, repeat the status so Home keeps the phone listed.
+                        let asleep = self.asleep.load(Ordering::Acquire);
+                        tokio::select! {
+                            changed = poses.changed() => if changed.is_err() { break },
+                            _ = tokio::time::sleep(Duration::from_secs(20)), if asleep => {}
+                        }
+                        let sample = poses.borrow_and_update().clone();
                         let status = (sample.is_none() && self.asleep.load(Ordering::Acquire))
                             .then(|| "asleep".to_string());
                         let _ = tokio::time::timeout(
@@ -751,14 +812,17 @@ impl MobileClient {
                     _ = geo_work => Ok(()),
                     result = local_work => result,
                     _ = pose_work => Ok(()),
+                    _ = pose_product_work => Ok(()),
+                    _ = depth_image_work => Ok(()),
                     _ = depth_work => Ok(()),
                     _ = self.follow_geometry(&peer, &home) => Ok(()),
                     result = self.follow(&peer, &home) => result,
                     _ = commands => Ok(()),
                 };
                 self.camera_demand.store(false, Ordering::Release);
-                let Declared { camera, depth: depth_publisher, pose: pose_publisher } = std::mem::replace(
-                    &mut *declared(), Declared { camera: None, depth: None, pose: None });
+                let Declared { camera, depth: depth_publisher, depth_image, pose: pose_publisher } = std::mem::replace(
+                    &mut *declared(), Declared { camera: None, depth: None, depth_image: None, pose: None });
+                if let Some(publisher) = depth_image { let _ = publisher.close(); }
                 if let Some(camera) = camera { let _ = camera.close(); }
                 if let Some(publisher) = local_publisher {
                     let _ = publisher.close().await;

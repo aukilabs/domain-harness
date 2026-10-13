@@ -54,6 +54,7 @@ pub mod mobile_geo;
 pub mod mobile_geometry;
 
 pub mod mobile_depth;
+pub mod mobile_depth_image;
 pub mod mobile_drive;
 pub mod mobile_calibration;
 

@@ -144,7 +144,7 @@ async fn phone_camera_joins_the_ar_session_and_declares_its_calibration() -> Res
             )?;
             Ok(jpeg)
         };
-        let geometry = Geometry { session: session.clone(), fx: 480., fy: 481., cx: 320., cy: 240., rotation_deg: 0 };
+        let geometry = Geometry { session: session.clone(), fx: 480., fy: 481., cx: 320., cy: 240., rotation_deg: 0, alignment_timestamp_ns: 0 };
         camera.publish_calibrated(100, jpeg(640, 480)?, geometry.clone())?;
         assert!(
             camera
@@ -168,8 +168,11 @@ async fn phone_camera_joins_the_ar_session_and_declares_its_calibration() -> Res
         assert_eq!(metadata["value"]["calibration"]["K"][4], 481.);
         assert_eq!(metadata["value"]["calibration"]["width"], 640);
         assert_eq!(metadata["value"]["rotation_from_camera_frame_deg"], 0);
-        // No pose Product is named, so Home does not offer its robot overlay.
+        // Home's robot overlay reads `pose_product_id`; that key is never set.
         assert!(metadata["value"].get("pose_product_id").is_none());
+        // Not aligned: there is no pose to match this frame with.
+        assert!(metadata["value"]["capture_pose_product_id"].is_null());
+        assert_eq!(metadata["value"]["depth_image_product_id"], "phone-depth-image");
         assert!(sensor_preview::camera_sensors(&Catalogs::from([(
             pair.b.peer_id().to_string(),
             sent.clone()
@@ -197,6 +200,21 @@ async fn phone_camera_joins_the_ar_session_and_declares_its_calibration() -> Res
         assert_eq!(metadata["calibration"]["height"], 640);
         assert_eq!(metadata["rotation_from_camera_frame_deg"], 90);
         assert_eq!(metadata["camera_frame"], format!("phone-camera:{session}"));
+
+        // A bigger picture is a new Output too, and an aligned frame names the
+        // pose Product that holds its capture-time pose.
+        let big = Geometry { fx: 721., fy: 720., cx: 360., cy: 480., rotation_deg: 90, alignment_timestamp_ns: 77, ..geometry.clone() };
+        camera.publish_calibrated(300, jpeg(720, 960)?, big.clone())?;
+        // Not the camera's 4:3 shape, too large, or on its side without a quarter turn.
+        assert!(camera.publish_calibrated(301, jpeg(720, 900)?, big.clone()).is_err());
+        assert!(camera.publish_calibrated(301, jpeg(1200, 1600)?, big.clone()).is_err());
+        assert!(camera.publish_calibrated(301, jpeg(960, 720)?, big).is_err());
+        let bigger = fetch(&pair.a, pair.b.peer_id(), &routes).await;
+        assert_eq!(frame_of(&bigger)["payload"]["height"], 960);
+        let metadata = &bigger["catalog"]["products"][0]["metadata"]["value"];
+        assert_eq!(metadata["calibration"]["width"], 720);
+        assert_eq!(metadata["capture_pose_product_id"], format!("phone-pose:{session}"));
+        assert_eq!(metadata["alignment_timestamp_ns"], 77);
 
         // A new AR session moves the camera again.
         let next = uuid::Uuid::new_v4().to_string();
