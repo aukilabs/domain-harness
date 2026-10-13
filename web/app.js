@@ -298,7 +298,14 @@ window.addEventListener('keydown',async e=>{
   if(!path||!await deletePath(path,map,frame))break;
  }}finally{backspaceQueue=0;backspaceDeleting=false;}
 });
-function focusNote(note){const p=new THREE.Vector3(...note.position);controls.target.copy(p);camera.position.copy(p).add(new THREE.Vector3(.5,.4,2));controls.update();showNoteSelection(note);}
+function closeUp(point){
+ if(attachedCamera.isActive())attachedCamera.detach();
+ const target=new THREE.Vector3(...point),direction=camera.position.clone().sub(target);
+ if(direction.lengthSq()<1e-8)direction.set(0,.3,1);
+ const position=target.clone().addScaledVector(direction.normalize(),2);
+ moveMapCamera({type:'move_camera',scene:activeMap,frame:current?.frame,position:position.toArray(),look_at:point},{scene:activeMap,frame:current?.frame,camera,controls,map2D});
+}
+function focusNote(note){closeUp(note.position);showNoteSelection(note);}
 function showNoteSelection(note){
  showSelection(noteTitle(note),`[${note.position.map(v=>v.toFixed(2)).join(', ')}] m`,note.robot_pose?'Live robot position':note.phone_pose?'Live phone position':note.anchor_surface?'Placed in Home':`${note.height_m} m above ${note.anchor_robot?note.text+' base':note.anchor_portal} · Home up axis`);
  selectedNoteId=note.id;$('selection').dataset.noteId=note.id;
@@ -461,10 +468,20 @@ renderer.domElement.addEventListener('pointerup',e=>{
  if(d.kind==='voxels'){const v=current.voxels[h.instanceId];showSelection('Occupied voxel',`[${v.center.map(n=>n.toFixed(2)).join(', ')}] m`,`Evidence ${v.evidence} · 10 cm cell`);}
  if(d.kind==='occupancy'){const t=current.occupancy_tiles[h.instanceId];showSelection('Occupancy · '+(t.value===100?'occupied':t.value===0?'free':'unknown'),`[${t.center.map(n=>n.toFixed(2)).join(', ')}] m`,`Value ${t.value} · 10 cm sample · retrieved in 2 m cells`);}
  if(d.kind==='path'){showPathSelection(d.path);noteView='path';openPanel('notes');renderNotes();return;}
- if(d.kind==='note')focusNote(d.note);
+ if(d.kind==='note')showNoteSelection(d.note);
  if(d.kind==='object'){const o=d.object;showSelection(o.label,`[${o.position.map(n=>n.toFixed(2)).join(', ')}] m`,`Source: ${o.source_peer}`);}
  if(d.kind==='portal'&&(d.portal.anchor_id.length===11||d.portal.anchor_id.startsWith('home:'))){focusPortal(d.portal);return;}
  if(d.kind==='portal')showSelection(`Portal ${d.portal.payload.split(':').at(-1)}`,`${d.portal.side_length_m.toFixed(2)} m encoded size`,'Manually supplied · no backend lookup');
+});
+renderer.domElement.addEventListener('dblclick',e=>{
+ if(e.button!==0||!current||crayon.isActive()||map2D.isActive())return;
+ const r=renderer.domElement.getBoundingClientRect(),ray=new THREE.Raycaster();
+ ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,1-(e.clientY-r.top)/r.height*2),camera);
+ const hits=ray.intersectObjects(selectable.filter(o=>{for(let p=o;p;p=p.parent)if(!p.visible)return false;return true;}));
+ const note=hits.find(h=>h.object.userData.kind==='note');
+ if(note){focusNote(note.object.userData.note);return;}
+ const volume=semanticVolumes.pick(ray);if(volume){closeUp(volume.point.toArray());return;}
+ const voxel=hits.find(h=>h.object.userData.kind==='voxels');if(voxel)closeUp(voxel.point.toArray());
 });
 async function api(path,body,method){if(path==='/api/chat'&&body){camera.updateMatrixWorld();const right=map2D.isActive()?[1,0,0]:new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld,0).toArray();body={...body,viewer:{frame:current?.frame||'',mode:map2D.isActive()?'2d':'3d',screen_right:right,camera_position:camera.position.toArray(),camera_target:controls.target.toArray()}};}const r=await fetch(path,body?{method:method||'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:method?{method}:undefined);const text=await r.text();let result;try{result=JSON.parse(text);}catch{throw new Error(text);}if(!r.ok){const error=new Error(result.error||text);error.status=r.status;throw error;}return result;}
 function peerSceneUrl(map){return '/api/sensors?scene=true&sensor='+encodeURIComponent(map.slice(11));}
@@ -913,7 +930,7 @@ function renderNotes(){
   const heading=document.createElement('h3');heading.textContent='Crayon paths';notesBody.append(heading);
   paths.forEach((path,i)=>{const row=uiButton(`${path.title} · ${i+1}`,()=>{noteView='path';focusPath(path);renderNotes();});row.dataset.pathId=path.id;notesBody.append(row);});
  }
- for(const note of notes){const row=uiButton(noteTitle(note),()=>{sidebarNoteId=note.id;noteView='detail';focusNote(note);renderNotes();});if(note.details?.thumbnail){const image=document.createElement('img');image.src=note.details.thumbnail;image.alt='';image.className='note-list-thumbnail';row.prepend(image);}notesBody.append(row);}
+ for(const note of notes){const row=uiButton(noteTitle(note),()=>{sidebarNoteId=note.id;noteView='detail';showNoteSelection(note);renderNotes();});if(note.details?.thumbnail){const image=document.createElement('img');image.src=note.details.thumbnail;image.alt='';image.className='note-list-thumbnail';row.prepend(image);}notesBody.append(row);}
 }
 async function editSidebarNote(note){
  const editingMap=activeMap;
