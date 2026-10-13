@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import Security
 import SpatialPortalBridge
 
 @MainActor
@@ -7,6 +8,21 @@ final class HomePeer: ObservableObject {
     @Published private(set) var depthDetail = "Depth not shared yet"
     @Published var email = ""
     @Published var password = ""
+    /// Sign in with an app key and secret instead of a User account.
+    @Published var useAppKey = UserDefaults.standard.bool(forKey: "signInWithAppKey") {
+        didSet { UserDefaults.standard.set(useAppKey, forKey: "signInWithAppKey") }
+    }
+    @Published var appKey = ""
+    @Published var appSecret = ""
+    @Published private(set) var savedAppKey = AppKeychain.load() != nil
+    var hasCredentials: Bool {
+        if useAppKey { return savedAppKey || (!appKey.isEmpty && !appSecret.isEmpty) }
+        return !email.isEmpty && !password.isEmpty
+    }
+    func forgetAppKey() {
+        AppKeychain.delete()
+        savedAppKey = false
+    }
     @Published private(set) var profile: HomeProfile?
     @Published private(set) var running = false
     @Published private(set) var detail = "Pair with Home to connect"
@@ -154,7 +170,11 @@ final class HomePeer: ObservableObject {
     }
 
     func connect() {
-        guard !running, profile != nil, !email.isEmpty, !password.isEmpty else { return }
+        guard !running, profile != nil, hasCredentials else { return }
+        // Newly typed app credentials replace any saved ones.
+        let typed = !appKey.isEmpty && !appSecret.isEmpty
+        let app = useAppKey ? (typed ? AppKeychain.Credentials(key: appKey, secret: appSecret) : AppKeychain.load()) : nil
+        if useAppKey && app == nil { savedAppKey = false; detail = "Enter the app key and secret"; return }
         do {
             let manager = FileManager.default
             var directory = try manager.url(for: .applicationSupportDirectory, in: .userDomainMask,
@@ -167,15 +187,21 @@ final class HomePeer: ObservableObject {
             if manager.fileExists(atPath: identity) {
                 try manager.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: identity)
             }
+            let (first, second) = app.map { ($0.key, $0.secret) } ?? (email, password)
+            let start = app == nil ? spatial_mobile_start : spatial_mobile_start_app
             let accepted = profileJSON.withCString { profile in
-                email.withCString { user in
-                    password.withCString { secret in
-                        identity.withCString { path in spatial_mobile_start(profile, user, secret, path) }
+                first.withCString { first in
+                    second.withCString { second in
+                        identity.withCString { path in start(profile, first, second, path) }
                     }
                 }
             }
             password = ""
             guard accepted == 1 else { throw ViewerError("Previous connection is still closing. Try again shortly.") }
+            if let app, typed {
+                savedAppKey = AppKeychain.save(app)
+                appKey = ""; appSecret = ""
+            }
             running = true; state = "connecting"; lastVersion = 0
             setName(UserDefaults.standard.string(forKey: "phoneName") ?? "")
             detail = "Signing in to Auki development services"
@@ -184,7 +210,7 @@ final class HomePeer: ObservableObject {
             timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.poll() }
             }
-        } catch { password = ""; detail = error.localizedDescription; state = "error" }
+        } catch { password = ""; appSecret = ""; detail = error.localizedDescription; state = "error" }
     }
 
     func disconnect(background: Bool = false) {
@@ -258,4 +284,36 @@ final class HomePeer: ObservableObject {
             backgroundTask = .invalid
         }
     }
+}
+
+/// The app key and secret, kept only in this iPhone's Keychain: never in defaults,
+/// backups or other devices.
+enum AppKeychain {
+    struct Credentials: Codable { let key: String; let secret: String }
+    private static let item: [String: Any] = [
+        kSecClass as String: kSecClassGenericPassword,
+        kSecAttrService as String: "com.spatialharness.PortalViewer.app-key",
+        kSecAttrAccount as String: "auki-app",
+    ]
+
+    static func load() -> Credentials? {
+        var query = item
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data else { return nil }
+        return try? JSONDecoder().decode(Credentials.self, from: data)
+    }
+
+    static func save(_ credentials: Credentials) -> Bool {
+        guard let data = try? JSONEncoder().encode(credentials) else { return false }
+        SecItemDelete(item as CFDictionary)
+        var query = item
+        query[kSecValueData as String] = data
+        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        return SecItemAdd(query as CFDictionary, nil) == errSecSuccess
+    }
+
+    static func delete() { SecItemDelete(item as CFDictionary) }
 }

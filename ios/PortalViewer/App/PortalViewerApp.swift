@@ -238,13 +238,32 @@ struct ViewerScreen: View {
                             .font(.caption)
                         if let pairingError { Text(pairingError).foregroundStyle(Theme.accent) }
                     }
-                    Section("Auki User · development environment") {
-                        TextField("Email", text: $peer.email)
-                            .textContentType(.username).keyboardType(.emailAddress)
-                            .textInputAutocapitalization(.never).autocorrectionDisabled()
-                        SecureField("Password", text: $peer.password).textContentType(.password)
-                        Text("Use a User account with access to Home's Domain. Passwords are not saved.")
-                            .font(.caption)
+                    Section("Sign in · Auki development environment") {
+                        Picker("Sign in with", selection: $peer.useAppKey) {
+                            Text("User account").tag(false)
+                            Text("App key").tag(true)
+                        }.pickerStyle(.segmented)
+                        if peer.useAppKey {
+                            if peer.savedAppKey {
+                                HStack {
+                                    Text("App key saved on this iPhone")
+                                    Spacer()
+                                    Button("Forget", role: .destructive) { peer.forgetAppKey() }
+                                }
+                            }
+                            TextField(peer.savedAppKey ? "New app key (optional)" : "App key", text: $peer.appKey)
+                                .textInputAutocapitalization(.never).autocorrectionDisabled()
+                            SecureField(peer.savedAppKey ? "New app secret (optional)" : "App secret", text: $peer.appSecret)
+                            Text("Use an app key with access to Home's Domain. It is kept in this iPhone's Keychain after the first sign-in.")
+                                .font(.caption)
+                        } else {
+                            TextField("Email", text: $peer.email)
+                                .textContentType(.username).keyboardType(.emailAddress)
+                                .textInputAutocapitalization(.never).autocorrectionDisabled()
+                            SecureField("Password", text: $peer.password).textContentType(.password)
+                            Text("Use a User account with access to Home's Domain. Passwords are not saved.")
+                                .font(.caption)
+                        }
                         if peer.profile == nil {
                             Text("Import Home's connection profile above to enable sign-in.")
                                 .font(.caption).foregroundStyle(.secondary)
@@ -252,7 +271,7 @@ struct ViewerScreen: View {
                         Button("Sign in and connect") {
                             peer.connect()
                             if peer.running { connecting = false }
-                        }.disabled(peer.profile == nil || peer.email.isEmpty || peer.password.isEmpty || peer.running)
+                        }.disabled(peer.profile == nil || !peer.hasCredentials || peer.running)
                     }
                     Text(peer.detail)
                 }
