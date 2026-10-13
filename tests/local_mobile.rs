@@ -446,11 +446,11 @@ async fn phone_reports_a_new_portal_into_the_selected_scene() -> Result<()> {
             code: new_code.into(),
             side_length_m: spatial_home::mobile_portal::DEFAULT_SIDE_M,
             portal_to_session: rigid(&new_in_session, &new_local, &session_frame),
-            alignment: alignment.clone(),
+            alignment: Some(alignment.clone()),
             replace: false,
         };
         let mut forged = report.clone();
-        forged.alignment.session_to_home.translation[0] += 1.;
+        forged.alignment.as_mut().unwrap().session_to_home.translation[0] += 1.;
         assert!(
             spatial_home::mobile_portal::send(&pair.b, &home, &forged)
                 .await
@@ -496,7 +496,7 @@ async fn phone_reports_a_new_portal_into_the_selected_scene() -> Result<()> {
         origin.code = "HNY3JGNLRAE".into();
         origin.portal_to_session.from_frame_id = portal.pose_in_map.from_frame_id.clone();
         let mut by_itself = moved.clone();
-        by_itself.alignment.portal_id = new_code.into();
+        by_itself.alignment.as_mut().unwrap().portal_id = new_code.into();
         let mut unknown = moved.clone();
         unknown.code = "NOTINSCENE1".into();
         unknown.portal_to_session.from_frame_id = spatial_home::mobile_portal::local_frame("NOTINSCENE1");

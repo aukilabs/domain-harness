@@ -476,15 +476,34 @@ impl MobileClient {
                     while let Some(report) = portal_reports.recv().await {
                         let code = report.code.clone();
                         let (done, doing) = if report.replace { ("moved in", "moved") } else { ("added to", "added") };
-                        let result = tokio::time::timeout(
-                            Duration::from_secs(4),
-                            operations.invoke::<_, bool>(
-                                &home.scoped_component(crate::mobile_portal::COMPONENT),
-                                "add", "phone-portal", &uuid::Uuid::new_v4().to_string(),
-                                Duration::from_secs(3), &report,
-                            ),
-                        )
-                        .await;
+                        let component = home.scoped_component(crate::mobile_portal::COMPONENT);
+                        let request = uuid::Uuid::new_v4().to_string();
+                        let result = if report.alignment.is_some() {
+                            tokio::time::timeout(
+                                Duration::from_secs(4),
+                                operations.invoke::<_, bool>(&component, "add", "phone-portal", &request,
+                                    Duration::from_secs(3), &report),
+                            )
+                            .await
+                        } else {
+                            // The first Portal of an empty scene: Home makes it the origin.
+                            let mut scene = self.state.lock().unwrap_or_else(|e| e.into_inner()).reference.clone();
+                            if let Some(render) = scene.as_mut().and_then(|s| s.as_object_mut()) { render.remove("render"); }
+                            let Some(Ok(expected_scene)) = scene.map(serde_json::from_value) else {
+                                self.local_status(format!("Portal {code} not added: no scene received from Home yet"));
+                                continue;
+                            };
+                            let first = crate::mobile_portal::FirstPortal {
+                                expected_scene, code: code.clone(), side_length_m: report.side_length_m,
+                                timestamp_ns: report.timestamp_ns, portal_to_native: report.portal_to_session.clone(),
+                            };
+                            tokio::time::timeout(
+                                Duration::from_secs(4),
+                                operations.invoke::<_, bool>(&component, "establish_origin", "phone-portal", &request,
+                                    Duration::from_secs(3), &first),
+                            )
+                            .await
+                        };
                         self.local_status(match result {
                             Ok(Ok(true)) => format!("Portal {code} {done} Home's scene"),
                             Ok(Ok(false)) => format!("Home refused Portal {code}"),

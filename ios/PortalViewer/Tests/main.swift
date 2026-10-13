@@ -175,6 +175,14 @@ let ownJSON = try JSONSerialization.jsonObject(with: JSONEncoder().encode(
 check(Set(ownJSON.keys) == ["session", "timestamp_ns", "cells"], "Home refuses a local map with any other field")
 print("Phone own map checks passed")
 
+let firstPortal = try JSONSerialization.jsonObject(with: JSONEncoder().encode(PortalReport(
+    session: "s", timestamp_ns: 7, code: "NV16FWJ9G2X", side_length_m: PortalReport.assumedSide,
+    portal_to_session: .transform(matrix_identity_float4x4, from: "portal:NV16FWJ9G2X:local", to: "phone-ar:s"),
+    alignment: nil))) as! [String: Any]
+check(firstPortal["alignment"] == nil && firstPortal["replace"] == nil && firstPortal["code"] as? String == "NV16FWJ9G2X",
+      "a scene's first Portal is reported with no alignment at all")
+print("First Portal report checks passed")
+
 func deviceNote(_ x: Float, frame: String = "home", phone: String? = nil, state: String? = nil, peer: String = "p1") -> RenderScene.Note {
     let key = phone == nil ? "robot_pose" : "phone_pose"
     let from = phone.map { "phone-camera:" + $0 } ?? "robot.base"

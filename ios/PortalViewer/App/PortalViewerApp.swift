@@ -2098,7 +2098,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 }
                 guard map.matching(payload) != nil else {
                     // A long-press on an unknown Portal asks Home to add it right away.
-                    guard self.aligned, self.depthAlignment != nil else {
+                    guard map.scenegraph.anchors.isEmpty || (self.aligned && self.depthAlignment != nil) else {
                         self.showOutline(corners, good: false)
                         UINotificationFeedbackGenerator().notificationOccurred(.warning)
                         self.showToast("Portal \(code) is new. Scan a Portal this scene already knows first, then long-press this one again.", good: false)
@@ -2169,7 +2169,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     /// Report an unknown Portal once two measurements a moment apart agree, so
-    /// one noisy read cannot place it. Needs an alignment from a known Portal.
+    /// one noisy read cannot place it. Needs an alignment from a known Portal,
+    /// unless the scene has no Portals: then this one is offered as its origin.
     func showPortalResult(_ text: String) {
         let good = text.contains("added to Home") || text.contains("moved in Home")
         UINotificationFeedbackGenerator().notificationOccurred(good ? .success : .error)
@@ -2178,18 +2179,23 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     private func offerNewPortal(_ code: String, portalInAR: simd_float4x4, at time: TimeInterval, confirmed: Bool = false) {
-        guard aligned, let alignment = depthAlignment, map?.scenegraph.anchors[code] == nil else {
-            if aligned, depthAlignment == nil { status = "Scan a known Portal first, then Portal \(code) can be added." }
+        guard let map, map.scenegraph.anchors[code] == nil else { return }
+        let first = map.scenegraph.anchors.isEmpty
+        let alignment = first ? nil : depthAlignment
+        guard first || (aligned && alignment != nil) else {
+            if aligned { status = "Scan a known Portal first, then Portal \(code) can be added." }
             return
         }
-        if !confirmed, let last = portalReported[code], time - last < 6 { return }
+        // A Home that cannot take a first Portal yet is not asked every few seconds.
+        if !confirmed, let last = portalReported[code], time - last < (first ? 20 : 6) { return }
         let position = SIMD3(portalInAR.columns.3.x, portalInAR.columns.3.y, portalInAR.columns.3.z)
         // An explicit long-press sends at once; passive sightings need two agreeing reads.
         if confirmed { portalCandidates[code] = (position, time) }
         guard let previous = portalCandidates[code], confirmed || (time - previous.time < 3 &&
               simd_distance(previous.position, position) < 0.03) else {
             portalCandidates[code] = (position, time)
-            status = "New Portal \(code) seen. Hold still to add it."
+            status = first ? "First Portal \(code) seen. Hold still to make it this scene's origin."
+                           : "New Portal \(code) seen. Hold still to add it."
             return
         }
         portalCandidates[code] = nil
@@ -2200,7 +2206,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             alignment: alignment)
         if onNewPortal?(report) == true {
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-            showToast("New Portal \(code) found. Asking Home to add it at 15 cm…", good: true)
+            showToast(first ? "First Portal \(code) found. Asking Home to make it this scene's origin…"
+                            : "New Portal \(code) found. Asking Home to add it at 15 cm…", good: true)
         } else {
             showToast("New Portal \(code) found, but Home is not connected.", good: false)
         }
