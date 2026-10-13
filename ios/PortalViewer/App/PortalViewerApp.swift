@@ -6,6 +6,7 @@ import CoreMotion
 import UniformTypeIdentifiers
 import PhotosUI
 import UserNotifications
+import AudioToolbox
 import SpatialPortalBridge
 
 @main
@@ -62,6 +63,7 @@ struct ViewerScreen: View {
         ZStack(alignment: .bottom) {
             CameraView(controller: controller).ignoresSafeArea()
             if !controller.snoozed { MessageMarker(center: controller.messages) }
+            if !controller.snoozed { MessageFound(center: controller.messages) }
             VStack(spacing: 0) {
                 MessageBanner(center: controller.messages) { withAnimation { showMessages = true } }
                 HStack(alignment: .top) {
@@ -225,6 +227,7 @@ struct ViewerScreen: View {
             controller.onGeo = { peer.setGeo($0) }
             controller.onStroke = { peer.saveStroke($0, frame: $1, done: $2) }
             controller.onErase = { peer.eraseStroke($0, frame: $1, done: $2) }
+            controller.onFound = { peer.saveAnnotation($0, text: $1) }
             peer.onPortalResult = { controller.showPortalResult($0) }
             // A Portal seen before Home's map has arrived offers sign-in once.
             controller.onPortalSeen = { _ in
@@ -1440,6 +1443,14 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private let guideQueue = DispatchQueue(label: "home.phone.route")
     /// The way everyone can see now: its path in Home, where it leads, and the frame it is in.
     private var guideShared: (id: String, route: [SIMD3<Float>], goal: SIMD3<Float>, frame: String)?
+    /// When Home said it had saved that way. Nil while waiting to hear.
+    private var guideSaved: Date?
+    /// When a way was last offered to Home, so a Home that cannot take one is not asked constantly.
+    private var guideOffered = Date.distantPast
+    /// Tells whoever left a message that this phone reached it: a note in reply, at the same spot.
+    var onFound: ((NotePlacement, String) -> Bool)?
+    /// Messages already answered, so walking past one again says nothing new.
+    private var answered = Set<String>()
     private func endGuide() {
         guard guidePlanned != nil || !guideRoute.isEmpty || messages.way != nil || guideShared != nil else { return }
         guideRoot.childNodes.forEach { $0.removeFromParentNode() }
@@ -1447,16 +1458,19 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         if messages.way != nil { messages.way = nil }
         // Nobody is being led any more, so the way comes off everyone's map.
         if let shared = guideShared { onErase?(shared.id, shared.frame) { _ in } }
-        guideShared = nil
+        guideShared = nil; guideSaved = nil
     }
     /// Show a freshly planned way to everyone. A way already shown is kept while the phone is
     /// still on it and it still leads to the right place, so the map is not redrawn at every step.
     private func share(_ route: [SIMD3<Float>], to target: MessageInbox.Message, from phone: SIMD3<Float>, frame: String) {
         if let shared = guideShared, shared.frame == frame, simd_distance(shared.goal, target.position) < 0.3,
            MessageRoute.stray(phone, from: shared.route) < 1 { return }
+        // Home is offered a way at most every few seconds.
+        guard Date().timeIntervalSince(guideOffered) > 3 else { return }
+        guideOffered = Date()
         if let old = guideShared { onErase?(old.id, old.frame) { _ in } }
         guideRoot.childNodes.forEach { $0.removeFromParentNode() }
-        guideShared = nil
+        guideShared = nil; guideSaved = nil
         let id = UUID().uuidString.lowercased()
         guard let path = MessageRoute.path(route, id: id, to: target.text) else { return }
         let color = UInt32(path.color.dropFirst(), radix: 16) ?? 0xff5fa8
@@ -1467,8 +1481,26 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             guideRoot.addChildNode(node)
         }
         guideShared = (id, route, target.position, frame)
-        // If Home cannot take it, the phone still shows its own copy.
-        onStroke?(path, frame) { _ in }
+        // If Home cannot take it, the phone still shows its own copy, and offers it again:
+        // a way nobody else can see is not yet shared.
+        onStroke?(path, frame) { [weak self] saved in
+            guard let self, self.guideShared?.id == id else { return }
+            if saved { self.guideSaved = Date() } else { self.guideShared = nil }
+        }
+    }
+    /// The phone has reached the message: reward the user, take the way off the map, and
+    /// leave a note in reply so whoever sent it hears too.
+    private func arrive(at phone: SIMD3<Float>, frame: String) {
+        guard let reached = messages.arrive() else { return }
+        endGuide()
+        guard !ownNotes.contains(reached.id), answered.insert(reached.id).inserted else { return }
+        let name = UserDefaults.standard.string(forKey: "phoneName")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let text = String("✓ \(name.isEmpty ? "Someone" : name) got “\(reached.text)”".prefix(120))
+        // Just above the message, so both can be read.
+        let at = reached.position + SIMD3(0, 0.25, 0)
+        let reply = NotePlacement(id: UUID().uuidString.lowercased(), frame: frame, origin: [phone.x, phone.y, phone.z],
+                                  direction: [at.x - phone.x, at.y - phone.y, at.z - phone.z], at: [at.x, at.y, at.z])
+        if onFound?(reply, text) == true { ownNotes.insert(reply.id) }
     }
     /// Plan the way to the message across the floor, round what the map shows, draw it for
     /// everyone, and say which way to head next. Planned again as the phone moves and the
@@ -1483,6 +1515,10 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         }
         let inHome = root.simdTransform.inverse * frame.camera.transform.columns.3
         let phone = SIMD3(inHome.x, inHome.y, inHome.z)
+        // Within a pace of it across the floor is there.
+        if simd_distance(SIMD2(phone.x, phone.z), SIMD2(target.position.x, target.position.z)) < 0.8 {
+            arrive(at: phone, frame: scene.frame); return
+        }
         if !guidePlanning, guidePlanned?.id != target.id || frame.timestamp - (guidePlanned?.at ?? 0) > 1.5 {
             guidePlanning = true
             let voxels = scene.voxels, size = scene.voxel_size, time = frame.timestamp, home = scene.frame
@@ -1826,6 +1862,11 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         if guideRoot.parent == nil { root.addChildNode(guideRoot) }
         let listed = Set(map.render?.paths?.items.map(\.id) ?? [])
         guideRoot.childNodes.filter { listed.contains($0.name ?? "") }.forEach { $0.removeFromParentNode() }
+        // Home said it saved the way, yet no longer lists it: it restarted, or someone erased
+        // it. Forget it, so the next plan shares the way again.
+        if let shared = guideShared, let saved = guideSaved, !listed.contains(shared.id), Date().timeIntervalSince(saved) > 4 {
+            guideShared = nil; guideSaved = nil
+        }
         // A stroke drawn here is dropped once Home's own copy of it arrives.
         let saved = Set(map.render?.paths?.items.map(\.id) ?? [])
         crayonRoot.childNodes.filter { $0.isHidden }.forEach { $0.removeFromParentNode() }
@@ -3024,6 +3065,24 @@ final class MessageCenter: ObservableObject {
     @Published var way: MessageAim?
     /// The phone is lying asleep with the app open, so nobody is looking at the screen.
     var asleep = false
+    /// The message just reached, shown for a moment as the reward for getting there.
+    @Published var found: MessageInbox.Message?
+    private var celebrated = 0
+    /// The phone has got to the message it was looking for.
+    func arrive() -> MessageInbox.Message? {
+        guard let reached = target else { return nil }
+        target = nil; aim = nil; way = nil
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        AudioServicesPlaySystemSound(1025)
+        celebrated += 1
+        let showing = celebrated
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.55)) { found = reached }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { [weak self] in
+            guard let self, self.celebrated == showing else { return }
+            withAnimation { self.found = nil }
+        }
+        return reached
+    }
     private var shown = 0
 
     func record(_ notes: [RenderScene.Note], frame: String, mine: Set<String>) {
@@ -3220,6 +3279,28 @@ struct MessageMarker: View {
             }
         }
         .ignoresSafeArea().allowsHitTesting(false)
+    }
+}
+
+/// The reward for reaching a message: a big tick and its words, for a few seconds.
+struct MessageFound: View {
+    @ObservedObject var center: MessageCenter
+    var body: some View {
+        if let found = center.found {
+            VStack(spacing: 12) {
+                Image(systemName: "checkmark").font(.system(size: 54, weight: .heavy)).foregroundStyle(Theme.onAccent)
+                    .frame(width: 116, height: 116).background(Theme.accent, in: Circle())
+                    .overlay(Circle().stroke(Theme.paper, lineWidth: 5))
+                    .shadow(color: Theme.glow, radius: 18)
+                Text("You found it").themeLabel(18, .bold)
+                Text(found.text).themeText(13).foregroundStyle(Theme.dim).lineLimit(2).multilineTextAlignment(.center)
+            }
+            .padding(22).foregroundStyle(Theme.ink).themeBubble()
+            .frame(maxWidth: 260).frame(maxWidth: .infinity, maxHeight: .infinity)
+            .transition(.scale(scale: 0.4).combined(with: .opacity))
+            .allowsHitTesting(false)
+            .accessibilityLabel("You found the message: \(found.text)")
+        }
     }
 }
 
