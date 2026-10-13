@@ -8,7 +8,7 @@ use std::time::Duration;
 
 async fn query(tx:&tokio::sync::mpsc::Sender<sensor_preview::Request>,id:&str,hash:&str)->Result<serde_json::Value>{
  let (reply,receive)=tokio::sync::oneshot::channel();
- tx.send(sensor_preview::Request{sensor:Some(id.into()),follow:true,capture:false,expected_manifest:Some(hash.into()),scene:false,ar:false,pick:false,reply}).await?;
+ tx.send(sensor_preview::Request{home_frame:None,debug_pose:false,sensor:Some(id.into()),follow:true,capture:false,expected_manifest:Some(hash.into()),scene:false,ar:false,pick:false,reply}).await?;
  tokio::time::timeout(Duration::from_secs(10),receive).await??
 }
 

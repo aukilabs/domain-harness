@@ -12,6 +12,7 @@ use tokio_util::sync::CancellationToken;
 async fn request(tx: &mpsc::Sender<Request>, sensor: Option<String>) -> Result<serde_json::Value> {
     let (reply, answer) = oneshot::channel();
     tx.send(Request {
+        home_frame: None, debug_pose: false,
         scene: false,
         sensor,
         ar: false,

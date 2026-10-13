@@ -55,13 +55,14 @@ A camera that can be drawn over (Home's picture-in-picture AR) provides:
 - A `VideoFrame` Product whose Output has a registered `spatial_frame` (the
   camera's own frame) and a clock.
 - Product metadata with `calibration` (width, height, `K`, `D`,
-  `distortion_model`) matching the image as sent, and `pose_product_id` naming
-  the capture-matched pose Product on the same peer. The field is
-  `pose_product_id` for every producer.
-- A `PoseUpdate` Product (`auki.odometry-pose/v1`) with an observation at the
-  image's exact timestamp on the same clock, whose contract `from_frame` is
-  the image's frame. Its `to_frame` is either a Home scene frame directly, or a
-  base frame with an odometry Product and a declared transform into Home.
+  `distortion_model`) matching the image as sent.
+- A sampled compact pose Product whose contract `from_frame` is the image's
+  exact registered frame and whose clock matches the image clock. Resolve by
+  frame references, never Product/component names. Its destination is a scene
+  frame directly or a native frame with a held compact transform into the scene.
+  Use exact capture-time samples or valid bounded interpolation, never a latest
+  pose fallback. See `docs/frame-registry.md` for the shared wire profile and
+  `docs/frame-registry-consumer.md` for Home's validation and trust policy.
 
 Pose payloads: `translation: [x, y, z]` in destination-frame units and
 `rotation_xyzw`, an active Hamilton quaternion mapping source coordinates into
