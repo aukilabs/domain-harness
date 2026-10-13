@@ -327,6 +327,7 @@ async fn home_draws_over_a_phone_camera_without_a_phone_adapter() -> Result<()> 
         r
     });
     pose.close()?;
+    declared.close()?;
     camera.close()?;
     products.close().await?;
     pair.shutdown().await?;
