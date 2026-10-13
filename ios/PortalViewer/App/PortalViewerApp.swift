@@ -60,6 +60,7 @@ struct ViewerScreen: View {
                 HStack(alignment: .top) {
                     VolumeControls(editor: controller.volumes, peer: peer)
                     Spacer(minLength: 0)
+                    VStack(spacing: 0) {
                     Button { withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) { showDetails.toggle() } } label: {
                         Image(uiImage: UIImage(named: "auki.png") ?? UIImage()).renderingMode(.original).resizable()
                             .frame(width: 44, height: 44).clipShape(Circle())
@@ -72,6 +73,15 @@ struct ViewerScreen: View {
                     }
                     .padding()
                     .accessibilityLabel(showDetails ? "Hide scene details" : "Show scene details")
+                    // Sometimes the room is easier to read without the voxels over it.
+                    Button { controller.showVoxels.toggle() } label: {
+                        Image(systemName: "square.grid.2x2.fill").font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(controller.showVoxels ? Theme.accent : Theme.dim)
+                            .frame(width: 36, height: 36).background(Theme.paper, in: Circle())
+                            .shadow(color: Theme.glow, radius: 4, y: 2)
+                    }
+                    .accessibilityLabel(controller.showVoxels ? "Hide voxels" : "Show voxels")
+                    }
                     .opacity(controller.snoozed ? 0 : 1).disabled(controller.snoozed)
                 }
                 Spacer()
@@ -1096,6 +1106,13 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     @Published var showVolumesInAR = UserDefaults.standard.object(forKey: "arVolumesVisible") as? Bool ?? true {
         didSet { UserDefaults.standard.set(showVolumesInAR, forKey: "arVolumesVisible"); applyVolumeVisibility() }
     }
+    /// Home's voxels in the AR view and the POV tab.
+    @Published var showVoxels = UserDefaults.standard.object(forKey: "arVoxelsVisible") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(showVoxels, forKey: "arVoxelsVisible")
+            for node in root.childNodes + povRoot.childNodes where node.name == "voxels" { node.isHidden = !showVoxels }
+        }
+    }
     private func applyVolumeVisibility() {
         // The authoring controller owns the AR nodes and re-shows them on every
         // redraw, so it carries the flag; the POV copy is plain nodes.
@@ -1731,6 +1748,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 shell.materials = [depth]
                 let first = SCNNode(geometry: shell)
                 first.renderingOrder = -2
+                first.name = "voxels"; first.isHidden = !showVoxels
                 root.addChildNode(first)
                 let material = SCNMaterial()
                 material.lightingModel = .constant
@@ -1738,6 +1756,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 geometry.materials = [material]
                 let second = SCNNode(geometry: geometry)
                 second.renderingOrder = -1
+                second.name = "voxels"; second.isHidden = !showVoxels
                 root.addChildNode(second)
             }
         }
