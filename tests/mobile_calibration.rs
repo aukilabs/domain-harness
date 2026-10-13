@@ -122,6 +122,12 @@ fn sdk_decodes_real_qr_pixels_without_hardcoded_marker_ids() {
     );
     assert_eq!(result.alignment.unwrap().portal_id, "ABCDEFGHIJK");
     let mut empty=capture();empty.scenegraph.anchors.clear();
+    // The upright camera fixture sees a wall. Home must reject that as its
+    // first origin; pitch the camera toward the floor for the accepted case.
+    let wall=detect(&image,&empty).unwrap().origin_observation.unwrap();
+    assert!(spatial_home::scene_origin::establish(&wall.expected_scene,&wall).is_err());
+    let h=std::f64::consts::FRAC_1_SQRT_2;
+    empty.camera_to_session.rotation_wxyz=[h,-h,0.,0.];
     let first=detect(&image,&empty).unwrap();
     assert!(first.alignment.is_none(),"Client must wait for Home's origin decision");
     let offer=first.origin_observation.expect("unlocalized observation offered");
