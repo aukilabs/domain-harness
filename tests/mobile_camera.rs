@@ -173,10 +173,9 @@ async fn phone_camera_joins_the_ar_session_and_declares_its_calibration() -> Res
         assert_eq!(metadata["value"]["calibration"]["K"][4], 481.);
         assert_eq!(metadata["value"]["calibration"]["width"], 640);
         assert_eq!(metadata["value"]["rotation_from_camera_frame_deg"], 0);
-        // Home's robot overlay reads `pose_product_id`; that key is never set.
-        assert!(metadata["value"].get("pose_product_id").is_none());
+        // `pose_product_id` is the name every producer uses, robots included.
         // Not aligned: there is no pose to match this frame with.
-        assert!(metadata["value"]["capture_pose_product_id"].is_null());
+        assert!(metadata["value"]["pose_product_id"].is_null());
         assert_eq!(metadata["value"]["depth_image_product_id"], "phone-depth-image");
         assert!(sensor_preview::camera_sensors(&Catalogs::from([(
             pair.b.peer_id().to_string(),
@@ -218,7 +217,7 @@ async fn phone_camera_joins_the_ar_session_and_declares_its_calibration() -> Res
         assert_eq!(frame_of(&bigger)["payload"]["height"], 960);
         let metadata = &bigger["catalog"]["products"][0]["metadata"]["value"];
         assert_eq!(metadata["calibration"]["width"], 720);
-        assert_eq!(metadata["capture_pose_product_id"], format!("phone-pose:{session}"));
+        assert_eq!(metadata["pose_product_id"], format!("phone-pose:{session}"));
         assert_eq!(metadata["alignment_timestamp_ns"], 77);
 
         // A new AR session moves the camera again.

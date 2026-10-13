@@ -92,7 +92,7 @@ fn metadata(geometry: Option<&(Geometry, (u32, u32))>) -> serde_json::Value {
             "rotation_from_camera_frame_deg": g.rotation_deg,
             // While aligned, the pose Product holds a pose with exactly this
             // frame's capture timestamp, on the same clock.
-            "capture_pose_product_id": (g.alignment_timestamp_ns > 0).then(|| crate::mobile_odometry::product_id(&g.session)),
+            "pose_product_id": (g.alignment_timestamp_ns > 0).then(|| crate::mobile_odometry::product_id(&g.session)),
             "alignment_timestamp_ns": (g.alignment_timestamp_ns > 0).then_some(g.alignment_timestamp_ns),
             // The LiDAR depth image of the same capture has the same timestamp.
             "depth_image_product_id": DEPTH_IMAGE_PRODUCT,
