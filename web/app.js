@@ -5,7 +5,7 @@ import { createPhoneTrails, cameraShape } from './phone-trails.js';
 import { createSemanticVolumes, legacyVolumesForView } from './semantic-volumes.js';
 import { createMap2D } from './map-2d.js';
 import { createCrayon } from './crayon.js';
-import { createGhostCamera, isEditing } from './ghost-camera.js';
+import { createGhostCamera, createCameraPan, isEditing } from './ghost-camera.js';
 import { createNoteBubble } from './note-bubble.js';
 import { createPipWindow } from './pip-window.js';
 import { moveMapCamera } from './view-camera.js';
@@ -82,7 +82,11 @@ const renderer=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:tru
 $('canvas').append(renderer.domElement);renderer.domElement.setAttribute('aria-label','3D voxel map');
 const controls=new OrbitControls(camera,renderer.domElement);controls.enableDamping=true;controls.minDistance=1.2;controls.maxDistance=60;controls.maxPolarAngle=Math.PI*.49;
 let crayon=null;
-const ghostCamera=createGhostCamera({camera,controls,canvas:renderer.domElement,enabled:()=>!map2D.isActive()&&!crayon?.isActive(),onMove:()=>{if(attachedCamera.isActive())attachedCamera.detach();}});
+const cameraPan=createCameraPan({camera,controls});
+renderer.domElement.addEventListener('pointerdown',()=>cameraPan.cancel(),true);
+renderer.domElement.addEventListener('wheel',()=>cameraPan.cancel(),{capture:true,passive:true});
+for(const id of ['map-select','fit','top','demo-view'])$(id).addEventListener(id==='map-select'?'change':'click',()=>cameraPan.cancel(),true);
+const ghostCamera=createGhostCamera({camera,controls,canvas:renderer.domElement,enabled:()=>!map2D.isActive()&&!crayon?.isActive(),onMove:()=>{cameraPan.cancel();if(attachedCamera.isActive())attachedCamera.detach();}});
 let activeMap='demo',current=null,busy=false,refreshing=false,lastScene=null,selectable=[],selectedNoteId=null,selectedPathId=null,deletingPathId=null,deletingNoteId=null,selectedSpatialNode=null,spatialSignature='';
 let homeOffline=false,catalogInitialized=false;
 function isLocalScene(map=activeMap){return map.startsWith('local:');}
@@ -303,7 +307,7 @@ function closeUp(point){
  const target=new THREE.Vector3(...point),direction=camera.position.clone().sub(target);
  if(direction.lengthSq()<1e-8)direction.set(0,.3,1);
  const position=target.clone().addScaledVector(direction.normalize(),2);
- moveMapCamera({type:'move_camera',scene:activeMap,frame:current?.frame,position:position.toArray(),look_at:point},{scene:activeMap,frame:current?.frame,camera,controls,map2D});
+ cameraPan.start(position,target);
 }
 function focusNote(note){closeUp(note.position);showNoteSelection(note);}
 function showNoteSelection(note){
@@ -470,7 +474,7 @@ renderer.domElement.addEventListener('pointerup',e=>{
  if(d.kind==='path'){showPathSelection(d.path);noteView='path';openPanel('notes');renderNotes();return;}
  if(d.kind==='note')showNoteSelection(d.note);
  if(d.kind==='object'){const o=d.object;showSelection(o.label,`[${o.position.map(n=>n.toFixed(2)).join(', ')}] m`,`Source: ${o.source_peer}`);}
- if(d.kind==='portal'&&(d.portal.anchor_id.length===11||d.portal.anchor_id.startsWith('home:'))){focusPortal(d.portal);return;}
+ if(d.kind==='portal'&&(d.portal.anchor_id.length===11||d.portal.anchor_id.startsWith('home:'))){showSelection(d.portal.anchor_id,'Portal','Double-click to approach');return;}
  if(d.kind==='portal')showSelection(`Portal ${d.portal.payload.split(':').at(-1)}`,`${d.portal.side_length_m.toFixed(2)} m encoded size`,'Manually supplied · no backend lookup');
 });
 renderer.domElement.addEventListener('dblclick',e=>{
@@ -481,7 +485,7 @@ renderer.domElement.addEventListener('dblclick',e=>{
  const note=hits.find(h=>h.object.userData.kind==='note');
  if(note){focusNote(note.object.userData.note);return;}
  const volume=semanticVolumes.pick(ray);if(volume){closeUp(volume.point.toArray());return;}
- const voxel=hits.find(h=>h.object.userData.kind==='voxels');if(voxel)closeUp(voxel.point.toArray());
+ const hit=hits[0];if(hit)closeUp(hit.point.toArray());
 });
 async function api(path,body,method){if(path==='/api/chat'&&body){camera.updateMatrixWorld();const right=map2D.isActive()?[1,0,0]:new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld,0).toArray();body={...body,viewer:{frame:current?.frame||'',mode:map2D.isActive()?'2d':'3d',screen_right:right,camera_position:camera.position.toArray(),camera_target:controls.target.toArray()}};}const r=await fetch(path,body?{method:method||'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:method?{method}:undefined);const text=await r.text();let result;try{result=JSON.parse(text);}catch{throw new Error(text);}if(!r.ok){const error=new Error(result.error||text);error.status=r.status;throw error;}return result;}
 function peerSceneUrl(map){return '/api/sensors?scene=true&sensor='+encodeURIComponent(map.slice(11));}
@@ -491,7 +495,7 @@ $('load').onclick=()=>action(async()=>{const f=await api('/api/fixtures');for(co
 $('project').onclick=()=>action(async()=>{const f=await api('/api/fixtures');const result=await api('/api/detections',f.detection);$('notice').textContent=result.applied?'Book placed at the first occupied voxel hit.':'This detection is already placed. No duplicate object created.';});
 $('replay').onclick=()=>action(async()=>{const f=await api('/api/fixtures');const r=await api('/api/contributions',f.contributions[0]);$('notice').textContent=r.applied?'Contribution accepted.':'Replay ignored. Voxel evidence and object count are unchanged.';});
 new ResizeObserver(()=>{const {width,height}=$('canvas').getBoundingClientRect();renderer.setSize(width,height);camera.aspect=width/height;camera.updateProjectionMatrix();}).observe($('canvas'));
-renderer.setAnimationLoop(now=>{if(!attachedCamera.isActive())controls.update();ghostCamera.tick(now);semanticVolumes.tick();if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);renderer.render(scene,camera);});
+renderer.setAnimationLoop(now=>{if(!cameraPan.tick(now)&&!attachedCamera.isActive())controls.update();ghostCamera.tick(now);semanticVolumes.tick();if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);renderer.render(scene,camera);});
 refresh().catch(e=>{$('notice').textContent=e.message;$('notice').classList.add('error');});setInterval(()=>{if(!busy)refresh().catch(()=>{});},500);
 
 function updatePairingDownload(){const link=$('pairing-download');link.href=isLocalScene()?localSceneUrl()+'/connection':'/api/home-connection';link.download=isLocalScene()?activeMap.slice(6)+'-connection.json':'home-connection.json';link.textContent=isLocalScene()?'Download phone connection for selected scene ↗':'Download Xmart connection ↗';}
@@ -681,6 +685,7 @@ function restartSensor(){
 async function applyChatCamera(actions,map){
  if(actions.length!==1)throw Error('Unsupported camera action');
  if(activeMap!==map)throw Error('Selected scene changed; ask again in the current scene');
+ if(['attach_camera','detach_camera','move_camera'].includes(actions[0].type))cameraPan.cancel();
  if(actions[0].type==='attach_camera')return attachedCamera.attach(actions[0]);
  if(actions[0].type==='detach_camera'){
   if(actions[0].scene!==activeMap||actions[0].frame!==current?.frame)throw Error('Selected scene changed; ask again');
