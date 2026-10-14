@@ -2988,12 +2988,23 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     /// pose and depth are declared in. Only its size, and its intrinsics with
     /// it, are scaled. A reader turns it for display if it wants to.
     /// `alignment` is the capture time of the Portal alignment in use, or 0.
+    /// The camera's pose in the AR session at this frame's capture time. Sent at most once per frame.
+    private var lastPoseSent: TimeInterval = -1
+    private func sendPose(_ frame: ARFrame) {
+        guard case .normal = frame.camera.trackingState, frame.timestamp != lastPoseSent else { return }
+        lastPoseSent = frame.timestamp
+        onPose?(PhonePoseSample(session: poseSession, timestamp: frame.timestamp, cameraInAR: frame.camera.transform))
+    }
     private func shareCamera(_ frame: ARFrame, alignment: UInt64, withPose: Bool) {
         guard spatial_mobile_camera_demand(1) != 0, !cameraShareBusy,
               withPose || frame.timestamp >= cameraShareNext else { return }
         let buffer = frame.capturedImage
         let width = Double(CVPixelBufferGetWidth(buffer)), height = Double(CVPixelBufferGetHeight(buffer))
         guard width > 0, height > 0, abs(width / height - 4.0 / 3.0) < 0.01 else { return }
+        // Every picture sent has the pose of its own frame beside it, so a reader never has to
+        // pair a picture with a pose from another moment. Not while tracking is limited:
+        // that picture has no pose to place it by.
+        sendPose(frame)
         cameraShareBusy = true
         cameraShareNext = frame.timestamp + 0.2
         let timestamp = UInt64(frame.timestamp * 1_000_000_000)
@@ -3079,8 +3090,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         if case .normal = frame.camera.trackingState {
             if frame.timestamp < lastNativePosePublication || frame.timestamp - lastNativePosePublication >= 0.2 {
                 lastNativePosePublication = frame.timestamp
-                onPose?(PhonePoseSample(session: poseSession, timestamp: frame.timestamp,
-                    cameraInAR: frame.camera.transform))
+                sendPose(frame)
             }
         } else { onPose?(nil) }
         if map == nil { scanBeforeMap(frame); return }

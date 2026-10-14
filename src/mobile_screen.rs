@@ -26,7 +26,7 @@ fn metadata() -> serde_json::Value {
 fn payload((width, height): (u32, u32)) -> PayloadContract {
     PayloadContract::Camera(CameraPayloadContract {
         datatype: VideoFrame::DATATYPE.into(),
-        schema: "auki.video-frame/v1".into(),
+        schema: crate::camera_frame::SCHEMA.into(),
         encoding: "jpeg".into(),
         width,
         height,
@@ -55,7 +55,7 @@ impl Screen {
             ObservableContract {
                 name: "frames".into(),
                 datatype: VideoFrame::DATATYPE.into(),
-                schema: "auki.video-frame/v1".into(),
+                schema: crate::camera_frame::SCHEMA.into(),
                 access: vec![ObservationAccess::FollowNew],
                 exposure: Exposure::Cluster,
             },
@@ -83,7 +83,7 @@ impl Screen {
                 }))
             },
         )?;
-        products.endpoint.export_product(&capture.product())?;
+        products.endpoint.export_product_with_encoder(&capture.product(), crate::camera_frame::encoder())?;
         Ok(Self {
             endpoint: products.endpoint.clone(),
             output,

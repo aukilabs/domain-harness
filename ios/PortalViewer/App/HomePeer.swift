@@ -232,6 +232,7 @@ final class HomePeer: ObservableObject {
                 try manager.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: identity)
             }
             let (first, second) = app.map { ($0.key, $0.secret) } ?? (email, password)
+            print("[bridge] built from \(String(cString: spatial_bridge_source()))")
             let start = app == nil ? spatial_mobile_start : spatial_mobile_start_app
             let accepted = profileJSON.withCString { profile in
                 first.withCString { first in
