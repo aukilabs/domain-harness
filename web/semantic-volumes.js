@@ -160,7 +160,12 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
   cardMode=mode;const v=mode==='create'?draft:items.find(x=>x.id===editing)||draft;if(!v)return;
   const nodes=[];const chip=document.createElement('span');chip.className='inspector-kind';chip.textContent=mode==='create'?'New volume':mode==='edit'?'Edit volume':'Volume';nodes.push(chip);
   if(mode==='view'){
-   const title=document.createElement('strong');title.textContent=v.title;nodes.push(title);
+   // An editable volume is renamed in place: click the name, type, Enter or click away saves.
+   if(context?.editable){const title=document.createElement('input');title.className='card-title-input';title.value=v.title;title.maxLength=120;title.setAttribute('aria-label','Volume name');title.title='Click to rename';
+    const commit=()=>{const name=title.value.trim();if(!name||name===v.title||pending||!draft){title.value=v.title;return;}draft.title=name;form.elements.title.value=name;persist(false,true);};
+    title.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();title.blur();}else if(e.key==='Escape'){e.preventDefault();e.stopPropagation();title.value=v.title;title.blur();}};
+    title.onblur=commit;nodes.push(title);}
+   else{const title=document.createElement('strong');title.textContent=v.title;nodes.push(title);}
    const summary=document.createElement('div');summary.className='inspector-position is-text';summary.textContent=`${dimensions(v)} · ${format((v.yaw*180/Math.PI).toFixed(0))}°`;nodes.push(summary);
    if(v.description){const d=document.createElement('p');d.className='card-description';d.textContent=v.description;nodes.push(d);}
    if(context?.editable){const hint=document.createElement('p');hint.className='card-hint';hint.textContent='Drag the handles to move, resize or rotate. Changes save when you let go.';nodes.push(hint);

@@ -1202,3 +1202,7 @@ body:has(.placement-banner:not([hidden])) .scene-notice{top:68px}
 .placement-banner .placement-name{min-width:180px;height:30px;padding:0 10px;border:1px solid rgba(255,255,255,.25);border-radius:9px;background:rgba(255,255,255,.1);color:inherit;font:inherit;outline:none}
 .placement-banner .placement-name:focus{border-color:rgba(255,255,255,.6);background:rgba(255,255,255,.16)}
 .placement-banner .placement-name::placeholder{color:rgba(255,255,255,.55)}
+/* A volume's name in its card is renamed in place. */
+.card-title-input{display:block;box-sizing:border-box;width:calc(100% - 26px);min-height:32px;margin:2px 0 0 -7px;color:var(--nav-text);padding:3px 6px;border:1px solid transparent;border-radius:8px;background:transparent;color:inherit;font:inherit;font-size:15px;font-weight:600;line-height:22px;cursor:text;outline:none;transition:background .15s ease,border-color .15s ease}
+.card-title-input:hover{background:var(--glass-fill);border-color:var(--glass-rim)}
+.card-title-input:focus{background:var(--glass-fill);border-color:var(--tab,#2563eb)}

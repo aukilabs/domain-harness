@@ -282,7 +282,10 @@ async function runnerCatalog(){
   }
   const select=$('map-select');select.replaceChildren(local,network);
   for(const peer of fleetNetwork?.peers||[])network.append(new Option((peer.name||peer.peer_id)+' · pose trail','peer-pose:'+peer.peer_id));
-  if(!catalogInitialized&&data.preferred&&Array.from(select.options).some(o=>o.value===data.preferred)){select.value=data.preferred;select.dispatchEvent(new Event('change'));}
+  // Open on the scene this browser last showed, when Home still has it; otherwise Home's preferred scene.
+  if(!catalogInitialized){let last=null;try{last=localStorage.getItem('home.lastScene');}catch{}
+   const start=[last,data.preferred].find(id=>id&&Array.from(select.options).some(o=>o.value===id));
+   if(start){select.value=start;select.dispatchEvent(new Event('change'));}}
   else if(Array.from(select.options).some(o=>o.value===activeMap))select.value=activeMap;
   else if(select.options.length){select.value=select.options[0].value;select.dispatchEvent(new Event('change'));}
   catalogInitialized=true;
@@ -386,7 +389,7 @@ const volumeInspector={element:$('selection'),
 const semanticVolumes=createSemanticVolumes({scene,camera,renderer,controls,panel:panelBodies.volumes,api,label,clear,openPanel,inspector:volumeInspector,toast,flyTo:(position,target)=>cameraPan.start(position,target),priorityPickObjects:()=>[...selectable.filter(o=>o.userData.kind==='note'),...crayon.objects()]});
 // The volume tool draws on the 3D floor, so it can't start while the 2D plan is open.
 $('volume-draw').addEventListener('click',e=>{if(map2D.isActive())e.stopImmediatePropagation();},true);
-$('map-select').addEventListener('change',()=>semanticVolumes.reset());
+$('map-select').addEventListener('change',()=>{semanticVolumes.reset();try{localStorage.setItem('home.lastScene',$('map-select').value);}catch{}});
 let phonePresenceBusy=false;
 const homePoseStatus=document.createElement('p');homePoseStatus.className='panel-hint';panelBodies.maps.append(homePoseStatus);
 $('map-select').addEventListener('change',()=>{homePoseStatus.textContent='';phoneTrails.reset(null);});
