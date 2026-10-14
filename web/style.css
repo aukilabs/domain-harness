@@ -1057,3 +1057,53 @@ select.form-control{appearance:none;-webkit-appearance:none;padding-right:30px;b
 .empty p{font-size:12px;color:var(--nav-muted)}
 .empty[hidden]{display:none}
 @media(prefers-reduced-motion:reduce){#canvas{transition:none}}
+/* Inspector card, one anatomy for every variant: header (tile, kind, title), meta aligned to the title,
+   body slots (description, media, facts, notices, disclosures) and a footer pinned to the bottom. */
+.selection{width:min(320px,calc(100% - 32px));padding:16px;border-radius:16px}
+.selection>.inspector-close{position:absolute;top:12px;right:12px;z-index:2;width:28px;height:28px;border-radius:8px}
+.card-head{display:grid;grid-template-columns:32px minmax(0,1fr);align-items:center;gap:12px;min-height:36px;margin:0 36px 0 0}
+.card-tile{display:grid;place-items:center;width:32px;height:32px;border-radius:9px;color:#fff;background:linear-gradient(180deg,rgba(255,255,255,.16),rgba(255,255,255,0) 55%,rgba(0,0,0,.06)),var(--tab);box-shadow:inset 0 1px 0 rgba(255,255,255,.35),inset 0 -1px 0 rgba(0,0,0,.15),0 4px 10px -4px color-mix(in srgb,var(--tab) 50%,transparent);transition:background-color .2s ease}
+.card-head-text{display:grid;min-width:0}
+.card-kind{display:block;height:auto;margin:0;padding:0;border-radius:0;background:none;font-size:11px;line-height:14px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:color-mix(in srgb,var(--tab) 72%,var(--nav-text))}
+.card-kind:only-child{font-size:15px;line-height:20px;letter-spacing:0;text-transform:none;color:var(--nav-text)}
+.card-head .card-title{display:block;margin:0;font-size:15px;line-height:20px;font-weight:600;color:var(--nav-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card-head .card-title.mono-id{font-size:14px}
+.card-head~.inspector-parent,.card-head~.inspector-position,.card-head~small{display:block;margin-left:44px}
+.card-head~.inspector-position{margin-top:2px}
+.card-head~small{margin-top:2px;font-size:12px;line-height:16px;color:var(--nav-muted)}
+.card-head+.form-status:empty{display:none}
+/* Facts: label/value rows with hairlines, used by scene picks and technical details alike. */
+.selection .card-facts{display:grid;grid-template-columns:96px minmax(0,1fr);gap:0 12px;margin:14px 0 0;padding:0;border-top:0}
+.selection .card-facts dt,.selection .card-facts dd{min-height:32px;padding:7px 0;border-top:1px solid color-mix(in srgb,var(--nav-line) 70%,transparent);align-items:center}
+.selection .card-facts dd .mono-id{font-size:12px}
+/* Notices: one component for read-only, hints, warnings and errors; never colour alone. */
+.card-readonly,.card-hint,.location-warning,.card-alert{display:flex;align-items:flex-start;gap:8px;margin:14px 0 0;padding:9px 12px;border:0;border-radius:10px;font-size:12px;line-height:17px}
+.card-readonly{background:var(--glass-fill);box-shadow:inset 0 0 0 1px var(--glass-rim);color:var(--nav-muted)}
+.card-readonly svg{flex-shrink:0;margin-top:1px}
+.card-hint{background:color-mix(in srgb,#8b5cf6 7%,transparent);color:var(--text-2)}
+.card-hint::before,.location-warning::before{content:"";flex-shrink:0;width:14px;height:14px;margin-top:1.5px;background:currentColor;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round'%3E%3Ccircle cx='9' cy='9' r='7.3'/%3E%3Cpath d='M9 8.2v4.8M9 5.6h.01'/%3E%3C/svg%3E") center/contain no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round'%3E%3Ccircle cx='9' cy='9' r='7.3'/%3E%3Cpath d='M9 8.2v4.8M9 5.6h.01'/%3E%3C/svg%3E") center/contain no-repeat;opacity:.7}
+.location-warning{background:color-mix(in srgb,#d97706 10%,transparent);color:#92400e}
+:root:not([data-theme="light"]) .location-warning{color:#fbbf24}
+.card-alert{background:color-mix(in srgb,#dc2626 9%,transparent);color:#b91c1c}
+.location-warning[hidden]{display:none}
+/* Footer: actions pinned to the bottom of the card, same in every mode. */
+.selection>.card-actions,.selection .note-card-form>.card-actions,.selection .volume-form>.card-actions,.selection>.card-confirm{position:sticky;bottom:-16px;z-index:1;margin:16px -16px -16px;padding:12px 16px;border-top:1px solid var(--nav-line);background:color-mix(in srgb,var(--nav-panel) 96%,transparent);border-radius:0 0 16px 16px}
+/* Delete confirm takes over the footer rather than nesting a box in the body. */
+.selection .card-confirm{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:6px 12px;border-top-color:color-mix(in srgb,#dc2626 30%,transparent);background:color-mix(in srgb,color-mix(in srgb,#dc2626 5%,var(--nav-panel)) 96%,transparent);animation:confirm-in .34s cubic-bezier(.3,1.25,.5,1)}
+.selection .card-confirm>p{margin:0;font-size:12px;line-height:16px;color:#b91c1c}
+:root:not([data-theme="light"]) .selection .card-confirm>p{color:#fca5a5}
+.selection .card-confirm .card-actions{position:static;margin:0;padding:0;border:0;background:none}
+.selection .card-confirm .form-status:empty{display:none}
+.selection .card-confirm .form-status{grid-column:1/-1;margin:0}
+@keyframes confirm-in{from{opacity:0;transform:translateY(8px)}}
+/* Body rhythm */
+.selection .card-description{margin-top:14px}
+.selection .technical-details{margin-top:14px;padding-top:12px;border-top:1px solid var(--nav-line)}
+.selection .note-photo,.selection .card-photo{margin-top:14px}
+.volume-form .form-control{height:36px;font-size:13px}
+@media(prefers-reduced-motion:reduce){.selection .card-confirm{animation:none}}
+/* Confirm footer: the question gets the full width, buttons sit beneath it on the right. */
+.selection .card-confirm{grid-template-columns:minmax(0,1fr)}
+.selection .card-confirm .card-actions{justify-content:flex-end}
+/* Positions wrap rather than truncate in facts rows. */
+.selection .card-facts dd>span.mono-id{white-space:normal;overflow:visible;text-overflow:clip}

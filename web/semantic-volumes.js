@@ -164,9 +164,9 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
     const row=document.createElement('div');row.className='card-actions';row.append(actionButton('Delete',{variant:'danger-ghost',onClick:confirmDelete}),actionButton('Edit',{onClick:()=>renderCard('edit')}));nodes.push(row);}
    else{const lock=document.createElement('p');lock.className='card-readonly';lock.append(icon(icons.lock,14),document.createTextNode('Read-only · Published volume'));nodes.push(lock);}
    form.hidden=true;nodes.push(form);
-  }else{if(mode==='edit'){const hint=document.createElement('p');hint.className='card-hint';hint.textContent='Handle changes save with this form.';nodes.push(hint);}form.hidden=false;nodes.push(form);for(const input of form.querySelectorAll('input,textarea'))input.disabled=false;}
+  }else{if(mode==='edit'){const hint=document.createElement('p');hint.className='card-hint';hint.textContent='Dragging the handles updates these values. Nothing changes until you save.';nodes.push(hint);}form.hidden=false;nodes.push(form);for(const input of form.querySelectorAll('input,textarea'))input.disabled=false;}
   inspector.open(nodes);
-  if(mode==='view'&&openedFromKeyboard){const t=inspector.element.querySelector(':scope>strong');if(t){t.tabIndex=-1;t.focus();}}
+  if(mode==='view'&&openedFromKeyboard){const t=inspector.element.querySelector('.card-title,:scope>strong');if(t){t.tabIndex=-1;t.focus();}}
   if(mode!=='view')requestAnimationFrame(()=>form.elements.title.focus());
  }
  function confirmDelete(){
