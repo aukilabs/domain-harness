@@ -100,6 +100,15 @@ final class HomePeer: ObservableObject {
               let json = String(data: data, encoding: .utf8) else { return }
         json.withCString { spatial_mobile_depth($0) }
     }
+    /// Publish where the AR session sits in the scene; nil says the phone no longer knows.
+    /// Kept so that a peer started later publishes it too.
+    func publishPlacement(_ placement: PhonePlacement?) {
+        self.placement = placement
+        guard let placement else { spatial_mobile_placement(nil); return }
+        guard let data = try? JSONEncoder().encode(placement), let json = String(data: data, encoding: .utf8) else { return }
+        json.withCString { spatial_mobile_placement($0) }
+    }
+    private var placement: PhonePlacement?
     /// Share the phone's own map with Home; nil stops sharing it.
     func publishLocalMap(_ map: PhoneLocalMap?) {
         guard let map else { _ = spatial_mobile_local_map(nil); return }
@@ -291,6 +300,8 @@ final class HomePeer: ObservableObject {
                         done(answer.route)
                     }
                     annotationResult = response.update.annotation
+                    // A peer started after the phone aligned has not been told where it is.
+                    if response.update.state == "live", state != "live", let placement { publishPlacement(placement) }
                     state = response.update.state
                     detail = response.update.detail
                     if let portals = response.update.portals { onMap?(portals) }

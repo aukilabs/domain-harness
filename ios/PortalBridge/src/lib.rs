@@ -477,6 +477,27 @@ pub extern "C" fn spatial_mobile_sleep(asleep: i32) {
     }
 }
 
+/// Where the AR session sits in the scene: `{"session", "timestamp_ns", "session_to_scene"}`.
+/// Null says the phone no longer knows. Published apart from depth sharing.
+/// # Safety
+/// A non-null pointer must be NUL-terminated UTF-8 valid for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spatial_mobile_placement(value: *const c_char) {
+    let _ = std::panic::catch_unwind(|| {
+        let placement = if value.is_null() {
+            None
+        } else {
+            let bytes = unsafe { CStr::from_ptr(value) }.to_bytes();
+            if bytes.len() > 8192 { return; }
+            let Ok(placement) = serde_json::from_slice(bytes) else { return; };
+            Some(placement)
+        };
+        if let Some(client) = CLIENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            client.update_placement(placement);
+        }
+    });
+}
+
 /// Replace the latest raw phone-local depth capture; null pauses sharing.
 /// # Safety
 /// A non-null pointer must be NUL-terminated UTF-8 valid for this call.

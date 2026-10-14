@@ -180,6 +180,8 @@ pub struct MobileClient {
     camera_demand: AtomicBool,
     local_map: tokio::sync::watch::Sender<Option<(crate::mobile_local::Snapshot, Instant)>>,
     depth: tokio::sync::watch::Sender<Option<(crate::mobile_depth::Sample, std::time::Instant)>>,
+    /// Where the AR session sits in the scene. None while the phone does not know.
+    placement: tokio::sync::watch::Sender<Option<crate::mobile_declared::Placement>>,
     pose: tokio::sync::watch::Sender<Option<crate::mobile_pose::Sample>>,
     /// Every pose in order, for this phone's own pose Product. The watch above
     /// keeps only the latest one, which is right for Home's presence push but
@@ -243,6 +245,7 @@ impl Default for MobileClient {
             name: tokio::sync::watch::channel(String::new()).0,
             geo: tokio::sync::watch::channel(None).0,
             depth: tokio::sync::watch::channel(None).0,
+            placement: tokio::sync::watch::channel(None).0,
             commands,
             receiver: Mutex::new(Some(receiver)),
             stop: CancellationToken::new(),
@@ -288,6 +291,10 @@ impl MobileClient {
     pub fn update_depth(&self, sample: Option<crate::mobile_depth::Sample>) {
         self.depth
             .send_replace(sample.map(|s| (s, std::time::Instant::now())));
+    }
+    /// The session-to-scene transform the app holds, published whether or not depth is shared.
+    pub fn update_placement(&self, placement: Option<crate::mobile_declared::Placement>) {
+        self.placement.send_replace(placement);
     }
     fn depth_status(&self, detail: String) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -836,6 +843,30 @@ impl MobileClient {
                         }
                     }
                 };
+                // Where this AR session sits in the scene is published as the app learns it,
+                // and again on each connection. It does not wait for a depth capture.
+                let mut placements = self.placement.subscribe();
+                placements.mark_changed();
+                let placement_work = async {
+                    while placements.changed().await.is_ok() {
+                        let latest = placements.borrow_and_update().clone();
+                        let published = (|| {
+                            let mut declared = declared();
+                            let Some(placement) = latest else {
+                                return declared.placed.as_mut().map_or(Ok(()), |placed| placed.lose());
+                            };
+                            if declared.placed.as_ref().is_some_and(|p| !p.serves(&placement.session, &home.peer_id, &home.frame))
+                                && let Some(old) = declared.placed.take() {
+                                old.close()?;
+                            }
+                            if declared.placed.is_none() {
+                                declared.placed = Some(crate::mobile_declared::Publisher::new(&products, &placement.session, &home.peer_id, &home.frame)?);
+                            }
+                            declared.placed.as_mut().unwrap().align(placement.timestamp_ns, &placement.session_to_scene)
+                        })();
+                        if let Err(error) = published { self.local_status(format!("Scene transform not published: {error}")); }
+                    }
+                };
                 let mut depths = self.depth.subscribe();
                 let depth_work = async {
                     let mut tick = tokio::time::interval(Duration::from_millis(500));
@@ -846,8 +877,9 @@ impl MobileClient {
                         }
                         let latest = depths.borrow_and_update().clone();
                         let Some((sample, received)) = latest else {
-                            // No capture means no alignment to vouch for either.
-                            if let Some(placed) = declared().placed.as_mut() { let _ = placed.lose(); }
+                            // An app that does not say where it is apart from its captures has,
+                            // with no capture, no alignment to vouch for either.
+                            if self.placement.borrow().is_none() && let Some(placed) = declared().placed.as_mut() { let _ = placed.lose(); }
                             self.depth_status("Depth sharing paused".into());
                             continue;
                         };
@@ -916,6 +948,7 @@ impl MobileClient {
                     _ = portal_work => Ok(()),
                     _ = path_work => Ok(()),
                     _ = route_work => Ok(()),
+                    _ = placement_work => Ok(()),
                     _ = origin_work => Ok(()),
                     _ = drive_work => Ok(()),
                     _ = name_work => Ok(()),

@@ -242,6 +242,7 @@ struct ViewerScreen: View {
             peer.onMap = { controller.load($0) }
             controller.onPose = { peer.publishPose($0) }
             controller.onDepth = { peer.publishDepth($0) }
+            controller.onPlacement = { peer.publishPlacement($0) }
             controller.onLocalMap = { peer.publishLocalMap($0) }
             peer.onDisconnect = { controller.clear() }
             controller.onSleep = { peer.setAsleep($0) }
@@ -1687,7 +1688,15 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private let depthQueue = DispatchQueue(label: "home.phone.depth")
     private var depthBusy = false
     private var lastDepthCapture: TimeInterval = 0
-    private var depthAlignment: DepthAlignment?
+    private var depthAlignment: DepthAlignment? {
+        didSet {
+            onPlacement?(depthAlignment.map {
+                PhonePlacement(session: poseSession, timestamp_ns: $0.timestamp_ns, session_to_scene: $0.session_to_home)
+            })
+        }
+    }
+    /// Where the AR session sits in the scene, each time it is measured; nil when it is lost.
+    var onPlacement: ((PhonePlacement?) -> Void)?
     var onPose: ((PhonePoseSample?) -> Void)?
     var onPortalSeen: ((String) -> Void)?
     private var alignment = AlignmentFilter()

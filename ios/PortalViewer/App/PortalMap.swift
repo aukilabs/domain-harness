@@ -396,6 +396,13 @@ struct DepthAlignment: Encodable {
     let portal_to_session: Portal.Pose
     let session_to_home: Portal.Pose
 }
+/// Where the phone's AR session sits in the scene, published for any peer to read
+/// whether or not depth is being shared.
+struct PhonePlacement: Encodable {
+    let session: String
+    let timestamp_ns: UInt64
+    let session_to_scene: Portal.Pose
+}
 /// A Portal this scene does not know yet, measured in the phone's AR session.
 /// Home validates `alignment` and composes the Portal's scene pose itself.
 struct PortalReport: Encodable {
