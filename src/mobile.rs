@@ -466,7 +466,6 @@ impl MobileClient {
                 // Shared by the producers below; never held across an await.
                 struct Declared {
                     camera: Option<crate::mobile_camera::Camera>,
-                    depth: Option<crate::mobile_depth::Publisher>,
                     depth_image: Option<crate::mobile_depth_image::Publisher>,
                     pose: Option<crate::mobile_odometry::Publisher>,
                     /// The phone's alignment into the scene and its depth points, for Home to read.
@@ -474,7 +473,6 @@ impl MobileClient {
                 }
                 let declared = std::sync::Mutex::new(Declared {
                     camera: Some(crate::mobile_camera::Camera::new(&products)?),
-                    depth: None,
                     depth_image: None,
                     pose: None,
                     placed: None,
@@ -759,9 +757,6 @@ impl MobileClient {
                                             declared.pose = Some(publisher);
                                         }
                                     }
-                                    if declared.depth.is_none() {
-                                        declared.depth = Some(crate::mobile_depth::Publisher::new(&products, &sample.session)?);
-                                    }
                                     match declared.depth_image.as_mut() {
                                         Some(publisher) => publisher.enter_session(&sample.session, sample.timestamp_ns)?,
                                         None => declared.depth_image = Some(crate::mobile_depth_image::Publisher::new(&products, &sample.session)?),
@@ -805,13 +800,6 @@ impl MobileClient {
                     }
                 };
                 let mut depths = self.depth.subscribe();
-                // An older Home rejects the optional color field. Only repeated
-                // failures that are about color pause it, and it is offered again
-                // every minute. A network error, or a capture Home refuses for its
-                // alignment, would fail without color too and must not strip it.
-                let mut send_colors = true;
-                let mut color_failures = 0u32;
-                let mut retry_color_at = Instant::now();
                 let depth_work = async {
                     let mut tick = tokio::time::interval(Duration::from_millis(500));
                     loop {
@@ -820,7 +808,7 @@ impl MobileClient {
                             continue;
                         }
                         let latest = depths.borrow_and_update().clone();
-                        let Some((mut sample, received)) = latest else {
+                        let Some((sample, received)) = latest else {
                             // No capture means no alignment to vouch for either.
                             if let Some(placed) = declared().placed.as_mut() { let _ = placed.lose(); }
                             self.depth_status("Depth sharing paused".into());
@@ -829,17 +817,11 @@ impl MobileClient {
                         if received.elapsed() > Duration::from_secs(2) {
                             continue;
                         }
-                        if !send_colors && Instant::now() >= retry_color_at {
-                            send_colors = true;
-                        }
-                        if !send_colors {
-                            sample.colors = None;
-                        }
                         let colored = sample.colors.is_some();
                         let count = sample.points.len();
-                        // Declared for Home to read: where this AR session sits in the scene, and
-                        // the points with no pose of their own. Home places them from the phone's
-                        // pose Product at the capture time.
+                        // Published for any peer to read: where this AR session sits in the scene,
+                        // and the points with no pose of their own. A reader places them from the
+                        // phone's pose Product at the capture time. Nothing is pushed.
                         let published = (|| {
                             let mut declared = declared();
                             if declared.placed.as_ref().is_some_and(|p| !p.serves(&sample.session, &home.peer_id, &home.frame))
@@ -853,55 +835,10 @@ impl MobileClient {
                             placed.align(sample.alignment.timestamp_ns, &sample.alignment.session_to_home)?;
                             placed.capture(sample.timestamp_ns, &sample.points, sample.colors.as_deref())
                         })();
-                        let result = async {
-                            let envelope = {
-                                let mut declared = declared();
-                                if let Some(publisher) = declared.depth.as_mut()
-                                    && publisher.session != sample.session {
-                                    publisher.reconfigure(&sample.session, sample.timestamp_ns)?;
-                                }
-                                if declared.depth.is_none() {
-                                    declared.depth = Some(crate::mobile_depth::Publisher::new(
-                                        &products,
-                                        &sample.session,
-                                    )?);
-                                }
-                                declared.depth.as_ref().unwrap().publish(sample)?
-                            };
-                            let accepted = tokio::time::timeout(
-                                Duration::from_secs(2),
-                                operations.invoke::<_,bool>(&home.scoped_component(crate::mobile_depth::COMPONENT),
-                                    "ingest","phone-depth",&uuid::Uuid::new_v4().to_string(),Duration::from_secs(1),&envelope),
-                            )
-                            .await??;
-                            ensure!(accepted, "Home rejected stale depth sample");
-                            Ok::<_, anyhow::Error>(())
-                        }
-                        .await;
-                        if colored {
-                            if result.is_ok() {
-                                color_failures = 0;
-                            } else if result.as_ref().is_err_and(crate::mobile_depth::rejects_color) {
-                                color_failures += 1;
-                                if color_failures >= 3 {
-                                    send_colors = false;
-                                    retry_color_at = Instant::now() + Duration::from_secs(60);
-                                    // One more failure after the retry pauses it again.
-                                    color_failures = 2;
-                                }
-                            }
-                        }
-                        self.depth_status(match result {
-                            Ok(()) if colored => format!("Depth sent to Home · {count} colored voxels"),
-                            Ok(()) => format!("Depth sent to Home · {count} voxels"),
-                            Err(error) if colored && !send_colors => format!("Color paused for a minute after repeated failures: {error}"),
-                            // A Home that reads depth itself no longer takes it pushed. What it
-                            // needs is published; say so, and say if even that failed.
-                            Err(error) if error.to_string().contains("compact pose contract required") => match &published {
-                                Ok(()) => format!("Depth published for Home to read · {count} voxels"),
-                                Err(error) => format!("Depth not published: {error}"),
-                            },
-                            Err(error) => format!("Depth not sent: {error}"),
+                        self.depth_status(match published {
+                            Ok(()) if colored => format!("Depth published · {count} colored voxels"),
+                            Ok(()) => format!("Depth published · {count} voxels"),
+                            Err(error) => format!("Depth not published: {error}"),
                         });
                     }
                 };
@@ -954,16 +891,13 @@ impl MobileClient {
                     _ = commands => Ok(()),
                 };
                 self.camera_demand.store(false, Ordering::Release);
-                let Declared { camera, depth: depth_publisher, depth_image, pose: pose_publisher, placed } = std::mem::replace(
-                    &mut *declared(), Declared { camera: None, depth: None, depth_image: None, pose: None, placed: None });
+                let Declared { camera, depth_image, pose: pose_publisher, placed } = std::mem::replace(
+                    &mut *declared(), Declared { camera: None, depth_image: None, pose: None, placed: None });
                 if let Some(publisher) = placed { let _ = publisher.close(); }
                 if let Some(publisher) = depth_image { let _ = publisher.close(); }
                 if let Some(camera) = camera { let _ = camera.close(); }
                 if let Some(calibration)=calibration_publisher {let _=calibration.close();}
                 if let Some(publisher) = local_publisher {
-                    let _ = publisher.close().await;
-                }
-                if let Some(publisher) = depth_publisher {
                     let _ = publisher.close().await;
                 }
                 if let Some(publisher) = pose_publisher {

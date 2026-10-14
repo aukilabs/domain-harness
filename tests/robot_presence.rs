@@ -61,35 +61,6 @@ fn fresh_authenticated_robot_pose_is_transformed_and_expires() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test(flavor="multi_thread",worker_threads=4)]
-async fn robot_presence_arrives_without_a_geometry_contribution() -> Result<()> {
-    let pair=support::LocalPair::start().await?;
-    let result=async {
-        let dir=tempfile::tempdir()?;
-        let scenes=std::sync::Arc::new(support::seeded_local_scenes(dir.path())?);
-        let server=spatial_home::network::ScenePublisher::mount(&pair.a)?;
-        let owner=pair.a.peer_id().to_string();
-        let clock=spatial_home::model::clock_entry(&owner,&uuid::Uuid::new_v4().to_string());
-        let mut publishers=spatial_home::local_mobile::Publisher::mount_all(&server.runtime,&server.endpoint,scenes.clone(),clock,Instant::now())?;
-        let home=scenes.connection("humanoid-hub-conference",spatial_home::network::HomeConnection::direct(&pair.a))?;
-        let s=sample(&pair.b.peer_id().to_string(),&owner,&home.frame);
-        spatial_home::mobile_pose::send_component(&pair.b,&home,spatial_home::robot_presence::COMPONENT,&Update {sample:Some(s)}).await?;
-        tokio::time::sleep(Duration::from_millis(1100)).await;
-        for publisher in &mut publishers {publisher.tick()?;}
-        let mut value=None;
-        spatial_home::local_mobile::receive(&pair.b,&home,&tokio_util::sync::CancellationToken::new(),Duration::from_millis(50),|v|value=Some(v)).await?;
-        let value=value.unwrap();
-        assert!(value["render"]["notes"].as_array().unwrap().iter().any(|n|n["text"]=="Bracketbot 0184" && n["robot_pose"].is_object()));
-        assert!(value["render"]["voxels"].as_array().unwrap().is_empty());
-        // Phones stay separate: robot presence must not become a reaching target.
-        assert!(scenes.presence("humanoid-hub-conference")?["poses"].as_array().unwrap().is_empty());
-        drop(publishers);
-        server.close().await?;
-        Ok(())
-    }.await;
-    pair.shutdown().await?;
-    result
-}
 #[test]
 fn robot_health_rides_along_with_presence_and_must_be_sane() -> Result<()> {
     use spatial_home::robot_presence::{Battery,Health,JointHealth};

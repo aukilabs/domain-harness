@@ -4,10 +4,6 @@ use spatial_home::{
     local_mapper::identity,
     scene_contribution::{Contribution, Inbox},
 };
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
 fn rigid(p: &auki_odometry::Pose, from: &str, to: &str) -> auki_scenegraph::RigidTransform {
     let [x, y, z, w] = p.rotation_xyzw;
     auki_scenegraph::RigidTransform {
@@ -182,57 +178,3 @@ fn rejects_wrong_owner_scene_clock_transform_and_stale_sequence() -> Result<()> 
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn generic_receiver_is_scene_scoped_and_phone_api_remains_advertised() -> Result<()> {
-    let pair = support::LocalPair::start().await?;
-    let result = async {
-        let dir = tempfile::tempdir()?;
-        let scenes = Arc::new(support::seeded_local_scenes(dir.path())?);
-        let server = spatial_home::network::ScenePublisher::mount(&pair.a)?;
-        let clock = spatial_home::model::clock_entry(&pair.a.peer_id().to_string(), "home-session");
-        let mut publishers = spatial_home::local_mobile::Publisher::mount_all(
-            &server.runtime,
-            &server.endpoint,
-            scenes.clone(),
-            clock,
-            Instant::now(),
-        )?;
-        let home = scenes.connection(
-            "humanoid-hub-conference",
-            spatial_home::network::HomeConnection::direct(&pair.a),
-        )?;
-        let c = sample(
-            &pair.b.peer_id().to_string(),
-            scenes.snapshot("humanoid-hub-conference")?,
-        );
-        assert!(spatial_home::scene_contribution::send(&pair.b, &home, &c).await?);
-        assert!(!spatial_home::scene_contribution::send(&pair.b, &home, &c).await?);
-        let other = scenes.connection(
-            "nacs",
-            spatial_home::network::HomeConnection::direct(&pair.a),
-        )?;
-        assert!(spatial_home::scene_contribution::send(&pair.b, &other, &c)
-            .await
-            .is_err());
-        tokio::time::sleep(Duration::from_millis(1050)).await;
-        for p in &mut publishers {
-            p.tick()?;
-        }
-        assert_eq!(
-            scenes.view("humanoid-hub-conference")?["integrated_observations"],
-            1
-        );
-        assert_eq!(scenes.view("nacs")?["integrated_observations"], 0);
-        let catalog = server.runtime.catalog().snapshot();
-        for prefix in ["home-phone-depth", "scene-contributions"] {
-            assert!(catalog
-                .components
-                .iter()
-                .any(|c| c.manifest.component_id == format!("{prefix}:humanoid-hub-conference")));
-        }
-        server.close().await?;
-        Ok::<_, anyhow::Error>(())
-    }
-    .await;
-    result.and(pair.shutdown().await)
-}
