@@ -72,7 +72,7 @@ impl Geometry {
 fn payload((width, height): (u32, u32)) -> PayloadContract {
     PayloadContract::Camera(CameraPayloadContract {
         datatype: VideoFrame::DATATYPE.into(),
-        schema: "auki.video-frame/v1".into(),
+        schema: crate::camera_frame::SCHEMA.into(),
         encoding: "jpeg".into(),
         width,
         height,
@@ -200,7 +200,7 @@ impl Camera {
                     ObservableContract {
                         name: "frames".into(),
                         datatype: VideoFrame::DATATYPE.into(),
-                        schema: "auki.video-frame/v1".into(),
+                        schema: crate::camera_frame::SCHEMA.into(),
                         access: vec![ObservationAccess::FollowNew],
                         exposure: Exposure::Cluster,
                     },
@@ -225,7 +225,7 @@ impl Camera {
         component.expose()?;
         let geometry = Arc::new(Mutex::new(None));
         let capture = capture(&products.runtime, &output, geometry.clone())?;
-        products.endpoint.export_product(&capture.product())?;
+        products.endpoint.export_product_with_encoder(&capture.product(), crate::camera_frame::encoder())?;
         Ok(Self {
             definitions: products.definitions.clone(),
             contract_hash: None,
@@ -266,6 +266,14 @@ impl Camera {
     }
     fn place_calibrated(&mut self, g: &Geometry, size: (u32, u32), timestamp: u64) -> Result<()> {
         use auki_protocols::registry::v3::{RegistryEntryEnvelope, RegistryKind};
+        // Intrinsics are declared once per AR session, from its first calibrated picture.
+        // Autofocus then moves the focal length a little (about 1-2%), and declaring each
+        // step replaced the camera faster than a reader could follow it. A new session or
+        // a new image size declares them again.
+        if self.contract_hash.is_some()
+            && self.placed.as_ref().is_some_and(|(session, turn, sized)| *session == g.session && *turn == 0 && *sized == size) {
+            return Ok(());
+        }
         let owner = self.runtime.peer_id().to_string();
         let frame = auki_registry::FrameRegistryEntry::opengl(&owner, g.frame_id());
         let mut clock = crate::model::clock_entry(&owner, &g.session);
@@ -306,7 +314,7 @@ impl Camera {
                 schema:crate::registry_ar::CAMERA_METADATA.into(),source_sequence:o.sequence,
                 value:serde_json::to_value(&contract).map_err(|e|e.to_string())?,
             })))?;
-        self.endpoint.export_product(&capture.product())?;
+        self.endpoint.export_product_with_encoder(&capture.product(), crate::camera_frame::encoder())?;
         self.capture = Some(capture);
         self.contract_hash = Some(hash);
         self.placed = Some((g.session.clone(),0,size));
@@ -359,7 +367,7 @@ impl Camera {
         self.last_timestamp = 0;
         *self.geometry()? = None;
         let capture = capture(&self.runtime, &self.output, self.geometry.clone())?;
-        self.endpoint.export_product(&capture.product())?;
+        self.endpoint.export_product_with_encoder(&capture.product(), crate::camera_frame::encoder())?;
         self.capture = Some(capture);
         Ok(())
     }

@@ -42,7 +42,7 @@ async fn phone_screen_is_sent_only_while_someone_watches() -> Result<()> {
 
         let client = ComponentProtocolClient::new(pair.a.protocols());
         let mut subscription = client
-            .subscribe_product_exact(
+            .subscribe_product_exact_with_decoder(
                 pair.b.peer_id(),
                 routes[0].parse()?,
                 ProductReference {
@@ -53,6 +53,8 @@ async fn phone_screen_is_sent_only_while_someone_watches() -> Result<()> {
                 ObservationStart::NewOnly,
                 BufferLimits::entries(1),
                 |f: &VideoFrame| f.bytes.len(),
+                // Screen pictures go out in the binary camera format, never as JSON.
+                spatial_home::camera_frame::decoder(spatial_home::camera_frame::SCHEMA)?,
             )
             .await?;
         assert!(screen.demanded());

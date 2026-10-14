@@ -2,6 +2,14 @@
 //! spatial_mobile_string_free. All peer work and cleanup stay on Tokio.
 use spatial_home::mobile::{MobileClient, SignIn};
 
+/// The commit this bridge was built from, as `build.sh` stamped it, so an app can say
+/// which Rust it is running. "unstamped" when built without the script.
+#[unsafe(no_mangle)]
+pub extern "C" fn spatial_bridge_source() -> *const std::ffi::c_char {
+    static SOURCE: std::sync::OnceLock<std::ffi::CString> = std::sync::OnceLock::new();
+    SOURCE.get_or_init(|| std::ffi::CString::new(option_env!("SPATIAL_BRIDGE_SOURCE").unwrap_or("unstamped")).unwrap_or_default()).as_ptr()
+}
+
 /// Submit a bounded phone-local map, or null to stop sharing it.
 /// # Safety
 /// Non-null input must be a live NUL-terminated UTF-8 string.
