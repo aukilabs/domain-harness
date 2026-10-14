@@ -31,9 +31,16 @@ import uuid
 import numpy as np
 
 RATE_HZ = 50
-MOVE_SECONDS = 4.
-AIM_SECONDS = 2.5
+# set_arm_pose.py's default move time; the mast still sets its own pace and
+# a following error beyond 0.08 turns stops the move.
+MOVE_SECONDS = 2.5
+AIM_SECONDS = 1.5
 HOLD_SECONDS = 3.
+# The factory driver stops publishing state for >=0.5 s while enabling; hold
+# at least this long, then until state is fresh again, at most the maximum.
+ENABLE_SETTLE_SECONDS = .5
+ENABLE_SETTLE_MAX_SECONDS = 2.
+REST_SETTLE_SECONDS = .5
 # Assumed, as in bracketbot_aim: BBOS base's origin is on the floor under the
 # drive axle. arm_base is BBOS base turned +90 deg about Z, raised to the axle.
 ARM_BASE_IN_BASE = dict(translation=[0., 0., .165/2],
@@ -138,6 +145,7 @@ def plan(arms, name, target):
 def execute(arms, name, poses, stopped, emit):
     """Move through HOME, forward and aimed, hold, and return. Raises on a fault."""
     from bbos import Type, Writer
+    from bracketbot_capture import timestamp
     start, home, forward, aimed = poses
     with contextlib.ExitStack() as stack:
         # Exclusive, ordinary priority only; a held topic raises instead of waiting.
@@ -186,9 +194,14 @@ def execute(arms, name, poses, stopped, emit):
         # publishing state for >=0.5 s while switching modes; hold through it.
         publish(start, enable=False)
         time.sleep(.02)
-        until = time.monotonic()+2
-        while time.monotonic() < until:
-            publish(start, arm_max_age=2.); time.sleep(1/RATE_HZ)
+        began = time.monotonic()
+        while True:
+            d = publish(start, arm_max_age=2.)
+            settled = time.monotonic()-began
+            fresh = (time.time_ns()-timestamp(d))/1e9 <= .1
+            if settled >= ENABLE_SETTLE_MAX_SECONDS or settled >= ENABLE_SETTLE_SECONDS and fresh:
+                break
+            time.sleep(1/RATE_HZ)
         emit('moving')
         if move(home, MOVE_SECONDS, True) and move(forward, MOVE_SECONDS, True) and move(aimed, AIM_SECONDS, True):
             d = publish(aimed)
@@ -197,7 +210,7 @@ def execute(arms, name, poses, stopped, emit):
         emit('returning')
         move(forward, AIM_SECONDS, False)
         move(home, MOVE_SECONDS, False)
-        hold(home, 1., False)
+        hold(home, REST_SETTLE_SECONDS, False)
 
 
 def main():
