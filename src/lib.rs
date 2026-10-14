@@ -13,7 +13,6 @@ pub mod catalog_chat;
 pub mod scene_geometry;
 pub mod peer_aliases;
 pub mod domain_portals;
-pub mod fisheye;
 pub mod local_mapper;
 pub mod mobile;
 pub mod mobile_home;
