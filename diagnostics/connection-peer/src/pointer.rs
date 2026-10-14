@@ -1,7 +1,9 @@
 //! `point_at` Operable over this peer's own declared frames and transforms.
 //! A target frame resolves into the base only through compact pose Products
 //! this peer publishes, on their one clock and session; there is no frame-name lookup and
-//! no axis guess. Milestone 1 resolves and accepts but does not move an arm.
+//! no axis guess. With an arm adapter the target then goes through the
+//! declared arm mount into the arm IK frame, and the adapter plans and moves;
+//! without one the request is resolved and accepted only.
 use crate::compact_pose::{Contract, FrameRef, Lifetime, Update};
 use crate::point_at::*;
 use anyhow::{Context, Result, bail, ensure};
@@ -111,6 +113,53 @@ fn through(pose: &Pose, point: [f64; 3]) -> Result<[f64; 3]> {
     Ok(crate::alignment::compose(pose, &at)?.translation)
 }
 
+/// `to <- from` composed from published transforms, with the observations used.
+pub fn chain(
+    known: &Frames,
+    from: &FrameRef,
+    to: &FrameRef,
+    clock: &ClockReference,
+    session: &str,
+    now: u64,
+) -> Result<(Pose, Vec<Used>)> {
+    // Breadth-first over published transforms, inverting where needed.
+    let mut reached = vec![(from.clone(), identity(), Vec::<Used>::new())];
+    let mut refused = Vec::new();
+    let mut i = 0;
+    while i < reached.len() && reached[i].0 != *to {
+        let (at, so_far, used) = reached[i].clone();
+        for t in &known.transforms {
+            let forward = t.contract.from_frame == at;
+            if !forward && t.contract.to_frame != at {
+                continue;
+            }
+            let next = if forward { &t.contract.to_frame } else { &t.contract.from_frame };
+            if reached.iter().any(|r| r.0 == *next) {
+                continue;
+            }
+            match value(t, clock, session, now) {
+                Ok((pose, observation)) => {
+                    let step = if forward { pose } else { crate::alignment::inverse(&pose)? };
+                    let mut used = used.clone();
+                    used.push(observation);
+                    reached.push((next.clone(), crate::alignment::compose(&step, &so_far)?, used));
+                }
+                Err(e) => refused.push(e.to_string()),
+            }
+        }
+        i += 1;
+    }
+    let Some((_, pose, used)) = reached.into_iter().find(|r| r.0 == *to) else {
+        bail!(
+            "No usable transform from {} to {}{}",
+            from.id,
+            to.id,
+            if refused.is_empty() { String::new() } else { format!(": {}", refused.join("; ")) }
+        )
+    };
+    Ok((pose, used))
+}
+
 /// Resolve `request` into `base` through the transforms in `known`.
 pub fn resolve(
     request: &PointAt,
@@ -153,40 +202,7 @@ pub fn resolve(
         source.units == LengthUnit::Meters && base_definition.units == LengthUnit::Meters,
         "Point frames must be in metres"
     );
-    // Breadth-first over published transforms, inverting where needed.
-    let mut reached = vec![(request.frame.clone(), identity(), Vec::<Used>::new())];
-    let mut refused = Vec::new();
-    let mut i = 0;
-    while i < reached.len() && reached[i].0 != *base {
-        let (at, so_far, used) = reached[i].clone();
-        for t in &known.transforms {
-            let forward = t.contract.from_frame == at;
-            if !forward && t.contract.to_frame != at {
-                continue;
-            }
-            let next = if forward { &t.contract.to_frame } else { &t.contract.from_frame };
-            if reached.iter().any(|r| r.0 == *next) {
-                continue;
-            }
-            match value(t, clock, session, now) {
-                Ok((pose, observation)) => {
-                    let step = if forward { pose } else { crate::alignment::inverse(&pose)? };
-                    let mut used = used.clone();
-                    used.push(observation);
-                    reached.push((next.clone(), crate::alignment::compose(&step, &so_far)?, used));
-                }
-                Err(e) => refused.push(e.to_string()),
-            }
-        }
-        i += 1;
-    }
-    let Some((_, base_from_source, resolved_from)) = reached.into_iter().find(|r| r.0 == *base) else {
-        bail!(
-            "No usable transform from {} to the robot base{}",
-            request.frame.id,
-            if refused.is_empty() { String::new() } else { format!(": {}", refused.join("; ")) }
-        )
-    };
+    let (base_from_source, resolved_from) = chain(known, &request.frame, base, clock, session, now)?;
     let point_in_base = through(&base_from_source, request.point)?;
     let [x, y, z] = point_in_base;
     let distance = (x * x + y * y + z * z).sqrt();
@@ -222,7 +238,7 @@ pub struct Busy {
     active: Option<(String, Instant)>,
 }
 impl Busy {
-    pub fn claim(&mut self, request_id: &str, now: Instant) -> Result<()> {
+    pub fn claim(&mut self, request_id: &str, now: Instant, window: Duration) -> Result<()> {
         if let Some((id, until)) = &self.active
             && now < *until
         {
@@ -231,22 +247,48 @@ impl Busy {
                 (*until - now).as_secs_f64()
             );
         }
-        self.active = Some((request_id.into(), now + MOTION_ALLOWANCE + HOLD));
+        self.active = Some((request_id.into(), now + window));
         Ok(())
+    }
+    /// End `request_id`'s window early (or any window, for `None`).
+    pub fn release(&mut self, request_id: Option<&str>) {
+        if request_id.is_none() || self.active.as_ref().is_some_and(|a| Some(a.0.as_str()) == request_id) {
+            self.active = None;
+        }
     }
 }
 
 pub struct Pointer {
     _component: Component,
     _operation: Operable<PointAt, PointAtAccepted>,
+    _arm: Option<Arc<crate::arm::Arm>>,
 }
 impl Pointer {
-    pub fn mount(p: &crate::poses::Publisher, known: Arc<Mutex<Frames>>) -> Result<Self> {
+    /// `arm` is None to resolve only, or Some(execute) to plan with the arm
+    /// adapter and, when `execute`, move.
+    pub fn mount(p: &crate::poses::Publisher, known: Arc<Mutex<Frames>>, arm: Option<bool>) -> Result<Self> {
         let base: FrameRef = (&p.contract.from_frame).into();
         let clock = p.contract.clock.clone();
         let session = p.contract.session_id.clone();
-        let component = p.runtime.component(ComponentSpec::new(COMPONENT).operable(contract()))?;
         let busy = Arc::new(Mutex::new(Busy::default()));
+        let arm = match arm {
+            Some(execute) => {
+                let released = busy.clone();
+                let arm = crate::arm::Arm::start(p, execute, move |id| {
+                    if let Ok(mut busy) = released.lock() {
+                        busy.release(id);
+                    }
+                })?;
+                known.lock().unwrap().insert(&[&arm.frame], crate::pointer::Transform {
+                    contract: arm.transform.contract.clone(),
+                    product: arm.transform.product.clone(),
+                });
+                Some(Arc::new(arm))
+            }
+            None => None,
+        };
+        let adapter = arm.clone();
+        let component = p.runtime.component(ComponentSpec::new(COMPONENT).operable(contract()))?;
         let operation = component.operable_ordered(
             OPERATION,
             InvocationOrdering::SerialInAcceptanceOrder,
@@ -254,18 +296,56 @@ impl Pointer {
             |ctx| !ctx.caller_peer_id.is_empty(),
             move |ctx, request: PointAt| {
                 let rejected = |e: anyhow::Error| InvocationError::Rejected(format!("{e:#}"));
-                let accepted = {
+                let (mut accepted, in_arm) = {
                     let known = known.lock().map_err(|_| InvocationError::TargetUnavailable)?;
-                    resolve(&request, &known, &base, &clock, &session, now_ns()).map_err(rejected)?
+                    let now = now_ns();
+                    let accepted = resolve(&request, &known, &base, &clock, &session, now).map_err(rejected)?;
+                    let in_arm = match &adapter {
+                        Some(arm) => {
+                            let to = &arm.transform.contract.from_frame;
+                            let (arm_from_base, used) =
+                                chain(&known, &base, to, &clock, &session, now).map_err(rejected)?;
+                            Some((through(&arm_from_base, accepted.point_in_base).map_err(rejected)?, used))
+                        }
+                        None => None,
+                    };
+                    (accepted, in_arm)
                 };
+                let window = if adapter.is_some() { crate::arm::MOTION_TIMEOUT } else { MOTION_ALLOWANCE + HOLD };
                 busy.lock()
                     .map_err(|_| InvocationError::TargetUnavailable)?
-                    .claim(&request.request_id, Instant::now())
+                    .claim(&request.request_id, Instant::now(), window)
                     .map_err(rejected)?;
+                if let (Some(arm), Some((target, used))) = (&adapter, in_arm) {
+                    let planned = arm.plan(&request.request_id, accepted.arm, target);
+                    let release = || {
+                        if let Ok(mut busy) = busy.lock() {
+                            busy.release(Some(&request.request_id));
+                        }
+                    };
+                    match planned {
+                        Ok(reply) if reply.phase == "planned" => {
+                            accepted.executes = reply.executes == Some(true) && arm.executes;
+                            if !accepted.executes {
+                                release();
+                            }
+                        }
+                        Ok(reply) => {
+                            release();
+                            return Err(rejected(anyhow::anyhow!(reply.reason.unwrap_or_else(|| "Arm cannot point there".into()))));
+                        }
+                        Err(e) => {
+                            release();
+                            return Err(rejected(e));
+                        }
+                    }
+                    accepted.resolved_from.extend(used);
+                }
                 crate::diagnostic_log!(
-                    "point_at {} from {} in {}: {:?} arm, {:.2} m, bearing {:.0}°, elevation {:.0}° (not executed)",
+                    "point_at {} from {} in {}: {:?} arm, {:.2} m, bearing {:.0}°, elevation {:.0}° ({})",
                     accepted.request_id, ctx.caller_peer_id, accepted.frame.id, accepted.arm,
-                    accepted.distance_m, accepted.bearing_deg, accepted.elevation_deg
+                    accepted.distance_m, accepted.bearing_deg, accepted.elevation_deg,
+                    if accepted.executes { "moving" } else { "not executed" }
                 );
                 Ok(accepted)
             },
@@ -275,6 +355,7 @@ impl Pointer {
         Ok(Self {
             _component: component,
             _operation: operation,
+            _arm: arm,
         })
     }
 }
@@ -307,6 +388,7 @@ mod tests {
         base: FrameRef,
         world: FrameRef,
         scene: FrameRef,
+        arm: FrameRef,
     }
     /// base -> world (sampled) and world -> Home scene (held), as the diagnostic publishes them.
     fn fixture() -> Fixture {
@@ -314,6 +396,7 @@ mod tests {
         let base = FrameRegistryEntry::in_convention("robot", "bbos-base", CoordinateConvention::ZUpRightForward);
         let world = FrameRegistryEntry::in_convention("robot", "bbos-world-s", CoordinateConvention::ZUpRightForward);
         let scene = FrameRegistryEntry::opengl("home", "scene");
+        let arm = FrameRegistryEntry::ros_body("robot", "bbos-arm-base-s");
         let mut fixture = Fixture {
             _runtime: runtime.clone(),
             _components: vec![],
@@ -323,10 +406,12 @@ mod tests {
             base: (&base).into(),
             world: (&world).into(),
             scene: (&scene).into(),
+            arm: (&arm).into(),
         };
         for (name, from, to, lifetime) in [
             ("pose", &base, &world, Lifetime::Sampled),
             ("alignment", &world, &scene, Lifetime::Held),
+            ("arm-mount", &arm, &base, Lifetime::Held),
         ] {
             let contract = Contract {
                 from_frame: from.into(),
@@ -381,6 +466,9 @@ mod tests {
         let f = fixture();
         publish(&f, 0, NOW - 100_000_000, Some(yaw(90., [0., 2., 0.])));
         publish(&f, 1, 1, Some(Pose { translation: [10., 0., 0.], ..identity() }));
+        // As diagnostic-arm.py declares it: base turned +90 deg about Z, at axle height.
+        let h = std::f64::consts::FRAC_PI_4;
+        publish(&f, 2, 0, Some(Pose { translation: [0., 0., 0.0825], rotation_xyzw: [0., 0., h.sin(), h.cos()] }));
         f
     }
     fn request(frame: &FrameRef, point: [f64; 3]) -> PointAt {
@@ -412,6 +500,19 @@ mod tests {
         assert_eq!(scene.clock, clock());
         let base = run(&f, &request(&f.base, [0., 1., 0.5])).unwrap();
         assert!(base.resolved_from.is_empty());
+    }
+
+    #[test]
+    fn the_arm_receives_targets_through_its_declared_mount() {
+        let f = aligned();
+        let scene = run(&f, &request(&f.scene, [9., 2., 0.5])).unwrap();
+        let (arm_from_base, used) = chain(&f.frames, &f.base, &f.arm, &clock(), "s", NOW).unwrap();
+        // 1 m ahead of the base is 1 m along arm_base +X, lowered to the axle.
+        close(through(&arm_from_base, scene.point_in_base).unwrap(), [1., 0., 0.5 - 0.0825]);
+        assert_eq!(used.len(), 1);
+        // The scene reaches the arm too, through world, base and the mount.
+        let (_, used) = chain(&f.frames, &f.scene, &f.arm, &clock(), "s", NOW).unwrap();
+        assert_eq!(used.len(), 3);
     }
 
     #[test]
@@ -464,9 +565,18 @@ mod tests {
     fn busy_rejects_until_hold_and_motion_finish() {
         let mut busy = Busy::default();
         let t = Instant::now();
-        busy.claim("a", t).unwrap();
-        let e = busy.claim("b", t + Duration::from_secs(1)).unwrap_err();
+        let window = MOTION_ALLOWANCE + HOLD;
+        busy.claim("a", t, window).unwrap();
+        let e = busy.claim("b", t + Duration::from_secs(1), window).unwrap_err();
         assert!(format!("{e}").contains("request a"), "{e}");
-        busy.claim("c", t + MOTION_ALLOWANCE + HOLD).unwrap();
+        busy.claim("c", t + window, window).unwrap();
+        // The adapter ends a move early; another request's end does not.
+        busy.release(Some("a"));
+        assert!(busy.claim("d", t + window, window).is_err());
+        busy.release(Some("c"));
+        busy.claim("d", t + window, window).unwrap();
+        // The adapter going away frees the arm.
+        busy.release(None);
+        busy.claim("e", t + window, window).unwrap();
     }
 }

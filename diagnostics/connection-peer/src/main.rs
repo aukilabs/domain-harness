@@ -1,6 +1,7 @@
 //! Connection-only diagnostic; --poses adds exactly one typed BBOS pose Product
 //! and a `point_at` Operable over the frames this peer relates.
 mod alignment;
+mod arm;
 mod camera;
 mod diagnostic_log;
 #[path = "../../../src/camera_frame.rs"]
@@ -67,11 +68,16 @@ async fn main() -> Result<()> {
     ensure!(
         args.len() == 4
             || (args.len() == 5
-                && matches!(args[4].as_str(), "--poses" | "--portals" | "--points" | "--check-home")),
-        "usage: auki-connection-diagnostic PEER_CONFIG HOME_CONNECTION DIAGNOSTIC_IDENTITY [--poses|--portals|--points|--check-home]"
+                && matches!(args[4].as_str(), "--poses" | "--portals" | "--points" | "--check-home"))
+            || (args.len() == 6
+                && matches!(args[4].as_str(), "--poses" | "--portals" | "--points")
+                && matches!(args[5].as_str(), "--arm-plan" | "--arm-motion")),
+        "usage: auki-connection-diagnostic PEER_CONFIG HOME_CONNECTION DIAGNOSTIC_IDENTITY [--poses|--portals|--points|--check-home] [--arm-plan|--arm-motion]"
     );
+    // point_at plans with the arm adapter (--arm-plan) and moves (--arm-motion).
+    let arm = args.get(5).map(|v| v == "--arm-motion");
     let check_home = args.get(4).is_some_and(|v| v == "--check-home");
-    let publish_poses = args.len() == 5 && !check_home;
+    let publish_poses = args.len() >= 5 && !check_home;
     let points = args.get(4).is_some_and(|v| v == "--points");
     let portals = points || args.get(4).is_some_and(|v| v == "--portals");
     let config: Config = read(&args[1])?;
@@ -176,7 +182,7 @@ async fn main() -> Result<()> {
                 &[&p.contract.from_frame, &p.contract.to_frame],
                 pointer::Transform { contract: p.compact(), product: p.product() },
             );
-            Some(pointer::Pointer::mount(p, known.clone())?)
+            Some(pointer::Pointer::mount(p, known.clone(), arm)?)
         }
         None => None,
     };
