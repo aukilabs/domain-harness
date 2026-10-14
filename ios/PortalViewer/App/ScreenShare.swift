@@ -36,6 +36,30 @@ final class ScreenShare: ObservableObject {
         size = (UInt32(min(max(width, 200), Self.height)), UInt32(Self.height))
     }
 
+    /// Ask iOS for screen sharing now, before anything needs the camera: its prompt
+    /// interrupts the camera. `done` hears whether it was allowed. Once allowed the
+    /// capture keeps running and pictures are sent only while Home watches, because
+    /// starting it again later can bring the prompt back.
+    func askFirst(_ done: @escaping (Bool) -> Void) {
+        let recorder = RPScreenRecorder.shared()
+        guard recorder.isAvailable else { done(false); return }
+        starting = true
+        recorder.startCapture(handler: { [weak self] buffer, type, error in
+            guard let self, error == nil, type == .video else { return }
+            self.queue.async { if self.watched { self.send(buffer) } }
+        }, completionHandler: { [weak self] error in
+            DispatchQueue.main.async {
+                self?.starting = false
+                self?.running = error == nil
+                done(error == nil)
+            }
+        })
+    }
+    /// The capture asked for at launch is running.
+    private var running = false
+    /// Touched only on `queue`: Home is watching, so pictures are sent.
+    private var watched = false
+
     func start() {
         guard timer == nil else { return }
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.poll() }
@@ -47,6 +71,13 @@ final class ScreenShare: ObservableObject {
         if sharing && !RPScreenRecorder.shared().isRecording { sharing = false }
         if spatial_mobile_screen_demand(size.width, size.height) != 0 { lastDemand = now }
         let wanted = now.timeIntervalSince(lastDemand) < Self.linger
+        if running {
+            // iOS ends a capture on its own, for example when the app leaves the screen.
+            if !RPScreenRecorder.shared().isRecording { running = false; sharing = false; return }
+            if sharing != wanted { sharing = wanted }
+            queue.async { self.watched = wanted }
+            return
+        }
         if wanted && !sharing && !starting && now.timeIntervalSince(refusedAt) > Self.retryAfter {
             begin()
         } else if !wanted && sharing {

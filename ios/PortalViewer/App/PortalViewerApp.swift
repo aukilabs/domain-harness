@@ -259,7 +259,13 @@ struct ViewerScreen: View {
             controller.showMessageResult("Home did not delete that message: \(result.detail)")
         }
         .onAppear {
-            // Screen sharing is off: iOS's recording prompt interrupted the camera mid-session.
+            // iOS asks before the screen can be shared, and asking takes the camera away.
+            // Ask first; the AR session starts once it is answered.
+            screen.askFirst { allowed in
+                controller.screenAsked = true
+                controller.start()
+                if allowed { screen.start() }
+            }
             peer.onMap = { controller.load($0) }
             controller.onPose = { peer.publishPose($0) }
             controller.onDepth = { peer.publishDepth($0) }
@@ -1869,7 +1875,11 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         view.addGestureRecognizer(pan); drawPan = pan
     }
 
+    /// The AR session waits until iOS has asked about screen sharing, so its prompt
+    /// never interrupts tracking.
+    var screenAsked = false
     func start() {
+        guard screenAsked else { return }
         guard !snoozed else { return }
         guard ARWorldTrackingConfiguration.isSupported else {
             status = "AR requires a supported physical iPhone"; return
@@ -3300,7 +3310,9 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         // ARKit relocalizes into the world it had; the alignment waits for that.
         status = "Recovering camera tracking. Look around slowly."
     }
-    func sessionShouldAttemptRelocalization(_ session: ARSession) -> Bool { true }
+    /// Worth finding the old world again only when a Portal alignment is in it. Otherwise
+    /// tracking starts afresh at once, so Portal scanning is not held up.
+    func sessionShouldAttemptRelocalization(_ session: ARSession) -> Bool { aligned }
     func session(_ session: ARSession, didFailWithError error: Error) {
         invalidate(); worldLost()
         // A heading-aligned session that cannot run must not cost the app its camera.
