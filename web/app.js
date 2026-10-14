@@ -10,7 +10,7 @@ import { createGhostCamera, createCameraPan, isEditing } from './ghost-camera.js
 import { createNoteBubble } from './note-bubble.js';
 import { createPipWindow } from './pip-window.js';
 import { createVideoPresentation } from './video-presentation.js';
-import { moveMapCamera } from './view-camera.js';
+import { moveMapCamera, applyChatActions, chatResultPresentation } from './view-camera.js';
 import { createAttachedCamera } from './attached-camera.js';
 import { createRobotModel } from './robot-model.js';
 import { applyRobotHealth } from './robot-health.js';
@@ -31,13 +31,14 @@ chatForm.onsubmit=async e=>{
  chatConversations.set(map,history);renderChat();chatPending=true;chatInput.value='';chatForm.querySelector('button').disabled=true;chatStatus.textContent='Qwen is replying locally…';
  try{
   const result=await api('/api/chat',{messages:history.map(({role,content})=>({role,content})),scene:map});
-  let cameraResult=null;
-  if(result.ui_actions?.length){try{cameraResult=await applyChatCamera(result.ui_actions,map);}catch(error){cameraResult=(result.ui_actions[0]?.type==='open_camera_pip'?'Camera not opened: ':'Map camera not moved: ')+error.message;}}
-  const changes=(result.changes||[]).map(c=>(c.summary||('Updated '+c.title+' description.'))+'\n'+(typeof c.after==='string'?c.after:c.after?JSON.stringify(c.after,null,2):'Deleted')).join('\n\n');
-  const reply=cameraResult||result.reply;
-  history.push({role:'assistant',content:reply,display_content:reply+(changes?'\n\n'+changes:cameraResult?'':'\n\nNo scene changes were saved.')});
-  if(result.changes?.length){lastScene=null;await refresh();}
-  chatStatus.textContent=result.model+(cameraResult?' · '+cameraResult:result.changes?.length?' · saved change confirmed by Home':' · no scene changes saved');
+  const browser=result.ui_actions===undefined?null:await applyChatCamera(result.ui_actions,map);
+  const presentation=chatResultPresentation(result,browser);
+  history.push({role:'assistant',content:presentation.content,display_content:presentation.display_content});
+  chatStatus.textContent=presentation.status;
+  if(result.changes?.length){
+   // A failed refresh cannot undo saved receipts or offer the whole edit again.
+   lastScene=null;try{await refresh();}catch(error){chatStatus.textContent+=' · View refresh failed: '+error.message;}
+  }
  }catch(error){history.pop();if(activeMap===map&&!chatInput.value)chatInput.value=message;chatStatus.textContent=error.message;}
  finally{chatPending=false;renderChat();chatForm.querySelector('button').disabled=!chatInput.value.trim();}
 };
@@ -772,25 +773,24 @@ function restartSensor(){
  watchSensor(generation);
 }
 async function applyChatCamera(actions,map){
- if(actions.length!==1)throw Error('Unsupported camera action');
- if(activeMap!==map)throw Error('Selected scene changed; ask again in the current scene');
- if(['attach_camera','detach_camera','move_camera'].includes(actions[0].type))cameraPan.cancel();
- if(actions[0].type==='attach_camera')return attachedCamera.attach(actions[0]);
- if(actions[0].type==='detach_camera'){
-  if(actions[0].scene!==activeMap||actions[0].frame!==current?.frame)throw Error('Selected scene changed; ask again');
-  return attachedCamera.detach();
- }
- if(actions[0].type==='move_camera'){const result=moveMapCamera(actions[0],{scene:activeMap,frame:current?.frame,camera,controls,map2D});attachedCamera.detach();return result;}
- if(actions[0].type!=='open_camera_pip')throw Error('Unsupported camera action');
- const action=actions[0],catalog=await api('/api/sensors');
- if(activeMap!==map)throw Error('Selected scene changed; ask again in the current scene');
- const sensor=catalog.sensors.find(s=>s.id===action.sensor_id&&s.peer_id===action.peer_id);
- if(!sensor)throw Error('Camera is no longer available');
- let option=Array.from(sensorSelect.options).find(o=>o.value===sensor.id);
- if(!option){option=new Option(sensor.label,sensor.id);option.dataset.peer=sensor.peer_id;sensorSelect.append(option);}
- arAvailable.set(sensor.id,sensor.ar_available===true);
- if(sensorSelect.value!==sensor.id||pip.hidden){sensorSelect.value=sensor.id;sensorSelect.dispatchEvent(new Event('change'));}
- return 'Camera PiP opened · waiting for live frames.';
+ return applyChatActions(actions,{scene:map,context:()=>({scene:activeMap,frame:current?.frame}),apply:async(action,guard)=>{
+  if(['attach_camera','detach_camera','move_camera'].includes(action.type))cameraPan.cancel();
+  if(action.type==='attach_camera')return attachedCamera.attach(action);
+  if(action.type==='detach_camera'){
+   if(action.scene!==activeMap||action.frame!==current?.frame)throw Error('Selected scene changed; ask again');
+   return attachedCamera.detach();
+  }
+  if(action.type==='move_camera'){const result=moveMapCamera(action,{scene:activeMap,frame:current?.frame,camera,controls,map2D});attachedCamera.detach();return result;}
+  const catalog=await api('/api/sensors');
+  guard();
+  const sensor=catalog.sensors.find(s=>s.id===action.sensor_id&&s.peer_id===action.peer_id);
+  if(!sensor)throw Error('Camera is no longer available');
+  let option=Array.from(sensorSelect.options).find(o=>o.value===sensor.id);
+  if(!option){option=new Option(sensor.label,sensor.id);option.dataset.peer=sensor.peer_id;sensorSelect.append(option);}
+  arAvailable.set(sensor.id,sensor.ar_available===true);
+  if(sensorSelect.value!==sensor.id||pip.hidden){sensorSelect.value=sensor.id;sensorSelect.dispatchEvent(new Event('change'));}
+  return 'Camera PiP opened · waiting for live frames.';
+ }});
 }
 arToggle.addEventListener('change',restartSensor);
 setInterval(()=>{if(!labelDialog.open&&arToggle.checked&&arLastSuccess&&Date.now()-arLastSuccess>3000){hideAr();arStatus.hidden=false;arStatus.textContent='AR paused · camera frames are stale';}},500);

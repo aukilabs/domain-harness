@@ -1011,6 +1011,7 @@ async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Jso
         let s=s.clone();let scene=scene.clone();let key=key.clone();let frame=frame.clone();let viewer=viewer.clone();let latest=latest.clone();let named_notes=named_notes.clone();let tool_state=tool_state.clone();
         async move {
         let network=s.peer.borrow().clone();
+        if name=="get_peer_pose" {return spatial_home::peer_locations::get(&s.previews,&network,args,&frame).await;}
         let ray=if name=="raycast_peer_camera"{Some(spatial_home::chat_camera::geometry(&s.previews,&network,args.clone(),&frame).await?)}else{None};
         let reference=args["reference_id"].as_str().unwrap_or("");
         let peer_id=if name=="point_relative_to_peer"{args["peer_id"].as_str()}else if name=="create_note_relative_to_view"&&(args["reference_kind"]=="peer"||reference.starts_with("phone-name:")||reference.starts_with("robot-name:")){Some(reference.strip_prefix("phone-name:").or_else(||reference.strip_prefix("robot-name:")).unwrap_or(reference))}else{None};
@@ -1139,6 +1140,7 @@ async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Jso
                 anyhow::ensure!(fresh_volumes.contains(&a.id),"Call get_semantic_volume in the current turn before deleting");
                 anyhow::ensure!(named_notes.is_empty()||spatial_home::scene_tools::mentions_name(&latest,&a.expected_name),"Do not substitute a volume for the requested note");
                 let receipt=s.local_scenes.volumes.delete_volume(&key,&frame,&a.id,&a.expected_name)?;
+                fresh_volumes.remove(&a.id);
                 if key=="canonical"{lock(&s).map_err(|e|e.0)?.built.registries["semantic_volumes"]=json!(s.local_scenes.volumes.get(&key,&frame)?);s.changes.send_replace(());}
                 Ok(receipt)
             },
@@ -1148,6 +1150,7 @@ async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Jso
                 let a:All=serde_json::from_value(args)?;
                 anyhow::ensure!(spatial_home::scene_tools::requests_all_volume_deletion(&latest),"Bulk deletion requires an explicit request to delete all volumes in this scene");
                 let receipt=s.local_scenes.volumes.delete_all_volumes(&key,&frame,&a.expected_ids)?;
+                fresh_volumes.clear();
                 if key=="canonical"{lock(&s).map_err(|e|e.0)?.built.registries["semantic_volumes"]=json!(s.local_scenes.volumes.get(&key,&frame)?);s.changes.send_replace(());}
                 Ok(receipt)
             },
@@ -1157,6 +1160,7 @@ async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Jso
                 anyhow::ensure!(named_notes.is_empty()||spatial_home::scene_tools::mentions_name(&latest,&target.title),"The request names note(s) {}, not volume {}. Do not substitute a volume for a note. Ask which volume is intended for resizing; moving a note uses move_note.",named_notes.join(", "),target.title);
                 anyhow::ensure!(fresh_volumes.contains(edit.id()),"Call get_semantic_volume for this ID in the current turn before editing. Old chat coordinates are not current scene state.");
                 let receipt=s.local_scenes.volumes.tool_edit(&key,&frame,edit)?;
+                fresh_volumes.remove(&target.id);
                 if key=="canonical" {lock(&s).map_err(|e|e.0)?.built.registries["semantic_volumes"]=json!(s.local_scenes.volumes.get(&key,&frame)?);s.changes.send_replace(());}
                 Ok(receipt)
             },
@@ -1180,6 +1184,7 @@ async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Jso
                 };Ok(receipt)
             },
             "update_volume_description"=>{let a:Edit=serde_json::from_value(args)?;anyhow::ensure!(fresh_volumes.contains(&a.id),"Call get_semantic_volume for this ID in the current turn before editing.");let receipt=s.local_scenes.volumes.update_description(&key,&frame,&a.id,&a.expected_description,&a.description)?;
+                fresh_volumes.remove(&a.id);
                 if key=="canonical" {lock(&s).map_err(|e|e.0)?.built.registries["semantic_volumes"]=json!(s.local_scenes.volumes.get(&key,&frame)?);s.changes.send_replace(());}
                 Ok(receipt)
             },
@@ -1189,9 +1194,6 @@ async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Jso
     },|args| {
         let network=s.peer.borrow().clone();let tx=s.previews.clone();
         async move {spatial_home::camera_vision::capture(&tx,&network,args).await}
-    },|snapshot| {
-        let network=s.peer.borrow().clone();let tx=s.previews.clone();
-        async move {spatial_home::peer_locations::enrich(snapshot,network,tx).await}
     }).await?;
     Ok(Json(result))
 }
