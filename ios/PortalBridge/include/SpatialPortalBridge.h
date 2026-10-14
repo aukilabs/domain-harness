@@ -20,6 +20,8 @@ int32_t spatial_mobile_change_path(const char *change);
 int32_t spatial_mobile_report_origin(const char *report);
 void spatial_mobile_depth(const char *sample);
 int32_t spatial_mobile_camera_demand(int32_t active);
+int32_t spatial_mobile_screen_demand(uint32_t width, uint32_t height);
+void spatial_mobile_screen(uint64_t timestamp, const uint8_t *jpeg, size_t length);
 void spatial_mobile_camera(uint64_t timestamp, const uint8_t *jpeg, size_t length);
 void spatial_mobile_camera_calibrated(uint64_t timestamp, const uint8_t *jpeg, size_t length, const char *session, double fx, double fy, double cx, double cy, int32_t rotation_deg, uint64_t alignment_timestamp_ns);
 void spatial_mobile_depth_image(uint64_t timestamp, const char *session, uint32_t width, uint32_t height, const uint16_t *depth_mm, const uint8_t *confidence, double fx, double fy, double cx, double cy, uint64_t alignment_timestamp_ns);

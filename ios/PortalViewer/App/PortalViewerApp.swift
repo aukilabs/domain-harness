@@ -19,6 +19,7 @@ struct PortalViewerApp: App {
 struct ViewerScreen: View {
     @StateObject private var controller = ViewerController()
     @StateObject private var peer = HomePeer()
+    @StateObject private var screen = ScreenShare()
     @State private var importing = false
     @State private var connecting = false
     @State private var pairingError: String?
@@ -237,8 +238,18 @@ struct ViewerScreen: View {
             // Last, so the way to a message is never under a panel or a button.
             if !controller.snoozed { MessageMarker(center: controller.messages) }
         }
+        .overlay(alignment: .top) {
+            // Home is watching this screen: say so, on the screen it sees.
+            if screen.sharing {
+                Text("Screen shared with Home").themeLabel(11, .bold).foregroundStyle(Theme.paper)
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .background(Capsule().fill(Theme.accent))
+                    .allowsHitTesting(false)
+            }
+        }
         .animation(.easeInOut(duration: 0.3), value: controller.snoozed)
         .onAppear {
+            screen.start()
             peer.onMap = { controller.load($0) }
             controller.onPose = { peer.publishPose($0) }
             controller.onDepth = { peer.publishDepth($0) }
