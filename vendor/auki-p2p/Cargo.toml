@@ -57,7 +57,7 @@ uuid = { workspace = true }
 web-time = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-hickory-resolver = "0.25.2"
+hickory-resolver = "0.26.2"
 libp2p = { workspace = true, features = ["tokio", "macros", "noise", "tcp", "yamux", "dns", "relay"] }
 libp2p-stream = { workspace = true }
 tempfile = { workspace = true }
