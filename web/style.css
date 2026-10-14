@@ -1107,3 +1107,18 @@ select.form-control{appearance:none;-webkit-appearance:none;padding-right:30px;b
 .selection .card-confirm .card-actions{justify-content:flex-end}
 /* Positions wrap rather than truncate in facts rows. */
 .selection .card-facts dd>span.mono-id{white-space:normal;overflow:visible;text-overflow:clip}
+/* Volume handles: glass pucks with a violet ring, matching the Volumes section. Hover lifts them like the
+   tab bar; dragging fills them solid violet. Hit area stays 44px; the visible puck is 30px. */
+.volume-resize-handle{width:44px;height:44px;color:#6d28d9;transition:color .2s ease}
+.volume-resize-handle::before{content:"";position:absolute;inset:7px;border-radius:50%;background:radial-gradient(circle at 35% 28%,#ffffff,#f4f4f5 58%,#e4e4e7);box-shadow:inset 0 0 0 1.5px color-mix(in srgb,#7c3aed 55%,transparent),inset 0 1px 0 #fff,0 6px 14px -5px rgba(24,24,27,.45);transition:transform .3s var(--ease-spring),box-shadow .2s ease,background .2s ease}
+.volume-resize-handle svg{position:relative;z-index:1;transition:transform .3s var(--ease-spring)}
+.volume-resize-handle:hover::before{transform:scale(1.12);box-shadow:inset 0 0 0 1.5px #7c3aed,inset 0 1px 0 #fff,0 8px 18px -6px rgba(24,24,27,.5),0 0 0 4px color-mix(in srgb,#7c3aed 16%,transparent)}
+.volume-resize-handle:hover svg{transform:scale(1.08)}
+.volume-resize-handle.active{color:#fff}
+.volume-resize-handle.active::before{transform:scale(1.08);background:linear-gradient(180deg,rgba(255,255,255,.2),rgba(255,255,255,0) 55%,rgba(0,0,0,.08)),#7c3aed;box-shadow:inset 0 1px 0 rgba(255,255,255,.35),0 0 0 5px color-mix(in srgb,#7c3aed 22%,transparent),0 8px 18px -6px rgba(124,58,237,.6)}
+.volume-resize-handle:focus-visible{outline:2px solid var(--focus);outline-offset:-3px;border-radius:50%}
+:root:not([data-theme="light"]) .volume-resize-handle{color:#c4b5fd}
+:root:not([data-theme="light"]) .volume-resize-handle::before{background:radial-gradient(circle at 35% 28%,#52525b,#3f3f46 58%,#27272a);box-shadow:inset 0 0 0 1.5px color-mix(in srgb,#a78bfa 60%,transparent),inset 0 1px 0 rgba(255,255,255,.12),0 6px 14px -5px rgba(0,0,0,.7)}
+:root:not([data-theme="light"]) .volume-resize-handle.active{color:#fff}
+.volume-leader{stroke:#7c3aed;stroke-width:1.25;stroke-dasharray:3 3;opacity:.55}
+@media(prefers-reduced-motion:reduce){.volume-resize-handle::before,.volume-resize-handle svg{transition:none}}

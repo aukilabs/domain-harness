@@ -23,7 +23,7 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
   const {axis,sign,kind,name}=descriptor;
   const button=document.createElement('button');button.type='button';button.className='volume-resize-handle';button.dataset.axis=String(axis);button.dataset.kind=kind;button.dataset.sign=String(sign);
   button.setAttribute('aria-label',name);button.title=kind==='rotate'?'Rotate around the opposite corner · Shift snaps to 15°':kind==='move'?'Move along the ground · Shift snaps to 10 cm':`Resize ${['width','height','depth'][axis]} · Shift snaps to 10 cm`;button.innerHTML=handleIcon(descriptor.icon);button.hidden=true;handleLayer.append(button);
-  const leader=document.createElementNS('http://www.w3.org/2000/svg','line');leader.setAttribute('stroke','#3b82f6');leader.setAttribute('stroke-width','1');leader.setAttribute('opacity','.65');leaders.append(leader);
+  const leader=document.createElementNS('http://www.w3.org/2000/svg','line');leader.setAttribute('class','volume-leader');leaders.append(leader);
   const handle={...descriptor,button,leader};handles.push(handle);
   button.addEventListener('pointerdown',e=>startResize(e,handle));
   button.addEventListener('pointermove',moveResize);
@@ -35,10 +35,11 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
  function handleIcon(icon){
   function arrow(dx,dy){const l=Math.hypot(dx,dy);dx/=l;dy/=l;const x=dx*12,y=dy*12;return [[-x,-y,x,y],[x,y,x-dx*5.4-dy*3.9,y-dy*5.4+dx*3.9],[x,y,x-dx*5.4+dy*3.9,y-dy*5.4-dx*3.9],[-x,-y,-x+dx*5.4-dy*3.9,-y+dy*5.4+dx*3.9],[-x,-y,-x+dx*5.4+dy*3.9,-y+dy*5.4-dx*3.9]];}
   let segments=icon==='move'?[...arrow(1,0),...arrow(0,1)]:icon==='vertical'?arrow(0,1):icon==='depth'?arrow(.707,-.707):arrow(1,0);
-  if(icon.startsWith('rotate')){const direction=icon==='rotate-left'?-1:1,start=direction<0?-.25:Math.PI+.25,sweep=direction*Math.PI*1.45;segments=[];let x=Math.cos(start)*9,y=Math.sin(start)*9;for(let i=1;i<=16;i++){const a=start+sweep*i/16,nx=Math.cos(a)*9,ny=Math.sin(a)*9;segments.push([x,y,nx,ny]);x=nx;y=ny;}let dx=direction*.75,dy=.35,len=Math.hypot(dx,dy);dx/=len;dy/=len;segments.push([x,y,x-dx*5.4-dy*3.9,y-dy*5.4+dx*3.9],[x,y,x-dx*5.4+dy*3.9,y-dy*5.4-dx*3.9]);}
+  // Rotate uses a standard circular arrow: counter-clockwise on the left corner, clockwise on the right.
+  if(icon.startsWith('rotate')){const d=icon==='rotate-left'?'M3.5 12a8.5 8.5 0 1 0 2.6-6.1L3.5 8.5M3.5 3.5v5h5':'M20.5 12a8.5 8.5 0 1 1-2.6-6.1l2.6 2.6M20.5 3.5v5h-5';
+   return `<svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="${d}" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;}
   const d=segments.map(([x,y,u,v])=>`M${x} ${y}L${u} ${v}`).join('');
-  const rail=icon==='move'||icon.startsWith('rotate')?'M-23 0H23M0-23V23':icon==='vertical'?'M0-24V24':icon==='depth'?'M-17 17L17-17':'M-24 0H24';
-  return `<svg width="48" height="48" viewBox="-36 -36 72 72" aria-hidden="true"><path d="${rail}" stroke="currentColor" stroke-width="4.5" opacity=".7"/><circle r="24" fill="currentColor" opacity=".96"/><circle r="22.8" fill="none" class="handle-ring" stroke-width="2.3"/><path d="${d}" fill="none" stroke="#27272a" stroke-width="6.6" opacity=".58" stroke-linecap="round"/><path d="${d}" fill="none" stroke="#f8fafc" stroke-width="3.1" stroke-linecap="round"/></svg>`;
+  return `<svg width="22" height="22" viewBox="-17 -17 34 34" aria-hidden="true"><path d="${d}" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
  }
  function axisVector(axis,yaw){return new THREE.Vector3(...[0,1,2].map(i=>i===axis?1:0)).applyAxisAngle(new THREE.Vector3(0,1,0),yaw);}
  function localPoint(v,point){return new THREE.Vector3(...point).applyAxisAngle(new THREE.Vector3(0,1,0),v.yaw).add(new THREE.Vector3(...v.center));}
@@ -129,8 +130,10 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
  function editable(){return context?.editable && !pending;}
  function buttons(){newVolume.disabled=!editable();newVolume.setAttribute('aria-pressed',String(drawing));for(const b of form.querySelectorAll('button'))b.disabled=pending;reason.hidden=!!context?.editable;reason.textContent=context?.editable?'':'Select a local Home scene to create volumes.';}
  function mesh(volume,parent,selected=false,isDraft=false){
-  const box=new THREE.Mesh(new THREE.BoxGeometry(1,1,1),new THREE.MeshBasicMaterial({color:0x7c3aed,transparent:true,opacity:selected?.16:.08,depthWrite:false,side:THREE.DoubleSide}));
-  box.position.fromArray(volume.center);box.scale.fromArray(volume.size);box.rotation.y=volume.yaw;box.userData.volume=volume;parent.add(box);
+  // Volumes often stand on the floor, coplanar with the grid: offset the faces and lift the drawing by a few
+  // millimetres (display only, the stored volume is unchanged) so the floor face and edges never z-fight.
+  const box=new THREE.Mesh(new THREE.BoxGeometry(1,1,1),new THREE.MeshBasicMaterial({color:0x7c3aed,transparent:true,opacity:selected?.16:.08,depthWrite:false,side:THREE.DoubleSide,polygonOffset:true,polygonOffsetFactor:-2,polygonOffsetUnits:-2}));
+  box.position.fromArray(volume.center);box.position.y+=.004;box.scale.fromArray(volume.size);box.rotation.y=volume.yaw;box.userData.volume=volume;parent.add(box);
   const edges=new THREE.EdgesGeometry(box.geometry),material=isDraft?new THREE.LineDashedMaterial({color:0x7c3aed,dashSize:.04,gapSize:.03}):new THREE.LineBasicMaterial({color:0x7c3aed,transparent:!selected,opacity:selected?1:.4});
   const outline=new THREE.LineSegments(edges,material);outline.position.copy(box.position);outline.scale.copy(box.scale);outline.rotation.copy(box.rotation);if(isDraft)outline.computeLineDistances();parent.add(outline);
   const title=label(volume.title||'New volume','#6d28d9');title.scale.multiplyScalar(1.6);title.position.set(volume.center[0],volume.center[1]+volume.size[1]/2+.2,volume.center[2]);parent.add(title);
@@ -160,7 +163,7 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
    const title=document.createElement('strong');title.textContent=v.title;nodes.push(title);
    const summary=document.createElement('div');summary.className='inspector-position is-text';summary.textContent=`${dimensions(v)} · ${format((v.yaw*180/Math.PI).toFixed(0))}°`;nodes.push(summary);
    if(v.description){const d=document.createElement('p');d.className='card-description';d.textContent=v.description;nodes.push(d);}
-   if(context?.editable){const hint=document.createElement('p');hint.className='card-hint';hint.textContent='Drag the blue handles to move, resize or rotate. Changes save when you let go.';nodes.push(hint);
+   if(context?.editable){const hint=document.createElement('p');hint.className='card-hint';hint.textContent='Drag the handles to move, resize or rotate. Changes save when you let go.';nodes.push(hint);
     const row=document.createElement('div');row.className='card-actions';row.append(actionButton('Delete',{variant:'danger-ghost',onClick:confirmDelete}),actionButton('Edit',{onClick:()=>renderCard('edit')}));nodes.push(row);}
    else{const lock=document.createElement('p');lock.className='card-readonly';lock.append(icon(icons.lock,14),document.createTextNode('Read-only · Published volume'));nodes.push(lock);}
    form.hidden=true;nodes.push(form);
