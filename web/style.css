@@ -1036,3 +1036,16 @@ select.form-control{appearance:none;-webkit-appearance:none;padding-right:30px;b
 :root{--plate-light:rgba(255,255,255,.09)}
 :root[data-theme="light"]{--plate-light:rgba(255,255,255,.55)}
 :root:not([data-theme="light"]) :is(.rail-tab,.agent-tool):not([aria-expanded="true"],[aria-pressed="true"]):is(:hover,:focus-visible) .rail-glint{opacity:.35}
+/* McKenna mark: the colour M turns its hue constantly. Hovering lifts it and writes it out in pen over
+   a light grey M, on a loop: the stroke draws along the traced route, holds, then fades to start again. */
+.rail-logo svg{display:block;width:30px;height:16px;overflow:visible;transition:transform .35s var(--ease-spring)}
+.rail-logo .mark-base{fill:#d4d4d8;opacity:0;transition:opacity .2s ease}
+:root:not([data-theme="light"]) .rail-logo .mark-base{fill:#3f3f46}
+.rail-logo .mark-pen{stroke-dasharray:1;stroke-dashoffset:0}
+.rail-logo:is(:hover,:focus-visible) svg{transform:scale(1.18)}
+.rail-logo:is(:hover,:focus-visible) .mark-base{opacity:1}
+.rail-logo:is(:hover,:focus-visible) .mark-pen{animation:mark-write 2.6s infinite}
+.rail-logo:is(:hover,:focus-visible) .mark-ink{animation:mark-fade 2.6s infinite}
+@keyframes mark-write{0%{stroke-dashoffset:1;animation-timing-function:cubic-bezier(.5,0,.25,1)}62%{stroke-dashoffset:0}100%{stroke-dashoffset:0}}
+@keyframes mark-fade{0%,80%{opacity:1}96%,100%{opacity:0}}
+@media(prefers-reduced-motion:reduce){.rail-logo:is(:hover,:focus-visible) :is(.mark-pen,.mark-ink){animation:none}.rail-logo:is(:hover,:focus-visible) svg{transform:none}}
