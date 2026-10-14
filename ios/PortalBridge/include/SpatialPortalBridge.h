@@ -4,6 +4,8 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+/// The commit the bridge was built from. Owned by the bridge; never freed.
+const char *spatial_bridge_source(void);
 int32_t spatial_mobile_start(const char *profile, const char *email, const char *password, const char *identity_path);
 int32_t spatial_mobile_start_app(const char *profile, const char *key, const char *secret, const char *identity_path);
 char *spatial_mobile_poll(void);

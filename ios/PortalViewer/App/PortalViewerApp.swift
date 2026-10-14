@@ -259,7 +259,7 @@ struct ViewerScreen: View {
             controller.showMessageResult("Home did not delete that message: \(result.detail)")
         }
         .onAppear {
-            screen.start()
+            // Screen sharing is off: iOS's recording prompt interrupted the camera mid-session.
             peer.onMap = { controller.load($0) }
             controller.onPose = { peer.publishPose($0) }
             controller.onDepth = { peer.publishDepth($0) }
@@ -2988,12 +2988,23 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     /// pose and depth are declared in. Only its size, and its intrinsics with
     /// it, are scaled. A reader turns it for display if it wants to.
     /// `alignment` is the capture time of the Portal alignment in use, or 0.
+    /// The camera's pose in the AR session at this frame's capture time. Sent at most once per frame.
+    private var lastPoseSent: TimeInterval = -1
+    private func sendPose(_ frame: ARFrame) {
+        guard case .normal = frame.camera.trackingState, frame.timestamp != lastPoseSent else { return }
+        lastPoseSent = frame.timestamp
+        onPose?(PhonePoseSample(session: poseSession, timestamp: frame.timestamp, cameraInAR: frame.camera.transform))
+    }
     private func shareCamera(_ frame: ARFrame, alignment: UInt64, withPose: Bool) {
         guard spatial_mobile_camera_demand(1) != 0, !cameraShareBusy,
               withPose || frame.timestamp >= cameraShareNext else { return }
         let buffer = frame.capturedImage
         let width = Double(CVPixelBufferGetWidth(buffer)), height = Double(CVPixelBufferGetHeight(buffer))
         guard width > 0, height > 0, abs(width / height - 4.0 / 3.0) < 0.01 else { return }
+        // Every picture sent has the pose of its own frame beside it, so a reader never has to
+        // pair a picture with a pose from another moment. Not while tracking is limited:
+        // that picture has no pose to place it by.
+        sendPose(frame)
         cameraShareBusy = true
         cameraShareNext = frame.timestamp + 0.2
         let timestamp = UInt64(frame.timestamp * 1_000_000_000)
@@ -3079,8 +3090,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         if case .normal = frame.camera.trackingState {
             if frame.timestamp < lastNativePosePublication || frame.timestamp - lastNativePosePublication >= 0.2 {
                 lastNativePosePublication = frame.timestamp
-                onPose?(PhonePoseSample(session: poseSession, timestamp: frame.timestamp,
-                    cameraInAR: frame.camera.transform))
+                sendPose(frame)
             }
         } else { onPose?(nil) }
         if map == nil { scanBeforeMap(frame); return }
@@ -3257,7 +3267,12 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         if snoozed { return }
         switch camera.trackingState {
         case .normal:
+            interrupted = false
             if aligned { status = "Tracking recovered · mapping resumed" }
+        case .limited(.relocalizing) where interrupted:
+            // Finding the world it had before the interruption: the alignment
+            // holds once it has, and nothing is mapped meanwhile.
+            if aligned { status = "Recovering camera tracking · mapping paused until it recovers" }
         case .limited(.excessiveMotion), .limited(.insufficientFeatures), .limited(.initializing):
             // ARKit keeps its world origin through these, so the alignment still
             // holds. Frames are simply not used until tracking is normal again;
@@ -3270,11 +3285,22 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             status = "Tracking lost. Scan a known Portal again."
         }
     }
+    /// The camera was taken away for a moment, for example by iOS asking whether
+    /// Home may see the screen. Nothing is placed or sent until ARKit has found its
+    /// old world again, and then the Portal alignment still holds.
+    private var interrupted = false
     func sessionWasInterrupted(_ session: ARSession) {
         if snoozed { return }
-        invalidate(); worldLost(); status = "AR interrupted. Rescan a Portal when the camera returns."
+        interrupted = true
+        volumes.invalidate(); onPose?(nil); onDepth?(nil)
+        status = "AR paused · it resumes when the camera returns"
     }
-    func sessionInterruptionEnded(_ session: ARSession) { if snoozed { return }; realign(); start() }
+    func sessionInterruptionEnded(_ session: ARSession) {
+        if snoozed { return }
+        // ARKit relocalizes into the world it had; the alignment waits for that.
+        status = "Recovering camera tracking. Look around slowly."
+    }
+    func sessionShouldAttemptRelocalization(_ session: ARSession) -> Bool { true }
     func session(_ session: ARSession, didFailWithError error: Error) {
         invalidate(); worldLost()
         // A heading-aligned session that cannot run must not cost the app its camera.

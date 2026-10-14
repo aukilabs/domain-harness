@@ -2,13 +2,14 @@
 //! frame sent, with the same capture timestamp on the same clock.
 use anyhow::{Result, ensure};
 use auki_components::*;
-use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 pub const COMPONENT: &str = "phone-depth-image";
 pub const PRODUCT: &str = crate::mobile_camera::DEPTH_IMAGE_PRODUCT;
-pub const SCHEMA: &str = "spatial.phone-depth-image/v1";
+pub const SCHEMA: &str = "spatial.phone-depth-image/v2";
+/// Binary wire encoding: never JSON, never base64. See `pack`.
+pub const ENCODING: &str = "spatial.phone-depth-image-packed/v2";
 pub const METADATA_SCHEMA: &str = "spatial.phone-depth-image-metadata/v1";
 pub const MAX_SIDE: u32 = 1024;
 
@@ -21,11 +22,11 @@ pub struct DepthImage {
     pub timestamp_ns: u64,
     pub width: u32,
     pub height: u32,
-    /// Base64 of `width * height` little-endian u16 depths in millimetres
-    /// along the optical axis. 0 means no measurement.
-    pub depth_mm: String,
-    /// Base64 of `width * height` bytes: 0 low, 1 medium, 2 high confidence.
-    pub confidence: String,
+    /// `width * height` little-endian u16 depths in millimetres along the
+    /// optical axis. 0 means no measurement.
+    pub depth_mm: Vec<u8>,
+    /// `width * height` bytes: 0 low, 1 medium, 2 high confidence.
+    pub confidence: Vec<u8>,
     /// Pinhole intrinsics for this image's pixels.
     pub fx: f64,
     pub fy: f64,
@@ -53,14 +54,13 @@ impl DepthImage {
             "Depth image size mismatch"
         );
         let bytes: Vec<u8> = depth_mm.iter().flat_map(|v| v.to_le_bytes()).collect();
-        let engine = base64::engine::general_purpose::STANDARD;
         let image = Self {
             session: session.into(),
             timestamp_ns,
             width,
             height,
-            depth_mm: engine.encode(bytes),
-            confidence: engine.encode(confidence),
+            depth_mm: bytes,
+            confidence: confidence.to_vec(),
             fx,
             fy,
             cx,
@@ -78,10 +78,8 @@ impl DepthImage {
             "Invalid depth image size"
         );
         let pixels = self.width as usize * self.height as usize;
-        // Base64 lengths are checked without decoding every frame twice.
         ensure!(
-            self.depth_mm.len() == (pixels * 2).div_ceil(3) * 4
-                && self.confidence.len() == pixels.div_ceil(3) * 4,
+            self.depth_mm.len() == pixels * 2 && self.confidence.len() == pixels,
             "Depth image size mismatch"
         );
         ensure!(
@@ -94,6 +92,53 @@ impl DepthImage {
         );
         Ok(())
     }
+}
+
+const MAGIC: &[u8; 4] = b"ADI2";
+/// "ADI2", width u32, height u32, capture time u64, alignment time u64, fx fy cx cy f64
+/// (all little-endian), the 36-byte session id, then the depth bytes and the confidence bytes.
+const HEADER: usize = 4 + 4 + 4 + 8 + 8 + 4 * 8 + 36;
+pub fn pack(image: &DepthImage) -> Result<Vec<u8>> {
+    image.validate()?;
+    let mut bytes = Vec::with_capacity(HEADER + image.depth_mm.len() + image.confidence.len());
+    bytes.extend_from_slice(MAGIC);
+    bytes.extend_from_slice(&image.width.to_le_bytes());
+    bytes.extend_from_slice(&image.height.to_le_bytes());
+    bytes.extend_from_slice(&image.timestamp_ns.to_le_bytes());
+    bytes.extend_from_slice(&image.alignment_timestamp_ns.to_le_bytes());
+    for v in [image.fx, image.fy, image.cx, image.cy] { bytes.extend_from_slice(&v.to_le_bytes()); }
+    // The session id exactly as declared: frame ids name it, case and all.
+    ensure!(image.session.len() == 36, "Depth image session must be a hyphenated UUID");
+    bytes.extend_from_slice(image.session.as_bytes());
+    bytes.extend_from_slice(&image.depth_mm);
+    bytes.extend_from_slice(&image.confidence);
+    Ok(bytes)
+}
+pub fn unpack(bytes: &[u8]) -> Result<DepthImage> {
+    ensure!(bytes.len() > HEADER && &bytes[..4] == MAGIC, "Invalid depth image packet");
+    let u32_at = |i: usize| u32::from_le_bytes(bytes[i..i + 4].try_into().unwrap());
+    let u64_at = |i: usize| u64::from_le_bytes(bytes[i..i + 8].try_into().unwrap());
+    let f64_at = |i: usize| f64::from_le_bytes(bytes[i..i + 8].try_into().unwrap());
+    let (width, height) = (u32_at(4), u32_at(8));
+    ensure!((1..=MAX_SIDE).contains(&width) && (1..=MAX_SIDE).contains(&height), "Invalid depth image size");
+    let pixels = width as usize * height as usize;
+    ensure!(bytes.len() == HEADER + pixels * 3, "Depth image packet length mismatch");
+    let image = DepthImage {
+        session: std::str::from_utf8(&bytes[60..96])?.into(),
+        timestamp_ns: u64_at(12), alignment_timestamp_ns: u64_at(20),
+        width, height,
+        fx: f64_at(28), fy: f64_at(36), cx: f64_at(44), cy: f64_at(52),
+        depth_mm: bytes[HEADER..HEADER + pixels * 2].to_vec(),
+        confidence: bytes[HEADER + pixels * 2..].to_vec(),
+    };
+    image.validate()?;
+    Ok(image)
+}
+pub fn encoder() -> Result<auki_component_protocol::ObservationEncoder<DepthImage>> {
+    Ok(auki_component_protocol::ObservationEncoder::new(ENCODING, |image| pack(image).map_err(|e| e.to_string()))?)
+}
+pub fn decoder() -> Result<auki_component_protocol::ObservationDecoder<DepthImage>> {
+    Ok(auki_component_protocol::ObservationDecoder::new(ENCODING, |bytes| unpack(bytes).map_err(|e| e.to_string()))?)
 }
 
 fn spec(owner: &str, session: &str) -> ConfiguredObservableSpec {
@@ -139,8 +184,8 @@ fn capture(
                 value: serde_json::json!({
                     "width": image.width,
                     "height": image.height,
-                    "depth_encoding": "base64 of little-endian u16 millimetres along the optical axis; 0 is no measurement",
-                    "confidence_encoding": "base64 of u8: 0 low, 1 medium, 2 high",
+                    "depth_encoding": "little-endian u16 millimetres along the optical axis; 0 is no measurement",
+                    "confidence_encoding": "u8: 0 low, 1 medium, 2 high",
                     "image_geometry": "ar_depth_image, not turned, row-major from the top-left pixel",
                     "camera_frame": format!("phone-camera:{}", image.session),
                     "camera_product_id": crate::mobile_camera::PRODUCT,
@@ -177,7 +222,7 @@ impl Publisher {
         let output = component.configured_observable(spec(runtime.peer_id(), session))?;
         component.expose()?;
         let capture = capture(&runtime, &output)?;
-        products.endpoint.export_product(&capture.product())?;
+        products.endpoint.export_product_with_encoder(&capture.product(), encoder()?)?;
         Ok(Self {
             session: session.into(),
             output,
@@ -210,7 +255,7 @@ impl Publisher {
         self.session = session.into();
         self.last_timestamp = 0;
         let capture = capture(&self.runtime, &self.output)?;
-        self.endpoint.export_product(&capture.product())?;
+        self.endpoint.export_product_with_encoder(&capture.product(), encoder()?)?;
         self.capture = Some(capture);
         Ok(())
     }
