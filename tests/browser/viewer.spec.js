@@ -444,7 +444,7 @@ test('right-click labels use Home voxel hits and the displayed camera frame',asy
   return r.fulfill({json:{sequence:++sequence,camera_token:'displayed-frame',width:320,height:240,encoding:'luma8',data:Buffer.alloc(320*240,80).toString('base64')}});
  });
  await page.goto('/');await expect(page.locator('#connection')).toHaveText('Home Server online');
- await page.locator('#canvas canvas').click({button:'right',position:{x:200,y:200}});
+ await page.locator('.agent-tool[aria-label="New note"]').click();await page.locator('#canvas canvas').click({position:{x:200,y:200}});
  await expect(page.locator('#label-dialog')).toBeVisible();await expect(page.locator('#label-dialog-text')).toBeEnabled();
  expect(picked[0].source).toBe('scene');expect(picked[0].origin).toHaveLength(3);
  await page.locator('#label-dialog-text').fill('Shelf');await page.getByRole('button',{name:'Save note',exact:true}).click();
@@ -457,7 +457,7 @@ test('right-click labels use Home voxel hits and the displayed camera frame',asy
  const held=await page.locator('#sensor-image').evaluate(c=>c.toDataURL());
  await page.getByRole('button',{name:'Cancel',exact:true}).click();expect(saved).toHaveLength(1);expect(held).toContain('data:image/png');
  await page.locator('#sensor-close').click();
- miss=true;await page.locator('#canvas canvas').click({button:'right',position:{x:200,y:200}});
+ miss=true;await page.locator('.agent-tool[aria-label="New note"]').click();await page.locator('#canvas canvas').click({position:{x:200,y:200}});
  await expect(page.locator('#label-dialog-status')).toContainText('No occupied Home voxel');await expect(page.getByRole('button',{name:'Save note',exact:true})).toBeDisabled();
  await page.keyboard.press('Escape');await expect(page.locator('#label-dialog')).not.toBeVisible();expect(saved).toHaveLength(1);
  expect(errors).toEqual([]);

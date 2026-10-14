@@ -12,7 +12,7 @@ test('volume picking defers to visible notes but retains volume-only and hidden-
    if(path==='/')return route.fulfill({contentType:'text/html',body:`
     <style>body{margin:0}canvas{width:600px;height:600px}</style>
     <script type="importmap">{"imports":{"three":"/three.module.js"}}</script>
-    <div><canvas width="600" height="600"></canvas></div><div id="panel"></div>
+    <div><canvas width="600" height="600"></canvas></div><div id="panel"></div><div id="card"></div>
     <script type="module">
     import * as THREE from 'three';
     import {createSemanticVolumes} from '/semantic-volumes.js';
@@ -23,13 +23,16 @@ test('volume picking defers to visible notes but retains volume-only and hidden-
     window.reset=()=>{window.scrollTo(0,0);camera.position.set(0,0,8);controls.target.set(0,0,0);controls.update();scene.updateMatrixWorld(true);window.picked=null;};
     window.notes=notes;
     const volumes=createSemanticVolumes({scene,camera,renderer:{domElement:canvas},controls,panel:document.querySelector('#panel'),
-     api:()=>{throw Error('Unexpected write')},label:()=>new THREE.Object3D(),clear:g=>g.clear(),openPanel:()=>{},priorityPickObjects:()=>[note]});
+     api:()=>{throw Error('Unexpected write')},label:()=>new THREE.Object3D(),clear:g=>g.clear(),openPanel:()=>{},priorityPickObjects:()=>[note],
+     inspector:{element:document.querySelector('#card'),open(nodes){this.element.replaceChildren(...nodes);},close(){this.element.replaceChildren();}}});
+    window.volumes=volumes;
     volumes.update('local:test',{frame:'test',semantic_volumes:{frame:'test',items:[{id:'box',title:'Box',description:'',center:[0,0,0],size:[4,4,4],yaw:0}]}});
     canvas.addEventListener('pointerup',e=>window.picked=e.semanticVolume?'volume':'normal');
     reset();window.ready=true;
     </script>`});
-   const source=path==='/semantic-volumes.js'
-    ?new URL('../web/semantic-volumes.js',import.meta.url)
+   // The volume module and the shared panel components it imports come from web/; three from node_modules.
+   const source=['/semantic-volumes.js','/panel-ui.js'].includes(path)
+    ?new URL('../web'+path,import.meta.url)
     :new URL('../node_modules/three/build'+path,import.meta.url);
    await route.fulfill({contentType:'text/javascript',body:await readFile(source,'utf8')});
   });
@@ -39,11 +42,11 @@ test('volume picking defers to visible notes but retains volume-only and hidden-
   await page.evaluate(()=>{reset();notes.visible=false;});
   await page.mouse.click(300,300);
   assert.equal(await page.evaluate(()=>window.picked),'volume','Hidden ancestor must not steal volume clicks');
-  await page.locator('#volume-cancel').click();
+  await page.evaluate(()=>volumes.closed());
   await page.evaluate(()=>{reset();notes.visible=true;});
   await page.mouse.click(420,300);
   assert.equal(await page.evaluate(()=>window.picked),'volume','Volume remains selectable away from note');
-  await page.locator('#volume-cancel').click();
+  await page.evaluate(()=>volumes.closed());
   await page.evaluate(()=>reset());
   await page.mouse.move(420,300);await page.mouse.down();await page.mouse.move(440,300);await page.mouse.up();
   assert.equal(await page.evaluate(()=>window.picked),'normal','Orbit drag must not select a volume');
