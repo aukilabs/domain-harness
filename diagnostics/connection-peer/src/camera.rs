@@ -87,6 +87,31 @@ impl Camera {
     pub fn calibration(&self) -> Calibration {
         self.calibration.clone()
     }
+    /// The localizer's pinned convenience constructor only accepts the legacy
+    /// JSON camera schema. Geometry is independent of the transport codec: bind
+    /// its public calibration to the real binary Product, never a relabelled one.
+    pub fn localization_calibration(&self) -> Result<auki_qr_localizer::Calibration> {
+        let product = self.product();
+        let output = &product.producer;
+        output.validate().map_err(anyhow::Error::msg)?;
+        let c = &self.calibration;
+        c.validate()?;
+        ensure!(matches!(&output.payload, PayloadContract::Camera(v)
+            if v.datatype == VideoFrame::DATATYPE && crate::camera_frame::supported(&v.schema)
+                && v.width == c.width && v.height == c.height && v.encoding == "jpeg"),
+            "Localizer calibration differs from camera Output");
+        let frame = output.spatial_frame.as_ref().ok_or_else(||anyhow::anyhow!("Camera frame missing"))?;
+        ensure!(frame.definition == FrameRegistryEntry::ros_optical(&output.peer_id, &frame.reference.id),
+            "Localizer requires the declared optical camera axes");
+        Ok(auki_qr_localizer::Calibration {
+            id: "raw-eye-undistorted-corners".into(),
+            camera_product: product.reference(), camera_frame_id: frame.reference.id.clone(),
+            clock: output.clock.clone(), width: c.width, height: c.height,
+            fx: c.k[0], fy: c.k[1], cx: c.k[2], cy: c.k[3],
+            // alignment::localize undistorts corners into this same optical frame.
+            distortion: auki_qr_localizer::Distortion::None,
+        })
+    }
     pub fn mount(p: &crate::poses::Publisher, c: Calibration) -> Result<Self> {
         c.validate()?;
         let owner = &p.contract.from_frame.peer_id;
@@ -117,7 +142,7 @@ impl Camera {
                 ComponentSpec::new("bbos-head-camera").observable(ObservableContract {
                     name: "frames".into(),
                     datatype: VideoFrame::DATATYPE.into(),
-                    schema: "auki.video-frame/v1".into(),
+                    schema: crate::camera_frame::SCHEMA.into(),
                     access: vec![ObservationAccess::FollowNew],
                     exposure: Exposure::Cluster,
                 }),
@@ -129,7 +154,7 @@ impl Camera {
                 p.contract.clock.clone(),
                 PayloadContract::Camera(CameraPayloadContract {
                     datatype: VideoFrame::DATATYPE.into(),
-                    schema: "auki.video-frame/v1".into(),
+                    schema: crate::camera_frame::SCHEMA.into(),
                     encoding: "jpeg".into(),
                     width: c.width,
                     height: c.height,
@@ -157,7 +182,7 @@ impl Camera {
                 }))
             },
         )?;
-        p.endpoint.export_product(&capture.product())?;
+        p.endpoint.export_product_with_encoder(&capture.product(),crate::camera_frame::encoder())?;
         let contract = crate::compact_pose::Contract {
             from_frame: (&frame).into(),
             to_frame: (&p.contract.from_frame).into(),
@@ -309,7 +334,7 @@ impl Camera {
                     Ok(())
                 })();
                 if let Err(e) = result {
-                    eprintln!("QR detector: {e}");
+                    crate::diagnostic_log!("QR detector: {e}");
                 }
                 // Bound detector duty cycle without blocking pose or camera delivery.
                 let until = std::time::Instant::now() + began.elapsed().saturating_mul(3);

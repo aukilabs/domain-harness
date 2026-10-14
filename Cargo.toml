@@ -54,6 +54,7 @@ rand = "0.8"
 auki-p2p = { git = "https://github.com/aukilabs/auki-sdk.git", rev = "3342d589605846f5f45c1de5430dd22923555de2" }
 
 [dev-dependencies]
+nalgebra = { version = "0.33", default-features = false, features = ["std"] }
 qrcode = { version = "0.14", default-features = false }
 tempfile = "3"
 

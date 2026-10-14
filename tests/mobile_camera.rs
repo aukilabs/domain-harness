@@ -10,7 +10,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
-async fn preview(tx: &mpsc::Sender<Request>, sensor: Option<String>) -> Result<serde_json::Value> {
+async fn preview(tx: &mpsc::Sender<Request>, sensor: Option<String>) -> Result<sensor_preview::Reply> {
     let (reply, answer) = oneshot::channel();
     tx.send(Request {
         home_frame: None, debug_pose: false,
@@ -86,7 +86,9 @@ async fn phone_camera_shares_sdk_catalog_and_home_consumes_only_on_demand() -> R
         .await?;
         assert_eq!(frame["width"], 640);
         assert_eq!(frame["height"], 480);
-        assert_eq!(frame["capture_timestamp_ns"], 100);
+        assert_eq!(frame["capture_timestamp_ns"], "100");
+        assert!(frame.get("data").is_none());
+        assert!(frame.image.as_ref().unwrap().starts_with(&[255,216]));
         tokio::time::timeout(Duration::from_secs(35), async {
             while camera.demanded() {
                 tokio::time::sleep(Duration::from_millis(50)).await;

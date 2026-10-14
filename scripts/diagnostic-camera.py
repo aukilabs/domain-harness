@@ -1,9 +1,27 @@
 #!/usr/bin/env python3
 """Read one existing BBOS raw eye. Local stdout IPC only; no controls or network."""
-import base64
 import json
 import os
+import struct
+import sys
 import time
+
+
+def write_configuration(config, output):
+    encoded = json.dumps(config, allow_nan=False).encode()
+    if not 0 < len(encoded) <= 16384:
+        raise ValueError('Camera configuration too large')
+    output.write(struct.pack('<I', len(encoded)))
+    output.write(encoded)
+    output.flush()
+
+
+def write_frame(timestamp_ns, jpeg, output):
+    if not 0 < len(jpeg) <= 2 * 1024 * 1024:
+        raise ValueError('Camera IPC frame too large')
+    output.write(struct.pack('<QI', timestamp_ns, len(jpeg)))
+    output.write(jpeg)
+    output.flush()
 
 
 def main():
@@ -25,7 +43,7 @@ def main():
                        d=np.asarray(dl).reshape(-1)[:4].tolist(),
                        camera_to_base=dict(translation=rectified_to_base[:, 3].tolist(),
                                            rotation_xyzw=rotation_quaternion(rotation)))
-    print(json.dumps(calibration, allow_nan=False), flush=True)
+    write_configuration(calibration, sys.stdout.buffer)
     parent, previous, writer = os.getppid(), 0, None
     wall_offset = time.time_ns() - time.monotonic_ns()
     with Reader('camera.head.jpeg', keeptime=False) as reader:
@@ -53,7 +71,7 @@ def main():
                     ok, jpeg = cv2.imencode('.jpg', image[:, :width], [cv2.IMWRITE_JPEG_QUALITY, 95])
                     if not ok:
                         raise ValueError('JPEG encoding failed')
-                    print(json.dumps(dict(timestamp_ns=stamp, jpeg=base64.b64encode(jpeg).decode())), flush=True)
+                    write_frame(stamp, jpeg.tobytes(), sys.stdout.buffer)
             time.sleep(.2)
 
 

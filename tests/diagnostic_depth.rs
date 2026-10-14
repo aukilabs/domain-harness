@@ -1,5 +1,6 @@
 #[allow(dead_code)]
 mod support;
+#[allow(dead_code)] #[path="../diagnostics/connection-peer/src/diagnostic_log.rs"] mod diagnostic_log;
 mod compact_pose { pub use spatial_home::compact_pose::*; }
 mod depth_points { pub use spatial_home::depth_points::*; }
 mod component_enabled { pub use spatial_home::component_enabled::*; }

@@ -54,6 +54,7 @@ pub mod registry_ar;
 pub mod transform_chain;
 pub mod depth_points;
 pub mod component_enabled;
+pub mod camera_frame;
 pub mod component_control;
 pub mod robot_occupancy;
 

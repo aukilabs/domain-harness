@@ -40,7 +40,7 @@ impl CameraContract {
         );
         ensure!(
             matches!(&output.payload, PayloadContract::Camera(c)
-            if c.datatype == VideoFrame::DATATYPE && c.schema == "auki.video-frame/v1"),
+            if c.datatype == VideoFrame::DATATYPE && crate::camera_frame::supported(&c.schema)),
             "Unsupported camera output"
         );
         Ok(())
@@ -196,17 +196,16 @@ pub async fn render(
         .ok_or_else(|| anyhow!("Home scene unavailable"))?;
     let view = homes.view(&home.scenegraph.map.map_id)?;
     let ar = if overlay {
-        crate::ar_preview::project_view(&view, &optical, &calibration)?
+        crate::ar_preview::project_annotations(&view, &optical, &calibration)?
     } else {
         Value::Null
     };
-    use base64::Engine;
     Ok(
         json!({"sequence":image.sequence.to_string(),"capture_timestamp_ns":image.timestamp_ns.to_string(),
         "clock":output.clock,"spatial_frame":output.spatial_frame,"calibration":calibration,
         "picking":{"frame":target.id,"camera_to_map":optical,"calibration":calibration},
         "viewpoint":crate::view_camera::frame_view(&pose,&declared.definition)?,"source_frame":camera.frame,
         "width":image.payload.width,"height":image.payload.height,"encoding":image.payload.encoding,
-        "data":base64::engine::general_purpose::STANDARD.encode(&image.payload.bytes),"ar":ar}),
+        "ar":ar}),
     )
 }

@@ -40,9 +40,9 @@ fn teleoperator_projects_paths_without_voxels_and_rejects_wrong_frame()->anyhow:
     let paths=Paths {items:vec![s],..Paths::empty("frame")};
     let mut view=serde_json::json!({"frame":"frame","voxel_size":0.1,"voxels":[],"notes":[],"paths":paths});
     let calibration=serde_json::json!({"K":[100.,0.,50.,0.,100.,50.,0.,0.,1.],"D":[],"distortion_model":"pinhole","width":100,"height":100});
-    let result=spatial_home::ar_preview::project_view(&view,&spatial_home::local_mapper::identity(),&calibration)?;
+    let result=spatial_home::ar_preview::project_annotations(&view,&spatial_home::local_mapper::identity(),&calibration)?;
     assert_eq!(result["path_segments"].as_array().unwrap().len(),1);
     assert_eq!(result["path_segments"][0]["points"][0][0],40.);
     view["paths"]["frame"]=serde_json::json!("other");
-    assert!(spatial_home::ar_preview::project_view(&view,&spatial_home::local_mapper::identity(),&calibration).is_err());Ok(())
+    assert!(spatial_home::ar_preview::project_annotations(&view,&spatial_home::local_mapper::identity(),&calibration).is_err());Ok(())
 }

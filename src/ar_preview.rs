@@ -295,9 +295,19 @@ fn project_scene(
 
 /// Project Home-owned geometry already expressed in its displayed scene frame.
 pub fn project_view(view: &Value, camera_to_map: &Pose, calibration: &Value) -> Result<Value> {
+    project_view_layers(view, camera_to_map, calibration, true)
+}
+
+/// PiP displays notes and drawings, not the voxel mesh. Do not expand and ship
+/// an unused mesh with every frame; the map remains intact for viewing/picking.
+pub fn project_annotations(view: &Value, camera_to_map: &Pose, calibration: &Value) -> Result<Value> {
+    project_view_layers(view, camera_to_map, calibration, false)
+}
+
+fn project_view_layers(view: &Value, camera_to_map: &Pose, calibration: &Value, include_voxels: bool) -> Result<Value> {
     project_geometry(view["frame"].as_str().ok_or_else(|| anyhow!("Home scene frame missing"))?,
         view["voxel_size"].as_f64().ok_or_else(|| anyhow!("Home voxel size missing"))?,
-        serde_json::from_value(view["voxels"].clone())?,
+        if include_voxels {serde_json::from_value(view["voxels"].clone())?} else {vec![]},
         serde_json::from_value(view["notes"].clone())?, camera_to_map, calibration,
         if view["paths"].is_object() {Some(serde_json::from_value(view["paths"].clone())?)}else{None})
 }

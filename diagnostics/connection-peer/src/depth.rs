@@ -65,7 +65,7 @@ pub fn start() -> (tokio::task::JoinHandle<()>, tokio::sync::watch::Receiver<Opt
             };
             tokio::select! {r=controls=>r,r=captures=>r}
         };
-        if let Err(e)=work.await {eprintln!("Depth capture failed: {e}");}
+        if let Err(e)=work.await {crate::diagnostic_log!("Depth capture failed: {e}");}
     });
     (task,rx,demand_tx)
 }

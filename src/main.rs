@@ -95,7 +95,7 @@ async fn component_enabled(State(s):State<Arc<AppState>>,headers:HeaderMap,
 async fn sensor_preview(
     State(s): State<Shared>,
     axum::extract::Query(q): axum::extract::Query<PreviewQuery>,
-) -> ApiResult {
+) -> Result<Response,ApiError> {
     let (reply, receive) = tokio::sync::oneshot::channel();
     s.previews
         .try_send(spatial_home::sensor_preview::Request {
@@ -111,10 +111,11 @@ async fn sensor_preview(
             reply,
         })
         .map_err(|_| anyhow::anyhow!("Sensor connection unavailable"))?;
-    let mut result = tokio::time::timeout(std::time::Duration::from_secs(10), receive)
+    let response = tokio::time::timeout(std::time::Duration::from_secs(10), receive)
         .await
         .map_err(|_| anyhow::anyhow!("Sensor request timed out"))?
         .map_err(|_| anyhow::anyhow!("Sensor connection stopped"))??;
+    let mut result=response.value;
     if let Some(geometry) = result.as_object_mut().and_then(|o| o.remove("picking")) {
         let token = s
             .picks
@@ -134,7 +135,12 @@ async fn sensor_preview(
             }
         }
     }
-    Ok(Json(result))
+    if let Some(bytes)=response.image {
+        let packet=spatial_home::camera_frame::browser_packet(&result,&bytes)?;
+        return Ok(([(header::CONTENT_TYPE,spatial_home::camera_frame::BROWSER_MIME),
+            (header::CACHE_CONTROL,"no-store")],packet).into_response());
+    }
+    Ok(Json(result).into_response())
 }
 #[derive(Deserialize)]
 struct RunnerQuery {
@@ -1425,6 +1431,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/robot/{*path}", get(robot_asset))
         .route("/api/sensors", get(sensor_preview))
         .route("/api/component-enabled", post(component_enabled))
+        .route("/camera-frame.js", get(|| async { ([(header::CONTENT_TYPE,"text/javascript")],include_str!("../web/camera-frame.js")) }))
         .route("/pose-inspector.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/pose-inspector.js")) }))
         .route("/video-presentation.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/video-presentation.js")) }))
         .route("/compact-pose-trail.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/compact-pose-trail.js")) }))

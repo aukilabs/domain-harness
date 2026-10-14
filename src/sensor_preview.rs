@@ -1,7 +1,7 @@
 //! Demand-driven previews from typed Products in discovered SDK catalogs.
 use anyhow::{Result, anyhow, ensure};
 use auki_component_protocol::{
-    ComponentProtocolClient, ObservationRequest, ObservationSelection, ObservationStart,
+    ComponentProtocolClient, ObservationDecoder, ObservationRequest, ObservationSelection, ObservationStart,
     RemoteObservationEvent,
 };
 use auki_components::{
@@ -9,7 +9,6 @@ use auki_components::{
     ProductReference, VideoFrame,
 };
 use auki_sdk::{AukiPeer, Multiaddr, PeerId};
-use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -27,8 +26,13 @@ pub struct Request {
     pub follow: bool,
     pub capture: bool,
     pub expected_manifest: Option<String>,
-    pub reply: oneshot::Sender<Result<Value>>,
+    pub reply: oneshot::Sender<Result<Reply>>,
 }
+
+#[derive(Debug)]
+pub struct Reply {pub value:Value,pub image:Option<Arc<[u8]>>}
+impl From<Value> for Reply {fn from(value:Value)->Self {Self {value,image:None}}}
+impl std::ops::Deref for Reply {type Target=Value;fn deref(&self)->&Value {&self.value}}
 
 // Polling an open PiP renews this lease. It must exceed the complete request
 // budget, including queueing, and starts again when a request finishes.
@@ -246,12 +250,14 @@ pub fn camera_sensors(catalogs: &crate::device_catalogs::Catalogs) -> Vec<Sensor
             if p.manifest.peer_id != *owner {
                 continue;
             }
-            if !snapshot.components.iter().flat_map(|c|c.current_outputs.values()).any(|o|
-                o.manifest.peer_id == *owner && o.manifest.reference()==p.manifest.producer &&
-                matches!(&o.manifest.payload, PayloadContract::Camera(c) if c.datatype==VideoFrame::DATATYPE)) { continue; }
+            let Some(camera)=snapshot.components.iter().flat_map(|c|c.current_outputs.values()).find_map(|o| {
+                if o.manifest.peer_id != *owner || o.manifest.reference()!=p.manifest.producer {return None;}
+                match &o.manifest.payload {PayloadContract::Camera(c) if c.datatype==VideoFrame::DATATYPE
+                    && crate::camera_frame::supported(&c.schema)=>Some(c),_=>None}
+            }) else {continue;};
             let ar_supported = crate::registry_ar::supported(p, &snapshot, &row["registries"]);
             found.push(Sensor {
-                datatype: VideoFrame::DATATYPE.into(),
+                datatype: camera.schema.clone(),
                 id: format!("{owner}/{}", p.manifest.product_id),
                 peer: expected,
                 reference: ProductReference {
@@ -295,7 +301,7 @@ impl<T> Drop for Preview<T> {
     }
 }
 fn start_preview<T: ContractType + serde::de::DeserializeOwned + Send + Sync + 'static>(client: ComponentProtocolClient, sensor: Sensor,
-    start: ObservationStart, size: fn(&T)->usize) -> Preview<T> {
+    start: ObservationStart, size: fn(&T)->usize, decoder:ObservationDecoder<T>) -> Preview<T> {
     let (send, frames) = watch::channel(None);
     let (health_send, health) = watch::channel("Connecting camera subscription".to_string());
     let reference = sensor.reference.clone();
@@ -316,23 +322,25 @@ fn start_preview<T: ContractType + serde::de::DeserializeOwned + Send + Sync + '
         let connect = async {
             if let Some(route) = sensor.route.clone() {
                 client
-                    .subscribe_product_exact(
+                    .subscribe_product_exact_with_decoder(
                         sensor.peer,
                         route,
                         sensor.reference.clone(),
                         start,
                         limits,
                         size,
+                        decoder.clone(),
                     )
                     .await
             } else {
                 client
-                    .subscribe_product(
+                    .subscribe_product_with_decoder(
                         sensor.peer,
                         sensor.reference.clone(),
                         start,
                         limits,
                         size,
+                        decoder.clone(),
                     )
                     .await
             }
@@ -415,11 +423,13 @@ fn start_preview<T: ContractType + serde::de::DeserializeOwned + Send + Sync + '
 }
 async fn capture_frame(client:ComponentProtocolClient,sensor:Sensor)->Result<Value>{
     // NewOnly excludes retained history. Drop cancels on success/error/timeout.
-    let mut capture=start_preview(client,sensor.clone(),ObservationStart::NewOnly,|f:&VideoFrame|f.bytes.len());
+    let decoder=crate::camera_frame::decoder(&sensor.datatype)?;
+    let mut capture=start_preview(client,sensor.clone(),ObservationStart::NewOnly,|f:&VideoFrame|f.bytes.len(),decoder);
     capture.frames.changed().await.map_err(|_|anyhow!("Camera stopped before publishing a fresh frame"))?;
     let sample=capture.frames.borrow().clone().ok_or_else(||anyhow!("Camera stream has a gap"))?;
     ensure!(sample.received.elapsed()<Duration::from_secs(2),"Camera frame is stale");
     ensure!(sample.observation.output==sample.producer.reference(),"Camera output changed");
+    crate::camera_frame::validate_output(&sample.observation.payload,&sample.producer)?;
     let image=crate::camera_vision::encode(&sample.observation.payload)?;
     Ok(json!({"image":image,"peer_id":sensor.reference.peer_id,"product":sensor.reference,
         "sequence":sample.observation.sequence,"capture_timestamp_ns":sample.observation.timestamp_ns,
@@ -461,10 +471,11 @@ pub async fn serve(
             tokio::spawn(async move {
                 let work=async {capture_frame(client,sensor.ok_or_else(||anyhow!("Sensor unavailable; waiting for its peer"))?).await};
                 let result=tokio::select!{_ = stop.cancelled()=>Err(anyhow!("Home stopped")),r=tokio::time::timeout(Duration::from_secs(8),work)=>r.unwrap_or_else(|_|Err(anyhow!("Camera did not publish a fresh frame in time")))};
-                let _=request.reply.send(result);
+                let _=request.reply.send(result.map(Into::into));
             });
             continue;
         }
+        let mut image=None;
         let work = async {
             if request.debug_pose || (request.follow && !sensors.iter().any(|s|Some(&s.id)==request.sensor.as_ref())) {
                 let id=request.sensor.as_ref().ok_or_else(||anyhow!("Select a sensor frame"))?;
@@ -473,7 +484,8 @@ pub async fn serve(
                 if sensor.datatype==crate::compact_pose::SCHEMA {
                     let contract:crate::compact_pose::Contract=serde_json::from_value(sensor.metadata.as_ref().unwrap().value.clone())?;
                     let start=if contract.lifetime==crate::compact_pose::Lifetime::Held {ObservationStart::LatestExisting}else{ObservationStart::NewOnly};
-                    let preview=compact.entry(id.clone()).or_insert_with(||start_preview(client.clone(),sensor.clone(),start,|_:&crate::compact_pose::Update|256));
+                    let preview=compact.entry(id.clone()).or_insert_with(||start_preview(client.clone(),sensor.clone(),start,|_:&crate::compact_pose::Update|256,
+                        ObservationDecoder::new("application/json",|b|serde_json::from_slice(b).map_err(|e|e.to_string())).expect("static pose codec")));
                     preview.used=Instant::now();
                     let sample=preview.frames.borrow().clone().ok_or_else(||anyhow!("Waiting for fresh sensor poses"))?;
                     contract.validate_output(&sample.producer)?;
@@ -555,9 +567,10 @@ pub async fn serve(
                     "Camera registry calibration unresolved or unsupported"
                 );
             }
+            let decoder=crate::camera_frame::decoder(&sensor.datatype)?;
             let preview = previews
                 .entry(id.clone())
-                .or_insert_with(|| start_preview(client.clone(), sensor.clone(),ObservationStart::LatestExisting,|f:&VideoFrame|f.bytes.len()));
+                .or_insert_with(|| start_preview(client.clone(), sensor.clone(),ObservationStart::LatestExisting,|f:&VideoFrame|f.bytes.len(),decoder));
             preview.used = Instant::now();
             let observations = preview
                 .frames
@@ -570,6 +583,8 @@ pub async fn serve(
                 "Camera frame is stale · {}", &*preview.health.borrow()
             );
             let f = &o.payload;
+            ensure!(o.output==observations.producer.reference(),"Camera output changed");
+            crate::camera_frame::validate_output(f,&observations.producer)?;
             ensure!(
                 f.width > 0
                     && f.height > 0
@@ -621,21 +636,20 @@ pub async fn serve(
                             view["age_ms"]=json!(observations.received.elapsed().as_millis() as u64);view["clock"]=frame["clock"].clone();
                             view["sequence"]=frame["sequence"].clone();view["capture_timestamp_ns"]=frame["capture_timestamp_ns"].clone();return Ok(view);
                         }
-                        frame["presentation"]=presentation.clone();return Ok(frame);
+                        image=Some(f.bytes.clone());frame["presentation"]=presentation.clone();return Ok(frame);
                     },
                     Err(e) if request.ar || request.follow => return Err(e),
                     Err(e) => pick_error = Some(e.to_string()),
                 }
             }
-            Ok(
-                json!({"presentation":presentation,"pick_error":pick_error,"spatial_frame":observations.producer.spatial_frame,"metadata":sensor.metadata,"sequence":o.sequence,"capture_timestamp_ns":o.timestamp_ns,"clock":observations.producer.clock,"width":f.width,"height":f.height,"encoding":f.encoding,"data":STANDARD.encode(&f.bytes)}),
-            )
+            image=Some(f.bytes.clone());
+            Ok(json!({"presentation":presentation,"pick_error":pick_error,"spatial_frame":observations.producer.spatial_frame,"metadata":sensor.metadata,"sequence":o.sequence.to_string(),"capture_timestamp_ns":o.timestamp_ns.to_string(),"clock":observations.producer.clock,"width":f.width,"height":f.height,"encoding":f.encoding}))
         };
         let result = tokio::select! {_ = stop.cancelled()=>break,r=tokio::time::timeout(Duration::from_secs(8),work)=>r.unwrap_or_else(|_|Err(anyhow!("Sensor peer timed out")))};
         if let Some(preview) = request.sensor.as_ref().and_then(|id| previews.get_mut(id)) {
             preview.used = Instant::now();
         }
-        let _ = request.reply.send(result);
+        let _ = request.reply.send(result.map(|value|Reply {value,image}));
     }
 }
 

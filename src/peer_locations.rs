@@ -48,7 +48,7 @@ pub async fn read(tx: &mpsc::Sender<crate::sensor_preview::Request>, peer: &Valu
             }
         }
     };
-    tokio::time::timeout(Duration::from_secs(3),work).await.map_err(|_|anyhow!("Live pose lookup timed out"))?
+    Ok(tokio::time::timeout(Duration::from_secs(3),work).await.map_err(|_|anyhow!("Live pose lookup timed out"))??.value)
 }
 
 /// Registry axes, never device kind, define front/left/right.
@@ -122,7 +122,7 @@ pub async fn enrich(mut scene: Value, network: Value, tx: mpsc::Sender<crate::se
         let worker=tokio::spawn(async move {
             let first=rx.recv().await.unwrap();first.reply.send(Err(anyhow!("Waiting for fresh sensor poses"))).unwrap();
             let q=rx.recv().await.unwrap();assert!(q.debug_pose);assert!(!q.capture);assert_eq!(q.home_frame.as_deref(),Some("home"));assert_eq!(q.expected_manifest.as_deref(),Some("hash"));assert_eq!(q.sensor.as_deref(),Some("any-peer/any-pose"));
-            q.reply.send(Ok(json!({"stream":"live","age_ms":10,"home_pose":{"frame":"home","tracking":{"status":"valid","pose":{"translation":[1,2,3]}}}}))).unwrap();
+            q.reply.send(Ok(json!({"stream":"live","age_ms":10,"home_pose":{"frame":"home","tracking":{"status":"valid","pose":{"translation":[1,2,3]}}}}).into())).unwrap();
         });
         let result=enrich(json!({"frame":"home","peers":[{"peer_id":"any-peer"}]}),json!({"peers":[peer]}),tx).await.unwrap();
         assert_eq!(result["peers"][0]["location"]["position"],json!([1.,2.,3.]));worker.await.unwrap();

@@ -61,11 +61,17 @@ marker size or axis inference is permitted. Multiple visible known portals must
 agree within 15 cm / 10 degrees; individual estimates must pass SDK reprojection
 quality checks.
 
-Leaving the portal's view does not expire the held alignment. Tracking loss,
-stalled pose publication, unavailable Home input or changed portal geometry
-withdraws it with a `lost` observation; a fresh portal capture is then required.
+Leaving the portal's view does not expire the held alignment. Temporary tracking
+loss, stalled pose publication or unavailable Home input pauses consumers without
+revoking calibration. Changed Home reference/portal geometry withdraws it with a
+`lost` observation; a fresh portal capture is then required.
 SLAM writer changes stop the diagnostic, requiring a fresh frame/session on
 restart. Camera and alignment work run outside the pose/LED processing loop.
+
+Camera bytes use the [binary camera contract](../../docs/camera-binary.md).
+Alignment initialization validates that exact camera Product before registering
+its Component. Diagnostic disk logging uses a bounded background writer so slow
+storage cannot stall the capture/libp2p event loop.
 
 Tests cover source-pixel retry decoding, fisheye rectification against OpenCV,
 capture-time interpolation, tracking loss/gaps/reset refusal, composition with a

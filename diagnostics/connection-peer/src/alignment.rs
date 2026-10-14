@@ -191,6 +191,9 @@ impl Worker {
         home: crate::home::Verified,
         homes: tokio::sync::watch::Receiver<Option<crate::home::Verified>>,
     ) -> Result<Self> {
+        // Validate downstream camera compatibility before registering anything;
+        // a failed initializer must not leave a phantom alignment in the Catalog.
+        let cal = camera.localization_calibration()?;
         let source = p.product();
         let native = Contract {
             from_frame: (&p.contract.from_frame).into(),
@@ -251,17 +254,6 @@ impl Worker {
         p.endpoint.export_product(&capture.product())?;
         let c = camera.calibration();
         let detections = camera.detections.clone();
-        let cal = auki_qr_localizer::Calibration::for_product(
-            "raw-eye-undistorted-corners",
-            &camera.product(),
-            auki_qr_localizer::Intrinsics {
-                fx: c.k[0],
-                fy: c.k[1],
-                cx: c.k[2],
-                cy: c.k[3],
-                distortion: auki_qr_localizer::Distortion::None,
-            },
-        )?;
         let stop = Arc::new(AtomicBool::new(false));
         let stopping = stop.clone();
         let thread = std::thread::spawn(move || {
@@ -314,7 +306,7 @@ impl Worker {
                             published = at;
                             valid = false;
                             loss = loss.max(at);
-                            eprintln!(
+                            crate::diagnostic_log!(
                                 "Alignment withdrawn: Home reference changed"
                             );
                         }
@@ -354,7 +346,7 @@ impl Worker {
                         match attempt {
                             Ok(()) => {
                                 if last_message != "aligned" {
-                                    eprintln!(
+                                    crate::diagnostic_log!(
                                         "Alignment established into {}",
                                         contract.to_frame.id
                                     );
@@ -364,7 +356,7 @@ impl Worker {
                             Err(e) => {
                                 let message = e.to_string();
                                 if message != last_message {
-                                    eprintln!("Alignment waiting: {message}");
+                                    crate::diagnostic_log!("Alignment waiting: {message}");
                                     last_message = message;
                                 }
                             }

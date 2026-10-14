@@ -82,7 +82,7 @@ fn valid(x: f64) -> std::sync::Arc<Update> {
     .into()
 }
 
-async fn exercise(extra_mount: bool) -> Result<()> {
+async fn exercise(extra_mount: bool, binary: bool) -> Result<()> {
     let pair = support::LocalPair::start().await?;
     let result = async {
         let owner = pair.b.peer_id().to_string();
@@ -115,17 +115,19 @@ async fn exercise(extra_mount: bool) -> Result<()> {
         registry::frame(&home_defs,&home_frame)?;
         let c = registry_ar::CameraContract {sensor:auki_registry::RegistryRef {peer_id:owner.clone(),id:sensor.sensor_id.clone(),hash:sensor.hash()},
             frame:(&frame).into(),clock:clock.clone(),session_id:"s".into()};
+        let schema=if binary {spatial_home::camera_frame::SCHEMA}else{spatial_home::camera_frame::LEGACY_SCHEMA};
         let component = runtime.component(ComponentSpec::new("image-source").observable(ObservableContract {
-            name:"pixels".into(),datatype:VideoFrame::DATATYPE.into(),schema:"auki.video-frame/v1".into(),
+            name:"pixels".into(),datatype:VideoFrame::DATATYPE.into(),schema:schema.into(),
             access:vec![ObservationAccess::FollowNew],exposure:Exposure::Cluster }))?;
         let output = component.configured_observable(ConfiguredObservableSpec::new("pixels",format!("camera-{}",manifest_hash(&c)),clock.clone(),
-            PayloadContract::Camera(CameraPayloadContract {datatype:VideoFrame::DATATYPE.into(),schema:"auki.video-frame/v1".into(),encoding:"jpeg".into(),
+            PayloadContract::Camera(CameraPayloadContract {datatype:VideoFrame::DATATYPE.into(),schema:schema.into(),encoding:"jpeg".into(),
                 width:100,height:80,nominal_frame_rate_hz:Some(5),observes:"test image".into()})).in_registered_frame(frame.clone()))?;
         component.expose()?;
         let capture = runtime.capture_buffer_with_metadata("arbitrary-image-product",&output,
             BufferLimits {max_entries:Some(2),max_bytes:None,target_duration:None},|f:&VideoFrame|f.bytes.len(),
             move |o| Ok(Some(CatalogProductMetadata {schema:registry_ar::CAMERA_METADATA.into(),source_sequence:o.sequence,value:serde_json::to_value(&c).map_err(|e| e.to_string())?})))?;
-        endpoint.export_product(&capture.product())?;
+        if binary {endpoint.export_product_with_encoder(&capture.product(),spatial_home::camera_frame::encoder())?;}
+        else {endpoint.export_product(&capture.product())?;}
         let t = 9_007_199_254_740_993;
         let _mount = if extra_mount {
             let m = transform(&runtime,&endpoint,&frame,&base,&clock,Lifetime::Held,"mount")?;
@@ -150,12 +152,21 @@ async fn exercise(extra_mount: bool) -> Result<()> {
         assert_eq!(cameras.len(),1);
         let source = &cameras[0];
         let client = auki_component_protocol::ComponentProtocolClient::new(pair.a.protocols());
+        let mut stream=client.subscribe_product_exact_with_decoder(pair.b.peer_id(),routes[0].parse()?,capture.product().reference(),
+            auki_component_protocol::ObservationStart::LatestExisting,BufferLimits::entries(1),|f:&VideoFrame|f.bytes.len(),spatial_home::camera_frame::decoder(schema)?).await?;
+        let event=tokio::time::timeout(std::time::Duration::from_secs(3),stream.next()).await??.unwrap();
+        let auki_component_protocol::RemoteObservationEvent::Observation(received)=event else {panic!("expected camera observation")};
+        assert_eq!(received.timestamp_ns,image.timestamp_ns);assert_eq!(received.sequence,image.sequence);
+        assert_eq!(received.output,image.output);assert_eq!(received.payload.bytes,image.payload.bytes);
+        let image=received;
         let manifest = output.manifest();
         let render = || registry_ar::render(&client,source,&row,&image,&manifest,&homes,&home_owner,true);
         assert!(render().await.unwrap_err().to_string().contains("Waiting for capture-matched"));
         motion.publish(t+50_000_000,valid(4.))?;
         let view = render().await?;
         assert_eq!(view["capture_timestamp_ns"],t.to_string());
+        assert_eq!(view["ar"]["voxel_count"],0);
+        assert_eq!(view["ar"]["vertices"],json!([]));
         assert_eq!(view["picking"]["camera_to_map"]["translation"],json!([if extra_mount {14.}else{13.},0.,0.]));
         assert_eq!(view["picking"]["frame"],home_frame.frame_id);
         assert_eq!(view["viewpoint"]["position"],view["picking"]["camera_to_map"]["translation"]);
@@ -212,10 +223,15 @@ async fn exercise(extra_mount: bool) -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_edge_camera_chain_over_authenticated_sdk() -> Result<()> {
-    exercise(false).await
+    exercise(false,false).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn three_edge_camera_chain_over_authenticated_sdk() -> Result<()> {
-    exercise(true).await
+    exercise(true,false).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn binary_camera_uses_same_capture_matched_registry_chain()->Result<()> {
+    exercise(true,true).await
 }

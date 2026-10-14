@@ -119,7 +119,7 @@ pub async fn chat_with_async_tools<T:std::future::Future<Output=Result<serde_jso
      let value=match result {Ok(v)=>{
       if name=="open_camera_pip" {return Ok(json!({"reply":"Camera selected. Requesting PiP in your browser.","model":model,"changes":changes,"ui_actions":[v]}));}
       if matches!(name,"move_camera"|"attach_camera"|"detach_camera") {return Ok(json!({"reply":"Requesting the map-camera change in your browser.","model":model,"changes":changes,"ui_actions":[v]}));}
-      if matches!(name,"create_note_at_volume_corner"|"set_peer_alias"|"create_volume"|"delete_all_notes"|"delete_all_volumes"|"delete_volume"|"create_note_relative_to_view"|"clear_voxels"|"update_volume_description"|"move_volume"|"resize_volume"|"rename_volume"|"set_volume_length"|"place_volume_relative_to_floor"|"create_note"|"delete_note"|"move_note"|"rename_note"|"change_note_description") {
+      if is_scene_edit(name) {
          changes.push(v.clone());
          let reply=v["summary"].as_str().map(str::to_owned).unwrap_or_else(||format!("Updated {}'s description.",v["title"].as_str().unwrap_or("the volume")));
          return Ok(json!({"reply":reply,"model":model,"changes":changes}));
@@ -209,8 +209,22 @@ fn selected_tools(text:&str,snapshot:&serde_json::Value)->serde_json::Value {
  selected.as_array_mut().unwrap().retain(|t|unique.insert(t["function"]["name"].as_str().unwrap_or("").to_owned()));
  selected
 }
+fn is_scene_edit(name:&str)->bool {
+ matches!(name,"create_note_at_volume_corner"|"set_peer_alias"|"create_volume"|"delete_all_notes"|"delete_all_volumes"|"delete_volume"|"create_note_relative_to_view"|"clear_voxels"|"update_volume_description"|"move_volume"|"resize_volume"|"rename_volume"|"set_volume_length"|"place_volume_relative_to_floor"|"create_note"|"delete_note"|"move_note"|"rename_note"|"change_note_description")
+}
+fn inference_request(model:&str,messages:&[serde_json::Value],tools:&serde_json::Value)->serde_json::Value {
+ let mut options=json!({"num_predict":1024});
+ // Measured on Home's edit fixtures. Keep model defaults for read-only/vision
+ // requests and other models; do not shrink context and risk truncating a scene.
+ let edits=tools.as_array().is_some_and(|items|items.iter().any(|t|
+     t["function"]["name"].as_str().is_some_and(is_scene_edit)));
+ if model=="qwen3.5:35b-a3b" && edits {
+     options["temperature"]=json!(0.25);options["presence_penalty"]=json!(0.0);
+ }
+ json!({"model":model,"messages":messages,"tools":tools,"stream":false,"think":false,"keep_alive":"30m","options":options})
+}
 async fn infer(client:&reqwest::Client,base:&str,model:&str,messages:&[serde_json::Value],tools:&serde_json::Value)->Result<serde_json::Value> {
- let mut response=client.post(format!("{}/api/chat",base.trim_end_matches('/'))).json(&json!({"model":model,"messages":messages,"tools":tools,"stream":false,"think":false,"options":{"num_predict":1024}})).send().await.map_err(|_|anyhow::anyhow!("Cannot reach local Ollama or the request timed out. Check that Ollama is running."))?;
+ let mut response=client.post(format!("{}/api/chat",base.trim_end_matches('/'))).json(&inference_request(model,messages,tools)).send().await.map_err(|_|anyhow::anyhow!("Cannot reach local Ollama or the request timed out. Check that Ollama is running."))?;
  let status=response.status();
  let mut bytes=Vec::new();
  while let Some(chunk)=response.chunk().await? {ensure!(bytes.len()+chunk.len()<=128*1024,"Ollama reply exceeded the size limit");bytes.extend_from_slice(&chunk);}
@@ -220,6 +234,23 @@ async fn infer(client:&reqwest::Client,base:&str,model:&str,messages:&[serde_jso
 }
 #[cfg(test)] mod tests {
  use super::*;
+ #[test] fn edit_sampling_keeps_context_and_output_budget() {
+  let messages=vec![json!({"role":"user","content":"Rename a note"})];
+  let tools=json!([{"type":"function","function":{"name":"rename_note"}}]);
+  let request=inference_request("qwen3.5:35b-a3b",&messages,&tools);
+  assert_eq!(request["options"],json!({"num_predict":1024,"temperature":0.25,"presence_penalty":0.0}));
+  assert_eq!(request["keep_alive"],"30m");assert_eq!(request["think"],false);
+  assert_eq!(request["messages"],json!(messages));assert_eq!(request["tools"],tools);
+ }
+ #[test] fn read_only_vision_and_other_models_keep_sampling_defaults() {
+  let image=vec![json!({"role":"user","content":"Describe this image","images":["fixture"]})];
+  for tools in [json!([]),json!([{"function":{"name":"capture_camera_frame"}},{"function":{"name":"inspect_catalog"}}])] {
+   assert_eq!(inference_request("qwen3.5:35b-a3b",&image,&tools)["options"],json!({"num_predict":1024}));
+  }
+  let edits=json!([{"function":{"name":"rename_note"}}]);
+  assert_eq!(inference_request("another-model",&[],&edits)["options"],json!({"num_predict":1024}));
+  assert!(!is_scene_edit("move_camera"));assert!(!is_scene_edit("capture_camera_frame"));
+ }
  #[test] fn geometry_discovery_includes_peer_and_camera_tools() {
   for operation in ["point_relative_to_peer","raycast_peer_camera"] {
    let mut selected=selected_tools("hello",&json!({}));

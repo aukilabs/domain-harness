@@ -1,6 +1,9 @@
 //! Connection-only diagnostic; --poses adds exactly one typed BBOS pose Product.
 mod alignment;
 mod camera;
+mod diagnostic_log;
+#[path = "../../../src/camera_frame.rs"]
+mod camera_frame;
 mod depth;
 #[path = "../../../src/component_enabled.rs"]
 mod component_enabled;
@@ -55,6 +58,7 @@ fn read<T: serde::de::DeserializeOwned>(path: &str) -> Result<T> {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
+    let _logging = diagnostic_log::start()?;
     let args: Vec<_> = std::env::args().collect();
     ensure!(
         args.len() == 4
@@ -123,7 +127,7 @@ async fn main() -> Result<()> {
             return Err(error.into());
         }
     };
-    eprintln!(
+    crate::diagnostic_log!(
         "Diagnostic peer {} -> Home {} (SDK PR 425)",
         peer.peer_id(),
         expected
@@ -166,7 +170,7 @@ async fn main() -> Result<()> {
         tokio::sync::watch::channel(None::<(camera::Calibration, u64, Vec<u8>)>);
     let camera_task = portals.then(|| {
         tokio::spawn(async move {
-            use base64::Engine;
+            use tokio::io::AsyncReadExt;
             let work = async {
                 let mut child = tokio::process::Command::new("python3")
                     .args([
@@ -181,29 +185,25 @@ async fn main() -> Result<()> {
                     .stdout(std::process::Stdio::piped())
                     .kill_on_drop(true)
                     .spawn()?;
-                let mut lines = tokio::io::BufReader::new(child.stdout.take().unwrap()).lines();
-                let first = tokio::time::timeout(Duration::from_secs(30), lines.next_line())
-                    .await??
-                    .context("Camera configuration missing")?;
+                let mut reader = tokio::io::BufReader::new(child.stdout.take().unwrap());
+                let length=tokio::time::timeout(Duration::from_secs(30),reader.read_u32_le()).await?? as usize;
+                ensure!(length>0 && length<=16384,"Camera configuration too large");
+                let mut first=vec![0;length];reader.read_exact(&mut first).await?;
+                let first=String::from_utf8(first)?;
                 let calibration: camera::Calibration = serde_json::from_str(&first)?;
                 calibration.validate()?;
-                #[derive(Deserialize)]
-                struct Frame {
-                    timestamp_ns: u64,
-                    jpeg: String,
-                }
                 loop {
-                    let line = lines.next_line().await?.context("Camera capture ended")?;
-                    ensure!(line.len() < 3 * 1024 * 1024, "Camera IPC frame too large");
-                    let frame: Frame = serde_json::from_str(&line)?;
-                    let bytes = base64::engine::general_purpose::STANDARD.decode(frame.jpeg)?;
-                    camera_tx.send_replace(Some((calibration.clone(), frame.timestamp_ns, bytes)));
+                    let timestamp_ns=reader.read_u64_le().await?;
+                    let length=reader.read_u32_le().await? as usize;
+                    ensure!(length>0 && length<=2*1024*1024,"Camera IPC frame too large");
+                    let mut bytes=vec![0;length];reader.read_exact(&mut bytes).await?;
+                    camera_tx.send_replace(Some((calibration.clone(), timestamp_ns, bytes)));
                 }
                 #[allow(unreachable_code)]
                 Ok::<(), anyhow::Error>(())
             };
             if let Err(e) = work.await {
-                eprintln!("Camera capture failed: {e}");
+                crate::diagnostic_log!("Camera capture failed: {e}");
             }
         })
     });
@@ -241,7 +241,7 @@ async fn main() -> Result<()> {
                     }
                 }
                 if result.is_none() && error != previous_error {
-                    eprintln!("Home alignment input unresolved: {error}");
+                    crate::diagnostic_log!("Home alignment input unresolved: {error}");
                 }
                 previous_error = error;
                 home_tx.send_replace(result);
@@ -252,6 +252,7 @@ async fn main() -> Result<()> {
         None
     };
     let mut alignment: Option<alignment::Worker> = None;
+    let mut alignment_error = String::new();
     let client = ComponentProtocolClient::new(peer.protocols());
     let (tx, rx) = tokio::sync::watch::channel(None::<Instant>);
     let requests = tokio::spawn(async move {
@@ -297,7 +298,7 @@ async fn main() -> Result<()> {
                 if changed.is_err() {
                     depth_open=false;
                     if let Some(d)=depth_publisher.take(){d.close(publisher.as_ref().unwrap())?;}
-                    eprintln!("Depth unavailable; pose and camera diagnostic continue");
+                    crate::diagnostic_log!("Depth unavailable; pose and camera diagnostic continue");
                     continue;
                 }
                 let sample=depth_rx.borrow_and_update().clone();
@@ -307,20 +308,20 @@ async fn main() -> Result<()> {
                         if let Some(sample)=sample {depth_publisher.as_mut().unwrap().publish(sample,&publisher.as_ref().unwrap().endpoint)?;}
                         Ok::<(),anyhow::Error>(())
                     })();
-                    if let Err(e)=result {eprintln!("Depth publish failed: {e}");}
+                    if let Err(e)=result {crate::diagnostic_log!("Depth publish failed: {e}");}
                 }
             },
             changed=camera_rx.changed(),if camera_open => {
-                if changed.is_err(){camera_open=false;alignment=None;camera_publisher=None;eprintln!("Camera unavailable; pose diagnostic continues");continue;}
+                if changed.is_err(){camera_open=false;alignment=None;camera_publisher=None;crate::diagnostic_log!("Camera unavailable; pose diagnostic continues");continue;}
                 let sample=camera_rx.borrow_and_update().clone();
                 if let Some((calibration,t,jpeg))=sample {
                     if camera_publisher.is_none(){
                         match camera::Camera::mount(publisher.as_ref().unwrap(),calibration) {
                             Ok(camera)=>camera_publisher=Some(camera),
-                            Err(error)=>{camera_open=false;eprintln!("Camera unavailable: {error}; pose diagnostic continues");continue;}
+                            Err(error)=>{camera_open=false;crate::diagnostic_log!("Camera unavailable: {error}; pose diagnostic continues");continue;}
                         }
                     }
-                    if let Err(e)=camera_publisher.as_mut().unwrap().publish(t,jpeg){eprintln!("Camera publish failed: {e}");}
+                    if let Err(e)=camera_publisher.as_mut().unwrap().publish(t,jpeg){crate::diagnostic_log!("Camera publish failed: {e}");}
                 }
             },
             line = input.next_line(), if publish_poses => {
@@ -328,10 +329,10 @@ async fn main() -> Result<()> {
                     Ok(Some(line)) if line.len() <= 4096 => {
                         match serde_json::from_str::<poses::Sample>(&line).map_err(anyhow::Error::from)
                             .and_then(|s| publisher.as_mut().unwrap().publish(s)) {
-                            Ok(()) => {}, Err(error) => { eprintln!("Pose input failed: {error}"); break; }
+                            Ok(()) => {}, Err(error) => { crate::diagnostic_log!("Pose input failed: {error}"); break; }
                         }
                     },
-                    _ => { eprintln!("Pose input ended or invalid; stopping diagnostic"); break; }
+                    _ => { crate::diagnostic_log!("Pose input ended or invalid; stopping diagnostic"); break; }
                 }
             },
             _ = tokio::signal::ctrl_c() => break,
@@ -342,7 +343,10 @@ async fn main() -> Result<()> {
                     if alignment.as_ref().is_some_and(|a|a.target!=(&home.frame).into()) {alignment=None;}
                     if alignment.is_none() {
                         match alignment::Worker::mount(publisher,camera,home,home_rx.clone()) {
-                            Ok(worker)=>alignment=Some(worker),Err(e)=>eprintln!("Alignment component unavailable: {e}"),
+                            Ok(worker)=>{alignment=Some(worker);alignment_error.clear();},
+                            Err(e)=>{let error=e.to_string();if error!=alignment_error {
+                                crate::diagnostic_log!("Alignment component unavailable: {error}");alignment_error=error;
+                            }},
                         }
                     }
                 }

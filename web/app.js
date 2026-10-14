@@ -10,6 +10,7 @@ import { createGhostCamera, createCameraPan, isEditing } from './ghost-camera.js
 import { createNoteBubble } from './note-bubble.js';
 import { createPipWindow } from './pip-window.js';
 import { createVideoPresentation } from './video-presentation.js';
+import { readCameraResponse } from './camera-frame.js';
 import { moveMapCamera } from './view-camera.js';
 import { createAttachedCamera } from './attached-camera.js';
 import { createRobotModel } from './robot-model.js';
@@ -811,10 +812,10 @@ async function watchSensor(generation){
  if(generation!==sensorGeneration||!sensorSelect.value)return;
  const status=document.querySelector('#sensor-feed-status');
  try{
-  const response=await fetch('/api/sensors?sensor='+encodeURIComponent(sensorSelect.value)+(arToggle.checked?'&ar=true':'')+(arAvailable.get(sensorSelect.value)?'&pick=true':''));const f=await response.json();if(!response.ok)throw Error(f.error);
+  const response=await fetch('/api/sensors?sensor='+encodeURIComponent(sensorSelect.value)+(arToggle.checked?'&ar=true':'')+(arAvailable.get(sensorSelect.value)?'&pick=true':''));const f=await readCameraResponse(response);
   if(generation!==sensorGeneration)return;
   if(f.sequence!==lastSensorSequence&&!labelDialog.open){
-   const bytes=Uint8Array.from(atob(f.data),c=>c.charCodeAt(0));
+   const bytes=f.bytes;
    if(!Number.isInteger(f.width)||!Number.isInteger(f.height)||f.width<1||f.height<1||f.width>4096||f.height>4096)throw Error('Invalid image dimensions');
    const bitmap=(f.encoding==='jpeg'||f.encoding==='jpg')?await createImageBitmap(new Blob([bytes],{type:'image/jpeg'})):null;
    if(generation!==sensorGeneration){bitmap?.close();return;}
@@ -828,7 +829,7 @@ async function watchSensor(generation){
    }
    displayedCamera={token:f.camera_token,error:f.pick_error,width:f.width,height:f.height,receivedAt:Date.now()};
    videoPresentation.update(f);
-   if(arToggle.checked){arOverlay??=createArOverlay($('sensor-ar-overlay'));arOverlay.show(f,Number($('sensor-stage').dataset.rotation)||0);arLastSuccess=Date.now();arStatus.textContent=['sdk-camera','sdk-fisheye'].includes(f.ar?.projection)?'AR · Home scene voxels + notes · capture-matched camera':'AR · Home live voxels + notes · synchronized mapping camera';}
+   if(arToggle.checked){arOverlay??=createArOverlay($('sensor-ar-overlay'));arOverlay.show(f,Number($('sensor-stage').dataset.rotation)||0);arLastSuccess=Date.now();arStatus.textContent='AR · Home notes + drawings · capture-matched camera';}
    lastSensorSequence=f.sequence;lastSensorChange=Date.now();
   }
   status.textContent=Date.now()-lastSensorChange>3000?'Stale · no new frames':'Receiving · frame '+f.sequence;
