@@ -294,14 +294,16 @@ enum CrayonTube {
         return curve
     }
     /// Rings of `sides` vertices round the curve, joined into one closed skin with flat ends.
-    static func mesh(_ points: [SIMD3<Float>], radius: Float, sides: Int = 8) -> (vertices: [SIMD3<Float>], indices: [UInt32])? {
+    /// Each vertex's `along` is its distance in metres from the first point, the way the line was drawn.
+    static func mesh(_ points: [SIMD3<Float>], radius: Float, sides: Int = 8) -> (vertices: [SIMD3<Float>], indices: [UInt32], along: [SIMD2<Float>])? {
         var path = [SIMD3<Float>]()
         for p in smooth(points) where p.x.isFinite && p.y.isFinite && p.z.isFinite {
             if let last = path.last, simd_distance(last, p) < 0.0005 { continue }
             path.append(p)
         }
         guard path.count >= 2, radius > 0, sides >= 3 else { return nil }
-        var vertices = [SIMD3<Float>](), indices = [UInt32]()
+        var vertices = [SIMD3<Float>](), indices = [UInt32](), along = [SIMD2<Float>]()
+        var distance: Float = 0
         // The ring's "up" is carried along the curve so the tube never twists or pinches.
         var normal = SIMD3<Float>(0, 1, 0)
         for i in path.indices {
@@ -313,9 +315,11 @@ enum CrayonTube {
             }
             normal = simd_normalize(side)
             let across = simd_cross(tangent, normal)
+            if i > 0 { distance += simd_distance(path[i - 1], path[i]) }
             for k in 0..<sides {
                 let angle = Float(k) / Float(sides) * 2 * .pi
                 vertices.append(path[i] + (normal * cos(angle) + across * sin(angle)) * radius)
+                along.append(SIMD2(distance, Float(k) / Float(sides)))
             }
         }
         let n = UInt32(sides)
@@ -325,14 +329,14 @@ enum CrayonTube {
                 indices.append(contentsOf: [a, b, c, b, d, c])
             }
         }
-        let first = UInt32(vertices.count); vertices.append(path[0])
-        let last = first + 1; vertices.append(path[path.count - 1])
+        let first = UInt32(vertices.count); vertices.append(path[0]); along.append(SIMD2(0, 0))
+        let last = first + 1; vertices.append(path[path.count - 1]); along.append(SIMD2(distance, 0))
         let end = UInt32(path.count - 1) * n
         for k in 0..<n {
             indices.append(contentsOf: [first, (k + 1) % n, k])
             indices.append(contentsOf: [last, end + k, end + (k + 1) % n])
         }
-        return (vertices, indices)
+        return (vertices, indices, along)
     }
 }
 
