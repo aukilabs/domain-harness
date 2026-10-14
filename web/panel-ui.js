@@ -133,10 +133,10 @@ export function formField({label,id=`field-${++fieldCount}`,multiline=false,max,
 }
 
 // A polite status message that fades after a few seconds.
-export function toast(text){
+export function toast(text,{tone}={}){
  let region=document.getElementById('toast');
  if(!region){region=element('div','toast');region.id='toast';region.setAttribute('role','status');document.querySelector('.viewport')?.append(region)||document.body.append(region);}
- region.textContent=text;region.hidden=false;clearTimeout(region.timer);region.timer=setTimeout(()=>{region.hidden=true;},3500);
+ region.textContent=text;region.dataset.tone=tone||(/fail|error|unavailable|not running|could not|can.t /i.test(text)?'error':'ok');region.hidden=false;clearTimeout(region.timer);region.timer=setTimeout(()=>{region.hidden=true;},3500);
 }
 
 // Marks a row as the current selection. Lists re-render often, so the selection pop only plays

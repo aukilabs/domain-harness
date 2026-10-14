@@ -1177,3 +1177,29 @@ select.form-control{appearance:none;-webkit-appearance:none;padding-right:30px;b
 #sensor-pip .pip-resize::after{right:6px;bottom:6px;width:8px;height:8px;border-width:1.5px;border-radius:0 0 3px 0}
 /* The old decorative blueprint grid over the viewport is gone; the scene has its own ground grid. */
 .viewport:before{display:none}
+/* Scene notice: one glass pill at the top of the view for scene status and errors. */
+.scene-notice{position:absolute;top:16px;left:50%;z-index:90;display:flex;align-items:flex-start;gap:10px;width:max-content;max-width:min(560px,calc(100% - 32px));padding:10px 8px 10px 14px;border:1px solid rgba(255,255,255,.6);border-radius:14px;background:color-mix(in srgb,var(--nav-panel) 92%,transparent);-webkit-backdrop-filter:blur(24px) saturate(1.3);backdrop-filter:blur(24px) saturate(1.3);box-shadow:0 12px 32px -12px rgba(24,24,27,.3),0 2px 6px rgba(24,24,27,.06);color:var(--nav-text);font-size:12.5px;line-height:17px;transform:translateX(-50%);animation:notice-in .32s cubic-bezier(.3,1.25,.5,1)}
+.scene-notice[hidden]{display:none}
+:root:not([data-theme="light"]) .scene-notice{border-color:rgba(255,255,255,.08)}
+.scene-notice-dot{flex-shrink:0;width:8px;height:8px;margin-top:4.5px;border-radius:50%;background:#2563eb;box-shadow:0 0 0 3px color-mix(in srgb,#2563eb 18%,transparent)}
+.scene-notice[data-tone="error"] .scene-notice-dot{background:#dc2626;box-shadow:0 0 0 3px rgba(220,38,38,.18)}
+.scene-notice[data-tone="warn"] .scene-notice-dot{background:#d97706;box-shadow:0 0 0 3px rgba(217,119,6,.18)}
+.scene-notice[data-tone="info"] .scene-notice-dot{background:#10b981;box-shadow:0 0 0 3px rgba(16,185,129,.18)}
+.scene-notice-text{display:grid;min-width:0}
+.scene-notice-text strong{font-weight:600}
+.scene-notice-text>span{color:var(--nav-muted);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
+.scene-notice-text>span:empty{display:none}
+.scene-notice-close{flex-shrink:0;width:24px;height:24px;margin:-3px 0 -3px 4px;display:grid;place-items:center;padding:0;border:0;border-radius:7px;background:transparent;color:var(--nav-muted);cursor:pointer;transition:background .15s ease,color .15s ease}
+.scene-notice-close:hover{background:var(--glass-fill);color:var(--nav-text)}
+@keyframes notice-in{from{opacity:0;transform:translate(-50%,-6px) scale(.98)}}
+/* The attached-camera status shares the ink mode banner. */
+.attached-camera-banner{z-index:91}
+.attached-camera-banner[hidden]{display:none}
+/* Toasts: an ink pill with a tone dot; errors read as errors. */
+.toast{display:flex;align-items:center;gap:8px;max-width:min(520px,calc(100% - 32px))}
+.toast::before{content:"";flex-shrink:0;width:7px;height:7px;border-radius:50%;background:#34d399}
+.toast[data-tone="error"]::before{background:#f87171}
+@media(prefers-reduced-motion:reduce){.scene-notice{animation:none}}
+.toast{top:auto;bottom:88px;z-index:96;animation:toast-in .3s cubic-bezier(.3,1.25,.5,1)}
+@keyframes toast-in{from{opacity:0;transform:translate(-50%,8px)}}
+@media(prefers-reduced-motion:reduce){.toast{animation:none}}
