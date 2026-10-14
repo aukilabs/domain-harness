@@ -13,6 +13,13 @@ use std::{
 };
 
 const MAX_GAP_NS: u64 = 250_000_000;
+#[derive(Debug, PartialEq)]
+enum AlignmentAction { Revoke, Pause, Observe }
+fn alignment_action(reference_changed: bool, ready: bool) -> AlignmentAction {
+    if reference_changed { AlignmentAction::Revoke }
+    else if !ready { AlignmentAction::Pause }
+    else { AlignmentAction::Observe }
+}
 fn rotation(p: &Pose) -> UnitQuaternion<f64> {
     let [x, y, z, w] = p.rotation_xyzw;
     UnitQuaternion::new_normalize(Quaternion::new(w, x, y, z))
@@ -263,7 +270,7 @@ impl Worker {
             let mut last_pose_sequence = None;
             let mut pose_received = Instant::now();
             let mut valid = false;
-            let mut published = 0;
+            let mut published: u64 = 0;
             let mut loss = 0;
             let mut geometry = home.identity;
             let mut last_message = String::new();
@@ -287,7 +294,12 @@ impl Worker {
                     && home.as_ref().is_some_and(|h| {
                         crate::compact_pose::FrameRef::from(&h.frame) == contract.to_frame
                     });
-                if !ready || changed || loss > published {
+                // Tracking availability belongs to the sampled base pose, not
+                // to this held world-to-Home calibration. A gap/lost sample
+                // pauses consumers at capture time without erasing alignment.
+                // A BBOS writer/frame reset terminates this worker via Publisher;
+                // its shutdown revocation and new session fence the old frame.
+                if alignment_action(changed, ready) == AlignmentAction::Revoke {
                     if valid {
                         let at = now_ns().max(published.saturating_add(1));
                         if output
@@ -303,17 +315,17 @@ impl Worker {
                             valid = false;
                             loss = loss.max(at);
                             eprintln!(
-                                "Alignment withdrawn: tracking, Home contract or connection unavailable"
+                                "Alignment withdrawn: Home reference changed"
                             );
                         }
                     }
                     if changed {
                         geometry = home.as_ref().unwrap().identity.clone();
                     }
-                    if !ready {
-                        std::thread::sleep(Duration::from_millis(50));
-                        continue;
-                    }
+                }
+                if !ready {
+                    std::thread::sleep(Duration::from_millis(50));
+                    continue;
                 }
                 if let (Some(home), Some(d)) = (home, latest(&detections)) {
                     // Wait for the right pose bracket, but never reuse pre-loss detections.
@@ -395,6 +407,16 @@ impl Drop for Worker {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    #[test]
+    fn temporary_unavailability_retains_calibration_but_reference_change_revokes() {
+        assert_eq!(alignment_action(false, true), AlignmentAction::Observe);
+        // Lost tracking, stale pose, or temporary Home disconnection.
+        assert_eq!(alignment_action(false, false), AlignmentAction::Pause);
+        // Recovery needs no new portal observation.
+        assert_eq!(alignment_action(false, true), AlignmentAction::Observe);
+        assert_eq!(alignment_action(true, false), AlignmentAction::Revoke);
+        assert_eq!(alignment_action(true, true), AlignmentAction::Revoke);
+    }
     fn identity() -> Pose {
         Pose {
             translation: [0.; 3],
@@ -504,6 +526,7 @@ pub(crate) mod tests {
         .unwrap();
         assert!(sampled_at(&p, &c, t + 150_000_000).is_err());
         assert!(sampled_at(&p, &c, t + 250_000_000).is_err());
+        assert!(sampled_at(&p, &c, t + 300_000_000).is_ok());
         o.publish(
             t + 900_000_000,
             Arc::new(Update {

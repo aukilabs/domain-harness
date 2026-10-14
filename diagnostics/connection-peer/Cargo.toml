@@ -6,6 +6,11 @@ edition = "2024"
 # Deliberately independent of Home and the full robot runner.
 [workspace]
 
+# This standalone workspace must share Home's cancel-safe authenticated server.
+# Cargo does not inherit patches from the enclosing Home workspace.
+[patch."https://github.com/aukilabs/auki-sdk.git"]
+auki-p2p = { path = "../../vendor/auki-p2p" }
+
 [dependencies]
 anyhow = "1"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }

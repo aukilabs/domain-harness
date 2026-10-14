@@ -1021,11 +1021,9 @@ async fn completing_operations_do_not_cancel_other_stream_authentication() {
         )
         .unwrap();
     let mut jobs = tokio::task::JoinSet::new();
-    // Keep raw admission below libp2p-stream's zero-buffer queue limit. An
-    // authenticated request can still finish while the next is authenticating.
-    let admission = Arc::new(tokio::sync::Mutex::new(()));
+    // The runtime must coordinate admission itself, across cloned Nodes.
+    // Finishing handlers must not cancel other streams' authentication.
     for lane in 0..8u8 {
-        let admission = admission.clone();
         let node = client_node.clone();
         let address = address.clone();
         let protocol = protocol.clone();
@@ -1036,7 +1034,6 @@ async fn completing_operations_do_not_cancel_other_stream_authentication() {
             let mut failures = Vec::new();
             for _ in 0..12 {
                 let exchange = async {
-                    let opening = admission.lock().await;
                     let mut stream = node
                         .open_exact_route(
                             peer,
@@ -1045,7 +1042,6 @@ async fn completing_operations_do_not_cancel_other_stream_authentication() {
                             requirements.clone(),
                         )
                         .await?;
-                    drop(opening);
                     stream.write_all(&[lane]).await?;
                     stream.flush().await?;
                     let mut reply = [0];

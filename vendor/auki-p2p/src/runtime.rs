@@ -204,6 +204,23 @@ impl Node {
         protocol: ApplicationProtocol,
         requirements: SessionRequirements,
     ) -> Result<AuthenticatedRouteStream> {
+        // libp2p-stream has a very small inbound admission queue. Serialize
+        // handshakes, not established streams, across all clones of this Node.
+        // Weak entries are pruned; cancellation releases the permit normally.
+        let gate = {
+            let mut gates = self.stream_admission.lock();
+            gates.retain(|_, gate| gate.strong_count() > 0);
+            let key = (remote_peer_id, protocol.stream_protocol().to_string());
+            match gates.get(&key).and_then(std::sync::Weak::upgrade) {
+                Some(gate) => gate,
+                None => {
+                    let gate = Arc::new(tokio::sync::Mutex::new(()));
+                    gates.insert(key, Arc::downgrade(&gate));
+                    gate
+                }
+            }
+        };
+        let _admission = gate.lock().await;
         match route {
             ExactRoute::Direct(route) => self
                 .open(remote_peer_id, vec![route], protocol, requirements)
