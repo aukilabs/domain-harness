@@ -11,7 +11,8 @@ import { createNoteBubble } from './note-bubble.js';
 import { createPipWindow } from './pip-window.js';
 import { createVideoPresentation } from './video-presentation.js';
 import { readCameraResponse } from './camera-frame.js';
-import { icons, icon, deviceIcon, sectionHeader, disclosure, statusKind, statusBadge, listRow, searchField, copyButton, emptyState, actionButton, formField, toast } from './panel-ui.js';
+import { icons, icon, deviceIcon, sectionHeader, disclosure, statusKind, statusBadge, listRow, searchField, copyButton, emptyState, actionButton, formField, toast, reveal, conceal, animateDetails } from './panel-ui.js';
+animateDetails(document);
 const plural=(count,word)=>`${count} ${word}${count===1?'':'s'}`;
 import { moveMapCamera, applyChatActions, chatResultPresentation } from './view-camera.js';
 import { createAttachedCamera } from './attached-camera.js';
@@ -126,27 +127,24 @@ $('runner-card').hidden=true;
 $('sensor-catalog-status').hidden=true;
 moveTo('settings','#demo-controls, aside > .section-label, aside > .layer, #robot-volume-status');
 sidebar.querySelectorAll(':scope > .map-label').forEach(el=>el.remove());
-// Liquid panel motion: the panel flows out of the clicked tab on two slightly out-of-step springs
-// (fast width/rotation, softer height/skew), pours back into it on close, and ripples when switching.
+// Panel motion: opening fades in with a bounce from the clicked tab, switching tabs bounces,
+// and closing fades out.
 let panelMotion=null;
-function spring(frames,stiffness,damping){const out=[];let x=0,v=0;for(let i=0;i<frames;i++){for(let k=0;k<4;k++){const a=stiffness*(1-x)-damping*v;v+=a/240;x+=v/240;}out.push(x);}out[frames-1]=1;return out;}
-const fast=spring(40,260,22),soft=spring(40,150,13.5);
 function panelOrigin(id){const tab=railTabs.querySelector(`[data-panel="${id}"]`);if(!tab)return '0px 40px';return `0px ${tab.getBoundingClientRect().top+tab.offsetHeight/2-sidebar.getBoundingClientRect().top}px`;}
-function liquidFrame(p,q){return {transform:`translateX(${(-10*(1-p)).toFixed(2)}px) scale(${(.94+.06*p).toFixed(4)},${(.7+.3*q).toFixed(4)})`,opacity:Math.min(1,p*3)};}
+// The bounce: a quick decaying ripple from the tab; on open it also fades in.
+function bounceFrames(origin,fade){const frames=[];for(let i=0;i<=30;i++){const t=i/30,a=Math.exp(-5*t)*Math.sin(16*t);frames.push({transform:`perspective(1200px) skewY(${(2.6*a).toFixed(3)}deg) scale(${(1+.02*a).toFixed(4)},${(1-.045*a).toFixed(4)})`,transformOrigin:origin,...(fade?{opacity:Math.min(1,t*4)}:{})});}return frames;}
 function switchPanel(id){
  panelMotion?.cancel();
  if(!railMotion){openPanel(id);return;}
  const from=activePanel;
  if(!id){ // Pour back into the tab, then collapse.
-  const origin=panelOrigin(from);
-  panelMotion=sidebar.animate([{transform:'translateX(0) scale(1,1)',opacity:1,transformOrigin:origin},{transform:'translateX(-8px) scale(.97,.9)',opacity:0,transformOrigin:origin}],{duration:190,easing:'cubic-bezier(.4,0,1,1)'});panelMotion.onfinish=()=>{panelMotion=null;openPanel(null);};return;
+  panelMotion=sidebar.animate([{opacity:1},{opacity:0}],{duration:160,easing:'ease-in'});panelMotion.onfinish=()=>{panelMotion=null;openPanel(null);};return;
  }
  openPanel(id);enterPanel(id);
  const origin=panelOrigin(id);
- if(!from){panelMotion=sidebar.animate(fast.map((p,i)=>({...liquidFrame(p,soft[i]),transformOrigin:origin})),{duration:fast.length*16,easing:'linear'});return;}
+ if(!from){panelMotion=sidebar.animate(bounceFrames(origin,true),{duration:520,easing:'linear'});return;}
  // Switching: a quick decaying ripple centred on the new tab.
- const ripple=[];for(let i=0;i<=30;i++){const t=i/30,a=Math.exp(-5*t)*Math.sin(16*t);ripple.push({transform:`perspective(1200px) skewY(${(2.6*a).toFixed(3)}deg) scale(${(1+.02*a).toFixed(4)},${(1-.045*a).toFixed(4)})`,transformOrigin:origin});}
- panelMotion=sidebar.animate(ripple,{duration:520,easing:'linear'});
+ panelMotion=sidebar.animate(bounceFrames(origin,false),{duration:520,easing:'linear'});
 }
 // Panel contents settle in one after another.
 function enterPanel(id){if(!railMotion)return;const body=$('panel-'+id);body.classList.remove('entering');void body.offsetWidth;body.classList.add('entering');setTimeout(()=>body.classList.remove('entering'),700);}
@@ -162,7 +160,14 @@ const spatialCounts=document.createElement('p');spatialCounts.className='panel-m
 spatialCounts.innerHTML='<span id="anchor-count">0</span> anchors · <span id="landmark-count">0</span> landmarks';
 const spatialStatus=document.createElement('p');spatialStatus.id='spatial-status';spatialStatus.className='panel-hint';
 const spatialTree=document.createElement('div');spatialTree.id='anchor-list';spatialTree.className='spatial-tree';spatialTree.setAttribute('aria-label','Anchors');
-spatialBrowser.append(sectionHeader('Anchors'),searchField({id:'spatial-search',label:'Search anchors and landmarks',placeholder:'Search by ID or type',onInput:()=>renderSpatialLists()}),spatialCounts,spatialStatus,spatialTree);
+const anchorsRegion=document.createElement('div');anchorsRegion.id='anchors-region';
+anchorsRegion.append(searchField({id:'spatial-search',label:'Search anchors and landmarks',placeholder:'Search by ID or type',onInput:()=>renderSpatialLists()}),spatialCounts,spatialStatus,spatialTree);
+let anchorsOpen=false;try{anchorsOpen=localStorage.getItem('maps-anchors-open')==='true';}catch{}
+anchorsRegion.hidden=!anchorsOpen;
+const anchorsToggle=disclosure('Anchors',{expanded:anchorsOpen,controls:'anchors-region',onToggle:()=>{}});anchorsToggle.classList.add('section-disclosure');
+anchorsToggle.onclick=()=>{anchorsOpen=!anchorsOpen;anchorsToggle.setAttribute('aria-expanded',String(anchorsOpen));try{localStorage.setItem('maps-anchors-open',String(anchorsOpen));}catch{}
+ if(anchorsOpen){anchorsRegion.hidden=false;reveal(anchorsRegion);}else conceal(anchorsRegion,()=>{anchorsRegion.hidden=true;});};
+spatialBrowser.append(anchorsToggle,anchorsRegion);
 mapsList.after(spatialBrowser);
 const fleetList=document.createElement('div');fleetList.id='fleet-sensors';panelBodies.fleet.append(fleetList);$('sensor-select').hidden=true;
 const {createPoseInspector}=await import('/pose-inspector.js');
@@ -619,7 +624,7 @@ function renderSpatialLists(){
   if(children.length){
    const toggle=document.createElement('button');toggle.type='button';toggle.className='tree-toggle';toggle.dataset.anchorToggle=anchor.id;
    toggle.setAttribute('aria-expanded',String(open));toggle.setAttribute('aria-controls','landmarks-'+anchor.id);toggle.setAttribute('aria-label',`Landmarks of ${anchor.id}`);toggle.append(icon(icons.chevron));
-   toggle.onclick=()=>{if(expandedAnchors.has(anchor.id))expandedAnchors.delete(anchor.id);else expandedAnchors.add(anchor.id);renderSpatialLists();};
+   toggle.onclick=()=>{const group=()=>document.getElementById('landmarks-'+anchor.id);if(expandedAnchors.has(anchor.id))conceal(group(),()=>{expandedAnchors.delete(anchor.id);renderSpatialLists();});else{expandedAnchors.add(anchor.id);renderSpatialLists();reveal(group());}};
    line.append(toggle);
   }else line.append(Object.assign(document.createElement('span'),{className:'tree-toggle-space'}));
   const row=spatialRow('anchor',anchor);const kindName=anchor.recognition.landmark_type.split('.').pop().replace(/^./,c=>c.toUpperCase());row.querySelector('.list-row-meta').textContent=children.length?`${kindName} · ${plural(children.length,'landmark')} · position only`:kindName;
@@ -986,7 +991,7 @@ function createNoteCard({request,error,portal=false}={}){
  const repick=actionButton('Pick another surface',{iconPath:icons.pin,onClick:()=>{options.hidden=true;change.setAttribute('aria-expanded','false');usePortal=false;startNotePlacement(pickSurface);}});
  const portalRegion=document.createElement('div');portalRegion.id='portal-options';
  const portalToggle=disclosure('Use a portal',{expanded:usePortal,controls:'portal-options',onToggle:()=>{}});
- portalToggle.onclick=()=>{usePortal=!usePortal;portalToggle.setAttribute('aria-expanded',String(usePortal));portalRegion.hidden=!usePortal;if(usePortal)loadPortals();describe();};
+ portalToggle.onclick=()=>{usePortal=!usePortal;portalToggle.setAttribute('aria-expanded',String(usePortal));if(usePortal){portalRegion.hidden=false;reveal(portalRegion);}else conceal(portalRegion,()=>{portalRegion.hidden=true;});if(usePortal)loadPortals();describe();};
  const portalField=document.createElement('div');portalField.className='form-field';
  const portalLabel=document.createElement('label');portalLabel.className='form-label';portalLabel.textContent='Portal';portalLabel.htmlFor='note-portal';
  const portalSelect=document.createElement('select');portalSelect.id='note-portal';portalSelect.className='form-control mono-id';portalField.append(portalLabel,portalSelect);
@@ -998,7 +1003,7 @@ function createNoteCard({request,error,portal=false}={}){
  stepper.append(step(-.1,'−'),height,unit,step(.1,'+'));heightField.append(heightLabel,stepper);
  portalRegion.append(portalField,heightField);portalRegion.hidden=!usePortal;
  options.append(repick,portalToggle,portalRegion);
- change.onclick=()=>{const open=options.hidden;options.hidden=!open;change.setAttribute('aria-expanded',String(open));};
+ change.onclick=()=>{const open=options.hidden;change.setAttribute('aria-expanded',String(open));if(open){options.hidden=false;reveal(options);}else conceal(options,()=>{options.hidden=true;});};
  titleField.after(location,warning,options);
  const cancel=actionButton('Cancel',{id:'label-dialog-cancel',onClick:()=>{stopNotePlacement();clearSelection();newNoteButton.focus();}});cancel.dataset.cancel='';
  const save=actionButton('Save note',{variant:'primary',type:'submit',id:'label-dialog-save'});save.disabled=true;
@@ -1214,7 +1219,7 @@ function renderMapRows(){
  for(const [name,title] of [['Local','On this server'],['Network','On the network']]){
   const options=Array.from($('map-select').options).filter(o=>(o.parentElement.label||'Local')===name),expanded=!collapsedMapGroups.has(name),id='scene-group-'+name.toLowerCase();
   const section=document.createElement('section');section.setAttribute('aria-label',name+' scenegraphs');
-  const toggle=disclosure(title,{count:options.length,expanded,controls:id,onToggle:open=>{if(open)collapsedMapGroups.delete(name);else collapsedMapGroups.add(name);try{localStorage.setItem('maps-collapsed-groups',JSON.stringify([...collapsedMapGroups]));}catch{}renderMapRows();}});toggle.dataset.group=name;
+  const toggle=disclosure(title,{count:options.length,expanded,controls:id,onToggle:open=>{const apply=()=>{if(open)collapsedMapGroups.delete(name);else collapsedMapGroups.add(name);try{localStorage.setItem('maps-collapsed-groups',JSON.stringify([...collapsedMapGroups]));}catch{}renderMapRows();};if(open){apply();reveal($(id));}else conceal($(id),apply);}});toggle.dataset.group=name;
   const list=document.createElement('div');list.id=id;list.className='list-group';list.hidden=!expanded;
   for(const option of options){
    const trail=option.value.startsWith('peer-pose:'),peer=trail?peers.find(p=>'peer-pose:'+p.peer_id===option.value):null;
@@ -1283,12 +1288,15 @@ function renderFleetRows(){
  else renderDeviceList(peers,sensors);
  if(focus)fleetList.querySelector(`[data-focus-key="${CSS.escape(focus)}"]`)?.focus();
 }
+// Navigating into a device slides its detail in from the right; going back slides the list in from the left.
+function slideDevices(direction){if(!railMotion)return;fleetList.animate([{opacity:0,transform:`translateX(${direction*18}px)`},{opacity:1,transform:'none'}],{duration:280,easing:'cubic-bezier(.2,.8,.2,1)'});
+ if(direction>0)fleetList.querySelectorAll('#device-detail>*').forEach((el,i)=>el.animate([{opacity:0,transform:'translateY(6px)'},{opacity:1,transform:'none'}],{duration:320,delay:40+Math.min(i,8)*28,easing:'cubic-bezier(.2,.8,.2,1)',fill:'backwards'}));}
 function deviceName(peer){return peer.self?'Home Server':fleetNetwork?.aliases?.[peer.peer_id]||peer.name||peer.peer_id;}
 function deviceRow(peer,feeds){
  const item=document.createElement('div');item.className='device-item';item.dataset.peer=peer.peer_id;
  const kind=peer.self?(fleetNetwork?.enabled?'live':null):statusKind(peer.status);
  const summary=deviceSummary(peer,feeds.length);
- const row=listRow({title:deviceName(peer),meta:kind?[statusBadge(kind),summary?' · '+summary:'']:(summary||deviceStatusSentence(peer)),tile:peer.self?icons.server:deviceIcon(deviceName(peer)),onSelect:e=>{deviceView=peer.peer_id;fleetSignature='';renderFleetRows();fleetList.querySelector('#device-detail h3')?.focus();}});
+ const row=listRow({title:deviceName(peer),meta:kind?[statusBadge(kind),summary?' · '+summary:'']:(summary||deviceStatusSentence(peer)),tile:peer.self?icons.server:deviceIcon(deviceName(peer)),onSelect:e=>{deviceView=peer.peer_id;fleetSignature='';renderFleetRows();slideDevices(1);fleetList.querySelector('#device-detail h3')?.focus({preventScroll:true});}});
  row.dataset.focusKey='row:'+peer.peer_id;if(kind==='offline')row.dataset.offline='true';
  item.append(row);
  if(feeds.length){const first=feeds[0];const view=document.createElement('button');view.type='button';view.className='icon-toggle device-camera';view.setAttribute('aria-label','View '+first.textContent);view.title='View '+first.textContent;view.append(icon(icons.camera,16));view.dataset.focusKey='cam:'+peer.peer_id;
@@ -1306,7 +1314,7 @@ function renderDeviceList(peers,sensors){
  if(!others.length)fleetList.append(emptyState(fleetNetwork?.enabled?'No devices connected yet.':'Turn on P2P to discover devices.'));
  if(offline.length){
   const toggle=disclosure('Offline',{count:offline.length,expanded:deviceOfflineOpen,controls:'devices-offline',onToggle:()=>{}});toggle.dataset.focusKey='offline';
-  toggle.onclick=()=>{deviceOfflineOpen=!deviceOfflineOpen;fleetSignature='';renderFleetRows();};
+  toggle.onclick=()=>{const apply=()=>{deviceOfflineOpen=!deviceOfflineOpen;fleetSignature='';renderFleetRows();};if(deviceOfflineOpen)conceal($('devices-offline'),apply);else{apply();reveal($('devices-offline'));}};
   const group=document.createElement('div');group.id='devices-offline';group.hidden=!deviceOfflineOpen;for(const p of offline)group.append(deviceRow(p,sensors.filter(o=>o.dataset.peer===p.peer_id)));
   fleetList.append(toggle,group);
  }
@@ -1314,7 +1322,7 @@ function renderDeviceList(peers,sensors){
 }
 function renderDeviceDetail(peer,feeds,openedTechnical){
  const view=document.createElement('section');view.id='device-detail';view.dataset.peer=peer.peer_id;view.setAttribute('aria-label',deviceName(peer));
- const back=actionButton('All devices',{variant:'ghost',iconPath:'M11 4.5 6.5 9 11 13.5'});back.dataset.focusKey='back';back.onclick=()=>{const id=peer.peer_id;deviceView=null;deviceRenaming=false;fleetSignature='';renderFleetRows();fleetList.querySelector(`[data-focus-key="row:${CSS.escape(id)}"]`)?.focus();};
+ const back=actionButton('All devices',{variant:'ghost',iconPath:'M11 4.5 6.5 9 11 13.5'});back.dataset.focusKey='back';back.onclick=()=>{const id=peer.peer_id;deviceView=null;deviceRenaming=false;fleetSignature='';renderFleetRows();slideDevices(-1);fleetList.querySelector(`[data-focus-key="row:${CSS.escape(id)}"]`)?.focus({preventScroll:true});};
  view.addEventListener('keydown',e=>{if(e.key==='Escape'&&!e.target.closest('input,textarea,select')){e.stopPropagation();back.click();}});
  // Identity and rename.
  const identity=document.createElement('div');identity.className='device-identity';
@@ -1409,7 +1417,7 @@ function capabilityRow(peer,kind,entry,catalog,openedTechnical){
  const raw=document.createElement('details');raw.className='technical-details capability-raw';raw.dataset.technical=peer.peer_id+':'+kind+':'+id;raw.open=openedTechnical.has(raw.dataset.technical);
  const summary=document.createElement('summary');summary.className='visually-hidden';summary.textContent=(kind==='component'?'Component':'Product')+' · '+id;raw.append(summary);
  const info=document.createElement('button');info.type='button';info.className='icon-toggle';info.setAttribute('aria-label','Technical details for '+humanize(id));info.setAttribute('aria-expanded',String(raw.open));info.append(icon(icons.info,16));info.dataset.focusKey='info:'+raw.dataset.technical;
- info.onclick=()=>{raw.open=!raw.open;info.setAttribute('aria-expanded',String(raw.open));};head.append(info);
+ info.onclick=()=>{const open=!raw.open;info.setAttribute('aria-expanded',String(open));if(open){raw.open=true;reveal(raw);}else conceal(raw,()=>{raw.open=false;});};head.append(info);
  for(const product of made){const line=document.createElement('p');line.className='mono-id capability-product';line.textContent='Product · '+product.manifest.product_id;raw.append(line);
   if(product.metadata?.schema==='spatial-harness.compact-pose-contract/v1')raw.append(actionButton('Inspect live pose',{onClick:()=>inspectPose(peer.peer_id,product,deviceName(peer)+' / '+product.manifest.product_id)}));}
  const pre=document.createElement('pre');pre.className='capability-json';pre.textContent=JSON.stringify(entry.manifest,null,2);raw.append(pre,copyButton(pre.textContent,'Copy manifest'));
@@ -1543,7 +1551,7 @@ const opacityLabel=document.createElement('label');opacityLabel.className='layer
  const peersHeading=document.createElement('h4');peersHeading.className='settings-group';peersHeading.textContent='Contributing peers';region.prepend(peersHeading);
  for(const [id,hint] of [['load','Adds iPhone and Bracketbot scans to the map.'],['project','Places a book detection onto the nearest surface.'],['replay','Re-sends the iPhone scans to check nothing duplicates.']]){const button=region.querySelector('#'+id);button.className='btn btn-secondary demo-button';button.querySelector('span')?.remove();const small=document.createElement('small');small.className='form-helper';small.textContent=hint;button.after(small);}
  const toggle=disclosure('Demo tools',{expanded:false,controls:'demo-tools',onToggle:()=>{}});
- toggle.onclick=()=>{region.hidden=!region.hidden;toggle.setAttribute('aria-expanded',String(!region.hidden));};
+ toggle.onclick=()=>{const open=region.hidden;toggle.setAttribute('aria-expanded',String(open));if(open){region.hidden=false;reveal(region);}else conceal(region,()=>{region.hidden=true;});};
  demo.append(toggle,region);
  body.replaceChildren(layers,display,demo);
  applyTheme(document.documentElement.dataset.theme==='light');
@@ -1575,7 +1583,7 @@ async function renderFiducials(focusKey=null){
  tagsBody.replaceChildren();
  const createOpen=fiducialCreateOpen??!catalog.fiducials.length;
  const newTag=actionButton('New tag',{variant:'primary',iconPath:icons.plus});newTag.setAttribute('aria-expanded',String(createOpen));newTag.setAttribute('aria-controls','fiducial-create');
- newTag.onclick=()=>{fiducialCreateOpen=!createOpen;renderFiducials().then(()=>$('fiducial-family')?.focus());};
+ newTag.onclick=()=>{const go=()=>{fiducialCreateOpen=!createOpen;return renderFiducials();};if(createOpen)conceal($('fiducial-create'),go);else go().then(()=>{reveal($('fiducial-create'));$('fiducial-family')?.focus();});};
  const actions=document.createElement('div');actions.className='panel-actions single';actions.append(newTag);
  const intro=document.createElement('p');intro.className='panel-hint';intro.textContent='Print markers robots can see, then measure the printed black square so poses come out to scale.';
  tagsBody.append(actions,intro);
@@ -1611,7 +1619,7 @@ async function renderFiducials(focusKey=null){
    const meta=document.createElement('span');meta.className='list-row-meta';meta.textContent=`${marker.side_length_mm.toLocaleString(undefined,{maximumFractionDigits:1})} mm black square`+(marker.created_unix_ms?` · ${ago(marker.created_unix_ms)}`:'');meta.title=meta.textContent;text.append(title,meta);
    const chevron=icon(icons.chevron);chevron.classList.add('fiducial-chevron');
    row.append(tile,text,chevron);
-   row.onclick=()=>{if(expandedFiducials.has(marker.key))expandedFiducials.delete(marker.key);else expandedFiducials.add(marker.key);renderFiducials().then(()=>tagsBody.querySelector(`[aria-controls="${bodyId}"]`)?.focus());};
+   row.onclick=()=>{const refocus=()=>tagsBody.querySelector(`[aria-controls="${bodyId}"]`)?.focus();if(expandedFiducials.has(marker.key))conceal($(bodyId),()=>{expandedFiducials.delete(marker.key);renderFiducials().then(refocus);});else{expandedFiducials.add(marker.key);renderFiducials().then(()=>{reveal($(bodyId));refocus();});}};
    const body=document.createElement('div');body.id=bodyId;body.className='fiducial-body';body.hidden=!open;
    const sizeText=`${marker.side_length_mm.toLocaleString(undefined,{maximumFractionDigits:1})} mm`;
    const print=document.createElement('a');print.className='btn btn-secondary btn-sm';print.href=marker.print_url;print.target='_blank';print.rel='noopener';print.textContent=`Print at ${sizeText} ↗`;print.setAttribute('aria-label',`Print at ${sizeText} (opens in a new tab)`);

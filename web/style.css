@@ -787,3 +787,33 @@ body>.app-header{position:fixed;top:12px;right:12px;z-index:40;height:auto;width
 /* Panel motion is driven by the liquid keyframes in app.js; CSS only holds the resting states. */
 .shell>aside{transition:none;transform:none;will-change:transform}
 .shell.panel-collapsed>aside{transition:none;transform:none;opacity:0;visibility:hidden}
+/* Anchors as a collapsed section. */
+.section-disclosure{margin-top:16px;height:40px;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.section-disclosure .disclosure-label{font-weight:600}
+#anchors-region{padding-top:4px}
+/* Account menu opens with a short scale and fade. */
+.user-menu:popover-open{animation:menu-in .22s cubic-bezier(.2,.8,.2,1)}
+@keyframes menu-in{from{opacity:0;transform:translateY(-6px) scale(.97)}}
+@media(prefers-reduced-motion:reduce){.user-menu:popover-open{animation:none}}
+/* Slim pill scrollbars inset from the panel edge. */
+.workspace-panel,.panel-body,.selection,.scene-chat-history,.capability-json,.user-menu{scrollbar-width:thin;scrollbar-color:color-mix(in srgb,var(--muted) 45%,transparent) transparent}
+.workspace-panel::-webkit-scrollbar,.panel-body::-webkit-scrollbar,.selection::-webkit-scrollbar,.scene-chat-history::-webkit-scrollbar,.capability-json::-webkit-scrollbar{width:12px;height:12px}
+.workspace-panel::-webkit-scrollbar-track,.panel-body::-webkit-scrollbar-track,.selection::-webkit-scrollbar-track,.scene-chat-history::-webkit-scrollbar-track,.capability-json::-webkit-scrollbar-track{background:transparent;margin:10px 0}
+.workspace-panel::-webkit-scrollbar-thumb,.panel-body::-webkit-scrollbar-thumb,.selection::-webkit-scrollbar-thumb,.scene-chat-history::-webkit-scrollbar-thumb,.capability-json::-webkit-scrollbar-thumb{border:4px solid transparent;border-radius:999px;background:color-mix(in srgb,var(--muted) 40%,transparent) padding-box}
+.workspace-panel::-webkit-scrollbar-thumb:hover,.panel-body::-webkit-scrollbar-thumb:hover,.selection::-webkit-scrollbar-thumb:hover{background:color-mix(in srgb,var(--muted) 65%,transparent) padding-box}
+/* Spacing system: a 16px content gutter. Interactive rows sit 8px in from the panel edge with 8px of
+   padding on every side, so icons have equal room all round and content still lines up at 16px. */
+.panel-heading{flex-shrink:0}
+.list-row{width:calc(100% + 16px);margin:0 -8px;padding:8px;min-height:48px;border-radius:10px}
+.list-row:not(:has(.list-row-tile)){padding:10px 8px;min-height:40px}
+.disclosure{width:calc(100% + 16px);margin:0 -8px;padding:0 8px;border-radius:10px}
+.fiducial-card{margin:0 -8px}
+.fiducial-card[data-created="true"]{margin:0 -8px}
+.fiducial-row{padding:8px;border-radius:10px}
+.fiducial-body{padding:4px 8px 12px}
+.device-item>.list-row{width:auto;margin:0 0 0 -8px}
+/* Tree: chevrons line up with the disclosure chevrons above; landmarks hang from the anchor tile. */
+.tree-line{grid-template-columns:32px minmax(0,1fr);gap:0;margin:0 -8px}
+.tree-line .list-row{width:auto;margin:0}
+.tree-children{margin:2px -8px 6px 48px;padding-left:8px}
+.tree-children .list-row{width:auto;margin:0;min-height:36px;padding:8px}
