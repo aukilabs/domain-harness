@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Deploy the minimal peer + sole LED controller. Never start/change BBOS.
 
+Arms move only with --arm-motion (point_at plans and moves); --arm-plan plans
+point_at requests against the live arm without opening any arm writer.
+
 Supply AUKI_ACCESS_KEY/AUKI_APP_SECRET in the environment (or invoke through
 with-home-credentials.py). Credentials go over SSH stdin, never into files.
 The binary must already be cross-built for ARM64 Linux on the laptop.
@@ -70,6 +73,10 @@ command+=['--peer-command',str(root/'bin/auki-connection-diagnostic'),str(root/'
 if request.get('points'): command+=['--points']
 elif request.get('portals'): command+=['--portals']
 elif request.get('poses'): command+=['--poses']
+if request.get('arm'):
+    for file in ('scripts/diagnostic-arm.py','scripts/bracketbot_point.py','scripts/bracketbot_aim.py'):
+        if not (root/file).is_file(): raise SystemExit('Missing diagnostic file: '+file)
+    command+=['--arm-motion' if request['arm']=='motion' else '--arm-plan']
 with (root/'diagnostic.log').open('ab',buffering=0) as log:
     child=subprocess.Popen(command,cwd=root,env=env,stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True)
 (root/'diagnostic.pid').write_text(str(child.pid)+'\n')
@@ -84,13 +91,17 @@ def main():
     parser.add_argument('--robot', default='182')
     parser.add_argument('--home-connection', type=Path, required=True)
     parser.add_argument('--binary', type=Path, required=True)
+    parser.add_argument('--peer-config', type=Path, help="Peer config whose Domain and auth endpoints to use (default: config/bracketbot-182.peer.json); nothing else is copied")
     parser.add_argument('--poses', action='store_true', help='Expose only the typed BBOS pose Product')
     parser.add_argument('--portals', action='store_true', help='Add one head camera and Arshak QR detector; implies poses')
     parser.add_argument('--points', action='store_true', help='Add measured depth points; implies portals and poses')
+    arm = parser.add_mutually_exclusive_group()
+    arm.add_argument('--arm-plan', action='store_true', help='point_at plans with the live arm; never moves it; implies poses')
+    arm.add_argument('--arm-motion', action='store_true', help='point_at moves an arm; clear the space in front of the robot; implies poses')
     parser.add_argument('--start-staged', action='store_true', help='Resume after a completed transfer; verifies the staged binary hash before stopping anything')
     args = parser.parse_args()
     args.portals = args.portals or args.points
-    args.poses = args.poses or args.portals
+    args.poses = args.poses or args.portals or args.arm_plan or args.arm_motion
     repo = Path(__file__).resolve().parents[1]
     credentials = {key: os.environ[key] for key in ('AUKI_ACCESS_KEY', 'AUKI_APP_SECRET')}
     home = json.loads(args.home_connection.read_text())
@@ -102,20 +113,21 @@ def main():
     with tempfile.TemporaryFile() as payload:
         with tarfile.open(fileobj=payload, mode='w:gz', compresslevel=3) as archive:
             archive.add(args.binary, arcname='bin/auki-connection-diagnostic.next')
-            # Only shared auth endpoints/Domain; never copy 182's routes or identity.
-            source = json.loads((repo/'config/bracketbot-182.peer.json').read_text())
+            # Only shared auth endpoints/Domain; never copy routes, identity or secrets.
+            source = json.loads((args.peer_config or repo/'config/bracketbot-182.peer.json').read_text())
             config = json.dumps({key: source[key] for key in
                                  ('domain_id', 'api_url', 'dds_url', 'dms_url', 'login')}).encode()
             entry = tarfile.TarInfo('peer.json')
             entry.size = len(config)
             archive.addfile(entry, io.BytesIO(config))
-            for name in ('bracketbot-python.py', 'bracketbot_slam_led_diagnostic.py', 'diagnostic-camera.py', 'diagnostic-depth.py', 'bracketbot_capture.py'):
+            for name in ('bracketbot-python.py', 'bracketbot_slam_led_diagnostic.py', 'diagnostic-camera.py', 'diagnostic-depth.py', 'bracketbot_capture.py',
+                         'diagnostic-arm.py', 'bracketbot_point.py', 'bracketbot_aim.py'):
                 archive.add(repo/'scripts'/name, arcname='scripts/'+name)
         payload.seek(0)
         if not args.start_staged:
             subprocess.run(ssh+[f'mkdir -p {ROOT} && tar -xzf - -C {ROOT}'], stdin=payload, check=True)
     subprocess.run(ssh+[shlex.join(['python3', '-c', START])],
-                   input=json.dumps({'home':home,'credentials':credentials,'poses':args.poses,'portals':args.portals,'points':args.points,'robot':args.robot,'sha256':hashlib.sha256(args.binary.read_bytes()).hexdigest()}).encode(), check=True)
+                   input=json.dumps({'home':home,'credentials':credentials,'poses':args.poses,'portals':args.portals,'points':args.points,'arm':'motion' if args.arm_motion else 'plan' if args.arm_plan else None,'robot':args.robot,'sha256':hashlib.sha256(args.binary.read_bytes()).hexdigest()}).encode(), check=True)
 
 
 if __name__ == '__main__':

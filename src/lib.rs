@@ -17,6 +17,7 @@ pub mod local_mapper;
 pub mod mobile;
 pub mod mobile_home;
 pub mod mobile_camera;
+pub mod mobile_screen;
 pub mod model;
 pub mod network;
 pub mod peer;
@@ -97,6 +98,7 @@ pub mod local_scenes;
 pub mod local_mobile;
 pub mod semantic_volumes;
 pub mod scene_paths;
+pub mod scene_navigation;
 
 pub mod robot_runner;
 pub mod chatbot;

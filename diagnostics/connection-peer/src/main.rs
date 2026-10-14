@@ -1,5 +1,7 @@
-//! Connection-only diagnostic; --poses adds exactly one typed BBOS pose Product.
+//! Connection-only diagnostic; --poses adds exactly one typed BBOS pose Product
+//! and a `point_at` Operable over the frames this peer relates.
 mod alignment;
+mod arm;
 mod camera;
 mod diagnostic_log;
 #[path = "../../../src/camera_frame.rs"]
@@ -14,6 +16,9 @@ mod compact_pose;
 #[path = "../../../src/fisheye.rs"]
 mod fisheye;
 mod home;
+#[path = "../../../src/point_at.rs"]
+mod point_at;
+mod pointer;
 mod poses;
 #[path = "../../../src/qr_decode.rs"]
 mod qr_decode;
@@ -63,11 +68,16 @@ async fn main() -> Result<()> {
     ensure!(
         args.len() == 4
             || (args.len() == 5
-                && matches!(args[4].as_str(), "--poses" | "--portals" | "--points" | "--check-home")),
-        "usage: auki-connection-diagnostic PEER_CONFIG HOME_CONNECTION DIAGNOSTIC_IDENTITY [--poses|--portals|--points|--check-home]"
+                && matches!(args[4].as_str(), "--poses" | "--portals" | "--points" | "--check-home"))
+            || (args.len() == 6
+                && matches!(args[4].as_str(), "--poses" | "--portals" | "--points")
+                && matches!(args[5].as_str(), "--arm-plan" | "--arm-motion")),
+        "usage: auki-connection-diagnostic PEER_CONFIG HOME_CONNECTION DIAGNOSTIC_IDENTITY [--poses|--portals|--points|--check-home] [--arm-plan|--arm-motion]"
     );
+    // point_at plans with the arm adapter (--arm-plan) and moves (--arm-motion).
+    let arm = args.get(5).map(|v| v == "--arm-motion");
     let check_home = args.get(4).is_some_and(|v| v == "--check-home");
-    let publish_poses = args.len() == 5 && !check_home;
+    let publish_poses = args.len() >= 5 && !check_home;
     let points = args.get(4).is_some_and(|v| v == "--points");
     let portals = points || args.get(4).is_some_and(|v| v == "--portals");
     let config: Config = read(&args[1])?;
@@ -164,6 +174,17 @@ async fn main() -> Result<()> {
         Some(poses::Publisher::mount(&peer)?)
     } else {
         None
+    };
+    let known = std::sync::Arc::new(std::sync::Mutex::new(pointer::Frames::default()));
+    let _pointer = match &publisher {
+        Some(p) => {
+            known.lock().unwrap().insert(
+                &[&p.contract.from_frame, &p.contract.to_frame],
+                pointer::Transform { contract: p.compact(), product: p.product() },
+            );
+            Some(pointer::Pointer::mount(p, known.clone(), arm)?)
+        }
+        None => None,
     };
     let mut input = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     let (camera_tx, mut camera_rx) =
@@ -317,7 +338,7 @@ async fn main() -> Result<()> {
                 if let Some((calibration,t,jpeg))=sample {
                     if camera_publisher.is_none(){
                         match camera::Camera::mount(publisher.as_ref().unwrap(),calibration) {
-                            Ok(camera)=>camera_publisher=Some(camera),
+                            Ok(camera)=>{let (frame,transform)=camera.extrinsic();known.lock().unwrap().insert(&[&frame],transform);camera_publisher=Some(camera)},
                             Err(error)=>{camera_open=false;crate::diagnostic_log!("Camera unavailable: {error}; pose diagnostic continues");continue;}
                         }
                     }
@@ -343,7 +364,7 @@ async fn main() -> Result<()> {
                     if alignment.as_ref().is_some_and(|a|a.target!=(&home.frame).into()) {alignment=None;}
                     if alignment.is_none() {
                         match alignment::Worker::mount(publisher,camera,home,home_rx.clone()) {
-                            Ok(worker)=>{alignment=Some(worker);alignment_error.clear();},
+                            Ok(worker)=>{let (frame,transform)=worker.transform();known.lock().unwrap().insert(&[&frame],transform);alignment=Some(worker);alignment_error.clear();},
                             Err(e)=>{let error=e.to_string();if error!=alignment_error {
                                 crate::diagnostic_log!("Alignment component unavailable: {error}");alignment_error=error;
                             }},

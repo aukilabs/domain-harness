@@ -72,7 +72,7 @@ impl Geometry {
 fn payload((width, height): (u32, u32)) -> PayloadContract {
     PayloadContract::Camera(CameraPayloadContract {
         datatype: VideoFrame::DATATYPE.into(),
-        schema: "auki.video-frame/v1".into(),
+        schema: crate::camera_frame::SCHEMA.into(),
         encoding: "jpeg".into(),
         width,
         height,
@@ -200,7 +200,7 @@ impl Camera {
                     ObservableContract {
                         name: "frames".into(),
                         datatype: VideoFrame::DATATYPE.into(),
-                        schema: "auki.video-frame/v1".into(),
+                        schema: crate::camera_frame::SCHEMA.into(),
                         access: vec![ObservationAccess::FollowNew],
                         exposure: Exposure::Cluster,
                     },
@@ -225,7 +225,7 @@ impl Camera {
         component.expose()?;
         let geometry = Arc::new(Mutex::new(None));
         let capture = capture(&products.runtime, &output, geometry.clone())?;
-        products.endpoint.export_product(&capture.product())?;
+        products.endpoint.export_product_with_encoder(&capture.product(), crate::camera_frame::encoder())?;
         Ok(Self {
             definitions: products.definitions.clone(),
             contract_hash: None,
@@ -306,7 +306,7 @@ impl Camera {
                 schema:crate::registry_ar::CAMERA_METADATA.into(),source_sequence:o.sequence,
                 value:serde_json::to_value(&contract).map_err(|e|e.to_string())?,
             })))?;
-        self.endpoint.export_product(&capture.product())?;
+        self.endpoint.export_product_with_encoder(&capture.product(), crate::camera_frame::encoder())?;
         self.capture = Some(capture);
         self.contract_hash = Some(hash);
         self.placed = Some((g.session.clone(),0,size));
@@ -359,7 +359,7 @@ impl Camera {
         self.last_timestamp = 0;
         *self.geometry()? = None;
         let capture = capture(&self.runtime, &self.output, self.geometry.clone())?;
-        self.endpoint.export_product(&capture.product())?;
+        self.endpoint.export_product_with_encoder(&capture.product(), crate::camera_frame::encoder())?;
         self.capture = Some(capture);
         Ok(())
     }

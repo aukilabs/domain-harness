@@ -665,6 +665,8 @@ impl Publisher {
         let (path_scenes,path_scene,path_frame)=(scenes.clone(),id.to_owned(),paths_frame.clone());
         let paths_publisher=crate::scene_paths::Publisher::mount(runtime,endpoint,id,&owner,&paths_frame,crate::model::clock_ref(&clock),
             move |path,stroke| path_scenes.paths.change(&path_scene,&path_frame,path,stroke))?;
+        components.push(crate::scene_navigation::mount(runtime, endpoint, id, &paths_frame, crate::model::clock_ref(&clock),
+            NavigationWorld { state: state.clone(), scenes: scenes.clone(), scene: id.into(), frame: paths_frame.clone(), started })?);
         let mut publisher = Self {
             id: id.into(),
             reference,
@@ -779,6 +781,23 @@ impl Publisher {
         self.last_content = Some(content);
         Ok(())
     }
+}
+/// The live scene as the route planner reads it: the same map, notes and saved paths peers see.
+struct NavigationWorld { state: Arc<Mutex<State>>, scenes: Arc<LocalScenes>, scene: String, frame: String, started: Instant }
+impl crate::scene_navigation::World for NavigationWorld {
+    fn voxels(&self) -> Result<(Vec<[f64; 3]>, f64)> {
+        let state = self.state.lock().map_err(|_| anyhow!("Scene unavailable"))?;
+        let voxels = state.map.voxels.as_ref().map(crate::model::occupied).transpose()?.unwrap_or_default();
+        Ok((voxels.into_iter().map(|v| v.center).collect(), crate::collaborative_mapper::HOME_VOXEL_SIZE))
+    }
+    fn note(&self, id: &str) -> Result<Option<(String, [f64; 3])>> {
+        let state = self.state.lock().map_err(|_| anyhow!("Scene unavailable"))?;
+        Ok(state.notes.items.iter().find(|n| n.id == id).map(|n| (n.text.clone(), n.position)))
+    }
+    fn store(&self, id: &str, stroke: Option<crate::scene_paths::Stroke>) -> Result<crate::scene_paths::Paths> {
+        self.scenes.paths.change(&self.scene, &self.frame, id, stroke)
+    }
+    fn now(&self) -> u64 { self.started.elapsed().as_nanos() as u64 }
 }
 /// Replace the saved scene atomically so a restart keeps reported Portals.
 fn save_scene(path: &std::path::Path, snapshot: &MapSnapshot) -> Result<()> {

@@ -57,6 +57,18 @@ final class HomePeer: ObservableObject {
         annotationResult = nil
         return json.withCString { spatial_mobile_annotate($0) == 1 }
     }
+    /// Ask Home to delete a note. Home answers in `annotationResult` under the returned id.
+    private var deletingNotes = [String: String]()
+    /// The note a delete request was for, once, when its answer comes.
+    func takeDeletedNote(_ request: String) -> String? { deletingNotes.removeValue(forKey: request) }
+    func deleteNote(_ id: String, frame: String) -> Bool {
+        let request = UUID().uuidString.lowercased()
+        let body: [String: Any] = ["request_id": request, "frame": frame, "action": ["kind": "delete", "id": id]]
+        guard let data = try? JSONSerialization.data(withJSONObject: body),
+              let json = String(data: data, encoding: .utf8), changeAnnotation(json) else { return false }
+        deletingNotes[request] = id
+        return true
+    }
     func changeAnnotation(_ json: String) -> Bool {
         guard state == "live" else { return false }
         annotationResult = nil
@@ -100,6 +112,15 @@ final class HomePeer: ObservableObject {
               let json = String(data: data, encoding: .utf8) else { return }
         json.withCString { spatial_mobile_depth($0) }
     }
+    /// Publish where the AR session sits in the scene; nil says the phone no longer knows.
+    /// Kept so that a peer started later publishes it too.
+    func publishPlacement(_ placement: PhonePlacement?) {
+        self.placement = placement
+        guard let placement else { spatial_mobile_placement(nil); return }
+        guard let data = try? JSONEncoder().encode(placement), let json = String(data: data, encoding: .utf8) else { return }
+        json.withCString { spatial_mobile_placement($0) }
+    }
+    private var placement: PhonePlacement?
     /// Share the phone's own map with Home; nil stops sharing it.
     func publishLocalMap(_ map: PhoneLocalMap?) {
         guard let map else { _ = spatial_mobile_local_map(nil); return }
@@ -120,9 +141,32 @@ final class HomePeer: ObservableObject {
     private var pathAnswers = [String: (Bool) -> Void]()
     private func changePath(_ id: String, _ change: some Encodable, done: @escaping (Bool) -> Void) {
         guard state == "live", let data = try? JSONEncoder().encode(change), let json = String(data: data, encoding: .utf8),
-              json.withCString({ spatial_mobile_change_path($0) == 1 }) else { done(false); return }
+              json.withCString({ spatial_mobile_change_path($0) == 1 }) else { print("[crayon] Path \(id) not sent: Home is not connected, or too many changes are waiting"); done(false); return }
         pathAnswers[id] = done
-        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in self?.pathAnswers.removeValue(forKey: id)?(false) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
+            guard let done = self?.pathAnswers.removeValue(forKey: id) else { return }
+            print("[crayon] Path \(id): no answer from Home in 6 s"); done(false)
+        }
+    }
+    /// Ask Home to plan a route in the scene. With `share` it replaces this phone's route on
+    /// everyone's map. `done` hears nil when Home cannot plan routes or does not answer.
+    func planRoute(frame: String, from: RoutePlace, to: RoutePlace, share: Bool, done: @escaping (HomeRoute?) -> Void) {
+        struct Plan: Encodable { let frame: String; let from: RoutePlace; let to: RoutePlace; let share: Bool }
+        askRoute(Plan(frame: frame, from: from, to: to, share: share), done: done)
+    }
+    /// Take this phone's route off everyone's map.
+    func clearRoute(frame: String) {
+        struct Clear: Encodable { let frame: String }
+        askRoute(Clear(frame: frame)) { _ in }
+    }
+    private var routeAnswers = [String: (HomeRoute?) -> Void]()
+    private struct Asked<Ask: Encodable>: Encodable { let id: String; let ask: Ask }
+    private func askRoute<Ask: Encodable>(_ ask: Ask, done: @escaping (HomeRoute?) -> Void) {
+        let id = UUID().uuidString.lowercased()
+        guard state == "live", let data = try? JSONEncoder().encode(Asked(id: id, ask: ask)), let json = String(data: data, encoding: .utf8),
+              json.withCString({ spatial_mobile_ask_route($0) == 1 }) else { done(nil); return }
+        routeAnswers[id] = done
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in self?.routeAnswers.removeValue(forKey: id)?(nil) }
     }
     var onMap: ((PortalMap) -> Void)?
     /// Home's answer to a new-Portal report, for the user to see.
@@ -188,6 +232,7 @@ final class HomePeer: ObservableObject {
                 try manager.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: identity)
             }
             let (first, second) = app.map { ($0.key, $0.secret) } ?? (email, password)
+            print("[bridge] built from \(String(cString: spatial_bridge_source()))")
             let start = app == nil ? spatial_mobile_start : spatial_mobile_start_app
             let accepted = profileJSON.withCString { profile in
                 first.withCString { first in
@@ -237,6 +282,18 @@ final class HomePeer: ObservableObject {
         let annotation: AnnotationResult?
         let depth_detail: String
         let local_detail: String?
+        let route: RouteAnswer?
+        let paths: [PathAnswer]?
+    }
+    private struct PathAnswer: Decodable {
+        let id: String
+        let done: Bool
+        let error: String?
+    }
+    private struct RouteAnswer: Decodable {
+        let id: String
+        let route: HomeRoute?
+        let error: String?
     }
     private func poll() {
         guard let pointer = spatial_mobile_poll() else { return }
@@ -248,19 +305,22 @@ final class HomePeer: ObservableObject {
                 // User-requested Stop must not briefly redisplay an in-flight scene.
                 if state != "stopping" {
                     depthDetail = response.update.depth_detail
-                    // "Path <id> saved", "Path <id> removed", or "Path <id> not …: why".
-                    if let note = response.update.local_detail, note.hasPrefix("Path ") {
-                        let words = note.split(separator: " ", maxSplits: 3)
-                        if words.count >= 3, let done = pathAnswers.removeValue(forKey: String(words[1])) {
-                            if words[2] == "not" { print("[crayon] \(note)") }
-                            done(words[2] != "not")
-                        }
+                    for answer in response.update.paths ?? [] {
+                        guard let done = pathAnswers.removeValue(forKey: answer.id) else { continue }
+                        if let error = answer.error { print("[crayon] Path \(answer.id) not changed: \(error)") }
+                        done(answer.done)
                     }
                     if let note = response.update.local_detail, note != portalDetail, note.hasPrefix("Portal ") || note.hasPrefix("Home did not add") {
                         portalDetail = note
                         onPortalResult?(note)
                     }
+                    if let answer = response.update.route, let done = routeAnswers.removeValue(forKey: answer.id) {
+                        if let error = answer.error { print("[route] \(error)") }
+                        done(answer.route)
+                    }
                     annotationResult = response.update.annotation
+                    // A peer started after the phone aligned has not been told where it is.
+                    if response.update.state == "live", state != "live", let placement { publishPlacement(placement) }
                     state = response.update.state
                     detail = response.update.detail
                     if let portals = response.update.portals { onMap?(portals) }
