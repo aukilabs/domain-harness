@@ -82,7 +82,7 @@ test('Backspace advances through paths, protects typing, and keeps selection on 
  await page.locator('[data-map="local:humanoid-hub-conference"]').click();
  await page.getByRole('button',{name:'Notes',exact:true}).click();
  await page.getByRole('button',{name:'Keyboard 1 · 2',exact:true}).click();
- const input=page.locator('#scene-chat-input');await input.fill('abc');await input.press('Backspace');
+ await page.locator('#agent-toggle').click();const input=page.locator('#scene-chat-input');await input.fill('abc');await input.press('Backspace');
  await expect(input).toHaveValue('ab');expect((await (await request.get(url)).json()).items).toHaveLength(4);
  await input.evaluate(el=>el.blur());
  await page.route('**/api/paths/*',async route=>{

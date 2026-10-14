@@ -24,7 +24,7 @@ for(const available of [true,false])test(`chat PiP ${available?'opens exactly on
  await page.goto('/');
  await page.waitForFunction(()=>document.querySelector('#scene-chat-form').onsubmit!==null);
  await expect(page.locator('#map-select option[value="demo"]')).toHaveText('Home Server');
- await page.locator('#scene-chat-input').fill("Pull up Dan's Phone's camera");
+ await page.locator('#agent-toggle').click();await page.locator('#scene-chat-input').fill("Pull up Dan's Phone's camera");
  await page.locator('#scene-chat-form button[type="submit"]').click();
  if(available){
   await expect(page.locator('#sensor-pip')).toBeVisible();

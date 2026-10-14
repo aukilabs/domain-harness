@@ -18,21 +18,44 @@ import { moveMapCamera, applyChatActions, chatResultPresentation } from './view-
 import { createAttachedCamera } from './attached-camera.js';
 import { createRobotModel } from './robot-model.js';
 import { applyRobotHealth } from './robot-health.js';
+import { createAgentBar, orb as agentOrb } from './agent-bar.js';
 const $=id=>document.getElementById(id);
 const chatForm=$('scene-chat-form'),chatInput=$('scene-chat-input'),chatStatus=$('scene-chat-status');
 chatForm.querySelector('button').disabled=true;
 const chatHistory=$('scene-chat-history'),chatConversations=new Map();let chatPending=false;
 let chatCompact=false;try{chatCompact=localStorage.getItem('home.chat.compact')==='true';}catch{}
-function syncChatCompact(){document.querySelector('.scene-chat').classList.toggle('compact',chatCompact);const toggle=$('scene-chat-toggle');toggle.textContent=chatCompact?'⌃':'⌄';toggle.title=chatCompact?'Show conversation':'Hide conversation';toggle.setAttribute('aria-label',toggle.title);toggle.setAttribute('aria-expanded',String(!chatCompact));}
+let agentBar=null;
+function syncChatCompact(){document.querySelector('.scene-chat').classList.toggle('compact',chatCompact);const toggle=$('scene-chat-toggle');toggle.dataset.tip=chatCompact?'Show conversation':'Hide conversation';toggle.setAttribute('aria-label',toggle.dataset.tip);toggle.setAttribute('aria-expanded',String(!chatCompact));agentBar?.syncSheet();}
 $('scene-chat-toggle').onclick=()=>{chatCompact=!chatCompact;try{localStorage.setItem('home.chat.compact',String(chatCompact));}catch{}syncChatCompact();};syncChatCompact();
-function renderChat(){const messages=chatConversations.get(activeMap)||[];chatHistory.replaceChildren();chatHistory.hidden=!messages.length;for(const m of messages){const row=document.createElement('div');row.className='scene-chat-message '+m.role;const who=document.createElement('strong');who.textContent=m.role==='user'?'You':'Qwen';const text=document.createElement('div');text.textContent=m.display_content||m.content;row.append(who,text);chatHistory.append(row);}chatHistory.scrollTop=chatHistory.scrollHeight;}
+// Messages already shown keep still; only new ones animate in. The thinking row stands in for a pending reply.
+let chatShown={map:null,count:0};
+function renderChat(){
+ const messages=chatConversations.get(activeMap)||[],pending=chatPending&&chatPendingMap===activeMap;
+ const fresh=chatShown.map===activeMap?chatShown.count:messages.length;chatShown={map:activeMap,count:messages.length};
+ chatHistory.replaceChildren();chatHistory.hidden=!messages.length&&!pending;$('agent-empty').hidden=!!messages.length||pending;
+ messages.forEach((m,i)=>{const row=document.createElement('div');row.className='scene-chat-message '+m.role+(i>=fresh?' enter':'');
+  const who=document.createElement('strong');who.className='visually-hidden';who.textContent=m.role==='user'?'You':'Qwen';
+  const text=document.createElement('div');text.className='scene-chat-text';text.textContent=m.display_content||m.content;
+  if(m.role!=='user')row.append(agentOrb('small'));row.append(who,text);chatHistory.append(row);});
+ if(pending){const row=document.createElement('div');row.className='scene-chat-message assistant thinking enter';const text=document.createElement('div');text.className='scene-chat-text';text.textContent='Thinking';row.append(agentOrb('small'),text);chatHistory.append(row);}
+ document.querySelector('.scene-chat').classList.toggle('pending',pending);
+ chatInput.placeholder=pending?'Qwen is thinking…':'Ask about this scene…';
+ chatHistory.scrollTop=chatHistory.scrollHeight;
+}
+let chatPendingMap=null;
+const suggestions=document.querySelector('.agent-suggestions');
+for(const text of ['What’s in this scene?','Describe the volumes here','Show me a live camera']){
+ const chip=document.createElement('button');chip.type='button';chip.className='agent-chip';chip.textContent=text;
+ chip.onclick=()=>{chatInput.value=text;chatInput.dispatchEvent(new Event('input'));chatForm.requestSubmit();};suggestions.append(chip);
+}
+$('agent-new').onclick=()=>{if(chatPending)return;chatConversations.delete(activeMap);renderChat();chatStatus.textContent='Local Qwen · inspect scene and edit volume descriptions';chatInput.focus();};
 chatInput.addEventListener('input',()=>{chatForm.querySelector('button').disabled=chatPending||!chatInput.value.trim();});
 chatForm.onsubmit=async e=>{
  e.preventDefault();if(chatPending||!chatInput.value.trim())return;
  const map=activeMap,message=chatInput.value.trim(),history=(chatConversations.get(map)||[]).slice(-18);
  history.push({role:'user',content:message});
  if(history.reduce((n,m)=>n+m.content.length,0)>32000){chatStatus.textContent='Conversation is too long. Start a shorter conversation.';return;}
- chatConversations.set(map,history);renderChat();chatPending=true;chatInput.value='';chatForm.querySelector('button').disabled=true;chatStatus.textContent='Qwen is replying locally…';
+ chatConversations.set(map,history);chatPending=true;chatPendingMap=map;renderChat();chatInput.value='';chatForm.querySelector('button').disabled=true;chatStatus.textContent='Qwen is replying locally…';
  try{
   const result=await api('/api/chat',{messages:history.map(({role,content})=>({role,content})),scene:map});
   const browser=result.ui_actions===undefined?null:await applyChatCamera(result.ui_actions,map);
@@ -44,7 +67,7 @@ chatForm.onsubmit=async e=>{
    lastScene=null;try{await refresh();}catch(error){chatStatus.textContent+=' · View refresh failed: '+error.message;}
   }
  }catch(error){history.pop();if(activeMap===map&&!chatInput.value)chatInput.value=message;chatStatus.textContent=error.message;}
- finally{chatPending=false;renderChat();chatForm.querySelector('button').disabled=!chatInput.value.trim();}
+ finally{chatPending=false;chatPendingMap=null;renderChat();if(document.activeElement===document.body||document.activeElement?.closest?.('.agent-bar'))chatInput.focus({preventScroll:true});chatForm.querySelector('button').disabled=!chatInput.value.trim();}
 };
 $('map-select').addEventListener('change',()=>{renderChat();chatStatus.textContent=chatPending?'A local reply is pending for the previous scene…':'Local Qwen · inspect scene and edit volume descriptions';});
 for(const event of ['pointerdown','pointerup','click','dblclick','contextmenu','wheel','keydown','keyup']){
@@ -81,8 +104,8 @@ const railIndicator=document.createElement('span');railIndicator.className='rail
 function moveRailIndicator(){const tab=railTabs.querySelector('[aria-expanded="true"]');railIndicator.hidden=!tab;if(!tab)return;railIndicator.style.setProperty('--tab',getComputedStyle(tab).getPropertyValue('--tab'));railIndicator.style.setProperty('--indicator-y',(tab.offsetTop+tab.offsetHeight+2)+'px');}
 railTabs.addEventListener('animationend',e=>{if(e.animationName==='rail-wash')e.target.closest('.rail-tab')?.classList.remove('pulse');});
 // The tab bar's tilt, spotlight and press feel, shared with every other control.
-const ICON_BUTTONS='.panel-close,.inspector-close,.icon-toggle,.tree-toggle,.copy-button,.search-clear';
-tactile(document,[{selector:'.rail-tab',tilt:7},{selector:ICON_BUTTONS,tilt:12,pulse:true},{selector:'.btn,.user-menu-button',tilt:3,pulse:true},{selector:'.list-row,.fiducial-row,.disclosure',tilt:8}]);
+const ICON_BUTTONS='.panel-close,.inspector-close,.icon-toggle,.tree-toggle,.copy-button,.search-clear,.agent-icon-button';
+tactile(document,[{selector:'.rail-tab,.agent-tool',tilt:7},{selector:ICON_BUTTONS,tilt:12,pulse:true},{selector:'.btn,.user-menu-button,.agent-ask,.agent-chip',tilt:3,pulse:true},{selector:'.list-row,.fiducial-row,.disclosure',tilt:8}]);
 // One shared tooltip shows each rail button's name on hover and keyboard focus (WCAG 1.4.13: dismissible, hoverable, persistent).
 // It repeats the button's aria-label, so it is hidden from assistive technology.
 const railTip=document.createElement('div');railTip.className='rail-tooltip';railTip.setAttribute('aria-hidden','true');railTip.hidden=true;document.body.append(railTip);
@@ -1507,6 +1530,12 @@ notesBody.append(notesActions,notesReadOnly,notesSearch,notesList);
 const drawPathHint=document.createElement('p');drawPathHint.className='panel-hint';notesActions.after(drawPathHint);
 const syncDrawPath=()=>{drawPathButton.setAttribute('aria-pressed',$('crayon').getAttribute('aria-pressed')||'false');drawPathButton.disabled=$('crayon').disabled;drawPathHint.textContent=$('crayon').disabled?'Drawing isn’t available here · '+($('crayon').title||'Choose a local Home scene'):'';drawPathHint.hidden=!drawPathHint.textContent;};
 new MutationObserver(syncDrawPath).observe($('crayon'),{attributes:true,attributeFilter:['aria-pressed','disabled','title']});syncDrawPath();
+// Bottom bar: the creation tools mirror their panel buttons; Ask morphs the bar into the assistant.
+agentBar=createAgentBar({root:document.querySelector('.agent-bar'),tools:[
+ {label:'New note',iconPath:icons.note,accent:'amber',source:newNoteButton,onTrigger:()=>placingNote?stopNotePlacement():startNotePlacement(),disabledReason:()=>'switch to a Home scene'},
+ {label:'Draw path',iconPath:icons.pen,accent:'amber',source:$('crayon'),onTrigger:()=>$('crayon').click(),disabledReason:()=>'switch to a Home scene'},
+ {label:'New volume',iconPath:'M9 1.5 15.5 5v8L9 16.5 2.5 13V5ZM2.5 5 9 8.5l6.5-3.5M9 8.5v8',accent:'violet',source:$('volume-draw'),onTrigger:()=>$('volume-draw').click(),disabledReason:()=>'select a local Home scene'},
+]});syncChatCompact();
 function notesWritable(){return !activeMap.startsWith('peer-scene:')&&!activeMap.startsWith('phone:')&&!isRunner()&&activeMap!=='domain';}
 function noteRowTile(note){
  if(!note.details?.thumbnail)return icons.note;
