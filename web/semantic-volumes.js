@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { icons, icon, sectionHeader, listRow, actionButton } from './panel-ui.js';
+import { icons, icon, sectionHeader, listRow, actionButton, markSelected } from './panel-ui.js';
 
 // Semantic boxes are independent of transient voxel and robot-occupancy layers.
 export function createSemanticVolumes({scene, camera, renderer, controls, panel, api, label, clear, openPanel, inspector, toast=()=>{}, flyTo=null, priorityPickObjects=()=>[]}) {
@@ -144,7 +144,7 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
   const focused=list.contains(document.activeElement)?document.activeElement.dataset.volumeId:null;
   for(const v of items){
    const row=listRow({title:v.title,meta:(v.description||'').split('\n')[0]||dimensions(v),tile:icon('M2 5l7-3 7 3v8l-7 3-7-3ZM2 5l7 3 7-3M9 8v8',16),accent:'violet',onSelect:e=>{openedFromKeyboard=e?.detail===0;select(v);}});
-   row.dataset.volumeId=v.id;if(v.id===editing)row.setAttribute('aria-current','true');list.append(row);
+   row.dataset.volumeId=v.id;if(v.id===editing)markSelected(row,'volumes',v.id);list.append(row);
   }
   if(!items.length){const p=document.createElement('p');p.className='empty-state';p.textContent='No semantic volumes in this scene.';list.append(p);}
   if(focused)list.querySelector(`[data-volume-id="${CSS.escape(focused)}"]`)?.focus();

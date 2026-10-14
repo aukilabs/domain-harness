@@ -139,6 +139,15 @@ export function toast(text){
  region.textContent=text;region.hidden=false;clearTimeout(region.timer);region.timer=setTimeout(()=>{region.hidden=true;},3500);
 }
 
+// Marks a row as the current selection. Lists re-render often, so the selection pop only plays
+// when the selected item in that list actually changes.
+const lastSelected=new Map();
+export function markSelected(row,list,id){
+ row.setAttribute('aria-current','true');
+ if(lastSelected.get(list)===id)return;
+ lastSelected.set(list,id);row.classList.add('select-pop');setTimeout(()=>row.classList.remove('select-pop'),600);
+}
+
 // Animated reveal and hide for anything that expands: height plus a short fade.
 const reduceMotion=()=>matchMedia('(prefers-reduced-motion: reduce)').matches;
 export function reveal(el){

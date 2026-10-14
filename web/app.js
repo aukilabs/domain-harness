@@ -11,7 +11,7 @@ import { createNoteBubble } from './note-bubble.js';
 import { createPipWindow } from './pip-window.js';
 import { createVideoPresentation } from './video-presentation.js';
 import { readCameraResponse } from './camera-frame.js';
-import { icons, icon, deviceIcon, sectionHeader, disclosure, statusKind, statusBadge, listRow, searchField, copyButton, emptyState, actionButton, formField, toast, reveal, conceal, animateDetails } from './panel-ui.js';
+import { icons, icon, deviceIcon, sectionHeader, disclosure, statusKind, statusBadge, listRow, searchField, copyButton, emptyState, actionButton, formField, toast, reveal, conceal, animateDetails, markSelected } from './panel-ui.js';
 animateDetails(document);
 const plural=(count,word)=>`${count} ${word}${count===1?'':'s'}`;
 import { moveMapCamera, applyChatActions, chatResultPresentation } from './view-camera.js';
@@ -589,7 +589,7 @@ function showSpatialSelection(kind,node,focus=false){
  if(focus&&window.matchMedia('(max-width:720px)').matches)openPanel(null);
 }
 function updateSpatialSelection(){
- for(const row of spatialBrowser.querySelectorAll('[data-spatial-kind]')){const selected=row.dataset.spatialKind===selectedSpatialNode?.kind&&row.dataset.spatialId===selectedSpatialNode?.id;if(selected)row.setAttribute('aria-current','true');else row.removeAttribute('aria-current');}
+ for(const row of spatialBrowser.querySelectorAll('[data-spatial-kind]')){const selected=row.dataset.spatialKind===selectedSpatialNode?.kind&&row.dataset.spatialId===selectedSpatialNode?.id;if(selected)markSelected(row,'spatial',row.dataset.spatialKind+':'+row.dataset.spatialId);else row.removeAttribute('aria-current');}
 }
 const expandedAnchors=new Set();
 const landmarkTitle=node=>{const name=node.id.includes('/')?node.id.slice(node.id.lastIndexOf('/')+1):node.id;return name.replace(/[_-]+/g,' ').replace(/^./,c=>c.toUpperCase());};
@@ -1263,7 +1263,7 @@ function renderMapRows(){
     onSelect:()=>{$('map-select').value=option.value;$('map-select').dispatchEvent(new Event('change'));renderMapRows();}});
    row.title=option.title;row.disabled=homeOffline||option.disabled;row.dataset.map=option.value;
    if(status==='offline')row.dataset.offline='true';
-   if(option.value===$('map-select').value)row.setAttribute('aria-current','true');
+   if(option.value===$('map-select').value)markSelected(row,'maps',option.value);
    list.append(row);
   }
   if(!options.length)list.append(emptyState(name==='Local'?'No saved scenes on this server':'No scenegraphs available'));
@@ -1533,7 +1533,7 @@ function renderNotes(){
   const reason=noteReadOnlyReason(note),lock=reason?document.createElement('span'):null;
   if(lock){lock.className='row-flag';lock.append(icon(icons.lock,14));lock.setAttribute('aria-label','Read-only');lock.title=reason;}
   const row=listRow({title:noteTitle(note),meta:(note.details?.description||'').split('\n')[0]||noteAnchorText(note),tile:noteRowTile(note),accent:'amber',trailing:lock,onSelect:e=>{focusNote(note);focusCard(e,()=>notesList.querySelector(`[data-note-row="${CSS.escape(note.id)}"]`));}});
-  row.dataset.noteRow=note.id;if(note.id===selectedNoteId)row.setAttribute('aria-current','true');notesList.append(row);
+  row.dataset.noteRow=note.id;if(note.id===selectedNoteId)markSelected(row,'notes',note.id);notesList.append(row);
  }
  if(!shownNotes.length)notesList.append(notesQuery?emptyState('No notes match',{label:'Clear search',onClick:()=>{notesSearch.querySelector('.search-clear').click();}}):emptyState(writable?'No notes here yet. Right-click any surface for a quick note.':'No notes in this map.'));
  if(paths.length||notesQuery){

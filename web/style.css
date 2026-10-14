@@ -817,3 +817,65 @@ body>.app-header{position:fixed;top:12px;right:12px;z-index:40;height:auto;width
 .tree-line .list-row{width:auto;margin:0}
 .tree-children{margin:2px -8px 6px 48px;padding-left:8px}
 .tree-children .list-row{width:auto;margin:0;min-height:36px;padding:8px}
+/* Interaction states, one system for every control. A single focus ring that settles in; fields that
+   respond to hover and focus; segmented controls with a sliding thumb; springy switches; icon buttons
+   that lift like rows; a short pop when a list selection changes. */
+:root{--focus:#60a5fa;--ease-out:cubic-bezier(.2,.8,.2,1);--ease-spring:cubic-bezier(.34,1.56,.64,1);--ring-at:2px;--ring-from:7px}
+:root[data-theme="light"]{--focus:#2563eb}
+:is(.list-row,.disclosure,.fiducial-row,.tree-toggle,.copy-button,.search-clear,.icon-toggle,.inspector-close,.panel-close){--ring-at:-2px;--ring-from:-7px}
+:root :is(button,a[href],summary,[tabindex],.switch-input):not(.rail-tab):focus-visible{outline:2px solid var(--focus);outline-offset:var(--ring-at);animation:focus-in .28s var(--ease-out)}
+.app-header :is(.app-logo,.user-menu-button):focus-visible,.user-menu :is(a,button):focus-visible{box-shadow:none}
+@keyframes focus-in{from{outline-color:transparent;outline-offset:var(--ring-from)}}
+/* Fields */
+.form-control,.search-field input{transition:border-color .15s ease,box-shadow .22s var(--ease-out),background-color .15s ease}
+.form-control:hover:not(:focus,:disabled),.search-field input:hover:not(:focus){border-color:color-mix(in srgb,var(--nav-muted) 40%,transparent)}
+.form-control:focus,.search-field input:focus{outline:none;border-color:var(--focus);background-color:var(--nav-row-selected);box-shadow:0 0 0 3px color-mix(in srgb,var(--focus) 18%,transparent)}
+.form-control[aria-invalid="true"],.form-control:user-invalid{border-color:#dc2626}
+.form-control[aria-invalid="true"]:focus,.form-control:user-invalid:focus{box-shadow:0 0 0 3px rgba(220,38,38,.16)}
+.form-control:disabled{opacity:.55;cursor:not-allowed}
+.form-control::placeholder,.search-field input::placeholder{color:var(--nav-muted);opacity:.85}
+select.form-control{appearance:none;-webkit-appearance:none;padding-right:30px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none' stroke='%2371717a' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center}
+/* Icon buttons lift like rows and press in. */
+:is(.panel-close,.inspector-close,.icon-toggle,.tree-toggle,.copy-button,.search-clear){transition:background-color .15s ease,color .15s ease,box-shadow .15s ease,transform .12s ease}
+:is(.panel-close,.inspector-close,.icon-toggle,.tree-toggle,.copy-button,.search-clear):hover{background:var(--glass-fill);color:var(--nav-text);box-shadow:var(--raise),inset 0 0 0 1px var(--glass-rim)}
+:is(.panel-close,.inspector-close,.icon-toggle,.tree-toggle,.copy-button,.search-clear):active{transform:scale(.92)}
+/* Text buttons */
+.btn-ghost:not(:disabled):hover{background:var(--glass-fill);box-shadow:var(--raise),inset 0 0 0 1px var(--glass-rim)}
+.btn-danger-ghost:not(:disabled):hover{background:color-mix(in srgb,#dc2626 9%,transparent)}
+.btn:disabled{cursor:not-allowed}
+.text-action{text-decoration:underline;text-decoration-color:transparent;text-underline-offset:3px;transition:text-decoration-color .15s ease,color .15s ease}
+.text-action:hover{text-decoration-color:currentColor}
+.technical-details summary{border-radius:6px;color:var(--nav-text);transition:color .15s ease}
+.technical-details summary:hover::before{border-color:var(--nav-text)}
+/* Segmented controls: the selected tile slides between options. */
+.theme-switch,.mode-toggle{position:relative;isolation:isolate}
+.theme-switch::before,.mode-toggle::before{content:"";position:absolute;z-index:-1;top:3px;bottom:3px;left:3px;width:calc((100% - 8px)/2);border-radius:7px;background:var(--nav-row-selected);box-shadow:0 1px 3px rgba(24,24,27,.14),inset 0 0 0 1px var(--glass-rim);transition:transform .34s var(--ease-spring),opacity .15s ease}
+:root:not([data-theme="light"]) :is(.theme-switch,.mode-toggle)::before{background:rgba(255,255,255,.12)}
+.theme-switch:has(>:nth-child(2):is([aria-pressed="true"],[aria-checked="true"]))::before{transform:translateX(calc(100% + 2px))}
+.mode-toggle[aria-pressed="true"]::before{transform:translateX(calc(100% + 2px))}
+.theme-switch:not(:has([aria-pressed="true"],[aria-checked="true"]))::before{opacity:0}
+.theme-switch button,.theme-switch button:is([aria-pressed="true"],[aria-checked="true"]){background:transparent;box-shadow:none;transition:color .2s ease}
+.theme-switch button:hover{color:var(--nav-text)}
+.mode-toggle{grid-auto-columns:1fr}
+.mode-toggle span,.mode-toggle[aria-pressed] span{background:transparent!important;box-shadow:none!important;transition:color .2s ease}
+.mode-toggle[aria-pressed="false"] span:first-child,.mode-toggle[aria-pressed="true"] span:last-child{color:var(--nav-text)}
+.scene-bar .view-controls .mode-toggle:hover{background:var(--glass-fill)!important}
+.mode-toggle:hover span{color:var(--nav-text)}
+/* Switches: the knob springs across and stretches while pressed. */
+:is(.switch,.switch-input){transition:background-color .2s ease,box-shadow .2s ease}
+:is(.switch,.switch-input)::after{transition:transform .32s var(--ease-spring),width .18s var(--ease-out),box-shadow .2s ease}
+:is(.switch:not([aria-checked="true"]),.switch-input:not(:checked)):not(:disabled):hover{background-color:#c4c4cc}
+:is(.switch,.switch-input):not(:disabled):hover::after{box-shadow:0 1px 3px rgba(0,0,0,.25),0 0 0 3px color-mix(in srgb,var(--focus) 12%,transparent)}
+:is(.switch,.switch-input):not(:disabled):active::after{width:20px}
+:is(.switch[aria-checked="true"],.switch-input:checked):not(:disabled):active::after{transform:translateX(12px)}
+/* Slider thumb grows under the pointer. */
+.range-row input[type="range"]::-webkit-slider-thumb{transition:transform .2s var(--ease-spring),box-shadow .15s ease}
+.range-row input[type="range"]:hover::-webkit-slider-thumb{transform:scale(1.12)}
+.range-row input[type="range"]:active::-webkit-slider-thumb{transform:scale(1.2)}
+.range-row input[type="range"]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 2px #fff,0 0 0 4px var(--focus)}
+/* A new selection fades its tint in and pops its tile. */
+.list-row.select-pop{animation:row-select .3s ease}
+.list-row.select-pop .list-row-tile{animation:tile-pop .45s var(--ease-spring)}
+@keyframes row-select{from{background-color:transparent;box-shadow:none}}
+@keyframes tile-pop{from{transform:scale(.8)}}
+@media(prefers-reduced-motion:reduce){:root :is(button,a[href],summary,[tabindex],.switch-input):focus-visible,.list-row.select-pop,.list-row.select-pop .list-row-tile{animation:none}.theme-switch::before,.mode-toggle::before,:is(.switch,.switch-input)::after,.range-row input[type="range"]::-webkit-slider-thumb{transition:none}}
