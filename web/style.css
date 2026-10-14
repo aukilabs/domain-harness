@@ -1153,3 +1153,27 @@ select.form-control{appearance:none;-webkit-appearance:none;padding-right:30px;b
 /* The plan strip sits at the top left, clear of the bottom bar whether or not a panel is open. */
 .map2d-strip{top:16px;bottom:auto}
 @media(max-width:720px){.map2d-strip{top:auto;bottom:84px}}
+/* Camera feed window: a glass card like the inspector, with the camera's tile, an AR switch, a compact
+   orientation picker and a live-status footer. The video sits in a rounded well. */
+#sensor-pip{padding:0 8px 8px;border:1px solid rgba(255,255,255,.6);border-radius:16px;background:color-mix(in srgb,var(--nav-panel) 92%,transparent);-webkit-backdrop-filter:blur(24px) saturate(1.3);backdrop-filter:blur(24px) saturate(1.3);box-shadow:0 18px 44px -14px rgba(24,24,27,.35),0 2px 6px rgba(24,24,27,.06);color:var(--nav-text)}
+:root:not([data-theme="light"]) #sensor-pip{border-color:rgba(255,255,255,.08)}
+#sensor-pip .sensor-pip-heading{gap:8px;height:48px;padding:0 0 0 4px;border:0;font-size:13px}
+.sensor-pip-tile{display:grid;place-items:center;flex-shrink:0;width:26px;height:26px;border-radius:8px;color:#fff;background:linear-gradient(180deg,rgba(255,255,255,.16),rgba(255,255,255,0) 55%,rgba(0,0,0,.06)),#0891b2;box-shadow:inset 0 1px 0 rgba(255,255,255,.35),0 3px 8px -3px rgba(8,145,178,.5)}
+#sensor-pip .sensor-pip-heading strong{font-weight:600;color:var(--nav-text)}
+#sensor-pip .ar-toggle{gap:6px;padding:0 4px;color:var(--nav-muted);font-size:12px;font-weight:500}
+#sensor-pip .ar-toggle .switch-input{width:30px!important;height:18px!important}
+#sensor-pip .ar-toggle .switch-input::after{width:14px;height:14px}
+#sensor-pip .ar-toggle .switch-input:checked::after{transform:translateX(12px)}
+#sensor-pip .sensor-orientation{width:auto;height:28px;margin:0;padding:0 24px 0 8px;border:0;border-radius:8px;background:var(--glass-fill) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 12 12' fill='none' stroke='%2371717a' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5'/%3E%3C/svg%3E") no-repeat right 7px center;box-shadow:inset 0 0 0 1px var(--glass-rim);color:var(--nav-text);font:500 12px system-ui;appearance:none;-webkit-appearance:none;cursor:pointer}
+#sensor-pip #sensor-close{position:static;flex-shrink:0;width:28px;height:28px;color:var(--nav-muted)}
+#sensor-pip #sensor-stage{border-radius:10px;background:#09090b;box-shadow:inset 0 0 0 1px rgba(0,0,0,.06)}
+#sensor-pip #sensor-image{background:#09090b}
+#sensor-pip #sensor-feed-status,#sensor-pip #sensor-ar-status{display:flex;align-items:center;gap:6px;padding:8px 28px 0 4px;color:var(--nav-muted);font-size:11.5px;line-height:15px}
+#sensor-pip #sensor-feed-status::before{content:"";flex-shrink:0;width:6px;height:6px;border-radius:50%;background:#a1a1aa}
+#sensor-pip #sensor-feed-status[data-state="live"]::before{background:#10b981;box-shadow:0 0 0 3px rgba(16,185,129,.18)}
+#sensor-pip #sensor-feed-status[data-state="stale"]::before{background:#f59e0b}
+#sensor-pip .pip-resize{right:4px;bottom:4px;color:var(--nav-muted);border-radius:6px}
+#sensor-pip .pip-resize:hover{color:var(--nav-text);background:var(--glass-fill)}
+#sensor-pip .pip-resize::after{right:6px;bottom:6px;width:8px;height:8px;border-width:1.5px;border-radius:0 0 3px 0}
+/* The old decorative blueprint grid over the viewport is gone; the scene has its own ground grid. */
+.viewport:before{display:none}
