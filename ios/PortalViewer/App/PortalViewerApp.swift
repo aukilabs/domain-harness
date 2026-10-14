@@ -75,7 +75,7 @@ struct ViewerScreen: View {
                     Spacer(minLength: 0)
                     VStack(spacing: 0) {
                     Button { withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) { showDetails.toggle() } } label: {
-                        Image(uiImage: UIImage(named: "auki.png") ?? UIImage()).renderingMode(.original).resizable()
+                        McKennaBadge()
                             .frame(width: 44, height: 44).clipShape(Circle())
                             .overlay(Circle().stroke(showDetails ? Theme.accent : Theme.paper, lineWidth: 3))
                             .shadow(color: Theme.glow, radius: 6, y: 3)
@@ -3925,6 +3925,24 @@ enum PhoneDepthCapture {
 }
 
 /// A glass dial of ticks that turns with the phone, with a red triangle at north.
+/// The McKenna "m", its colours slowly turning as on Home's web page, on a dark disc.
+struct McKennaBadge: View {
+    static let colors: [Color] = [0x10b981, 0x3b82f6, 0x8b5cf6, 0xec4899, 0xf59e0b, 0x06b6d4, 0x10b981].map {
+        Color(red: Double($0 >> 16 & 0xff) / 255, green: Double($0 >> 8 & 0xff) / 255, blue: Double($0 & 0xff) / 255)
+    }
+    var body: some View {
+        ZStack {
+            Circle().fill(Color(red: 0.08, green: 0.08, blue: 0.1))
+            TimelineView(.animation(minimumInterval: 1.0 / 20)) { context in
+                let turn = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 10) * 36
+                AngularGradient(colors: Self.colors, center: .center, angle: .degrees(turn))
+                    .mask(Image("McKennaMark").resizable().scaledToFit().padding(.horizontal, 7))
+            }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
 struct CompassRing: View {
     let turn: Double
     var body: some View {

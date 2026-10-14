@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		0A9A1BD27276FC3895F4A4EC /* ScreenShare.swift in Sources */ = {isa = PBXBuildFile; fileRef = C38092EFE931EB56A528B487 /* ScreenShare.swift */; };
+		126307E730AE9D6F418261E3 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 5E28D30D4D61E2D22CF37F86 /* Assets.xcassets */; };
 		2481687917605ECCE2F2C22A /* bracketbot_0184_rigged.usdz in Resources */ = {isa = PBXBuildFile; fileRef = BA431FB9B359E3A0AF861867 /* bracketbot_0184_rigged.usdz */; };
 		2DC11F9A3C2824AFF300B427 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E4554C6754FD11EA49048B5 /* Theme.swift */; };
 		2F00069261E099226C9BD6C9 /* PortalMap.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF63C94F0E06FB864456F332 /* PortalMap.swift */; };
@@ -27,6 +28,7 @@
 		2BCEC81F73CF1D624DA0884F /* GeoLocator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeoLocator.swift; sourceTree = "<group>"; };
 		4400D81FC657522891C44E1A /* SemanticVolumeModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SemanticVolumeModel.swift; sourceTree = "<group>"; };
 		53473FD966BA04F1FC85EED6 /* GeoReference.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeoReference.swift; sourceTree = "<group>"; };
+		5E28D30D4D61E2D22CF37F86 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		79389B6ADD96902B6B08CFCB /* PortalViewer.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = PortalViewer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		8E4554C6754FD11EA49048B5 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		8FF47757AD099392D75B3200 /* PortalPose.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortalPose.swift; sourceTree = "<group>"; };
@@ -64,6 +66,7 @@
 		72B20422B48B789027D9077B /* Resources */ = {
 			isa = PBXGroup;
 			children = (
+				5E28D30D4D61E2D22CF37F86 /* Assets.xcassets */,
 				27973CF9A0CDCC6DEC974C85 /* auki.png */,
 				BA431FB9B359E3A0AF861867 /* bracketbot_0184_rigged.usdz */,
 			);
@@ -159,6 +162,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				126307E730AE9D6F418261E3 /* Assets.xcassets in Resources */,
 				CE88F9F57B642D17A46C0710 /* auki.png in Resources */,
 				2481687917605ECCE2F2C22A /* bracketbot_0184_rigged.usdz in Resources */,
 			);
@@ -198,7 +202,7 @@
 					"\"../PortalBridge/build\"",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = Annotator;
+				INFOPLIST_KEY_CFBundleDisplayName = McKenna;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Scan a Portal to display Home's scenegraph in augmented reality.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connect directly to Home to receive its live Portal scenegraph.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Find north and this phone's GPS position once at launch, to place Home's map on the Earth.";
@@ -291,7 +295,7 @@
 					"\"../PortalBridge/build\"",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = Annotator;
+				INFOPLIST_KEY_CFBundleDisplayName = McKenna;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Scan a Portal to display Home's scenegraph in augmented reality.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connect directly to Home to receive its live Portal scenegraph.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Find north and this phone's GPS position once at launch, to place Home's map on the Earth.";
