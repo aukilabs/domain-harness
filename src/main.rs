@@ -32,6 +32,7 @@ struct AppState {
     ar_frames: spatial_home::ar_preview::Frames,
     previews: tokio::sync::mpsc::Sender<spatial_home::sensor_preview::Request>,
     controls: tokio::sync::mpsc::Sender<spatial_home::component_control::Request>,
+    pointing: tokio::sync::mpsc::Sender<spatial_home::robot_pointing::Invoke>,
     store: Arc<Mutex<Store>>,
     changes: tokio::sync::watch::Sender<()>,
     peer: tokio::sync::watch::Receiver<Value>,
@@ -1001,6 +1002,52 @@ async fn robot_asset(axum::extract::Path(path): axum::extract::Path<String>) -> 
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
 }
+/// Resolve a chat pointing target from current scene state, declare its frame,
+/// and ask the robot through the `point_at` operable it advertises.
+async fn point_robot_at(s:&Shared,key:&str,frame:&str,args:Value)->anyhow::Result<Value> {
+
+                // Home resolves the target from current scene state and declares its frame;
+                // the robot then decides, through its own calibration, whether it can point.
+                #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Target {kind:String,#[serde(default)] id:Option<String>,#[serde(default)] position:Option<[f64;3]>}
+                #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Point {#[serde(default)] robot:Option<String>,target:Target}
+                let a:Point=serde_json::from_value(args)?;
+                let network=spatial_home::peer_aliases::network(s.peer.borrow().clone())?;
+                let candidate=spatial_home::robot_pointing::select(&network,a.robot.as_deref())?;
+                let id=a.target.id.clone().filter(|v|!v.is_empty());
+                let need_id=||id.clone().ok_or_else(||anyhow::anyhow!("target.id is required for kind {}",a.target.kind));
+                let label_of=|peer:&str|network["peers"].as_array().and_then(|peers|peers.iter().find(|p|p["peer_id"]==peer)).and_then(|p|p["alias"].as_str().or(p["name"].as_str()).or(p["reported_name"].as_str())).unwrap_or(peer).to_owned();
+                let (position,label):([f64;3],Option<String>)=match a.target.kind.as_str() {
+                    "note"=>{let note_id=need_id()?;
+                        let note=if key=="canonical"{spatial_home::notes::from_registries(&lock(s).map_err(|e|e.0)?.built.registries,frame)?.items.into_iter().find(|n|n.id==note_id).ok_or_else(||anyhow::anyhow!("Note not found in selected scene"))?}else{
+                            s.local_scenes.note_editors.lock().map_err(|_|anyhow::anyhow!("Scene annotations unavailable"))?.get(key).cloned().ok_or_else(||anyhow::anyhow!("Scene annotations unavailable"))?.get_note(&note_id)?};
+                        (note.position,Some(if note.details.title.is_empty(){note.text}else{note.details.title}))},
+                    "volume"=>{let volume_id=need_id()?;let volume=s.local_scenes.volumes.get(key,frame)?.items.into_iter().find(|v|v.id==volume_id).ok_or_else(||anyhow::anyhow!("Volume not found in selected scene"))?;(volume.center,Some(volume.title))},
+                    "peer"=>{let peer_id=need_id()?;
+                        // Same registry-backed live pose resolver as get_peer_pose and the viewer.
+                        let raw=s.peer.borrow().clone();
+                        let pose=spatial_home::peer_locations::get(&s.previews,&raw,json!({"peer_id":peer_id}),frame).await
+                            .map_err(|e|anyhow::anyhow!("No current pose for {} in the selected scene: {e}",label_of(&peer_id)))?;
+                        (serde_json::from_value(pose["location"]["position"].clone())?,Some(label_of(&peer_id)))},
+                    "position"=>(a.target.position.ok_or_else(||anyhow::anyhow!("target.position is required for kind position"))?,None),
+                    _=>anyhow::bail!("target.kind must be note, volume, peer or position"),
+                };
+                let home_peer=s.peer.borrow()["connection"]["peer_id"].as_str().map(str::to_owned).ok_or_else(||anyhow::anyhow!("Home P2P peer is not ready"))?;
+                let scene_frame=spatial_home::conventions::registry(&home_peer,frame)?;
+                anyhow::ensure!(position.iter().all(|v|v.is_finite()),"Target position must be finite");
+                let instruction=spatial_home::point_at::PointAt{request_id:uuid::Uuid::new_v4().to_string(),
+                    frame:spatial_home::compact_pose::FrameRef::from(&scene_frame),point:position,arm:Default::default()};
+                let robot=label_of(&candidate.peer_id);
+                let (reply,receive)=tokio::sync::oneshot::channel();
+                s.pointing.try_send(spatial_home::robot_pointing::Invoke{candidate:candidate.clone(),instruction,reply})
+                    .map_err(|_|anyhow::anyhow!("Home P2P is not running, or another robot request is pending"))?;
+                let accepted=receive.await.map_err(|_|anyhow::anyhow!("Robot pointing request was dropped"))??;
+                let target=label.map(|l|format!("\"{l}\"")).unwrap_or_else(||"the point".into());
+                let side=if accepted.bearing_deg>=0.{"left"}else{"right"};
+                let motion=if accepted.executes{format!("Its {} arm is pointing for {:.0} s.",format!("{:?}",accepted.arm).to_lowercase(),accepted.hold_s)}else{"The arm did not move: arm motion is not enabled on the robot.".to_owned()};
+                Ok(json!({"summary":format!("{robot} accepted {target}: {:.2} m away, {:.0}\u{b0} to its {side}, {:.0}\u{b0} elevation. {motion}",
+                    accepted.distance_m,accepted.bearing_deg.abs(),accepted.elevation_deg),
+                    "robot_peer_id":candidate.peer_id,"result":accepted}))
+}
 async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Json<spatial_home::chatbot::Request>)->ApiResult {
     local_write(&headers)?;
     let (key,frame)=volume_context(&s,&request.scene)?;
@@ -1017,6 +1064,8 @@ async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Jso
         let s=s.clone();let scene=scene.clone();let key=key.clone();let frame=frame.clone();let viewer=viewer.clone();let latest=latest.clone();let named_notes=named_notes.clone();let tool_state=tool_state.clone();
         async move {
         let network=s.peer.borrow().clone();
+        if name=="get_peer_pose" {return spatial_home::peer_locations::get(&s.previews,&network,args,&frame).await;}
+        if name=="point_robot_at" {return point_robot_at(&s,&key,&frame,args).await;}
         let ray=if name=="raycast_peer_camera"{Some(spatial_home::chat_camera::geometry(&s.previews,&network,args.clone(),&frame).await?)}else{None};
         let reference=args["reference_id"].as_str().unwrap_or("");
         let peer_id=if name=="point_relative_to_peer"{args["peer_id"].as_str()}else if name=="create_note_relative_to_view"&&(args["reference_kind"]=="peer"||reference.starts_with("phone-name:")||reference.starts_with("robot-name:")){Some(reference.strip_prefix("phone-name:").or_else(||reference.strip_prefix("robot-name:")).unwrap_or(reference))}else{None};
@@ -1145,6 +1194,7 @@ async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Jso
                 anyhow::ensure!(fresh_volumes.contains(&a.id),"Call get_semantic_volume in the current turn before deleting");
                 anyhow::ensure!(named_notes.is_empty()||spatial_home::scene_tools::mentions_name(&latest,&a.expected_name),"Do not substitute a volume for the requested note");
                 let receipt=s.local_scenes.volumes.delete_volume(&key,&frame,&a.id,&a.expected_name)?;
+                fresh_volumes.remove(&a.id);
                 if key=="canonical"{lock(&s).map_err(|e|e.0)?.built.registries["semantic_volumes"]=json!(s.local_scenes.volumes.get(&key,&frame)?);s.changes.send_replace(());}
                 Ok(receipt)
             },
@@ -1154,6 +1204,7 @@ async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Jso
                 let a:All=serde_json::from_value(args)?;
                 anyhow::ensure!(spatial_home::scene_tools::requests_all_volume_deletion(&latest),"Bulk deletion requires an explicit request to delete all volumes in this scene");
                 let receipt=s.local_scenes.volumes.delete_all_volumes(&key,&frame,&a.expected_ids)?;
+                fresh_volumes.clear();
                 if key=="canonical"{lock(&s).map_err(|e|e.0)?.built.registries["semantic_volumes"]=json!(s.local_scenes.volumes.get(&key,&frame)?);s.changes.send_replace(());}
                 Ok(receipt)
             },
@@ -1163,6 +1214,7 @@ async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Jso
                 anyhow::ensure!(named_notes.is_empty()||spatial_home::scene_tools::mentions_name(&latest,&target.title),"The request names note(s) {}, not volume {}. Do not substitute a volume for a note. Ask which volume is intended for resizing; moving a note uses move_note.",named_notes.join(", "),target.title);
                 anyhow::ensure!(fresh_volumes.contains(edit.id()),"Call get_semantic_volume for this ID in the current turn before editing. Old chat coordinates are not current scene state.");
                 let receipt=s.local_scenes.volumes.tool_edit(&key,&frame,edit)?;
+                fresh_volumes.remove(&target.id);
                 if key=="canonical" {lock(&s).map_err(|e|e.0)?.built.registries["semantic_volumes"]=json!(s.local_scenes.volumes.get(&key,&frame)?);s.changes.send_replace(());}
                 Ok(receipt)
             },
@@ -1186,6 +1238,7 @@ async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Jso
                 };Ok(receipt)
             },
             "update_volume_description"=>{let a:Edit=serde_json::from_value(args)?;anyhow::ensure!(fresh_volumes.contains(&a.id),"Call get_semantic_volume for this ID in the current turn before editing.");let receipt=s.local_scenes.volumes.update_description(&key,&frame,&a.id,&a.expected_description,&a.description)?;
+                fresh_volumes.remove(&a.id);
                 if key=="canonical" {lock(&s).map_err(|e|e.0)?.built.registries["semantic_volumes"]=json!(s.local_scenes.volumes.get(&key,&frame)?);s.changes.send_replace(());}
                 Ok(receipt)
             },
@@ -1195,9 +1248,6 @@ async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Jso
     },|args| {
         let network=s.peer.borrow().clone();let tx=s.previews.clone();
         async move {spatial_home::camera_vision::capture(&tx,&network,args).await}
-    },|snapshot| {
-        let network=s.peer.borrow().clone();let tx=s.previews.clone();
-        async move {spatial_home::peer_locations::enrich(snapshot,network,tx).await}
     }).await?;
     Ok(Json(result))
 }
@@ -1272,6 +1322,7 @@ async fn main() -> anyhow::Result<()> {
         tokio::sync::watch::channel(spatial_home::scene_mirror::RemoteScene::default());
     let (preview_tx, preview_rx) = tokio::sync::mpsc::channel(4);
     let (control_tx, control_rx) = tokio::sync::mpsc::channel(4);
+    let (pointing_tx, pointing_rx) = tokio::sync::mpsc::channel(4);
     let occupancy = spatial_home::robot_occupancy::Cache::default();
     let ar_frames = spatial_home::ar_preview::Frames::default();
     let shutdown = tokio_util::sync::CancellationToken::new();
@@ -1357,6 +1408,7 @@ async fn main() -> anyhow::Result<()> {
             },
             preview_rx,
             control_rx,
+            pointing_rx,
             occupancy.clone(),
             ar_frames.clone(),
             shutdown.clone(),
@@ -1374,6 +1426,7 @@ async fn main() -> anyhow::Result<()> {
         ar_frames,
         previews: preview_tx,
         controls: control_tx,
+        pointing: pointing_tx,
         store,
         changes,
         peer: peer_rx,

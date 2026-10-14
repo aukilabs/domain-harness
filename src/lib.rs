@@ -101,6 +101,8 @@ pub mod scene_paths;
 pub mod scene_navigation;
 
 pub mod robot_runner;
+pub mod robot_pointing;
+pub mod point_at;
 pub mod chatbot;
 pub mod view_camera; // Browser-local viewpoint controls; sensor attachments never move hardware.
 pub mod camera_vision;

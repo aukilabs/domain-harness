@@ -306,21 +306,25 @@ async fn local_model_describes_selected_camera_image()->anyhow::Result<()> {
 async fn local_model_where_is_phone_uses_live_position_not_attachment()->anyhow::Result<()> {
  use serde_json::json;
  let viewer:spatial_home::chatbot::Viewer=serde_json::from_value(json!({"frame":"home-frame","mode":"3d","screen_right":[1,0,0],"camera_position":[3,4,5],"camera_target":[0,0,0]}))?;
+ let mut read_pose=false;
  let result=spatial_home::chatbot::chat(spatial_home::chatbot::Request{viewer:Some(viewer.clone()),scene:"local:home".into(),messages:vec![spatial_home::chatbot::Message{role:"user".into(),content:"Where is Dan's Phone?".into()}]},|name,args|match name{
-  "inspect_scenegraph"=>Ok(json!({"notes":[],"semantic_volumes":{"items":[]},"peers":[{"peer_id":"phone","alias":"Dan's Phone","status":"connected","location":{"position":[8,1,-3],"frame":"home-frame","received_age_ms":50}}],"peer_aliases":{"phone":"Dan's Phone"}})),
-  "move_camera"=>{let target:[f64;3]=serde_json::from_value(args["look_at"].clone())?;anyhow::ensure!(target==[8.,1.,-3.],"Must use live position: {args}");spatial_home::view_camera::action(args,"local:home","home-frame",Some(&viewer))},
+  "inspect_scenegraph"=>Ok(json!({"notes":[],"semantic_volumes":{"items":[]},"peers":[{"peer_id":"phone","alias":"Dan's Phone","status":"connected"},{"peer_id":"offline-peer","alias":"Offline robot","status":"disconnected"}],"peer_aliases":{"phone":"Dan's Phone"}})),
+  "get_peer_pose"=>{anyhow::ensure!(args==json!({"peer_id":"phone"}),"Read only the requested peer: {args}");read_pose=true;Ok(json!({"peer_id":"phone","location":{"position":[8,1,-3],"rotation_xyzw":[0,0,0,1],"frame":"home-frame","received_age_ms":50,"capture_timestamp_ns":"1700000000000000003","clock":{"peer_id":"phone","id":"capture","hash":"fixture-clock"},"freshness":{"status":"live","basis":"arrival","maximum_received_age_ms":2000}}}))},
+  "move_camera"=>{anyhow::ensure!(read_pose,"Must read a targeted current pose before choosing the viewpoint");let target:[f64;3]=serde_json::from_value(args["look_at"].clone())?;anyhow::ensure!(target==[8.,1.,-3.],"Must use live position: {args}");spatial_home::view_camera::action(args,"local:home","home-frame",Some(&viewer))},
   _=>anyhow::bail!("Use current peer location, not attachment or scene edits"),
  }).await?;
- assert_eq!(result["ui_actions"][0]["type"],"move_camera","{result}");assert_eq!(result["changes"],json!([]));Ok(())
+ assert!(read_pose,"{result}");assert_eq!(result["ui_actions"][0]["type"],"move_camera","{result}");assert_eq!(result["changes"],json!([]));Ok(())
 }
 #[tokio::test]
 #[ignore = "requires local Ollama with configured Qwen model"]
 async fn live_peer_distance_is_answered_without_scene_edits()->anyhow::Result<()> {
  use serde_json::json;
- let result=spatial_home::chatbot::chat(spatial_home::chatbot::Request{viewer:None,scene:"local:fixture".into(),messages:vec![spatial_home::chatbot::Message{role:"user".into(),content:"How far is Broom boy from cheese?".into()}]},|name,_|match name {
-  "inspect_scenegraph"=>Ok(json!({"frame":"fixture","notes":[{"id":"cheese","text":"cheese","position":[6,0,8]}],"peers":[{"peer_id":"synthetic-peer","alias":"Broom boy","location":{"position":[0,0,0],"frame":"fixture","received_age_ms":10}}],"semantic_volumes":{"items":[]}})),
+ let mut read_pose=false;
+ let result=spatial_home::chatbot::chat(spatial_home::chatbot::Request{viewer:None,scene:"local:fixture".into(),messages:vec![spatial_home::chatbot::Message{role:"user".into(),content:"How far is Broom boy from cheese?".into()}]},|name,args|match name {
+  "inspect_scenegraph"=>Ok(json!({"frame":"fixture","notes":[{"id":"cheese","text":"cheese","position":[6,0,8]}],"peers":[{"peer_id":"synthetic-peer","alias":"Broom boy","status":"connected"},{"peer_id":"unrelated-peer","alias":"Another robot","status":"disconnected"}],"semantic_volumes":{"items":[]}})),
+  "get_peer_pose"=>{anyhow::ensure!(args==json!({"peer_id":"synthetic-peer"}),"Read only Broom boy: {args}");read_pose=true;Ok(json!({"peer_id":"synthetic-peer","location":{"position":[0,0,0],"rotation_xyzw":[0,0,0,1],"frame":"fixture","received_age_ms":10,"capture_timestamp_ns":"1700000000000000003","clock":{"peer_id":"synthetic-peer","id":"capture","hash":"fixture-clock"},"freshness":{"status":"live","basis":"arrival","maximum_received_age_ms":2000}}}))},
   "get_note"=>Ok(json!({"id":"cheese","name":"cheese","position":[6,0,8]})),
   _=>anyhow::bail!("Read-only question must not move a view, open video or edit scene"),
  }).await?;
- assert!(result["changes"].as_array().unwrap().is_empty());assert!(result["reply"].as_str().unwrap().contains("10"),"{result}");Ok(())
+ assert!(read_pose,"{result}");assert!(result["changes"].as_array().unwrap().is_empty());assert!(result.get("ui_actions").is_none());assert!(result["reply"].as_str().unwrap().contains("10"),"{result}");Ok(())
 }

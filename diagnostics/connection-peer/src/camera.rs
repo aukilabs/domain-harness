@@ -78,6 +78,8 @@ pub struct Camera {
     worker: Option<std::thread::JoinHandle<()>>,
     stop: Arc<std::sync::atomic::AtomicBool>,
     calibration: Calibration,
+    frame: FrameRegistryEntry,
+    extrinsic: crate::compact_pose::Contract,
     last: u64,
 }
 impl Camera {
@@ -111,6 +113,16 @@ impl Camera {
             // alignment::localize undistorts corners into this same optical frame.
             distortion: auki_qr_localizer::Distortion::None,
         })
+    }
+    /// The raw optical frame and its held transform into the base.
+    pub fn extrinsic(&self) -> (FrameRegistryEntry, crate::pointer::Transform) {
+        (
+            self.frame.clone(),
+            crate::pointer::Transform {
+                contract: self.extrinsic.clone(),
+                product: self._extrinsic.product(),
+            },
+        )
     }
     pub fn mount(p: &crate::poses::Publisher, c: Calibration) -> Result<Self> {
         c.validate()?;
@@ -223,15 +235,18 @@ impl Camera {
             &extrinsic_output,
             BufferLimits::entries(1),
             |_: &crate::compact_pose::Update| 256,
-            move |o| {
+            {
+                let contract = contract.clone();
+                move |o| {
                 Ok(Some(CatalogProductMetadata {
                     schema: crate::compact_pose::METADATA.into(),
                     source_sequence: o.sequence,
                     value: serde_json::to_value(&contract).unwrap(),
                 }))
-            },
+            }},
         )?;
         p.endpoint.export_product(&extrinsic.product())?;
+        let extrinsic_contract = contract.clone();
         // Static mount: valid throughout this capture session, not a moving-head guess.
         extrinsic_output.publish(
             0,
@@ -267,7 +282,7 @@ impl Camera {
                     unit: Some("pixels".into()),
                 }),
             )
-            .in_registered_frame(frame),
+            .in_registered_frame(frame.clone()),
         )?;
         detector.expose()?;
         let retained = p.runtime.capture_buffer_with_metadata(
@@ -355,6 +370,8 @@ impl Camera {
             worker: Some(worker),
             stop,
             calibration: c,
+            frame,
+            extrinsic: extrinsic_contract,
             last: 0,
         })
     }
