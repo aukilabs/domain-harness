@@ -294,14 +294,16 @@ enum CrayonTube {
         return curve
     }
     /// Rings of `sides` vertices round the curve, joined into one closed skin with flat ends.
-    static func mesh(_ points: [SIMD3<Float>], radius: Float, sides: Int = 8) -> (vertices: [SIMD3<Float>], indices: [UInt32])? {
+    /// Each vertex's `along` is its distance in metres from the first point, the way the line was drawn.
+    static func mesh(_ points: [SIMD3<Float>], radius: Float, sides: Int = 8) -> (vertices: [SIMD3<Float>], indices: [UInt32], along: [SIMD2<Float>])? {
         var path = [SIMD3<Float>]()
         for p in smooth(points) where p.x.isFinite && p.y.isFinite && p.z.isFinite {
             if let last = path.last, simd_distance(last, p) < 0.0005 { continue }
             path.append(p)
         }
         guard path.count >= 2, radius > 0, sides >= 3 else { return nil }
-        var vertices = [SIMD3<Float>](), indices = [UInt32]()
+        var vertices = [SIMD3<Float>](), indices = [UInt32](), along = [SIMD2<Float>]()
+        var distance: Float = 0
         // The ring's "up" is carried along the curve so the tube never twists or pinches.
         var normal = SIMD3<Float>(0, 1, 0)
         for i in path.indices {
@@ -313,9 +315,11 @@ enum CrayonTube {
             }
             normal = simd_normalize(side)
             let across = simd_cross(tangent, normal)
+            if i > 0 { distance += simd_distance(path[i - 1], path[i]) }
             for k in 0..<sides {
                 let angle = Float(k) / Float(sides) * 2 * .pi
                 vertices.append(path[i] + (normal * cos(angle) + across * sin(angle)) * radius)
+                along.append(SIMD2(distance, Float(k) / Float(sides)))
             }
         }
         let n = UInt32(sides)
@@ -325,14 +329,14 @@ enum CrayonTube {
                 indices.append(contentsOf: [a, b, c, b, d, c])
             }
         }
-        let first = UInt32(vertices.count); vertices.append(path[0])
-        let last = first + 1; vertices.append(path[path.count - 1])
+        let first = UInt32(vertices.count); vertices.append(path[0]); along.append(SIMD2(0, 0))
+        let last = first + 1; vertices.append(path[path.count - 1]); along.append(SIMD2(distance, 0))
         let end = UInt32(path.count - 1) * n
         for k in 0..<n {
             indices.append(contentsOf: [first, (k + 1) % n, k])
             indices.append(contentsOf: [last, end + k, end + (k + 1) % n])
         }
-        return (vertices, indices)
+        return (vertices, indices, along)
     }
 }
 
@@ -395,6 +399,13 @@ struct DepthAlignment: Encodable {
     let portal_id: String
     let portal_to_session: Portal.Pose
     let session_to_home: Portal.Pose
+}
+/// Where the phone's AR session sits in the scene, published for any peer to read
+/// whether or not depth is being shared.
+struct PhonePlacement: Encodable {
+    let session: String
+    let timestamp_ns: UInt64
+    let session_to_scene: Portal.Pose
 }
 /// A Portal this scene does not know yet, measured in the phone's AR session.
 /// Home validates `alignment` and composes the Portal's scene pose itself.
@@ -580,6 +591,17 @@ struct MessageInbox: Equatable {
     mutating func open(_ id: String) {
         if let index = messages.firstIndex(where: { $0.id == id }) { messages[index].unread = false }
     }
+    /// Two messages to show the way between, from the first to the second.
+    struct Pair: Equatable {
+        var from: Message
+        var to: Message
+    }
+    /// The same two as Home has them now. Nil once either is gone.
+    func current(_ pair: Pair) -> Pair? {
+        guard let from = messages.first(where: { $0.id == pair.from.id }),
+              let to = messages.first(where: { $0.id == pair.to.id }) else { return nil }
+        return Pair(from: from, to: to)
+    }
 }
 
 /// A way across the floor to a spot, round what the map shows is in the way.
@@ -728,16 +750,31 @@ enum MessageRoute {
     }
 
     /// The route as a path for everyone in the scene to see: a line drawn without a crayon.
-    static func path(_ route: [SIMD3<Float>], id: String, to name: String) -> CrayonStroke? {
+    /// A way between two messages says where it starts as well.
+    static func path(_ route: [SIMD3<Float>], id: String, to name: String, from origin: String? = nil) -> CrayonStroke? {
         guard let start = route.first else { return nil }
         // Closely spaced points keep the smooth line on the route round corners.
         let points = [start] + crumbs(route, every: 0.3)
         guard points.count >= 2, simd_distance(start, points[points.count - 1]) > 0.05 else { return nil }
-        let title = String(("Way to " + name.trimmingCharacters(in: .whitespacesAndNewlines)).prefix(120))
+        let leg = origin.map { "Way from " + $0.trimmingCharacters(in: .whitespacesAndNewlines) + " to " } ?? "Way to "
+        let title = String((leg + name.trimmingCharacters(in: .whitespacesAndNewlines)).prefix(120))
         return CrayonStroke(id: id, title: title, color: color, width_m: width, segments: [points.map { [$0.x, $0.y, $0.z] }])
     }
     static let color = "#ff5fa8"
     static let width: Float = 0.05
+
+    /// How far it is along the route from its start to its end.
+    static func length(_ route: [SIMD3<Float>]) -> Float {
+        zip(route, route.dropFirst()).reduce(0) { $0 + simd_distance($1.0, $1.1) }
+    }
+
+    /// How far apart two routes get, across the floor. Small when they are the same way.
+    static func apart(_ a: [SIMD3<Float>], _ b: [SIMD3<Float>]) -> Float {
+        func off(_ route: [SIMD3<Float>], from other: [SIMD3<Float>]) -> Float {
+            (route + crumbs(route, every: 0.3)).map { stray($0, from: other) }.max() ?? .infinity
+        }
+        return max(off(a, from: b), off(b, from: a))
+    }
 
     /// The spot `distance` along the route from its start: where to head next.
     static func ahead(_ route: [SIMD3<Float>], by distance: Float) -> SIMD3<Float>? {
@@ -749,6 +786,38 @@ enum MessageRoute {
             left -= length; spot = next
         }
         return spot
+    }
+}
+
+/// One end of a route asked of Home: a point in the scene frame, or a note by its ID.
+enum RoutePlace: Encodable, Equatable {
+    case point(SIMD3<Float>)
+    case note(String)
+    private enum Key: String, CodingKey { case point, note }
+    func encode(to encoder: Encoder) throws {
+        var box = encoder.container(keyedBy: Key.self)
+        switch self {
+        case .point(let p): try box.encode([p.x, p.y, p.z], forKey: .point)
+        case .note(let id): try box.encode(id, forKey: .note)
+        }
+    }
+}
+
+/// A route as Home planned it (`spatial-harness.route/v1`). Its path is in the scene's paths
+/// like any drawn one, unless it was asked for without sharing.
+struct HomeRoute: Decodable, Equatable {
+    struct Path: Decodable, Equatable {
+        let id: String
+        let segments: [[[Float]]]
+    }
+    let frame: String
+    /// `found`, `direct` when nothing known is in the way, or `unreachable`.
+    let status: String
+    let path: Path?
+    let length_m: Float
+    /// The way's points from its start to its end. Empty when there is no way.
+    var points: [SIMD3<Float>] {
+        (path?.segments.first ?? []).compactMap { $0.count == 3 ? SIMD3($0[0], $0[1], $0[2]) : nil }
     }
 }
 

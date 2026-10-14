@@ -23,6 +23,7 @@ use auki_odometry::{Pose, Tracking};
 use auki_protocols::registry::v3::{RegistryEntryEnvelope, RegistryKind};
 use auki_registry::FrameRegistryEntry;
 use auki_scenegraph::RigidTransform;
+use serde::Deserialize;
 use std::sync::Arc;
 
 pub use crate::depth_points::{Points, PointsContract, POINTS_SCHEMA, POINTS_METADATA, MAX_POINTS};
@@ -33,6 +34,15 @@ pub fn transform_product_id(session: &str) -> String {
 }
 pub fn points_product_id(session: &str) -> String {
     format!("depth-points:{session}")
+}
+
+/// Where the app's AR session sits in the scene, as the app last measured it.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Placement {
+    pub session: String,
+    pub timestamp_ns: u64,
+    pub session_to_scene: RigidTransform,
 }
 
 /// The transform as a pose: translation, and an XYZW quaternion of unit length.
@@ -70,8 +80,10 @@ pub struct Publisher {
     home_frame: String,
     alignment: ConfiguredObservable<Transform>,
     alignment_capture: BufferProductCapture<Transform>,
-    points: ConfiguredObservable<Points>,
-    points_capture: BufferProductCapture<Points>,
+    /// Depth goes out in the binary point format, never JSON.
+    points: ConfiguredObservable<crate::depth_points::PackedPoints>,
+    points_capture: BufferProductCapture<crate::depth_points::PackedPoints>,
+    points_contract: PointsContract,
     endpoint: Arc<auki_component_protocol::ComponentProtocolEndpoint>,
     aligned_at: u64,
     lost: bool,
@@ -133,10 +145,11 @@ impl Publisher {
         let points_contract = PointsContract {
             frame: (&camera).into(), clock: clock_ref.clone(), session_id: session.into(),
         };
-        let depth = runtime.component(ComponentSpec::new("depth-points").observable(observable("points", POINTS_SCHEMA)))?;
-        let points: ConfiguredObservable<Points> = depth.configured_observable(
+        use crate::depth_points::{PackedPoints, PACKED_POINTS_SCHEMA};
+        let depth = runtime.component(ComponentSpec::new("depth-points").observable(observable("points", PACKED_POINTS_SCHEMA)))?;
+        let points: ConfiguredObservable<PackedPoints> = depth.configured_observable(
             ConfiguredObservableSpec::new("points", points_contract.output_id(), clock_ref,
-                structured("depth", POINTS_SCHEMA, "lidar_points_in_camera_frame", Some("meters")))
+                structured("depth", PACKED_POINTS_SCHEMA, "lidar_points_in_camera_frame", Some("meters")))
             .in_registered_frame(camera),
         )?;
         depth.expose()?;
@@ -144,18 +157,18 @@ impl Publisher {
         let points_capture = runtime.capture_buffer_with_metadata(
             points_product_id(session), &points,
             BufferLimits { max_entries: Some(4), max_bytes: Some(2 * 1024 * 1024), target_duration: None },
-            |p: &Points| serde_json::to_vec(p).map_or(usize::MAX, |v| v.len()),
+            |p: &PackedPoints| p.as_bytes().len(),
             move |observation| Ok(Some(CatalogProductMetadata {
                 schema: POINTS_METADATA.into(),
                 source_sequence: observation.sequence,
                 value: serde_json::to_value(&described).map_err(|e| e.to_string())?,
             })),
         )?;
-        endpoint.export_product(&points_capture.product())?;
+        endpoint.export_product_with_encoder(&points_capture.product(), PackedPoints::encoder()?)?;
 
         Ok(Self {
             session: session.into(), home_peer: home_peer.into(), home_frame: home_frame.into(),
-            alignment, alignment_capture, points, points_capture, endpoint,
+            alignment, alignment_capture, points, points_capture, points_contract, endpoint,
             aligned_at: 0, lost: false, captured_at: 0, _components: [aligner, depth],
         })
     }
@@ -198,7 +211,8 @@ impl Publisher {
         }
         let update = Points { points: points.to_vec(), colors: colors.map(<[_]>::to_vec) };
         update.validate()?;
-        self.points.publish(timestamp_ns, Arc::new(update))?;
+        let packed = crate::depth_points::PackedPoints::from_points(self.points_contract.clone(), &update)?;
+        self.points.publish(timestamp_ns, Arc::new(packed))?;
         ensure!(self.points_capture.errors().is_empty(), "Depth points Product capture failed");
         self.captured_at = timestamp_ns;
         Ok(())

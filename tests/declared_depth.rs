@@ -93,14 +93,17 @@ async fn run(actual_publisher: bool, extra_mount: bool, packed: bool) -> Result<
             Some((component,output,retained))
         } else {None};
         let mut packed_send = None;
+        let mut phone_depth = None;
         let _retained: Box<dyn std::any::Any> = if actual_publisher {
             let mut publisher = spatial_home::mobile_declared::Publisher::new(&products, &session, &home, &frame)?;
             publisher.align(1, &auki_scenegraph::RigidTransform {
                 from_frame_id: pc.to_frame.id.clone(), to_frame_id: frame.clone(),
                 translation: [2.,0.,0.], rotation_wxyz: [1.,0.,0.,0.]
             })?;
-            publisher.capture(100, &[[0.,-1.,-1.]], Some(&[[255,0,0]]))?;
-            Box::new(publisher)
+            // The phone's depth is binary and Home follows it from when it subscribes,
+            // so the capture goes out once Home is listening.
+            phone_depth = Some(publisher);
+            Box::new(())
         } else {
         let held = Contract {
             from_frame: pc.to_frame.clone(),
@@ -296,7 +299,12 @@ async fn run(actual_publisher: bool, extra_mount: bool, packed: bool) -> Result<
             let mut packed_published = false;
             tokio::time::timeout(std::time::Duration::from_secs(8), async {
                 loop {
-                    if !packed_published && products.endpoint.product_active_subscriptions("empty-until-subscribed") > 0 {
+                    if let Some(publisher) = phone_depth.as_mut() && !packed_published
+                        && products.endpoint.product_active_subscriptions(&spatial_home::mobile_declared::points_product_id(&session)) > 0 {
+                        publisher.capture(100, &[[0.,-1.,-1.]], Some(&[[255,0,0]]))?;
+                        packed_published = true;
+                    }
+                    if packed && !packed_published && products.endpoint.product_active_subscriptions("empty-until-subscribed") > 0 {
                         let (output, packet) = packed_send.as_ref().unwrap();
                         output.publish(100, std::sync::Arc::new(packet.clone()))?;
                         packed_published = true;

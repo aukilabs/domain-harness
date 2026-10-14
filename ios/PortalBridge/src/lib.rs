@@ -2,6 +2,14 @@
 //! spatial_mobile_string_free. All peer work and cleanup stay on Tokio.
 use spatial_home::mobile::{MobileClient, SignIn};
 
+/// The commit this bridge was built from, as `build.sh` stamped it, so an app can say
+/// which Rust it is running. "unstamped" when built without the script.
+#[unsafe(no_mangle)]
+pub extern "C" fn spatial_bridge_source() -> *const std::ffi::c_char {
+    static SOURCE: std::sync::OnceLock<std::ffi::CString> = std::sync::OnceLock::new();
+    SOURCE.get_or_init(|| std::ffi::CString::new(option_env!("SPATIAL_BRIDGE_SOURCE").unwrap_or("unstamped")).unwrap_or_default()).as_ptr()
+}
+
 /// Submit a bounded phone-local map, or null to stop sharing it.
 /// # Safety
 /// Non-null input must be a live NUL-terminated UTF-8 string.
@@ -70,6 +78,22 @@ pub unsafe extern "C" fn spatial_mobile_change_path(change: *const c_char) -> i3
         let Ok(change) = serde_json::from_slice(bytes) else { return 0; };
         CLIENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
             .map_or(0, |client| i32::from(client.change_path(change)))
+    }).unwrap_or(0)
+}
+
+/// Ask Home to plan a route, or to take this phone's route away: `{"id", "ask"}`.
+/// The answer arrives in the polled `route` under the same `id`.
+/// # Safety
+/// `asked` must be a NUL-terminated UTF-8 JSON string valid for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spatial_mobile_ask_route(asked: *const c_char) -> i32 {
+    std::panic::catch_unwind(|| {
+        if asked.is_null() { return 0; }
+        let bytes = unsafe { CStr::from_ptr(asked) }.to_bytes();
+        if bytes.len() > 8192 { return 0; }
+        let Ok(asked) = serde_json::from_slice(bytes) else { return 0; };
+        CLIENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+            .map_or(0, |client| i32::from(client.ask_route(asked)))
     }).unwrap_or(0)
 }
 
@@ -478,6 +502,27 @@ pub extern "C" fn spatial_mobile_sleep(asleep: i32) {
     if let Some(client) = CLIENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
         client.set_asleep(asleep != 0);
     }
+}
+
+/// Where the AR session sits in the scene: `{"session", "timestamp_ns", "session_to_scene"}`.
+/// Null says the phone no longer knows. Published apart from depth sharing.
+/// # Safety
+/// A non-null pointer must be NUL-terminated UTF-8 valid for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spatial_mobile_placement(value: *const c_char) {
+    let _ = std::panic::catch_unwind(|| {
+        let placement = if value.is_null() {
+            None
+        } else {
+            let bytes = unsafe { CStr::from_ptr(value) }.to_bytes();
+            if bytes.len() > 8192 { return; }
+            let Ok(placement) = serde_json::from_slice(bytes) else { return; };
+            Some(placement)
+        };
+        if let Some(client) = CLIENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            client.update_placement(placement);
+        }
+    });
 }
 
 /// Replace the latest raw phone-local depth capture; null pauses sharing.

@@ -67,23 +67,23 @@ async fn phone_depth_image_is_declared_and_read_back_exactly() -> Result<()> {
             manifest_hash: entry["manifest_hash"].as_str().unwrap().into(),
         };
         let read = client
-            .observations_exact::<DepthImage>(
+            .observations_exact_with_decoder::<DepthImage>(
                 pair.b.peer_id(),
                 routes[0].parse()?,
                 auki_component_protocol::ObservationRequest {
                     product: reference,
                     selection: auki_component_protocol::ObservationSelection::LatestExisting,
                 },
+                // Binary on the wire: a reader expecting JSON gets nothing.
+                spatial_home::mobile_depth_image::decoder()?,
             )
             .await?;
         let got = &read.observations[0];
         assert_eq!(got.timestamp_ns, 100);
         assert_eq!(*got.payload, image);
-        let engine = base64::engine::general_purpose::STANDARD;
-        let bytes = engine.decode(&got.payload.depth_mm)?;
-        let back: Vec<u16> = bytes.chunks(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
+        let back: Vec<u16> = got.payload.depth_mm.chunks(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
         assert_eq!(back, depth);
-        assert_eq!(engine.decode(&got.payload.confidence)?, confidence);
+        assert_eq!(got.payload.confidence, confidence);
 
         // A new AR session is a new Output on the same Component.
         let next = uuid::Uuid::new_v4().to_string();

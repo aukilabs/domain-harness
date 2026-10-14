@@ -98,6 +98,7 @@ pub mod local_scenes;
 pub mod local_mobile;
 pub mod semantic_volumes;
 pub mod scene_paths;
+pub mod scene_navigation;
 
 pub mod robot_runner;
 pub mod robot_pointing;
