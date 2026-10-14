@@ -31,6 +31,7 @@ struct AppState {
     occupancy: spatial_home::robot_occupancy::Cache,
     ar_frames: spatial_home::ar_preview::Frames,
     previews: tokio::sync::mpsc::Sender<spatial_home::sensor_preview::Request>,
+    controls: tokio::sync::mpsc::Sender<spatial_home::component_control::Request>,
     store: Arc<Mutex<Store>>,
     changes: tokio::sync::watch::Sender<()>,
     peer: tokio::sync::watch::Receiver<Value>,
@@ -80,16 +81,22 @@ struct PreviewQuery {
     #[serde(default)]
     pick: bool,
 }
+async fn component_enabled(State(s):State<Arc<AppState>>,headers:HeaderMap,
+    Json(command):Json<spatial_home::component_control::Command>)->ApiResult {
+    local_write(&headers)?;
+    let (reply,receive)=tokio::sync::oneshot::channel();
+    s.controls.try_send(spatial_home::component_control::Request {command,reply})
+        .map_err(|_|anyhow::anyhow!("Device controls busy or unavailable"))?;
+    let result=tokio::time::timeout(std::time::Duration::from_secs(8),receive).await
+        .map_err(|_|anyhow::anyhow!("Control timed out; state unconfirmed"))?
+        .map_err(|_|anyhow::anyhow!("Device controls stopped"))??;
+    Ok(Json(json!({"enabled":result.enabled})))
+}
 async fn sensor_preview(
     State(s): State<Shared>,
     axum::extract::Query(q): axum::extract::Query<PreviewQuery>,
-) -> ApiResult {
+) -> Result<Response,ApiError> {
     let (reply, receive) = tokio::sync::oneshot::channel();
-    // AR and picking validate compact contracts in compact_ar. Following has
-    // not been migrated and must remain disabled independently.
-    if q.follow {
-        spatial_home::home_pose_policy::unsupported("Home camera following")?;
-    }
     s.previews
         .try_send(spatial_home::sensor_preview::Request {
             home_frame: q.home_frame,
@@ -104,10 +111,11 @@ async fn sensor_preview(
             reply,
         })
         .map_err(|_| anyhow::anyhow!("Sensor connection unavailable"))?;
-    let mut result = tokio::time::timeout(std::time::Duration::from_secs(10), receive)
+    let response = tokio::time::timeout(std::time::Duration::from_secs(10), receive)
         .await
         .map_err(|_| anyhow::anyhow!("Sensor request timed out"))?
         .map_err(|_| anyhow::anyhow!("Sensor connection stopped"))??;
+    let mut result=response.value;
     if let Some(geometry) = result.as_object_mut().and_then(|o| o.remove("picking")) {
         let token = s
             .picks
@@ -127,7 +135,12 @@ async fn sensor_preview(
             }
         }
     }
-    Ok(Json(result))
+    if let Some(bytes)=response.image {
+        let packet=spatial_home::camera_frame::browser_packet(&result,&bytes)?;
+        return Ok(([(header::CONTENT_TYPE,spatial_home::camera_frame::BROWSER_MIME),
+            (header::CACHE_CONTROL,"no-store")],packet).into_response());
+    }
+    Ok(Json(result).into_response())
 }
 #[derive(Deserialize)]
 struct RunnerQuery {
@@ -999,21 +1012,25 @@ async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Jso
         let title=n["details"]["title"].as_str().filter(|s|!s.is_empty()).or_else(||n["text"].as_str())?;
         spatial_home::scene_tools::mentions_name(&latest,title).then(||title.to_string())
     }).collect::<Vec<_>>()).unwrap_or_default();
-    let mut fresh_volumes=std::collections::BTreeSet::new();
-    let mut geometry_points=Vec::<[f64;3]>::new();
-    let mut camera_hits=Vec::<[f64;3]>::new();
-    let result=spatial_home::chatbot::chat_with_camera(request,|name,mut args| {
+    let tool_state=std::sync::Arc::new(std::sync::Mutex::new((std::collections::BTreeSet::<String>::new(),Vec::<[f64;3]>::new(),Vec::<[f64;3]>::new())));
+    let result=spatial_home::chatbot::chat_with_async_tools(request,|name,mut args| {
+        let s=s.clone();let scene=scene.clone();let key=key.clone();let frame=frame.clone();let viewer=viewer.clone();let latest=latest.clone();let named_notes=named_notes.clone();let tool_state=tool_state.clone();
+        async move {
+        let network=s.peer.borrow().clone();
+        let ray=if name=="raycast_peer_camera"{Some(spatial_home::chat_camera::geometry(&s.previews,&network,args.clone(),&frame).await?)}else{None};
+        let reference=args["reference_id"].as_str().unwrap_or("");
+        let peer_id=if name=="point_relative_to_peer"{args["peer_id"].as_str()}else if name=="create_note_relative_to_view"&&(args["reference_kind"]=="peer"||reference.starts_with("phone-name:")||reference.starts_with("robot-name:")){Some(reference.strip_prefix("phone-name:").or_else(||reference.strip_prefix("robot-name:")).unwrap_or(reference))}else{None};
+        let peer_pose=if let Some(id)=peer_id {Some(spatial_home::peer_locations::read_peer(&s.previews,&network,id,&frame).await?)}else{None};
+        let mut state=tool_state.lock().map_err(|_|anyhow::anyhow!("Chat tool state unavailable"))?;
+        let (fresh_volumes,geometry_points,camera_hits)=&mut *state;
         #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Get {id:String}
         #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Edit {id:String,expected_description:String,description:String}
+        let name=name.as_str();
         match name {
             "raycast_peer_camera"=>{
-                spatial_home::home_pose_policy::unsupported("Home peer-camera raycasting")?;
-                let a:spatial_home::scene_geometry::CameraRay=serde_json::from_value(args)?;
+                let a:spatial_home::chat_camera::Query=serde_json::from_value(args)?;
                 let view=if scene.starts_with("local:"){s.local_scenes.view(&key)?}else{serde_json::to_value(&lock(&s).map_err(|e|e.0)?.built.view)?};
-                let id=format!("phone-name:{}",a.peer_id);
-                let camera=view["notes"].as_array().and_then(|notes|notes.iter().find(|n|n["id"]==id)).map(|n|&n["phone_pose"]).ok_or_else(||anyhow::anyhow!("Peer camera unavailable"))?;
-                let calibration=if a.pixel.is_some(){Some(spatial_home::mobile_camera::registry_calibration(&s.peer.borrow(),&a.peer_id,camera["camera_configuration_id"].as_str().ok_or_else(||anyhow::anyhow!("Phone has not published a camera registry reference; rebuild phone"))?,camera["pose"]["from_frame_id"].as_str().ok_or_else(||anyhow::anyhow!("Camera frame missing"))?)?)}else{None};
-                let ray=spatial_home::scene_geometry::peer_camera_ray(&view,&a.peer_id,a.pixel,&frame,calibration.as_ref())?;
+                let ray=ray.ok_or_else(||anyhow::anyhow!("Camera ray unavailable"))?;
                 let voxels:Vec<spatial_home::raycast::Voxel>=serde_json::from_value(view["voxels"].clone())?;
                 let size=view["voxel_size"].as_f64().ok_or_else(||anyhow::anyhow!("Scene voxel geometry unavailable"))?;
                 let hit=spatial_home::mobile_notes::intersection(&voxels,size,serde_json::from_value(ray["origin"].clone())?,serde_json::from_value(ray["direction"].clone())?)?;
@@ -1023,8 +1040,7 @@ async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Jso
             "point_relative_to_peer"=>{
                 #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct PeerPoint {peer_id:String,direction:String,distance_m:f64,#[serde(default)]elevation_y:Option<f64>}
                 let a:PeerPoint=serde_json::from_value(args)?;
-                let view=if scene.starts_with("local:"){s.local_scenes.view(&key)?}else{serde_json::to_value(&lock(&s).map_err(|e|e.0)?.built.view)?};
-                let position=spatial_home::scene_geometry::peer_relative_point(&view,&a.peer_id,&a.direction,a.distance_m,&frame)?;
+                let position=spatial_home::peer_locations::relative(peer_pose.as_ref().ok_or_else(||anyhow::anyhow!("Live peer pose unavailable"))?,&frame,&a.direction,a.distance_m)?;
                 let position=spatial_home::scene_geometry::placement_elevation(position,a.elevation_y,&latest)?;
                 geometry_points.push(position);Ok(json!({"frame":frame,"peer_id":a.peer_id,"position":position}))
             },
@@ -1078,9 +1094,9 @@ async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Jso
                 if instruction.contains("in front of") {anyhow::ensure!(a.direction=="in_front","The user requested in front, not a sideways placement");}
                 let v=viewer.as_ref().ok_or_else(||anyhow::anyhow!("Viewer context missing; refresh Home before making a view-relative request"))?;
                 anyhow::ensure!(v.frame==frame,"Viewer belongs to another scene frame");
-                let peer_view=if a.reference_kind=="peer"{Some(if scene.starts_with("local:"){s.local_scenes.view(&key)?}else{serde_json::to_value(&lock(&s).map_err(|e|e.0)?.built.view)?})}else{None};
+
                 let origin:[f64;3]=match a.reference_kind.as_str(){
-                    "peer"=>{let view=if scene.starts_with("local:"){s.local_scenes.view(&key)?}else{serde_json::to_value(&lock(&s).map_err(|e|e.0)?.built.view)?};let phone=format!("phone-name:{}",a.reference_id);let robot=format!("robot-name:{}",a.reference_id);let note=view["notes"].as_array().and_then(|notes|notes.iter().find(|n|n["id"]==phone||n["id"]==robot)).ok_or_else(||anyhow::anyhow!("Peer has no current localized position in the selected scene; cannot place relative to it"))?;serde_json::from_value(note["position"].clone())?},
+                    "peer"=>serde_json::from_value(peer_pose.as_ref().ok_or_else(||anyhow::anyhow!("Live peer pose unavailable"))?["home_pose"]["tracking"]["pose"]["translation"].clone())?,
                     "volume"=>s.local_scenes.volumes.get(&key,&frame)?.items.into_iter().find(|v|v.id==a.reference_id).ok_or_else(||anyhow::anyhow!("Reference volume not found"))?.center,
                     "note"=>{
                         let note=if key=="canonical"{spatial_home::notes::from_registries(&lock(&s).map_err(|e|e.0)?.built.registries,&frame)?.items.into_iter().find(|n|n.id==a.reference_id).ok_or_else(||anyhow::anyhow!("Reference note not found"))?}else{s.local_scenes.note_editors.lock().map_err(|_|anyhow::anyhow!("Scene unavailable"))?.get(&key).cloned().ok_or_else(||anyhow::anyhow!("Scene unavailable"))?.get_note(&a.reference_id)?};note.position
@@ -1089,8 +1105,8 @@ async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Jso
                     _=>anyhow::bail!("Invalid reference kind")
                 };
                 let explicit_viewer=["from my perspective","from my viewpoint","from my point of view","from the viewer"].iter().any(|s|instruction.contains(s));
-                let position=if let Some(view)=peer_view.as_ref().filter(|_|!explicit_viewer){
-                    spatial_home::scene_geometry::peer_relative_point(view,&a.reference_id,&a.direction,a.distance_m,&frame)?
+                let position=if let Some(pose)=peer_pose.as_ref().filter(|_|!explicit_viewer){
+                    spatial_home::peer_locations::relative(pose,&frame,&a.direction,a.distance_m)?
                 }else if matches!(a.direction.as_str(),"behind"|"in_front") {
                     anyhow::ensure!(v.mode=="3d","Behind/front is ambiguous in 2D mode; switch to 3D");
                     spatial_home::scene_tools::view_relative_depth(origin,v.camera_position.ok_or_else(||anyhow::anyhow!("Camera position missing; refresh the viewer"))?,&a.direction,a.distance_m)?
@@ -1113,10 +1129,8 @@ async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Jso
                 let view=if scene.starts_with("local:"){s.local_scenes.view(&key)?}else{serde_json::to_value(&lock(&s).map_err(|e|e.0)?.built.view)?};
                 let notes=view["notes"].as_array().map(|n|n.iter().map(|n|json!({"authored":n["anchor_robot"].is_null()&&!n["id"].as_str().unwrap_or("").starts_with("robot-name:")&&!n["id"].as_str().unwrap_or("").starts_with("phone-name:"),"id":n["id"],"text":n["text"],"position":n["position"],"description":n["details"]["description"]})).collect::<Vec<_>>()).unwrap_or_default();
                 let network=spatial_home::peer_aliases::network(s.peer.borrow().clone())?;
-                let presence=if scene.starts_with("local:"){s.local_scenes.presence(&key)?}else{lock(&s).map_err(|e|e.0)?.built.registries["mobile_presence"].clone()};
                 let peers=network["peers"].as_array().map(|peers|peers.iter().map(|p|{
-                    let mut peer=json!({"peer_id":p["peer_id"],"name":p["name"],"alias":p["alias"],"reported_name":p["reported_name"],"status":p["status"]});
-                    if let Some(position)=spatial_home::view_camera::peer_position(&presence,p["peer_id"].as_str().unwrap_or(""),&frame){peer["location"]=position;}
+                    let peer=json!({"peer_id":p["peer_id"],"name":p["name"],"alias":p["alias"],"reported_name":p["reported_name"],"status":p["status"]});
                     peer
                 }).collect::<Vec<_>>()).unwrap_or_default();
                 Ok(json!({"scene":scene,"frame":frame,"notes":notes,"peers":peers,"peer_aliases":network["aliases"],"anchors":view["portals"],"landmarks":view["landmarks"],"semantic_volumes":s.local_scenes.volumes.get(&key,&frame)?}))
@@ -1177,9 +1191,13 @@ async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Jso
             },
             _=>anyhow::bail!("Unknown scene tool"),
         }
+        }
     },|args| {
         let network=s.peer.borrow().clone();let tx=s.previews.clone();
         async move {spatial_home::camera_vision::capture(&tx,&network,args).await}
+    },|snapshot| {
+        let network=s.peer.borrow().clone();let tx=s.previews.clone();
+        async move {spatial_home::peer_locations::enrich(snapshot,network,tx).await}
     }).await?;
     Ok(Json(result))
 }
@@ -1253,6 +1271,7 @@ async fn main() -> anyhow::Result<()> {
     let (home_live_tx, home_live_rx) =
         tokio::sync::watch::channel(spatial_home::scene_mirror::RemoteScene::default());
     let (preview_tx, preview_rx) = tokio::sync::mpsc::channel(4);
+    let (control_tx, control_rx) = tokio::sync::mpsc::channel(4);
     let occupancy = spatial_home::robot_occupancy::Cache::default();
     let ar_frames = spatial_home::ar_preview::Frames::default();
     let shutdown = tokio_util::sync::CancellationToken::new();
@@ -1337,6 +1356,7 @@ async fn main() -> anyhow::Result<()> {
                 status: mapping_tx,
             },
             preview_rx,
+            control_rx,
             occupancy.clone(),
             ar_frames.clone(),
             shutdown.clone(),
@@ -1353,6 +1373,7 @@ async fn main() -> anyhow::Result<()> {
         occupancy,
         ar_frames,
         previews: preview_tx,
+        controls: control_tx,
         store,
         changes,
         peer: peer_rx,
@@ -1409,6 +1430,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/robot-health.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/robot-health.js")) }))
         .route("/robot/{*path}", get(robot_asset))
         .route("/api/sensors", get(sensor_preview))
+        .route("/api/component-enabled", post(component_enabled))
+        .route("/camera-frame.js", get(|| async { ([(header::CONTENT_TYPE,"text/javascript")],include_str!("../web/camera-frame.js")) }))
         .route("/pose-inspector.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/pose-inspector.js")) }))
         .route("/video-presentation.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/video-presentation.js")) }))
         .route("/compact-pose-trail.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/compact-pose-trail.js")) }))

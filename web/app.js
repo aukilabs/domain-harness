@@ -10,6 +10,7 @@ import { createGhostCamera, createCameraPan, isEditing } from './ghost-camera.js
 import { createNoteBubble } from './note-bubble.js';
 import { createPipWindow } from './pip-window.js';
 import { createVideoPresentation } from './video-presentation.js';
+import { readCameraResponse } from './camera-frame.js';
 import { moveMapCamera } from './view-camera.js';
 import { createAttachedCamera } from './attached-camera.js';
 import { createRobotModel } from './robot-model.js';
@@ -82,6 +83,8 @@ disconnectRobots.onclick=async()=>{disconnectRobots.disabled=true;try{await api(
 const notesBody=panelBodies.notes;
 const tagsBody=panelBodies.tags;
 let fleetNetwork=null,fleetSignature='';
+const componentControlResults=new Map();
+let componentControlPending=false;
 const scene=new THREE.Scene();scene.background=new THREE.Color('#0d0d0f');scene.fog=new THREE.Fog('#0d0d0f',10,26);
 const camera=new THREE.PerspectiveCamera(42,1,.01,100);
 const renderer=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true});renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.1;
@@ -161,7 +164,7 @@ function fit(){if(current?.simulation){const d=Math.max(12,11/Math.max(camera.as
 fit();
 const map2D=createMap2D($('canvas'),active=>{controls.enabled=!active;$('top').textContent=active?'3D':'2D';$('top').setAttribute('aria-pressed',String(active));$('top').title=active?'Switch to 3D mode':'Switch to 2D mode';$('top').setAttribute('aria-label',$('top').title);$('canvas').dataset.viewMode=active?'2d':'3d';});
 const attachedCamera=createAttachedCamera({host:$('canvas'),camera,controls,map2D,context:()=>({scene:activeMap,frame:current?.frame}),request:async(action,signal)=>{
- const q=new URLSearchParams({follow:'true',sensor:action.sensor_id,expected_manifest:action.pose_product.manifest_hash});
+ const q=new URLSearchParams({follow:'true',home_frame:action.frame,sensor:action.sensor_id,expected_manifest:action.pose_product.manifest_hash});
  const response=await fetch('/api/sensors?'+q,{signal});const value=await response.json();if(!response.ok)throw Error(value.error||'Sensor unavailable');return value;
 }});
 for(const id of ['map-select','fit','top','demo-view'])$(id).addEventListener(id==='map-select'?'change':'click',()=>{if(attachedCamera.isActive())attachedCamera.detach();},true);
@@ -809,10 +812,10 @@ async function watchSensor(generation){
  if(generation!==sensorGeneration||!sensorSelect.value)return;
  const status=document.querySelector('#sensor-feed-status');
  try{
-  const response=await fetch('/api/sensors?sensor='+encodeURIComponent(sensorSelect.value)+(arToggle.checked?'&ar=true':'')+(arAvailable.get(sensorSelect.value)?'&pick=true':''));const f=await response.json();if(!response.ok)throw Error(f.error);
+  const response=await fetch('/api/sensors?sensor='+encodeURIComponent(sensorSelect.value)+(arToggle.checked?'&ar=true':'')+(arAvailable.get(sensorSelect.value)?'&pick=true':''));const f=await readCameraResponse(response);
   if(generation!==sensorGeneration)return;
   if(f.sequence!==lastSensorSequence&&!labelDialog.open){
-   const bytes=Uint8Array.from(atob(f.data),c=>c.charCodeAt(0));
+   const bytes=f.bytes;
    if(!Number.isInteger(f.width)||!Number.isInteger(f.height)||f.width<1||f.height<1||f.width>4096||f.height>4096)throw Error('Invalid image dimensions');
    const bitmap=(f.encoding==='jpeg'||f.encoding==='jpg')?await createImageBitmap(new Blob([bytes],{type:'image/jpeg'})):null;
    if(generation!==sensorGeneration){bitmap?.close();return;}
@@ -826,11 +829,11 @@ async function watchSensor(generation){
    }
    displayedCamera={token:f.camera_token,error:f.pick_error,width:f.width,height:f.height,receivedAt:Date.now()};
    videoPresentation.update(f);
-   if(arToggle.checked){arOverlay??=createArOverlay($('sensor-ar-overlay'));arOverlay.show(f,Number($('sensor-stage').dataset.rotation)||0);arLastSuccess=Date.now();arStatus.textContent=['sdk-camera','sdk-fisheye'].includes(f.ar?.projection)?'AR · Home scene voxels + notes · capture-matched camera':'AR · Home live voxels + notes · synchronized mapping camera';}
+   if(arToggle.checked){arOverlay??=createArOverlay($('sensor-ar-overlay'));arOverlay.show(f,Number($('sensor-stage').dataset.rotation)||0);arLastSuccess=Date.now();arStatus.textContent='AR · Home notes + drawings · capture-matched camera';}
    lastSensorSequence=f.sequence;lastSensorChange=Date.now();
   }
   status.textContent=Date.now()-lastSensorChange>3000?'Stale · no new frames':'Receiving · frame '+f.sequence;
- }catch(e){if(generation===sensorGeneration){status.textContent='Unavailable · '+e.message;if(!labelDialog.open)hideAr();if(arToggle.checked){arStatus.hidden=false;arStatus.textContent='AR paused · '+e.message;}}}
+ }catch(e){if(generation===sensorGeneration){displayedCamera=null;status.textContent=(lastSensorSequence!==null?'Stale image · ':'Waiting · ')+e.message;if(!labelDialog.open)hideAr();if(arToggle.checked){arStatus.hidden=false;arStatus.textContent='AR paused · '+e.message;}}}
  if(generation===sensorGeneration)setTimeout(()=>watchSensor(generation),100);
 }
 sensorSelect.addEventListener('change',()=>{
@@ -932,7 +935,7 @@ function catalogType(entry,kind,catalog){
  return 'Other';
 }
 function renderFleetRows(){
- if(fleetList.contains(document.activeElement)&&document.activeElement.matches('input,textarea,select'))return;
+ if(componentControlPending||(fleetList.contains(document.activeElement)&&document.activeElement.matches('input,textarea,select')))return;
  disconnectRobots.hidden=!fleetNetwork?.simulation;disconnectRobots.disabled=homeOffline||!(fleetNetwork?.peers||[]).some(p=>p.status==='connected');
  const selfId=fleetNetwork?.connection?.peer_id;
  const peers=[{peer_id:selfId||'self',name:'Home Server',self:true,catalog:fleetNetwork?.catalog},...Array.from(new Map((fleetNetwork?.peers||[]).filter(p=>p.peer_id&&p.peer_id!==selfId).map(p=>[p.peer_id,p])).values())];
@@ -964,6 +967,23 @@ function renderFleetRows(){
    for(const {kind,entry} of matching){
    const id=entry.manifest[kind+'_id'],details=document.createElement('details');details.dataset[kind]=id;details.open=openedCatalog.has(JSON.stringify([peer.peer_id,kind,id]));
    const title=document.createElement('summary');title.textContent=(kind==='component'?'Component':'Product')+' · '+id;
+   if(kind==='component'&&!peer.self&&entry.manifest.operables?.some(o=>o.name==='set_enabled'&&o.instruction==='spatial-harness.set-enabled/v1'&&o.result==='spatial-harness.component-enabled-state/v1')){
+    const stateProduct=(catalog.products||[]).find(p=>p.manifest.producer?.component_id===id&&p.manifest.producer?.component_manifest_hash===entry.manifest_hash&&p.metadata?.schema==='spatial-harness.component-enabled-state/v1');
+    let enabled=stateProduct?.metadata?.value?.enabled;
+    const key=JSON.stringify([peer.peer_id,id,entry.manifest_hash,stateProduct?.manifest_hash]),ack=componentControlResults.get(key);
+    if(ack){if(enabled===ack.enabled||stateProduct?.metadata?.source_sequence>ack.sequence)componentControlResults.delete(key);else enabled=ack.enabled;}
+    const control=document.createElement('div'),status=document.createElement('span');status.setAttribute('role','status');
+    const button=uiButton(typeof enabled==='boolean'?(enabled?'Turn off':'Turn on'):'State unavailable',async()=>{
+     componentControlPending=true;button.disabled=true;status.textContent='Applying…';
+     try{const confirmed=await api('/api/component-enabled',{peer_id:peer.peer_id,component_id:id,manifest_hash:entry.manifest_hash,enabled:!enabled});
+      enabled=confirmed.enabled;componentControlResults.set(key,{enabled,sequence:stateProduct?.metadata?.source_sequence});button.textContent=enabled?'Turn off':'Turn on';status.textContent=enabled?'Enabled':'Disabled';
+     }catch(e){status.textContent=e.message;button.textContent='Refresh Devices to confirm';return;}
+     finally{componentControlPending=false;}
+     button.disabled=false;
+    });
+    button.disabled=typeof enabled!=='boolean'||peer.catalog_status!=='ready'||!!peer.catalog_cached;
+    status.textContent=typeof enabled==='boolean'?(enabled?'Enabled':'Disabled'):'Waiting for state';control.append(button,status);details.append(control);
+   }
    if(kind==='product'&&entry.metadata?.schema==='spatial-harness.compact-pose-contract/v1')details.append(uiButton('Inspect live pose',()=>inspectPose(peer.peer_id,entry,(peer.name||peer.peer_id)+' / '+id)));
    const pre=document.createElement('pre');pre.style.cssText='white-space:pre-wrap;overflow-wrap:anywhere;font-size:10px';pre.textContent=JSON.stringify(entry.manifest,null,2);details.append(title,pre);section.append(details);
    }group.append(section);

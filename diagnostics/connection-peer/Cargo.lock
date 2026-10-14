@@ -59,6 +59,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "allocator-api2"
+version = "0.2.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -72,6 +78,15 @@ name = "anyhow"
 version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
+
+[[package]]
+name = "approx"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cab112f0a86d568ea0e627cc1d6be74a1e9cd55214684db5561995f6dad897c6"
+dependencies = [
+ "num-traits",
+]
 
 [[package]]
 name = "arrayref"
@@ -227,7 +242,6 @@ dependencies = [
 [[package]]
 name = "auki-component-protocol"
 version = "0.1.0"
-source = "git+https://github.com/aukilabs/auki-sdk.git?rev=3342d589605846f5f45c1de5430dd22923555de2#3342d589605846f5f45c1de5430dd22923555de2"
 dependencies = [
  "async-channel",
  "auki-components",
@@ -261,8 +275,14 @@ dependencies = [
  "auki-components",
  "auki-odometry",
  "auki-protocols",
+ "auki-qr-detector",
+ "auki-qr-localizer",
  "auki-registry",
+ "auki-scenegraph",
  "auki-sdk",
+ "base64 0.22.1",
+ "image",
+ "nalgebra",
  "serde",
  "serde_json",
  "tokio",
@@ -351,6 +371,7 @@ source = "git+https://github.com/aukilabs/auki-sdk.git?rev=3342d589605846f5f45c1
 dependencies = [
  "auki-datatypes",
  "auki-registry",
+ "pnp-core",
 ]
 
 [[package]]
@@ -385,6 +406,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "auki-manifests"
+version = "0.0.0"
+source = "git+https://github.com/aukilabs/auki-sdk.git?rev=3342d589605846f5f45c1de5430dd22923555de2#3342d589605846f5f45c1de5430dd22923555de2"
+dependencies = [
+ "auki-hash",
+ "auki-jcs",
+ "auki-registry",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "auki-odometry"
 version = "0.1.0"
 source = "git+https://github.com/aukilabs/auki-sdk.git?rev=3342d589605846f5f45c1de5430dd22923555de2#3342d589605846f5f45c1de5430dd22923555de2"
@@ -400,7 +433,6 @@ dependencies = [
 [[package]]
 name = "auki-p2p"
 version = "0.1.0"
-source = "git+https://github.com/aukilabs/auki-sdk.git?rev=3342d589605846f5f45c1de5430dd22923555de2#3342d589605846f5f45c1de5430dd22923555de2"
 dependencies = [
  "async-channel",
  "chrono",
@@ -446,6 +478,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "auki-qr-detector"
+version = "0.0.0"
+source = "git+https://github.com/aukilabs/auki-sdk.git?rev=3342d589605846f5f45c1de5430dd22923555de2#3342d589605846f5f45c1de5430dd22923555de2"
+dependencies = [
+ "auki-components",
+ "auki-datatypes",
+ "auki-registry",
+ "auki-session",
+ "futures",
+ "image",
+ "qr-lab",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "auki-qr-localizer"
+version = "0.1.0"
+source = "git+https://github.com/aukilabs/auki-sdk.git?rev=3342d589605846f5f45c1de5430dd22923555de2#3342d589605846f5f45c1de5430dd22923555de2"
+dependencies = [
+ "auki-components",
+ "auki-geometry",
+ "auki-scenegraph",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "auki-registry"
 version = "0.0.0"
 source = "git+https://github.com/aukilabs/auki-sdk.git?rev=3342d589605846f5f45c1de5430dd22923555de2#3342d589605846f5f45c1de5430dd22923555de2"
@@ -469,6 +531,21 @@ dependencies = [
  "chrono",
  "futures",
  "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "uuid",
+]
+
+[[package]]
+name = "auki-scenegraph"
+version = "0.1.0"
+source = "git+https://github.com/aukilabs/auki-sdk.git?rev=3342d589605846f5f45c1de5430dd22923555de2#3342d589605846f5f45c1de5430dd22923555de2"
+dependencies = [
+ "auki-components",
+ "auki-datatypes",
+ "auki-geometry",
+ "auki-registry",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -503,6 +580,25 @@ dependencies = [
  "tracing",
  "uuid",
  "wasm-bindgen-futures",
+]
+
+[[package]]
+name = "auki-session"
+version = "0.0.0"
+source = "git+https://github.com/aukilabs/auki-sdk.git?rev=3342d589605846f5f45c1de5430dd22923555de2#3342d589605846f5f45c1de5430dd22923555de2"
+dependencies = [
+ "auki-datatypes",
+ "auki-jcs",
+ "auki-logs",
+ "auki-manifests",
+ "auki-registry",
+ "futures",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "ulid",
 ]
 
 [[package]]
@@ -621,10 +717,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
+name = "bytemuck"
+version = "1.25.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95832e849adfb21180ccb6826a99da14e5d266ae5c2e668e1602cf234f153797"
+
+[[package]]
 name = "byteorder"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
+
+[[package]]
+name = "byteorder-lite"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f1fe948ff07f4bd06c30984e69f5b4899c516a3ef74f34df92a2df2ab535495"
 
 [[package]]
 name = "bytes"
@@ -1260,6 +1368,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "g2gen"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c5a7e0eb46f83a20260b850117d204366674e85d3a908d90865c78df9a6b1dfc"
+dependencies = [
+ "g2poly",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "g2p"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "539e2644c030d3bf4cd208cb842d2ce2f80e82e6e8472390bcef83ceba0d80ad"
+dependencies = [
+ "g2gen",
+ "g2poly",
+]
+
+[[package]]
+name = "g2poly"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "312d2295c7302019c395cfb90dacd00a82a2eabd700429bba9c7a3f38dbbe11b"
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1379,6 +1515,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
 dependencies = [
  "foldhash 0.1.5",
+]
+
+[[package]]
+name = "hashbrown"
+version = "0.16.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
+dependencies = [
+ "allocator-api2",
+ "equivalent",
+ "foldhash 0.2.0",
 ]
 
 [[package]]
@@ -1774,6 +1921,20 @@ dependencies = [
  "tokio",
  "url",
  "xmltree",
+]
+
+[[package]]
+name = "image"
+version = "0.25.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85ab80394333c02fe689eaf900ab500fbd0c2213da414687ebf995a65d5a6104"
+dependencies = [
+ "bytemuck",
+ "byteorder-lite",
+ "moxcms",
+ "num-traits",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -2316,6 +2477,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
+name = "lru"
+version = "0.16.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f66e8d5d03f609abc3a39e6f08e4164ebf1447a732906d39eb9b99b7919ef39"
+dependencies = [
+ "hashbrown 0.16.1",
+]
+
+[[package]]
 name = "lru-slab"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2330,6 +2500,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "matrixmultiply"
+version = "0.3.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f607c237553f086e7043417a51df26b2eb899d3caff94e6a67592ff992fedc7"
+dependencies = [
+ "autocfg",
+ "rawpointer",
 ]
 
 [[package]]
@@ -2370,6 +2550,16 @@ dependencies = [
  "smallvec",
  "tagptr",
  "uuid",
+]
+
+[[package]]
+name = "moxcms"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b"
+dependencies = [
+ "num-traits",
+ "pxfm",
 ]
 
 [[package]]
@@ -2431,6 +2621,21 @@ dependencies = [
  "pin-project",
  "smallvec",
  "unsigned-varint 0.7.2",
+]
+
+[[package]]
+name = "nalgebra"
+version = "0.33.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9d43ddcacf343185dfd6de2ee786d9e8b1c2301622afab66b6c73baf9882abfd"
+dependencies = [
+ "approx",
+ "matrixmultiply",
+ "num-complex",
+ "num-rational",
+ "num-traits",
+ "simba",
+ "typenum",
 ]
 
 [[package]]
@@ -2537,6 +2742,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "num-complex"
+version = "0.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73f88a1307638156682bada9d7604135552957b7818057dcef22705b4d509495"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "num-conv"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2557,6 +2771,17 @@ version = "0.1.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c92800bd69a1eac91786bcfe9da64a897eb72911b8dc3095decbd07429e8048b"
 dependencies = [
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
+name = "num-rational"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f83d14da390562dca69fc84082e73e548e1ad308d24accdedd2720017cb37824"
+dependencies = [
+ "num-bigint",
  "num-integer",
  "num-traits",
 ]
@@ -2735,6 +2960,15 @@ checksum = "f950b2377845cebe5cf8b5165cb3cc1a5e0fa5cfa3e1f7f55707d8fd82e0a7b7"
 dependencies = [
  "der",
  "spki",
+]
+
+[[package]]
+name = "pnp-core"
+version = "0.1.0"
+source = "git+https://github.com/aukilabs/pnp-lab.git?rev=c56b1d4d5518eac997f020168a4e508bb27d599a#c56b1d4d5518eac997f020168a4e508bb27d599a"
+dependencies = [
+ "libm",
+ "nalgebra",
 ]
 
 [[package]]
@@ -2995,6 +3229,57 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95067976aca6421a523e491fce939a3e65249bac4b977adee0ee9771568e8aa3"
 
 [[package]]
+name = "pxfm"
+version = "0.1.30"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
+
+[[package]]
+name = "qr-lab"
+version = "0.1.0"
+source = "git+https://github.com/aukilabs/qr-lab.git?rev=d9ee65e0d2f7ea8ecd2b01e1fb6091cfc2a34355#d9ee65e0d2f7ea8ecd2b01e1fb6091cfc2a34355"
+dependencies = [
+ "qr-lab-geometry",
+ "qr-lab-image",
+ "qr-lab-imgproc",
+ "qr-lab-qr",
+]
+
+[[package]]
+name = "qr-lab-geometry"
+version = "0.1.0"
+source = "git+https://github.com/aukilabs/qr-lab.git?rev=d9ee65e0d2f7ea8ecd2b01e1fb6091cfc2a34355#d9ee65e0d2f7ea8ecd2b01e1fb6091cfc2a34355"
+dependencies = [
+ "qr-lab-image",
+]
+
+[[package]]
+name = "qr-lab-image"
+version = "0.1.0"
+source = "git+https://github.com/aukilabs/qr-lab.git?rev=d9ee65e0d2f7ea8ecd2b01e1fb6091cfc2a34355#d9ee65e0d2f7ea8ecd2b01e1fb6091cfc2a34355"
+
+[[package]]
+name = "qr-lab-imgproc"
+version = "0.1.0"
+source = "git+https://github.com/aukilabs/qr-lab.git?rev=d9ee65e0d2f7ea8ecd2b01e1fb6091cfc2a34355#d9ee65e0d2f7ea8ecd2b01e1fb6091cfc2a34355"
+dependencies = [
+ "qr-lab-geometry",
+ "qr-lab-image",
+]
+
+[[package]]
+name = "qr-lab-qr"
+version = "0.1.0"
+source = "git+https://github.com/aukilabs/qr-lab.git?rev=d9ee65e0d2f7ea8ecd2b01e1fb6091cfc2a34355#d9ee65e0d2f7ea8ecd2b01e1fb6091cfc2a34355"
+dependencies = [
+ "js-sys",
+ "qr-lab-geometry",
+ "qr-lab-image",
+ "qr-lab-imgproc",
+ "rqrr",
+]
+
+[[package]]
 name = "quick-protobuf"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3190,6 +3475,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "rawpointer"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60a357793950651c4ed0f3f52338f53b2f809f32d83a07f72909fa13e4c6c1e3"
+
+[[package]]
 name = "rcgen"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3309,6 +3600,16 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "rqrr"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ffbe87d9e8db95652c25ded2418150e00b08c2fde09e23ec15896d2c470c6631"
+dependencies = [
+ "g2p",
+ "lru",
 ]
 
 [[package]]
@@ -3449,6 +3750,15 @@ name = "ryu-js"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6518fc26bced4d53678a22d6e423e9d8716377def84545fe328236e3af070e7f"
+
+[[package]]
+name = "safe_arch"
+version = "0.7.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96b02de82ddbe1b636e6170c21be622223aea188ef2e139be0a5b219ec215323"
+dependencies = [
+ "bytemuck",
+]
 
 [[package]]
 name = "scopeguard"
@@ -3611,6 +3921,19 @@ checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
 dependencies = [
  "digest",
  "rand_core 0.6.4",
+]
+
+[[package]]
+name = "simba"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c99284beb21666094ba2b75bbceda012e610f5479dfcc2d6e2426f53197ffd95"
+dependencies = [
+ "approx",
+ "num-complex",
+ "num-traits",
+ "paste",
+ "wide",
 ]
 
 [[package]]
@@ -4035,6 +4358,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
+name = "ulid"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "470dbf6591da1b39d43c14523b2b469c86879a53e8b758c8e090a470fe7b1fbe"
+dependencies = [
+ "rand 0.9.5",
+ "web-time",
+]
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4225,6 +4558,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7dcd9d09a39985f5344844e66b0c530a33843579125f23e21e9f0f220850f22a"
 dependencies = [
  "rustls-pki-types",
+]
+
+[[package]]
+name = "wide"
+version = "0.7.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ce5da8ecb62bcd8ec8b7ea19f69a51275e91299be594ea5cc6ef7819e16cd03"
+dependencies = [
+ "bytemuck",
+ "safe_arch",
 ]
 
 [[package]]
@@ -4660,3 +5003,18 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+
+[[package]]
+name = "zune-core"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d56377fd46368984a170bc5aac5567e52ca5da874caa60bea39fcbca78fb658b"
+
+[[package]]
+name = "zune-jpeg"
+version = "0.5.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296"
+dependencies = [
+ "zune-core",
+]

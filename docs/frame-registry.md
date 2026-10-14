@@ -130,6 +130,10 @@ is needed.
 
 ## What the phone still does the old way
 
+For the registry-backed camera contract and Home's generic capture-time PiP AR
+consumer, see [camera AR](generic-camera-ar.md). Legacy inline camera/pose
+metadata is not an AR fallback.
+
 - It still pushes each depth capture to Home's `ingest` operation with a pose
   and alignment inside. A Home that reads the Products refuses that push, and
   the phone reports "Depth published for Home to read". Remove the push once

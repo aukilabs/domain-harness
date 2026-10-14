@@ -9,7 +9,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
-async fn request(tx: &mpsc::Sender<Request>, sensor: Option<String>) -> Result<serde_json::Value> {
+async fn request(tx: &mpsc::Sender<Request>, sensor: Option<String>) -> Result<sensor_preview::Reply> {
     let (reply, answer) = oneshot::channel();
     tx.send(Request {
         home_frame: None, debug_pose: false,
@@ -82,7 +82,9 @@ async fn discovered_camera_uses_real_catalog_and_subscription_demand() -> Result
         })
         .await?;
         assert_eq!(frame["width"], 640);
-        assert_eq!(frame["capture_timestamp_ns"], 1);
+        assert_eq!(frame["capture_timestamp_ns"], "1");
+        assert_eq!(frame.image.as_deref(),Some(jpeg.as_slice()));
+        assert!(frame.get("data").is_none());
         assert_eq!(camera.endpoint.active_subscriptions(), 1);
         // A second browser request reuses the same subscription.
         request(&tx, Some(id.clone())).await?;

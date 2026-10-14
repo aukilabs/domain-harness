@@ -4429,6 +4429,7 @@ dependencies = [
  "futures",
  "image",
  "jsonwebtoken 9.3.1",
+ "nalgebra 0.33.3",
  "p256",
  "prost 0.13.5",
  "qrcode",

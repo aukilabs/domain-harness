@@ -313,3 +313,14 @@ async fn local_model_where_is_phone_uses_live_position_not_attachment()->anyhow:
  }).await?;
  assert_eq!(result["ui_actions"][0]["type"],"move_camera","{result}");assert_eq!(result["changes"],json!([]));Ok(())
 }
+#[tokio::test]
+#[ignore = "requires local Ollama with configured Qwen model"]
+async fn live_peer_distance_is_answered_without_scene_edits()->anyhow::Result<()> {
+ use serde_json::json;
+ let result=spatial_home::chatbot::chat(spatial_home::chatbot::Request{viewer:None,scene:"local:fixture".into(),messages:vec![spatial_home::chatbot::Message{role:"user".into(),content:"How far is Broom boy from cheese?".into()}]},|name,_|match name {
+  "inspect_scenegraph"=>Ok(json!({"frame":"fixture","notes":[{"id":"cheese","text":"cheese","position":[6,0,8]}],"peers":[{"peer_id":"synthetic-peer","alias":"Broom boy","location":{"position":[0,0,0],"frame":"fixture","received_age_ms":10}}],"semantic_volumes":{"items":[]}})),
+  "get_note"=>Ok(json!({"id":"cheese","name":"cheese","position":[6,0,8]})),
+  _=>anyhow::bail!("Read-only question must not move a view, open video or edit scene"),
+ }).await?;
+ assert!(result["changes"].as_array().unwrap().is_empty());assert!(result["reply"].as_str().unwrap().contains("10"),"{result}");Ok(())
+}

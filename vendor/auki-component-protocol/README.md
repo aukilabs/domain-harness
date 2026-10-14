@@ -29,8 +29,9 @@ The protocols keep discovery, data delivery, and operations separate:
   provider's authorizer receives the caller Peer ID from the authenticated
   stream and the caller Component ID from the request.
 
-Payloads are typed by the Component/Product manifests and encoded
-as bounded JSON frames. Control frames are limited to 1 MiB, payload frames to
+Payloads are typed by the Component/Product manifests. JSON is the default;
+explicit application codecs can encode the observation body as raw binary.
+Control frames are limited to 1 MiB, payload frames to
 32 MiB, observation batches to 4,096 entries, and operation deadlines to 60
 seconds.
 
@@ -87,6 +88,35 @@ closing/dropping the subscription cancels it and closes local readers.
 Reconfiguration ends it after retained data drains, never migrating it.
 Transport failure or unexport terminates it; reconnect/rebind is explicit.
 An idle producer needs no heartbeat or application-level timeout.
+
+## Explicit binary observation payloads and demand
+
+`ObservationEncoder<T>` / `ObservationDecoder<T>` select one named payload
+encoding from the application's Product contract. Use
+`endpoint.export_product_with_encoder` and
+`client.subscribe_product_exact_with_decoder` (or
+`observations_exact_with_decoder` for finite retained reads). The SDK writes the
+encoder's bytes directly as the bounded payload frame; it does not JSON-encode
+or base64-wrap them. Control envelopes, manifests, source sequence and capture
+timestamp remain unchanged, including full registered clock/frame identities.
+Decoders reject a different encoding ID before decoding. Payload validation and
+the encoding's versioning belong to the application contract, not a peer-specific
+transport adapter.
+
+The existing JSON methods and protocol IDs are unchanged. New codec users need
+both producer and consumer support, advertised by an explicit new Product schema
+or contract; old consumers must not be pointed at a binary Product as though it
+were JSON. Retained-product polling mirrors currently use the JSON codec; binary
+consumers use the continuing subscription or explicit finite decode API.
+
+`endpoint.product_active_subscriptions(product_id)` counts admitted continuing
+readers of that exact current export. Catalog and finite reads do not count.
+Producers can avoid capture/encoding work when this count is zero without
+withdrawing the discoverable Product. An empty Product can be subscribed to;
+it does not require a synthetic first observation. Last-reader cancellation,
+FIN, unexport and endpoint shutdown release the count, including while idle.
+This is transport demand, not permission to override an application's enabled
+state. A silent partition still has the idle-stream detection limitation below.
 
 Catalog v3 and finite observations v4 carry full clock references and verified frame definitions; both peers
 need these versions and the stream ID for subscriptions. No fallback to polling is automatic.

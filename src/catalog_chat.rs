@@ -9,7 +9,7 @@ pub fn tool() -> Value {
 }
 
 pub fn camera_tool() -> Value {
-    json!({"type":"function","function":{"name":"open_camera_pip","description":"Request opening one camera in this user's Home PiP. Resolve alias to exact peer_id via inspect_catalog. Omit product_id only if the peer has one camera; otherwise ask which. Replaces the current PiP, not all cameras. Only for explicit requests to view a feed, not capability questions.","parameters":{"type":"object","properties":{"peer_id":{"type":"string"},"product_id":{"type":"string"}},"required":["peer_id"],"additionalProperties":false}}})
+    json!({"type":"function","function":{"name":"open_camera_pip","description":"Request opening one camera in this user's Home PiP. Resolve alias to exact peer_id via inspect_catalog. Omit product_id only if the peer has one camera; otherwise inspect the Catalog and pass the best matching product_id for the user's wording, tolerating typos. Ask only if no reasonable choice exists. Replaces the current PiP, not all cameras. Only for explicit requests to view a feed, not capability questions.","parameters":{"type":"object","properties":{"peer_id":{"type":"string"},"product_id":{"type":"string"}},"required":["peer_id"],"additionalProperties":false}}})
 }
 
 pub fn select_camera(cameras: &[Value], args: Value) -> Result<Value> {

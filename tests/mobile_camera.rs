@@ -10,7 +10,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
-async fn preview(tx: &mpsc::Sender<Request>, sensor: Option<String>) -> Result<serde_json::Value> {
+async fn preview(tx: &mpsc::Sender<Request>, sensor: Option<String>) -> Result<sensor_preview::Reply> {
     let (reply, answer) = oneshot::channel();
     tx.send(Request {
         home_frame: None, debug_pose: false,
@@ -86,7 +86,9 @@ async fn phone_camera_shares_sdk_catalog_and_home_consumes_only_on_demand() -> R
         .await?;
         assert_eq!(frame["width"], 640);
         assert_eq!(frame["height"], 480);
-        assert_eq!(frame["capture_timestamp_ns"], 100);
+        assert_eq!(frame["capture_timestamp_ns"], "100");
+        assert!(frame.get("data").is_none());
+        assert!(frame.image.as_ref().unwrap().starts_with(&[255,216]));
         tokio::time::timeout(Duration::from_secs(35), async {
             while camera.demanded() {
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -170,57 +172,51 @@ async fn phone_camera_joins_the_ar_session_and_declares_its_calibration() -> Res
             format!("phone-camera:{session}")
         );
         let metadata = &sent["catalog"]["products"][0]["metadata"];
-        assert_eq!(metadata["schema"], "spatial.phone-camera/v1");
-        assert_eq!(metadata["value"]["calibration"]["K"][0], 480.);
-        assert_eq!(metadata["value"]["calibration"]["K"][4], 481.);
-        assert_eq!(metadata["value"]["calibration"]["width"], 640);
-        assert_eq!(metadata["value"]["rotation_from_camera_frame_deg"], 0);
-        // `pose_product_id` is the name every producer uses, robots included.
-        // Not aligned: there is no pose to match this frame with.
-        assert!(metadata["value"]["pose_product_id"].is_null());
-        assert_eq!(metadata["value"]["depth_image_product_id"], "phone-depth-image");
+        assert_eq!(metadata["schema"], spatial_home::registry_ar::CAMERA_METADATA);
+        let contract: spatial_home::registry_ar::CameraContract =
+            serde_json::from_value(metadata["value"].clone())?;
+        let output: auki_components::OutputManifest = serde_json::from_value(frame_of(&sent))?;
+        contract.validate(&output)?;
+        assert_eq!(contract.session_id, session);
+        let registry = spatial_home::product_registry::resolve(
+            &pair.a, pair.b.peer_id(), &sent, None, &Default::default()).await;
+        assert_eq!(registry["status"], "ready");
+        let sensor = registry["definitions"].as_object().unwrap().values()
+            .find(|v| v["sensor_id"] == contract.sensor.id).unwrap();
+        assert_eq!(sensor["calibration"]["fx"], 480.);
+        assert_eq!(sensor["calibration"]["fy"], 481.);
+        assert_eq!(sensor["width"], 640);
         assert!(sensor_preview::camera_sensors(&Catalogs::from([(
             pair.b.peer_id().to_string(),
             sent.clone()
         )]))
         .len() == 1);
 
-        // Held upright, the phone sends the image turned: 480 wide, 640 tall,
-        // in a frame of its own that says which camera frame it was turned from.
+        // Presentation rotation never changes the published image/frame.
         let upright = Geometry { fx: 481., fy: 480., cx: 240., cy: 320., rotation_deg: 90, ..geometry.clone() };
         assert!(camera.publish_calibrated(200, jpeg(640, 480)?, upright.clone()).is_err());
-        camera.publish_calibrated(201, jpeg(480, 640)?, upright.clone())?;
-        // Entering the same session again does not turn the camera back.
+        assert!(camera.publish_calibrated(201, jpeg(480, 640)?, upright).is_err());
         camera.enter_session(&session, 202)?;
-        camera.publish_calibrated(203, jpeg(480, 640)?, upright)?;
+        camera.publish_calibrated(203, jpeg(640, 480)?, geometry.clone())?;
         let turned = fetch(&pair.a, pair.b.peer_id(), &routes).await;
         let output = frame_of(&turned);
-        assert_eq!(output["payload"]["width"], 480);
-        assert_eq!(output["payload"]["height"], 640);
+        assert_eq!(output["payload"]["width"], 640);
+        assert_eq!(output["payload"]["height"], 480);
         assert_eq!(
             output["spatial_frame_id"],
-            format!("phone-camera:{session}:turned-90")
+            format!("phone-camera:{session}")
         );
-        let metadata = &turned["catalog"]["products"][0]["metadata"]["value"];
-        assert_eq!(metadata["calibration"]["width"], 480);
-        assert_eq!(metadata["calibration"]["height"], 640);
-        assert_eq!(metadata["rotation_from_camera_frame_deg"], 90);
-        assert_eq!(metadata["camera_frame"], format!("phone-camera:{session}"));
-
-        // A bigger picture is a new Output too, and an aligned frame names the
-        // pose Product that holds its capture-time pose.
-        let big = Geometry { fx: 721., fy: 720., cx: 360., cy: 480., rotation_deg: 90, alignment_timestamp_ns: 77, ..geometry.clone() };
-        camera.publish_calibrated(300, jpeg(720, 960)?, big.clone())?;
-        // Not the camera's 4:3 shape, too large, or on its side without a quarter turn.
+        // Changed calibration replaces the sensor reference and Output.
+        let big = Geometry { fx: 720., fy: 721., cx: 480., cy: 360., rotation_deg: 0, alignment_timestamp_ns: 77, ..geometry.clone() };
+        camera.publish_calibrated(300, jpeg(960, 720)?, big.clone())?;
         assert!(camera.publish_calibrated(301, jpeg(720, 900)?, big.clone()).is_err());
         assert!(camera.publish_calibrated(301, jpeg(1200, 1600)?, big.clone()).is_err());
-        assert!(camera.publish_calibrated(301, jpeg(960, 720)?, big).is_err());
+        assert!(camera.publish_calibrated(301, jpeg(720, 960)?, big).is_err());
         let bigger = fetch(&pair.a, pair.b.peer_id(), &routes).await;
-        assert_eq!(frame_of(&bigger)["payload"]["height"], 960);
+        assert_eq!(frame_of(&bigger)["payload"]["height"], 720);
         let metadata = &bigger["catalog"]["products"][0]["metadata"]["value"];
-        assert_eq!(metadata["calibration"]["width"], 720);
-        assert_eq!(metadata["pose_product_id"], format!("phone-pose:{session}"));
-        assert_eq!(metadata["alignment_timestamp_ns"], 77);
+        assert_ne!(metadata["sensor"]["hash"], contract.sensor.hash);
+        assert_ne!(frame_of(&bigger)["output_id"], output["output_id"]);
 
         // A new AR session moves the camera again.
         let next = uuid::Uuid::new_v4().to_string();
@@ -313,7 +309,7 @@ async fn home_draws_over_a_phone_camera_without_a_phone_adapter() -> Result<()> 
         })
         .await
         .map_err(|_| anyhow::anyhow!("Home never drew over the phone camera: {last}"))??;
-        assert_eq!(drawn["capture_timestamp_ns"], 1000);
+        assert_eq!(drawn["capture_timestamp_ns"], "1000");
         assert_eq!(drawn["ar"]["status"], "ready");
         assert_eq!(drawn["ar"]["frame"], home_frame);
         let seen = &drawn["picking"]["camera_to_map"];

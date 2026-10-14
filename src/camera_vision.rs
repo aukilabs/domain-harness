@@ -13,9 +13,9 @@ pub async fn capture(tx:&tokio::sync::mpsc::Sender<crate::sensor_preview::Reques
  let (reply,receive)=tokio::sync::oneshot::channel();
  tx.try_send(crate::sensor_preview::Request{home_frame:None,debug_pose:false,sensor:Some(selected["sensor_id"].as_str().unwrap().into()),capture:true,follow:false,scene:false,ar:false,pick:false,expected_manifest:None,reply})
   .map_err(|_|anyhow::anyhow!("Camera request queue unavailable"))?;
- tokio::time::timeout(std::time::Duration::from_secs(10),receive).await
+ Ok(tokio::time::timeout(std::time::Duration::from_secs(10),receive).await
   .map_err(|_|anyhow::anyhow!("Camera did not provide a fresh frame in time"))?
-  .map_err(|_|anyhow::anyhow!("Camera connection stopped"))?
+  .map_err(|_|anyhow::anyhow!("Camera connection stopped"))??.value)
 }
 
 /// Validate bytes before allocating, bound JPEG decoding, then normalize all
