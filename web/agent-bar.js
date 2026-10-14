@@ -49,7 +49,7 @@ export function createAgentBar({root,tools,onOpen,hasConversation=()=>true}){
  function morph(mode,done){
   if(root.dataset.mode===mode){done?.();return;}
   const movingOrb=toggle.querySelector('.agent-orb'),from=shell.getBoundingClientRect(),orbFrom=movingOrb.getBoundingClientRect();
-  const leaving=[...shell.querySelectorAll(mode==='agent'?'.agent-tools,.agent-divider,.agent-ask-label,.agent-ask-key':'#scene-chat-form,.agent-shell-actions')];
+  const leaving=[...shell.querySelectorAll(mode==='agent'?'.agent-tools,.map2d-strip,.agent-divider,.agent-ask-label,.agent-ask-key':'#scene-chat-form,.agent-shell-actions')];
   const swap=()=>{
    root.dataset.mode=mode;toggle.setAttribute('aria-expanded',String(mode==='agent'));done?.();
    if(reduceMotion())return;
@@ -57,7 +57,7 @@ export function createAgentBar({root,tools,onOpen,hasConversation=()=>true}){
    shell.animate([{width:from.width+'px',height:from.height+'px'},{width:to.width+'px',height:to.height+'px'}],{duration:560,easing:spring});
    const dx=(orbFrom.left-from.left)-(orbTo.left-to.left);
    movingOrb.animate([{transform:`translateX(${dx}px) scale(.9)`},{transform:'none'}],{duration:620,easing:spring});
-   const entering=[...shell.querySelectorAll(mode==='agent'?'#scene-chat-input,.agent-shell-actions>*':'.agent-tool,.agent-ask-label,.agent-ask-key')];
+   const entering=[...shell.querySelectorAll(mode==='agent'?'#scene-chat-input,.agent-shell-actions>*':(root.hasAttribute('data-plan')?'.map2d-strip>*,.agent-ask-label,.agent-ask-key':'.agent-tool,.agent-ask-label,.agent-ask-key'))];
    entering.forEach((node,i)=>node.animate([{opacity:0,filter:'blur(6px)',transform:'translateY(6px) scale(.96)'},{opacity:1,filter:'none',transform:'none'}],{duration:380,delay:120+i*40,easing:'cubic-bezier(.2,.8,.2,1)',fill:'backwards'}));
   };
   if(reduceMotion()){swap();return;}
