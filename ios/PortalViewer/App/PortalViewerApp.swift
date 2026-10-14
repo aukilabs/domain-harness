@@ -1531,9 +1531,19 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     /// Take the way everyone sees off the map, by whoever put it there.
     private func retireShared() {
         if let old = guideShared {
-            if guideByHome { onRouteClear?(old.frame) } else { onErase?(old.id, old.frame) { _ in } }
+            // Gone from this phone at once, whatever Home takes to drop it.
+            erasing.insert(old.id)
+            (root.childNodes + povRoot.childNodes).filter { $0.name == "scene-path:" + old.id }.forEach { $0.isHidden = true }
+            if guideByHome { onRouteClear?(old.frame) } else { eraseShared(old.id, frame: old.frame, tries: 3) }
         }
         guideShared = nil; guideSaved = nil; guideByHome = false; guideStale = false
+    }
+    /// Ask Home to erase a way nobody is following, again if it does not, so it does not stay on everyone's map.
+    private func eraseShared(_ id: String, frame: String, tries: Int) {
+        onErase?(id, frame) { [weak self] erased in
+            guard !erased, tries > 1 else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { self?.eraseShared(id, frame: frame, tries: tries - 1) }
+        }
     }
     private func endGuide() {
         guard guidePlanned != nil || !guideRoute.isEmpty || messages.way != nil || guideShared != nil else { return }
@@ -2556,32 +2566,41 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         return material
     }
 
-    /// A saved path's colour with lighter chevrons that run the way it was drawn.
+    /// A saved path's colour with a glow that runs along it the way it was drawn: a long
+    /// brightening tail and a sharp head, so even a still frame shows which way it goes.
     private static func flowingMaterial(_ color: UIColor) -> SCNMaterial {
         let material = crayonMaterial(color)
-        material.diffuse.contents = chevrons(color)
-        material.diffuse.wrapS = .repeat; material.diffuse.wrapT = .repeat
-        // One chevron every 12 cm along the path, two round it so every side shows one.
-        let tile = SCNMatrix4MakeScale(1 / 0.12, 2, 1)
-        material.diffuse.contentsTransform = tile
-        let flow = CABasicAnimation(keyPath: "contentsTransform")
-        flow.fromValue = NSValue(scnMatrix4: tile)
-        flow.toValue = NSValue(scnMatrix4: SCNMatrix4Mult(tile, SCNMatrix4MakeTranslation(-1, 0, 0)))
-        flow.duration = 0.5; flow.repeatCount = .infinity
-        material.diffuse.addAnimation(flow, forKey: "flow")
+        material.diffuse.contents = glow(color)
+        material.diffuse.wrapS = .repeat; material.diffuse.wrapT = .clamp
+        material.diffuse.contentsTransform = flowShift
+        flowing.add(material.diffuse)
         return material
     }
-    private static var chevronTiles = [UIColor: UIImage]()
-    private static func chevrons(_ color: UIColor) -> UIImage {
-        if let tile = chevronTiles[color] { return tile }
-        let tile = UIGraphicsImageRenderer(size: CGSize(width: 64, height: 64)).image { drawn in
-            color.setFill(); drawn.fill(CGRect(x: 0, y: 0, width: 64, height: 64))
-            let mark = UIBezierPath()
-            mark.move(to: CGPoint(x: 18, y: 10)); mark.addLine(to: CGPoint(x: 44, y: 32)); mark.addLine(to: CGPoint(x: 18, y: 54))
-            mark.lineWidth = 11; mark.lineCapStyle = .round; mark.lineJoinStyle = .round
-            UIColor.white.withAlphaComponent(0.7).setStroke(); mark.stroke()
+    /// Metres between glows, and how fast they travel.
+    private static let flowTile: Float = 0.45, flowSpeed: Float = 0.7
+    private static let flowing = NSHashTable<SCNMaterialProperty>.weakObjects()
+    private static var flowShift = SCNMatrix4MakeScale(1 / flowTile, 1, 1)
+    /// Moves every path's glow on, from one clock, so a path rebuilt when Home's map
+    /// changes carries on where it was instead of starting again.
+    private static func flow(at time: TimeInterval) {
+        let shift = Float((time * Double(flowSpeed / flowTile)).truncatingRemainder(dividingBy: 1))
+        flowShift = SCNMatrix4Mult(SCNMatrix4MakeScale(1 / flowTile, 1, 1), SCNMatrix4MakeTranslation(-shift, 0, 0))
+        for property in flowing.allObjects { property.contentsTransform = flowShift }
+    }
+    private static var glowTiles = [UIColor: UIImage]()
+    private static func glow(_ color: UIColor) -> UIImage {
+        if let tile = glowTiles[color] { return tile }
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        color.getRed(&r, green: &g, blue: &b, alpha: &a)
+        let light = UIColor(red: r + (1 - r) * 0.75, green: g + (1 - g) * 0.75, blue: b + (1 - b) * 0.75, alpha: 1)
+        let tile = UIGraphicsImageRenderer(size: CGSize(width: 128, height: 4)).image { drawn in
+            let colors = [color, color, light, light, color].map(\.cgColor) as CFArray
+            let locations: [CGFloat] = [0, 0.3, 0.86, 0.92, 1]
+            if let ramp = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: locations) {
+                drawn.cgContext.drawLinearGradient(ramp, start: .zero, end: CGPoint(x: 128, y: 0), options: [])
+            }
         }
-        chevronTiles[color] = tile
+        glowTiles[color] = tile
         return tile
     }
 
@@ -3012,6 +3031,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         if snoozed { return }
         checkRest(frame)
         if snoozed { return }
+        Self.flow(at: frame.timestamp)
         sampleCrayon()
         // Aligned frames are shared below, together with their pose.
         if !aligned { shareCamera(frame, alignment: 0, withPose: false) }
