@@ -183,6 +183,8 @@ pub struct Worker {
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
     pub target: crate::compact_pose::FrameRef,
+    frame: auki_registry::FrameRegistryEntry,
+    transform: (Contract, RetainedProduct<Update>),
 }
 impl Worker {
     pub fn mount(
@@ -252,6 +254,8 @@ impl Worker {
             },
         )?;
         p.endpoint.export_product(&capture.product())?;
+        let transform = (contract.clone(), capture.product());
+        let frame = home.frame.clone();
         let c = camera.calibration();
         let detections = camera.detections.clone();
         let stop = Arc::new(AtomicBool::new(false));
@@ -378,7 +382,19 @@ impl Worker {
             stop,
             thread: Some(thread),
             target,
+            frame,
+            transform,
         })
+    }
+    /// The Home scene frame and this worker's held transform into it.
+    pub fn transform(&self) -> (auki_registry::FrameRegistryEntry, crate::pointer::Transform) {
+        (
+            self.frame.clone(),
+            crate::pointer::Transform {
+                contract: self.transform.0.clone(),
+                product: self.transform.1.clone(),
+            },
+        )
     }
 }
 fn now_ns() -> u64 {

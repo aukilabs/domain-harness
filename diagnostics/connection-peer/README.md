@@ -14,6 +14,15 @@ also exposes BBOS poses. `--portals` implies poses and adds:
 - `bbos-home-alignment-<target-hash>`: a separate compact held transform from
   this boot's native Bracket world into the selected Home scene frame.
 
+`--poses` and `--portals` also expose `arm-pointer/point_at`
+(`spatial-harness.point-at/v1`, contract in `src/point_at.rs`). A target names
+its frame by full Registry reference and resolves into `bbos-base` only through
+this peer's own compact pose Products: the sampled base pose (at most 800 ms
+old), the held head extrinsic and, once aligned, the held Home alignment. All
+must share one clock; a lost or stale link refuses the request. Milestone 1
+accepts or rejects (one request at a time, held 3 s) and reports the base-frame
+point and the observations it used; it does not command the arms.
+
 Frame, clock and numeric sensor calibration definitions are served through the
 SDK Registry endpoint. Catalog metadata binds their exact references and static
 interpretation to hashed output IDs. Images and detections do not carry repeated

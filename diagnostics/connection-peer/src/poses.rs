@@ -33,6 +33,15 @@ impl Publisher {
     pub fn product(&self) -> RetainedProduct<crate::compact_pose::Update> {
         self._capture.product()
     }
+    pub fn compact(&self) -> crate::compact_pose::Contract {
+        crate::compact_pose::Contract {
+            from_frame: (&self.contract.from_frame).into(),
+            to_frame: (&self.contract.to_frame).into(),
+            clock: self.contract.clock.clone(),
+            session_id: self.contract.session_id.clone(),
+            lifetime: crate::compact_pose::Lifetime::Sampled,
+        }
+    }
     pub fn mount(peer: &AukiPeer) -> Result<Self> {
         let owner = peer.peer_id().to_string();
         let session = uuid::Uuid::new_v4().to_string();
