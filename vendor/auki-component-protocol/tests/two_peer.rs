@@ -6,6 +6,7 @@ use std::time::{Duration, SystemTime};
 
 use auki_component_protocol::{
     CatalogResponse, ComponentProtocolClient, ComponentProtocolEndpoint, ComponentProtocolError,
+    ObservationDecoder, ObservationEncoder, ObservationRequest, ObservationSelection,
     ObservationStart, RemoteMirrorStart, RemoteObservationEvent, RemoteProductSubscription,
 };
 use auki_components::{
@@ -1156,6 +1157,75 @@ async fn dropping_or_closing_idle_subscription_releases_only_its_handler_and_rea
     fixture.shutdown().await;
 }
 
+fn binary_level_encoder() -> ObservationEncoder<f64> {
+    ObservationEncoder::new("test/f64-le", |value: &f64| Ok(value.to_le_bytes().to_vec())).unwrap()
+}
+
+fn binary_level_decoder() -> ObservationDecoder<f64> {
+    ObservationDecoder::new("test/f64-le", |bytes| {
+        let bytes: [u8; 8] = bytes.try_into().map_err(|_| "expected 8 raw bytes".to_owned())?;
+        Ok(f64::from_le_bytes(bytes))
+    }).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn explicit_binary_codec_preserves_capture_identity_and_empty_product_demand_lifetime() {
+    let fixture = TwoPeerFixture::with_initial_observation(false).await;
+    let product = fixture.capture.product();
+    fixture.endpoint.unexport_product(&product.manifest.product_id);
+    fixture.endpoint.export_product_with_encoder(&product, binary_level_encoder()).unwrap();
+    let request = ObservationRequest {
+        product: product.reference(), selection: ObservationSelection::LatestExisting,
+    };
+    let empty = fixture.client.observations_exact_with_decoder(
+        fixture.server.peer_id(), fixture.route.clone(), request.clone(), binary_level_decoder(),
+    ).await.unwrap();
+    assert!(empty.observations.is_empty());
+    let _ = fixture.client.catalog_exact(fixture.server.peer_id(), fixture.route.clone(), None).await.unwrap();
+    assert_eq!(fixture.endpoint.product_active_subscriptions(&product.manifest.product_id), 0,
+        "Catalog/finite fetches must not create production demand");
+
+    let mut subscription = fixture.client.subscribe_product_exact_with_decoder(
+        fixture.server.peer_id(), fixture.route.clone(), product.reference(),
+        ObservationStart::NewOnly, BufferLimits::entries(1), |_| 8, binary_level_decoder(),
+    ).await.unwrap();
+    wait_for_subscriptions(&fixture.endpoint, 1).await;
+    assert_eq!(fixture.endpoint.product_active_subscriptions(&product.manifest.product_id), 1);
+    assert_eq!(subscription.product().producer.clock, product.producer.clock);
+    let timestamp_ns = 18_000_000_000_000_001; // beyond exact JSON-double integer precision
+    fixture.output.publish(timestamp_ns, Arc::new(42.25)).unwrap();
+    let RemoteObservationEvent::Observation(sample) = subscription_event(&mut subscription).await else {
+        panic!("binary sample missing")
+    };
+    assert_eq!(sample.output, product.manifest.producer);
+    assert_eq!(sample.sequence, 0);
+    assert_eq!(sample.timestamp_ns, timestamp_ns);
+    assert_eq!(*sample.payload, 42.25);
+    let finite = fixture.client.observations_exact_with_decoder(
+        fixture.server.peer_id(), fixture.route.clone(), request.clone(), binary_level_decoder(),
+    ).await.unwrap();
+    assert_eq!(finite.observations[0].timestamp_ns, timestamp_ns);
+    assert_eq!(*finite.observations[0].payload, 42.25);
+
+    // JSON clients must fail explicitly, not try to deserialize a binary body.
+    let wrong = fixture.client.observations_exact::<f64>(
+        fixture.server.peer_id(), fixture.route.clone(), request,
+    ).await;
+    assert!(matches!(wrong, Err(ComponentProtocolError::InvalidResponse(_))));
+    let mut wrong = fixture.subscribe(ObservationStart::LatestExisting).await;
+    assert!(matches!(wrong.next().await, Err(ComponentProtocolError::InvalidResponse(_))));
+    assert!(wrong.is_closed());
+    wait_for_subscriptions(&fixture.endpoint, 1).await;
+
+    // No subsequent sample is required for FIN/drop to remove demand.
+    assert!(tokio::time::timeout(Duration::from_millis(20), subscription.next()).await.is_err());
+    drop(subscription);
+    wait_for_subscriptions(&fixture.endpoint, 0).await;
+    assert_eq!(fixture.endpoint.product_active_subscriptions(&product.manifest.product_id), 0);
+    assert!(product.end_notice().is_none(), "consumer cancellation must not end the producer");
+    fixture.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn unexport_interrupts_idle_subscription_without_ending_the_source_or_auto_reconnecting() {
     let fixture = TwoPeerFixture::new().await;
@@ -1718,7 +1788,7 @@ async fn latest_sync_reports_skipped_history_then_accepts_the_terminal_notice_on
     fixture.shutdown().await;
 }
 
-#[path = "../../auki-components/tests/support/clock.rs"]
+#[path = "support/clock.rs"]
 mod clock_fixture;
 use clock_fixture::fixture_clock;
 

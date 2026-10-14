@@ -6,11 +6,13 @@
 
 #![forbid(unsafe_code)]
 
+mod codec;
 mod endpoint;
 mod subscription;
 mod wire;
 
 pub use subscription::{RemoteObservationEvent, RemoteProductSubscription};
+pub use codec::{ObservationDecoder, ObservationEncoder};
 
 pub use endpoint::{
     ComponentProtocolClient, ComponentProtocolEndpoint, ComponentProtocolError,

@@ -9,17 +9,21 @@ use spatial_home::{
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn home_integrates_declared_camera_points_over_authenticated_sdk() -> Result<()> {
-    run(false, false).await
+    run(false, false, false).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn home_consumes_the_actual_mobile_declared_publisher() -> Result<()> {
-    run(true, false).await
+    run(true, false, false).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn home_voxelizes_points_through_sensor_mount_odometry_and_home_alignment() -> Result<()> {
-    run(false, true).await
+    run(false, true, false).await
 }
-async fn run(actual_publisher: bool, extra_mount: bool) -> Result<()> {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn home_subscribes_to_empty_compact_depth_and_preserves_capture_chain() -> Result<()> {
+    run(false, true, true).await
+}
+async fn run(actual_publisher: bool, extra_mount: bool, packed: bool) -> Result<()> {
     let pair = support::LocalPair::start().await?;
     let result = async {
         let dir = tempfile::tempdir()?;
@@ -88,6 +92,7 @@ async fn run(actual_publisher: bool, extra_mount: bool) -> Result<()> {
             output.publish(0,std::sync::Arc::new(Update {tracking:auki_odometry::Tracking::Valid {pose:auki_odometry::Pose {translation:[1.,0.,0.],rotation_xyzw:[0.,0.,0.,1.]}}}))?;
             Some((component,output,retained))
         } else {None};
+        let mut packed_send = None;
         let _retained: Box<dyn std::any::Any> = if actual_publisher {
             let mut publisher = spatial_home::mobile_declared::Publisher::new(&products, &session, &home, &frame)?;
             publisher.align(1, &auki_scenegraph::RigidTransform {
@@ -164,6 +169,30 @@ async fn run(actual_publisher: bool, extra_mount: bool) -> Result<()> {
             clock: pc.clock.clone(),
             session_id: session.clone(),
         };
+        if packed {
+            use spatial_home::depth_points::{PackedPoints, PACKED_POINTS_SCHEMA};
+            let component = products.runtime.component(ComponentSpec::new("arbitrary-binary-depth")
+                .observable(ObservableContract {name:"points".into(), datatype:PACKED_POINTS_SCHEMA.into(),
+                    schema:PACKED_POINTS_SCHEMA.into(), access:vec![ObservationAccess::FollowNew], exposure:Exposure::Cluster}))?;
+            let depth: ConfiguredObservable<PackedPoints> = component.configured_observable(
+                ConfiguredObservableSpec::new("points", dc.output_id(), dc.clock.clone(),
+                    PayloadContract::Structured(StructuredPayloadContract {modality:"depth".into(),
+                        datatype:PACKED_POINTS_SCHEMA.into(), schema:PACKED_POINTS_SCHEMA.into(),
+                        observes:"measured_points".into(), unit:Some("meters".into())}))
+                    .in_registered_frame(point_frame.clone()))?;
+            component.expose()?;
+            let retained = products.runtime.capture_buffer("empty-until-subscribed", &depth,
+                BufferLimits {max_entries:Some(1),max_bytes:Some(128*1024),target_duration:None},
+                |p:&PackedPoints|p.as_bytes().len())?;
+            products.endpoint.export_product_with_encoder(&retained.product(), PackedPoints::encoder()?)?;
+            // There is deliberately no metadata or initial observation. A consumer
+            // discovers the exact typed Output, not a robot name or sentinel cloud.
+            assert!(retained.product().latest_existing()?.is_none());
+            assert_eq!(products.endpoint.product_active_subscriptions("empty-until-subscribed"),0);
+            let packet = PackedPoints::from_points(dc, &Points {points:vec![[0.,-1.,-1.]], colors:Some(vec![[255,0,0]])})?;
+            packed_send = Some((depth, packet));
+            Box::new((component, output, capture, retained))
+        } else {
         let component = products.runtime.component(
             ComponentSpec::new("arbitrary-depth-component").observable(ObservableContract {
                 name: "points".into(),
@@ -216,6 +245,7 @@ async fn run(actual_publisher: bool, extra_mount: bool) -> Result<()> {
             .into(),
         )?;
             Box::new((component, output, capture, depth, retained))
+        }
         };
         let camera_component = products.runtime.component(ComponentSpec::new("ar-test-camera")
             .observable(ObservableContract { name:"rgb".into(), datatype:VideoFrame::DATATYPE.into(),
@@ -256,15 +286,21 @@ async fn run(actual_publisher: bool, extra_mount: bool) -> Result<()> {
         let frames=client.observations_exact::<VideoFrame>(pair.b.peer_id(),row["catalog_route"].as_str().unwrap().parse()?,auki_component_protocol::ObservationRequest{
             product:camera_capture.product().manifest.reference(),
             selection:auki_component_protocol::ObservationSelection::LatestExisting}).await?;
-        let (_tx, rx) =
+        let (catalog_tx, rx) =
             tokio::sync::watch::channel(std::collections::BTreeMap::from([(phone, row.clone())]));
         let stop = tokio_util::sync::CancellationToken::new();
         let held = spatial_home::frame_alignment::HeldTransforms::default();
         let subscriptions = held.serve(&pair.a, rx.clone(), &stop);
         let consumer = spatial_home::declared_depth::serve(&pair.a, rx, &scenes, &held, &stop);
         let check = async {
+            let mut packed_published = false;
             tokio::time::timeout(std::time::Duration::from_secs(8), async {
                 loop {
+                    if !packed_published && products.endpoint.product_active_subscriptions("empty-until-subscribed") > 0 {
+                        let (output, packet) = packed_send.as_ref().unwrap();
+                        output.publish(100, std::sync::Arc::new(packet.clone()))?;
+                        packed_published = true;
+                    }
                     for publisher in &mut publishers {
                         publisher.tick()?;
                     }
@@ -280,6 +316,30 @@ async fn run(actual_publisher: bool, extra_mount: bool) -> Result<()> {
                         let ar=spatial_home::compact_ar::render(&client,&held,&sensors[0],&row,&frames.observations[0],&frames.producer,&scenes,&home,true).await?;
                         assert_eq!(ar["picking"]["frame"],frame);
                         assert_eq!(ar["ar"]["voxel_count"],0);
+                        if packed {
+                            let count = view["integrated_observations"].clone();
+                            let discovered = catalog_tx.send_replace(std::collections::BTreeMap::new());
+                            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                                while products.endpoint.product_active_subscriptions("empty-until-subscribed") != 0 {
+                                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                                }
+                            }).await?;
+                            catalog_tx.send_replace(discovered);
+                            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                                while products.endpoint.product_active_subscriptions("empty-until-subscribed") != 1 {
+                                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                                }
+                            }).await?;
+                            // Rejoining requests new observations, never the last cached
+                            // cloud. A genuinely new cloud without a pose at its capture
+                            // time must not use the previous exact pose as a fallback.
+                            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                            assert_eq!(scenes.view("humanoid-hub-conference")?["integrated_observations"], count);
+                            let (output, packet) = packed_send.as_ref().unwrap();
+                            output.publish(101, std::sync::Arc::new(packet.clone()))?;
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                            assert_eq!(scenes.view("humanoid-hub-conference")?["integrated_observations"], count);
+                        }
                         break Ok::<(), anyhow::Error>(());
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -292,7 +352,16 @@ async fn run(actual_publisher: bool, extra_mount: bool) -> Result<()> {
             stop.cancel();
             result
         });
-        checked
+        checked?;
+        // Home's consumer shutdown must remove source demand, even with an idle cloud.
+        if packed {
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while products.endpoint.product_active_subscriptions("empty-until-subscribed") != 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            }).await?;
+        }
+        Ok(())
     }
     .await;
     pair.shutdown().await?;

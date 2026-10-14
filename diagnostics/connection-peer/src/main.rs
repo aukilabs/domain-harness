@@ -2,6 +2,8 @@
 mod alignment;
 mod camera;
 mod depth;
+#[path = "../../../src/component_enabled.rs"]
+mod component_enabled;
 #[path = "../../../src/depth_points.rs"]
 mod depth_points;
 #[path = "../../../src/compact_pose.rs"]
@@ -207,9 +209,9 @@ async fn main() -> Result<()> {
     });
     let mut camera_publisher: Option<camera::Camera> = None;
     let mut camera_open = portals;
-    let (depth_task, mut depth_rx) = if points {
-        let (task,rx)=depth::start(); (Some(task),rx)
-    } else { (None,tokio::sync::watch::channel(None).1) };
+    let (depth_task, mut depth_rx,depth_demand) = if points {
+        let (task,rx,demand)=depth::start(); (Some(task),rx,demand)
+    } else { (None,tokio::sync::watch::channel(None).1,tokio::sync::watch::channel(false).0) };
     let mut depth_open=points;
     let mut depth_publisher:Option<depth::Depth>=None;
     let (home_tx, home_rx) = tokio::sync::watch::channel(None::<home::Verified>);
@@ -283,8 +285,14 @@ async fn main() -> Result<()> {
     });
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut tick = tokio::time::interval(Duration::from_secs(1));
+    let mut demand_tick=tokio::time::interval(Duration::from_millis(100));
+    demand_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
+            _=demand_tick.tick(),if depth_open=>{
+                let wanted=depth_publisher.as_ref().is_some_and(|d|d.wants_capture(&publisher.as_ref().unwrap().endpoint));
+                depth_demand.send_if_modified(|old|{if *old==wanted {false}else{*old=wanted;true}});
+            },
             changed=depth_rx.changed(),if depth_open => {
                 if changed.is_err() {
                     depth_open=false;
@@ -295,8 +303,9 @@ async fn main() -> Result<()> {
                 let sample=depth_rx.borrow_and_update().clone();
                 if let Some((config,sample))=sample {
                     let result=(|| {
-                        if depth_publisher.is_none(){depth_publisher=Some(depth::Depth::mount(publisher.as_ref().unwrap(),config)?);}
-                        depth_publisher.as_mut().unwrap().publish(sample)
+                        if depth_publisher.is_none(){depth_publisher=Some(depth::Depth::mount(publisher.as_ref().unwrap(),config,expected.to_string())?);}
+                        if let Some(sample)=sample {depth_publisher.as_mut().unwrap().publish(sample,&publisher.as_ref().unwrap().endpoint)?;}
+                        Ok::<(),anyhow::Error>(())
                     })();
                     if let Err(e)=result {eprintln!("Depth publish failed: {e}");}
                 }

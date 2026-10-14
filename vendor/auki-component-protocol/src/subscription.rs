@@ -15,14 +15,14 @@ use futures::future::BoxFuture as ReceiveFuture;
 #[cfg(target_arch = "wasm32")]
 use futures::future::LocalBoxFuture as ReceiveFuture;
 use futures::{AsyncRead, AsyncReadExt, AsyncWrite, FutureExt, Stream, StreamExt, pin_mut};
-use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::endpoint::{
     ComponentProtocolClient, ComponentProtocolError, ComponentProtocolOperation,
     EncodedObservation, NETWORK_TIMEOUT, OBSERVATION_EXCHANGE_TIMEOUT, ServiceError, ServiceState,
-    close_stream, deadline, encode_observation,
+    close_stream, deadline, encode_observation_with,
 };
+use crate::{ObservationDecoder, ObservationEncoder};
 use crate::wire::{
     OBSERVATION_STREAM_PROTOCOL_ID, ObservationStart, ObservationSubscriptionRequest, SourceGap,
     SubscriptionEventHeader, SubscriptionHeader, read_json, read_json_after_first, read_payload,
@@ -52,7 +52,10 @@ pub(super) struct SubscriptionSource {
 }
 
 impl SubscriptionSource {
-    pub fn new<T: Serialize + Send + Sync + 'static>(product: &RetainedProduct<T>) -> Self {
+    pub fn with_encoder<T: Send + Sync + 'static>(
+        product: &RetainedProduct<T>,
+        encoder: ObservationEncoder<T>,
+    ) -> Self {
         let retained = product.clone();
         let (sender, revoked) = async_channel::bounded(1);
         Self {
@@ -63,6 +66,7 @@ impl SubscriptionSource {
             _keep_open: sender,
             open: Box::new(move |start| {
                 let product = retained.clone();
+                let encoder = encoder.clone();
                 let cursor = product.buffer().subscribe(match start {
                     ObservationStart::FromSequence { sequence } => {
                         CursorStart::FromSequence(sequence)
@@ -73,11 +77,12 @@ impl SubscriptionSource {
                 let next_sequence = cursor.next_sequence();
                 let events = futures::stream::unfold(Some(cursor), move |cursor| {
                     let product = product.clone();
+                    let encoder = encoder.clone();
                     async move {
                         let mut cursor = cursor?;
                         let event = match cursor.next_async().await {
                             CursorRead::Item(envelope) => {
-                                encode_observation(envelope.payload.clone())
+                                encode_observation_with(envelope.payload.clone(), &encoder)
                                     .map(SourceEvent::Observation)
                             }
                             CursorRead::Gap(gap) => Ok(SourceEvent::Gap(SourceGap {
@@ -166,10 +171,12 @@ where
         .map_err(Into::into);
     }
     let exported = source.expect("validated export");
-    exported.active_subscriptions.fetch_add(1, Ordering::AcqRel);
-    let _product_active = ActiveSubscription(&exported.active_subscriptions);
     let source = &exported.source;
     let mut cursor = (source.open)(request.start);
+    // Establish the cursor before signaling demand: a producer may publish its
+    // first sample immediately when the count changes from zero to one.
+    exported.active_subscriptions.fetch_add(1, Ordering::AcqRel);
+    let _product_active = ActiveSubscription(&exported.active_subscriptions);
     deadline(
         ComponentProtocolOperation::Exchange,
         write_json(
@@ -316,6 +323,28 @@ impl ComponentProtocolClient {
     where
         T: DeserializeOwned + Send + Sync + 'static,
     {
+        self.subscribe_product_exact_with_decoder(
+            remote_peer_id, route, product, start, limits, retained_size,
+            ObservationDecoder::json(),
+        ).await
+    }
+
+    /// Subscribe with the explicitly declared application payload codec. The
+    /// retained Product and source capture-time envelope are unchanged.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn subscribe_product_exact_with_decoder<T>(
+        &self,
+        remote_peer_id: PeerId,
+        route: Multiaddr,
+        product: ProductReference,
+        start: ObservationStart,
+        limits: BufferLimits,
+        retained_size: impl Fn(&T) -> usize + Send + Sync + 'static,
+        decoder: ObservationDecoder<T>,
+    ) -> Result<RemoteProductSubscription<T>, ComponentProtocolError>
+    where
+        T: Send + Sync + 'static,
+    {
         validate_peer(&product, remote_peer_id)?;
         subscribe_opened(
             ObservationSubscriptionRequest { product, start },
@@ -323,6 +352,7 @@ impl ComponentProtocolClient {
                 .open_exact(remote_peer_id, route, OBSERVATION_STREAM_PROTOCOL_ID),
             limits,
             retained_size,
+            decoder,
         )
         .await
     }
@@ -339,6 +369,26 @@ impl ComponentProtocolClient {
     where
         T: DeserializeOwned + Send + Sync + 'static,
     {
+        self.subscribe_product_with_decoder(
+            remote_peer_id, product, start, limits, retained_size, ObservationDecoder::json(),
+        ).await
+    }
+
+    /// Native configured-route variant of the explicit decoder subscription.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn subscribe_product_with_decoder<T>(
+        &self,
+        remote_peer_id: PeerId,
+        product: ProductReference,
+        start: ObservationStart,
+        limits: BufferLimits,
+        retained_size: impl Fn(&T) -> usize + Send + Sync + 'static,
+        decoder: ObservationDecoder<T>,
+    ) -> Result<RemoteProductSubscription<T>, ComponentProtocolError>
+    where
+        T: Send + Sync + 'static,
+    {
         validate_peer(&product, remote_peer_id)?;
         subscribe_opened(
             ObservationSubscriptionRequest { product, start },
@@ -346,6 +396,7 @@ impl ComponentProtocolClient {
                 .open(remote_peer_id, OBSERVATION_STREAM_PROTOCOL_ID),
             limits,
             retained_size,
+            decoder,
         )
         .await
     }
@@ -365,9 +416,10 @@ async fn subscribe_opened<T>(
     opening: impl Future<Output = Result<AuthenticatedRouteStream, AukiProtocolError>>,
     limits: BufferLimits,
     retained_size: impl Fn(&T) -> usize + Send + Sync + 'static,
+    decoder: ObservationDecoder<T>,
 ) -> Result<RemoteProductSubscription<T>, ComponentProtocolError>
 where
-    T: DeserializeOwned + Send + Sync + 'static,
+    T: Send + Sync + 'static,
 {
     let mut stream = deadline(ComponentProtocolOperation::Open, opening, NETWORK_TIMEOUT).await??;
     let header: SubscriptionHeader = deadline(
@@ -415,6 +467,7 @@ where
         pending_observation: None,
         next_sequence,
         finished: false,
+        decoder,
     })
 }
 
@@ -447,9 +500,10 @@ pub struct RemoteProductSubscription<T> {
     pending_observation: Option<Observation<T>>,
     next_sequence: u64,
     finished: bool,
+    decoder: ObservationDecoder<T>,
 }
 
-impl<T: DeserializeOwned + Send + Sync + 'static> RemoteProductSubscription<T> {
+impl<T: Send + Sync + 'static> RemoteProductSubscription<T> {
     pub fn product(&self) -> &RetainedProduct<T> {
         &self.product
     }
@@ -479,8 +533,9 @@ impl<T: DeserializeOwned + Send + Sync + 'static> RemoteProductSubscription<T> {
                     .stream
                     .take()
                     .expect("active subscription owns its stream");
+                let decoder = self.decoder.clone();
                 self.pending = Some(Box::pin(async move {
-                    let event = receive_event(&mut stream).await;
+                    let event = receive_event(&mut stream, &decoder).await;
                     (stream, event)
                 }));
             }
@@ -575,8 +630,9 @@ impl<T> Drop for RemoteProductSubscription<T> {
     }
 }
 
-async fn receive_event<T: DeserializeOwned>(
+async fn receive_event<T>(
     stream: &mut AuthenticatedRouteStream,
+    decoder: &ObservationDecoder<T>,
 ) -> Result<RemoteObservationEvent<T>, ComponentProtocolError> {
     // Idle producers are valid. Once a frame starts, its full transfer is bounded.
     let mut first = [0];
@@ -590,14 +646,13 @@ async fn receive_event<T: DeserializeOwned>(
             let header: SubscriptionEventHeader = read_json_after_first(stream, first[0]).await?;
             match header {
                 SubscriptionEventHeader::Observation { record } => {
-                    if record.payload_encoding != "application/json" {
+                    if record.payload_encoding != decoder.encoding() {
                         return Err(ComponentProtocolError::InvalidResponse(
                             "unsupported payload encoding".into(),
                         ));
                     }
                     let payload = read_payload(stream, record.payload_bytes).await?;
-                    let payload = serde_json::from_slice(&payload)
-                        .map_err(|error| ComponentProtocolError::Codec(error.to_string()))?;
+                    let payload = decoder.decode(&payload)?;
                     Ok(RemoteObservationEvent::Observation(Observation {
                         output: record.output,
                         sequence: record.sequence,
@@ -658,7 +713,7 @@ mod tests {
             let capture = runtime
                 .capture_buffer("history", &output, BufferLimits::entries(2), |_| 8)
                 .unwrap();
-            let source = SubscriptionSource::new(&capture.product());
+            let source = SubscriptionSource::with_encoder(&capture.product(), ObservationEncoder::json());
             let mut slow = (source.open)(ObservationStart::NewOnly);
             let mut fast = (source.open)(ObservationStart::NewOnly);
             for sequence in 0..10 {
@@ -708,7 +763,7 @@ mod tests {
     }
 }
 
-#[path = "../../auki-components/tests/support/clock.rs"]
+#[path = "../tests/support/clock.rs"]
 #[cfg(test)]
 mod clock_fixture;
 #[cfg(test)]

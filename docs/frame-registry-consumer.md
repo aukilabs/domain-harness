@@ -52,12 +52,17 @@ gap/error/closure events; it does not invent clock synchronization or liveness.
 
 ## Depth
 
-Consume depth-points/v1 with descriptor {frame, clock, session_id}. It is a
-bounded camera-space point cloud, optionally with one RGB color per point.
-Home polls the latest retained capture, so this is deliberately lossy under
-load, not an exhaustive recording. It applies scene_from_native *
-native_from_camera at capture time and integrates once per exact Product and
-sequence. The legacy posed-depth ingestion operation remains disabled.
+Consume depth-points/v1 JSON and depth-points/v2 compact binary with descriptor
+{frame, clock, session_id}. Both are bounded sensor-frame measured point clouds,
+optionally with one RGB color per point. V1 retains its latest-capture polling
+compatibility path. V2 uses one authenticated SDK continuing subscription per
+exact Product, retaining only the latest capture. An empty v2 Product is discovered
+from its typed Output; the first packet supplies its mandatory descriptor.
+Home's mapper is demand, independent of browser visibility. Neither path is an
+exhaustive recording under load. The generic resolver composes the declared
+transform chain at capture time and integrates once per exact Product and
+sequence, never replacing capture time with arrival time or extrapolating poses.
+The legacy posed-depth ingestion operation remains disabled.
 No past geometry is replayed or back-propagated when calibration changes.
 
 ## Camera AR

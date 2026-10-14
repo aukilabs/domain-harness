@@ -242,7 +242,6 @@ dependencies = [
 [[package]]
 name = "auki-component-protocol"
 version = "0.1.0"
-source = "git+https://github.com/aukilabs/auki-sdk.git?rev=3342d589605846f5f45c1de5430dd22923555de2#3342d589605846f5f45c1de5430dd22923555de2"
 dependencies = [
  "async-channel",
  "auki-components",

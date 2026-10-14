@@ -31,6 +31,7 @@ struct AppState {
     occupancy: spatial_home::robot_occupancy::Cache,
     ar_frames: spatial_home::ar_preview::Frames,
     previews: tokio::sync::mpsc::Sender<spatial_home::sensor_preview::Request>,
+    controls: tokio::sync::mpsc::Sender<spatial_home::component_control::Request>,
     store: Arc<Mutex<Store>>,
     changes: tokio::sync::watch::Sender<()>,
     peer: tokio::sync::watch::Receiver<Value>,
@@ -79,6 +80,17 @@ struct PreviewQuery {
     ar: bool,
     #[serde(default)]
     pick: bool,
+}
+async fn component_enabled(State(s):State<Arc<AppState>>,headers:HeaderMap,
+    Json(command):Json<spatial_home::component_control::Command>)->ApiResult {
+    local_write(&headers)?;
+    let (reply,receive)=tokio::sync::oneshot::channel();
+    s.controls.try_send(spatial_home::component_control::Request {command,reply})
+        .map_err(|_|anyhow::anyhow!("Device controls busy or unavailable"))?;
+    let result=tokio::time::timeout(std::time::Duration::from_secs(8),receive).await
+        .map_err(|_|anyhow::anyhow!("Control timed out; state unconfirmed"))?
+        .map_err(|_|anyhow::anyhow!("Device controls stopped"))??;
+    Ok(Json(json!({"enabled":result.enabled})))
 }
 async fn sensor_preview(
     State(s): State<Shared>,
@@ -1253,6 +1265,7 @@ async fn main() -> anyhow::Result<()> {
     let (home_live_tx, home_live_rx) =
         tokio::sync::watch::channel(spatial_home::scene_mirror::RemoteScene::default());
     let (preview_tx, preview_rx) = tokio::sync::mpsc::channel(4);
+    let (control_tx, control_rx) = tokio::sync::mpsc::channel(4);
     let occupancy = spatial_home::robot_occupancy::Cache::default();
     let ar_frames = spatial_home::ar_preview::Frames::default();
     let shutdown = tokio_util::sync::CancellationToken::new();
@@ -1337,6 +1350,7 @@ async fn main() -> anyhow::Result<()> {
                 status: mapping_tx,
             },
             preview_rx,
+            control_rx,
             occupancy.clone(),
             ar_frames.clone(),
             shutdown.clone(),
@@ -1353,6 +1367,7 @@ async fn main() -> anyhow::Result<()> {
         occupancy,
         ar_frames,
         previews: preview_tx,
+        controls: control_tx,
         store,
         changes,
         peer: peer_rx,
@@ -1409,6 +1424,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/robot-health.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/robot-health.js")) }))
         .route("/robot/{*path}", get(robot_asset))
         .route("/api/sensors", get(sensor_preview))
+        .route("/api/component-enabled", post(component_enabled))
         .route("/pose-inspector.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/pose-inspector.js")) }))
         .route("/video-presentation.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/video-presentation.js")) }))
         .route("/compact-pose-trail.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/compact-pose-trail.js")) }))

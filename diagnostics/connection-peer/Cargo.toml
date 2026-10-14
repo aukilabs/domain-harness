@@ -10,6 +10,7 @@ edition = "2024"
 # Cargo does not inherit patches from the enclosing Home workspace.
 [patch."https://github.com/aukilabs/auki-sdk.git"]
 auki-p2p = { path = "../../vendor/auki-p2p" }
+auki-component-protocol = { path = "../../vendor/auki-component-protocol" }
 
 [dependencies]
 anyhow = "1"

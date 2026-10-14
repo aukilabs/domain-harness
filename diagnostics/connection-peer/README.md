@@ -79,17 +79,24 @@ do not re-enable an unmigrated legacy pose path to make that checkbox appear.
 BBOS `camera.points` measurements. The launcher accepts the same `--points` flag.
 It does not start SLAM, enable driving, or create a robot-side voxel map.
 
-- `bbos-depth-points` uses the same declared point-cloud wire profile as Annotator:
-  `spatial-harness.depth-points/v1`, with optional per-point sRGB colors.
+- `bbos-depth-points` uses `spatial-harness.depth-points/v2`: compact binary
+  float32 XYZ and optional sRGB bytes through the SDK observation codec. Home
+  also continues to read Annotator's existing v1 JSON Products.
 - `bbos-depth-extrinsic` is a held compact transform from the registered rectified
   depth optical frame into BBOS base. This is distinct from the raw QR camera.
 - Capture timestamps retain BBOS's capture clock; no receipt-time substitution.
 - The local helper undoes BBOS's calibrated optical-to-base conversion, preserving
   the depth sensor origin for Home's free-space rays. It reads shared memory and
   writes local stdout IPC only. All peer data uses the existing SDK endpoint/libp2p.
-- At most 2,048 measured returns per capture, 5 captures/second, four retained
-  captures (1 MiB cap), and a latest-only IPC mailbox. Sampling rotates through
+- At most 2,048 measured returns per capture, 5 captures/second, one retained
+  capture (128 KiB cap), and a latest-only IPC mailbox. Sampling rotates through
   measured points; it never fills holes with invented measurements.
+- Publication and local point preparation require both `set_enabled=true` and
+  an active SDK Product subscription. The empty Product is discoverable before
+  demand. Listing the Catalog or fetching old retained data does not create
+  demand. Home's mapper is a subscriber even with its browser hidden. No
+  subscribers means the helper waits without copying or encoding point clouds;
+  BBOS's depth daemon itself remains unchanged.
 - Invalid/dynamic mounts, writer changes, clock jumps and timestamp regressions
   stop depth capture. Missing/lost/ambiguous transforms prevent Home integration.
 
@@ -102,3 +109,5 @@ Validation is local: `tests/diagnostic_depth.rs` exercises the actual publisher
 through authenticated SDK discovery/read; `tests/declared_depth.rs` covers phone
 and three-edge cloud integration; `tests/test_diagnostic_depth.py` checks the
 BBOS adapter without a robot. Deployment and live sensor verification are separate.
+See [compact point-cloud contract](../../docs/point-cloud-binary.md) for the
+wire layout and coordinated producer/consumer rollout requirements.

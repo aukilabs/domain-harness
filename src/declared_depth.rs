@@ -1,14 +1,25 @@
 //! Home-only reader for PR40 camera-space depth and declared transform chains.
 use crate::compact_pose::{FrameRef, Update};
 use anyhow::{Result, anyhow, ensure};
-use auki_component_protocol::{ComponentProtocolClient, ObservationRequest, ObservationSelection};
+use auki_component_protocol::{ComponentProtocolClient, ObservationRequest, ObservationSelection,
+    ObservationStart, RemoteObservationEvent};
 use auki_components::*;
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::BTreeMap, sync::{Arc, Mutex}, time::Duration};
+use tokio_util::sync::CancellationToken;
+use crate::depth_points::{PackedPoints, PACKED_POINTS_SCHEMA};
 pub use crate::mobile_declared::{Points, PointsContract, POINTS_SCHEMA as SCHEMA, POINTS_METADATA as METADATA};
 pub const MAX_GAP_NS: u64 = 500_000_000;
 
 impl PointsContract {
     pub fn validate_output(&self, o: &OutputManifest) -> Result<()> {
+        self.validate_typed_output(o, SCHEMA)
+    }
+
+    pub fn validate_packed_output(&self, o: &OutputManifest) -> Result<()> {
+        self.validate_typed_output(o, PACKED_POINTS_SCHEMA)
+    }
+
+    fn validate_typed_output(&self, o: &OutputManifest, schema: &str) -> Result<()> {
         o.validate().map_err(anyhow::Error::msg)?;
         ensure!(
             !self.session_id.is_empty() && self.session_id.len() <= 256,
@@ -23,7 +34,7 @@ impl PointsContract {
             "Depth descriptor mismatch"
         );
         ensure!(
-            matches!(&o.payload, PayloadContract::Structured(p) if p.datatype==SCHEMA && p.schema==SCHEMA),
+            matches!(&o.payload, PayloadContract::Structured(p) if p.datatype==schema && p.schema==schema),
             "Wrong depth type"
         );
         ensure!(
@@ -146,6 +157,8 @@ async fn capture(
             .flat_map(|c| c.current_outputs.values())
             .find(|o| o.manifest.reference() == p.manifest.producer)
             .ok_or_else(|| anyhow!("Depth Output unavailable"))?;
+        if matches!(&output.manifest.payload, PayloadContract::Structured(p)
+            if p.datatype == PACKED_POINTS_SCHEMA && p.schema == PACKED_POINTS_SCHEMA) { continue; }
         c.validate_output(&output.manifest)?;
         let sensor = crate::sensor_preview::Sensor {
             datatype: SCHEMA.into(),
@@ -178,37 +191,165 @@ async fn capture(
         if done.get(&key).is_some_and(|seq| *seq >= o.sequence) {
             continue;
         }
-        let t = o.timestamp_ns;
-        let editors = scenes.note_editors.lock().map_err(|_|anyhow!("Scenes unavailable"))?
-            .values().cloned().collect::<Vec<_>>();
-        let targets = editors.iter().map(|editor| {
-            let reference = editor.reference()?;
-            crate::conventions::registry(home, &reference.scenegraph.map.frame.id)
-                .map(|f| FrameRef::from(&f))
-        }).collect::<Result<Vec<_>>>()?;
-        let (target, pose) = crate::transform_chain::resolve(client, &sensor, row,
-            &c.frame, &c.clock, &c.session_id, t, &targets, Some(held_cache)).await?;
-        let source_frame = r.producer.spatial_frame.as_ref()
-            .ok_or_else(||anyhow!("Depth frame missing"))?.definition.clone();
-        let editor = editors.into_iter().find(|editor| editor.reference().is_ok_and(|r|
-            r.scenegraph.map.frame.id == target.id)).ok_or_else(||anyhow!("Home scene unavailable"))?;
-        let matched = [(editor, target.id, pose)];
-        for (editor, target, pose) in matched {
-            editor.integrate_declared(Localized {
-                target,
-                binding: auki_voxel_map::SensorBinding {
-                    sensor_product: sensor.reference.clone(),
-                    sensor_frame: source_frame.clone(),
-                    observation_clock: c.clock.clone(),
-                },
-                sequence: o.sequence,
-                timestamp: t,
-                points: (*o.payload).clone(),
-                pose,
-            })?;
-        }
+        integrate(client, held_cache, &sensor, row, home, scenes, &c, &r.producer,
+            o.sequence, o.timestamp_ns, (*o.payload).clone()).await?;
         done.insert(key, o.sequence);
     }
+    Ok(())
+}
+
+/// Both wire profiles use exactly the same registered capture-time transform chain.
+async fn integrate(
+    client: &ComponentProtocolClient,
+    held_cache: &crate::frame_alignment::HeldTransforms,
+    sensor: &crate::sensor_preview::Sensor,
+    row: &serde_json::Value,
+    home: &str,
+    scenes: &crate::local_scenes::LocalScenes,
+    c: &PointsContract,
+    producer: &OutputManifest,
+    sequence: u64,
+    timestamp: u64,
+    points: Points,
+) -> Result<()> {
+    let editors = scenes.note_editors.lock().map_err(|_|anyhow!("Scenes unavailable"))?
+        .values().cloned().collect::<Vec<_>>();
+    let targets = editors.iter().map(|editor| {
+        let reference = editor.reference()?;
+        crate::conventions::registry(home, &reference.scenegraph.map.frame.id)
+            .map(|f| FrameRef::from(&f))
+    }).collect::<Result<Vec<_>>>()?;
+    let (target, pose) = crate::transform_chain::resolve(client, sensor, row,
+        &c.frame, &c.clock, &c.session_id, timestamp, &targets, Some(held_cache)).await?;
+    let source_frame = producer.spatial_frame.as_ref()
+        .ok_or_else(||anyhow!("Depth frame missing"))?.definition.clone();
+    let editor = editors.into_iter().find(|editor| editor.reference().is_ok_and(|r|
+        r.scenegraph.map.frame.id == target.id)).ok_or_else(||anyhow!("Home scene unavailable"))?;
+    editor.integrate_declared(Localized {
+        target: target.id,
+        binding: auki_voxel_map::SensorBinding {
+            sensor_product: sensor.reference.clone(),
+            sensor_frame: source_frame,
+            observation_clock: c.clock.clone(),
+        },
+        sequence,
+        timestamp,
+        points,
+        pose,
+    })?;
+    Ok(())
+}
+
+const MAX_PACKED_STREAMS: usize = 64;
+
+struct PackedWorker {
+    fingerprint: String,
+    sensor: crate::sensor_preview::Sensor,
+    // The SDK owns retention; one latest observation, never a second cloud queue.
+    product: Arc<Mutex<Option<RetainedProduct<PackedPoints>>>>,
+    stop: CancellationToken,
+    task: tokio::task::JoinHandle<()>,
+}
+
+fn packed_sensors(rows: &crate::device_catalogs::Catalogs)
+    -> BTreeMap<String, (String, crate::sensor_preview::Sensor)> {
+    let mut desired = BTreeMap::new();
+    for (owner, row) in rows {
+        let Ok(catalog) = serde_json::from_value::<CatalogSnapshot>(row["catalog"].clone()) else { continue; };
+        for p in &catalog.products {
+            if p.manifest.peer_id != *owner { continue; }
+            let Some(output) = catalog.components.iter().flat_map(|c| c.current_outputs.values())
+                .find(|o| o.manifest.reference() == p.manifest.producer) else { continue; };
+            // An idle demand-driven Product has no first observation or metadata yet.
+            // Its exact typed Output is enough to subscribe; the packet supplies the
+            // mandatory frame/clock/session contract before any sample is integrated.
+            if output.manifest.validate().is_err() || output.manifest.spatial_frame.is_none()
+                || !matches!(&output.manifest.payload, PayloadContract::Structured(s)
+                    if s.datatype == PACKED_POINTS_SCHEMA && s.schema == PACKED_POINTS_SCHEMA) { continue; }
+            let Ok(peer) = owner.parse() else { continue; };
+            let Some(route) = row["catalog_route"].as_str().and_then(|s| s.parse().ok()) else { continue; };
+            let reference = p.manifest.reference();
+            let key = serde_json::to_string(&reference).unwrap();
+            let fingerprint = serde_json::to_string(&(&reference, &row["catalog_route"])).unwrap();
+            desired.insert(key, (fingerprint, crate::sensor_preview::Sensor {
+                peer, route: Some(route),
+                id: p.manifest.product_id.clone(), reference, datatype: PACKED_POINTS_SCHEMA.into(),
+                metadata: p.metadata.clone(), ar_supported: false,
+            }));
+        }
+    }
+    desired
+}
+
+async fn follow_packed(client: ComponentProtocolClient, sensor: crate::sensor_preview::Sensor,
+    product: Arc<Mutex<Option<RetainedProduct<PackedPoints>>>>, stop: CancellationToken) {
+    let mut backoff = 1;
+    let mut last_error = String::new();
+    loop {
+        *product.lock().unwrap() = None;
+        let run = async {
+            let limits = BufferLimits {max_entries:Some(1), max_bytes:Some(128 * 1024), target_duration:None};
+            let connect = async {
+                let size = |points: &PackedPoints| points.as_bytes().len();
+                client.subscribe_product_exact_with_decoder(sensor.peer, sensor.route.clone().unwrap(), sensor.reference.clone(),
+                    ObservationStart::NewOnly, limits, size, PackedPoints::decoder()?).await
+            };
+            let mut sub = tokio::time::timeout(Duration::from_secs(5), connect).await??;
+            ensure!(sub.product().reference() == sensor.reference
+                && sub.product().manifest.producer == sub.product().producer.reference(), "Depth Product changed");
+            let producer = sub.product().producer.clone();
+            *product.lock().unwrap() = Some(sub.product().clone());
+            let result: Result<()> = async {
+                loop {
+                    match sub.next().await? {
+                        Some(RemoteObservationEvent::Observation(o)) => {
+                            ensure!(o.output == producer.reference(), "Depth provenance mismatch");
+                            // The binary decoder constructs only immutable, validated packets.
+                            o.payload.contract().validate_packed_output(&producer)?;
+                            backoff = 1;
+                            last_error.clear();
+                        }
+                        Some(RemoteObservationEvent::Gap(_)) => {}, // Latest-cloud mapping skips superseded samples.
+                        Some(RemoteObservationEvent::Closed(_)) | None => return Ok(()),
+                    }
+                }
+            }.await;
+            *product.lock().unwrap() = None;
+            let _ = tokio::time::timeout(Duration::from_secs(1), sub.close()).await;
+            result
+        };
+        let result = tokio::select! {_ = stop.cancelled() => break, result = run => result};
+        match result {
+            Ok(()) => break, // A terminal Product needs a newly discovered identity.
+            Err(error) => {
+                *product.lock().unwrap() = None;
+                let detail = error.to_string();
+                if detail != last_error {
+                    eprintln!("Declared depth stream {} / {}: {detail}", sensor.peer, sensor.id);
+                    last_error = detail;
+                }
+            }
+        }
+        tokio::select! {_ = stop.cancelled() => break, _ = tokio::time::sleep(Duration::from_secs(backoff)) => {}}
+        backoff = (backoff * 2).min(8);
+    }
+    *product.lock().unwrap() = None;
+}
+
+async fn capture_packed(client: &ComponentProtocolClient,
+    held_cache: &crate::frame_alignment::HeldTransforms, worker: &PackedWorker,
+    row: &serde_json::Value, home: &str, scenes: &crate::local_scenes::LocalScenes,
+    done: &mut BTreeMap<String, u64>) -> Result<()> {
+    let Some(product) = worker.product.lock().map_err(|_|anyhow!("Depth stream unavailable"))?.clone() else { return Ok(()); };
+    let Some(o) = product.latest_existing()? else { return Ok(()); };
+    let key = serde_json::to_string(&worker.sensor.reference)?;
+    if done.get(&key).is_some_and(|seq| *seq >= o.sequence) { return Ok(()); }
+    ensure!(o.output == product.producer.reference(), "Depth provenance mismatch");
+    let c = o.payload.contract().clone();
+    c.validate_packed_output(&product.producer)?;
+    integrate(client, held_cache, &worker.sensor, row, home, scenes, &c, &product.producer,
+        o.sequence, o.timestamp_ns, (*o.payload).clone().into_points()).await?;
+    done.insert(key, o.sequence);
     Ok(())
 }
 
@@ -223,22 +364,59 @@ pub async fn serve(
     let home = peer.peer_id().to_string();
     let mut done = BTreeMap::new();
     let mut errors = BTreeMap::<String, String>::new();
+    let lifetime = stop.child_token();
+    let _cancel_on_drop = lifetime.clone().drop_guard();
+    let mut workers = BTreeMap::<String, PackedWorker>::new();
     let mut tick = tokio::time::interval(Duration::from_millis(200));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {_ = stop.cancelled()=>break,_ = tick.tick()=>{}}
         let rows = catalogs.borrow().clone();
-        for (owner, row) in rows {
-            let result = tokio::select! {_ = stop.cancelled()=>return,r=tokio::time::timeout(Duration::from_secs(2),capture(&client,held_cache,&owner,&row,&home,scenes,&mut done))=>r.unwrap_or_else(|_|Err(anyhow!("Declared depth resolution timed out")))};
+        let desired = packed_sensors(&rows);
+        let removed = workers.iter().filter(|(key, worker)|
+            desired.get(*key).is_none_or(|(fingerprint, _)| fingerprint != &worker.fingerprint))
+            .map(|(key, _)|key.clone()).collect::<Vec<_>>();
+        for key in removed {
+            let worker = workers.remove(&key).unwrap();
+            worker.stop.cancel();
+            let _ = worker.task.await;
+            done.remove(&key);
+        }
+        for (key, (fingerprint, sensor)) in desired {
+            if workers.contains_key(&key) || workers.len() >= MAX_PACKED_STREAMS { continue; }
+            let product = Arc::new(Mutex::new(None));
+            let cancel = lifetime.child_token();
+            let task = tokio::spawn(follow_packed(client.clone(), sensor.clone(), product.clone(), cancel.clone()));
+            workers.insert(key, PackedWorker {fingerprint, sensor, product, stop:cancel, task});
+        }
+        errors.retain(|key, _| rows.contains_key(key) || workers.contains_key(key));
+        for (owner, row) in &rows {
+            let result = tokio::select! {_ = stop.cancelled()=>break,r=tokio::time::timeout(Duration::from_secs(2),capture(&client,held_cache,owner,row,&home,scenes,&mut done))=>r.unwrap_or_else(|_|Err(anyhow!("Declared depth resolution timed out")))};
             match result {
                 Ok(()) => {
-                    errors.remove(&owner);
+                    errors.remove(owner);
                 }
                 Err(e) => {
                     let detail = e.to_string();
-                    if errors.get(&owner) != Some(&detail) {
+                    if errors.get(owner) != Some(&detail) {
                         eprintln!("Declared depth {owner}: {detail}");
-                        errors.insert(owner, detail);
+                        errors.insert(owner.clone(), detail);
+                    }
+                }
+            }
+        }
+        for (key, worker) in &workers {
+            let Some(row) = rows.get(&worker.sensor.peer.to_string()) else { continue; };
+            let result = tokio::select! {_ = stop.cancelled()=>break,
+                r=tokio::time::timeout(Duration::from_secs(2), capture_packed(&client, held_cache, worker, row, &home, scenes, &mut done))
+                    => r.unwrap_or_else(|_|Err(anyhow!("Declared depth resolution timed out")))};
+            match result {
+                Ok(()) => { errors.remove(key); }
+                Err(error) => {
+                    let detail = error.to_string();
+                    if errors.get(key) != Some(&detail) {
+                        eprintln!("Declared depth {} / {}: {detail}", worker.sensor.peer, worker.sensor.id);
+                        errors.insert(key.clone(), detail);
                     }
                 }
             }
@@ -247,5 +425,10 @@ pub async fn serve(
         if done.len() > 1024 {
             done.clear();
         }
+    }
+    lifetime.cancel();
+    for (_, worker) in workers {
+        worker.stop.cancel();
+        let _ = worker.task.await;
     }
 }

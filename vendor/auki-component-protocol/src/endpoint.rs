@@ -26,6 +26,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::subscription::{SubscriptionSource, serve_subscription};
+use crate::{ObservationDecoder, ObservationEncoder};
 
 use crate::wire::{
     CATALOG_PROTOCOL_ID, CatalogRequest, CatalogResponse, MAX_BATCH_OBSERVATIONS,
@@ -243,9 +244,23 @@ impl ComponentProtocolEndpoint {
     where
         T: Serialize + Send + Sync + 'static,
     {
+        self.export_product_with_encoder(product, ObservationEncoder::json())
+    }
+
+    /// Export an exact Buffer Product with an explicitly declared payload
+    /// encoder. Source identity/timing and all transport bounds are unchanged.
+    pub fn export_product_with_encoder<T>(
+        &self,
+        product: &RetainedProduct<T>,
+        encoder: ObservationEncoder<T>,
+    ) -> Result<(), ComponentProtocolError>
+    where
+        T: Send + Sync + 'static,
+    {
         let reference = product.reference();
         self.validate_product_export(&reference)?;
         let exported = product.clone();
+        let query_encoder = encoder.clone();
         let handler: Arc<ProductHandler> = Arc::new(move |selection| {
             // Read terminal state first. Once present, this Buffer is closed
             // and its retained tail cannot move while we select a batch.
@@ -267,7 +282,7 @@ impl ComponentProtocolEndpoint {
             });
             let observations = observations
                 .into_iter()
-                .map(encode_observation)
+                .map(|observation| encode_observation_with(observation, &query_encoder))
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(EncodedObservationBatch {
                 product: exported.manifest.clone(),
@@ -290,7 +305,7 @@ impl ComponentProtocolEndpoint {
             reference.product_id,
             Arc::new(ProductExport {
                 query: handler,
-                source: SubscriptionSource::new(product),
+                source: SubscriptionSource::with_encoder(product, encoder),
                 active_subscriptions: AtomicUsize::new(0),
             }),
         );
@@ -572,6 +587,30 @@ impl ComponentProtocolClient {
                 .open_exact(remote_peer_id, route, OBSERVATIONS_PROTOCOL_ID),
         )
         .await
+    }
+
+    /// Fetch retained observations using the codec selected by the Product's
+    /// application contract. Existing JSON APIs do not silently select codecs.
+    pub async fn observations_exact_with_decoder<T>(
+        &self,
+        remote_peer_id: PeerId,
+        route: Multiaddr,
+        request: ObservationRequest,
+        decoder: ObservationDecoder<T>,
+    ) -> Result<RemoteObservations<T>, ComponentProtocolError> {
+        if request.product.peer_id != remote_peer_id.to_string() {
+            return Err(ComponentProtocolError::InvalidRequest(
+                "Product peer must match authenticated destination".into(),
+            ));
+        }
+        let mut stream = deadline(
+            ComponentProtocolOperation::Open,
+            self.protocols.open_exact(remote_peer_id, route, OBSERVATIONS_PROTOCOL_ID),
+            NETWORK_TIMEOUT,
+        ).await??;
+        let exchange = observations_exchange_with_decoder(&mut stream, request, &decoder).await;
+        let cleanup = close_stream(&mut stream).await;
+        prefer_primary(exchange, cleanup)
     }
 
     /// Create a typed local mirror fed from a remote Buffer Product.
@@ -1472,18 +1511,19 @@ where
     }
 }
 
-pub(super) fn encode_observation<T: Serialize>(
+pub(super) fn encode_observation_with<T>(
     observation: Observation<T>,
+    encoder: &ObservationEncoder<T>,
 ) -> Result<EncodedObservation, ServiceError> {
-    let payload = serde_json::to_vec(&*observation.payload)
-        .map_err(|error| ServiceError::new("payload_encoding_failed", error.to_string()))?;
+    let payload = encoder.encode(&observation.payload)
+        .map_err(|error| ServiceError::new("payload_encoding_failed", error))?;
     ensure_payload_bound(payload.len())?;
     Ok(EncodedObservation {
         header: ObservationRecordHeader {
             output: observation.output,
             sequence: observation.sequence,
             timestamp_ns: observation.timestamp_ns,
-            payload_encoding: "application/json".to_owned(),
+            payload_encoding: encoder.encoding().to_owned(),
             payload_bytes: u32::try_from(payload.len())
                 .expect("payload bound is smaller than u32::MAX"),
         },
@@ -1552,6 +1592,14 @@ async fn observations_exchange<T>(
 where
     T: DeserializeOwned,
 {
+    observations_exchange_with_decoder(stream, request, &ObservationDecoder::json()).await
+}
+
+async fn observations_exchange_with_decoder<T>(
+    stream: &mut AuthenticatedRouteStream,
+    request: ObservationRequest,
+    decoder: &ObservationDecoder<T>,
+) -> Result<RemoteObservations<T>, ComponentProtocolError> {
     let requested = request.product.clone();
     deadline(
         ComponentProtocolOperation::Exchange,
@@ -1606,7 +1654,7 @@ where
             for _ in 0..observations {
                 let record: ObservationRecordHeader = read_json(stream).await?;
                 if record.output != producer_reference
-                    || record.payload_encoding != "application/json"
+                    || record.payload_encoding != decoder.encoding()
                     || end.as_ref().is_some_and(|notice| {
                         notice
                             .last_sequence
@@ -1618,8 +1666,7 @@ where
                     ));
                 }
                 let payload = read_payload(stream, record.payload_bytes).await?;
-                let payload = serde_json::from_slice(&payload)
-                    .map_err(|error| ComponentProtocolError::Codec(error.to_string()))?;
+                let payload = decoder.decode(&payload)?;
                 decoded.push(Observation {
                     output: record.output,
                     sequence: record.sequence,
@@ -1974,6 +2021,32 @@ impl<T> OptionTransposeIf<T> for Option<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn binary_encoder_preserves_envelope_and_cannot_bypass_payload_bound() {
+        let observation = Observation {
+            output: auki_components::OutputReference {
+                peer_id: "fixture-peer".into(), component_id: "fixture-component".into(),
+                component_manifest_hash: "component-hash".into(), slot: "sample".into(),
+                output_id: "fixture-output".into(), manifest_hash: "output-hash".into(),
+            },
+            sequence: 7,
+            timestamp_ns: 18_000_000_000_000_001,
+            payload: Arc::new(()),
+        };
+        let encoder = ObservationEncoder::new("test/raw", |_: &()| Ok(vec![0, 255, 34, 123])).unwrap();
+        let encoded = encode_observation_with(observation.clone(), &encoder).unwrap();
+        assert_eq!(encoded.payload, [0, 255, 34, 123]);
+        assert_eq!(encoded.header.payload_bytes, 4);
+        assert_eq!(encoded.header.payload_encoding, "test/raw");
+        assert_eq!(encoded.header.output, observation.output);
+        assert_eq!(encoded.header.sequence, observation.sequence);
+        assert_eq!(encoded.header.timestamp_ns, observation.timestamp_ns);
+        let oversized = ObservationEncoder::new("test/raw", |_: &()| {
+            Ok(vec![0; MAX_PAYLOAD_FRAME_BYTES + 1])
+        }).unwrap();
+        assert!(encode_observation_with(observation, &oversized).is_err());
+    }
 
     #[test]
     fn operation_deadlines_are_bounded_before_opening_a_stream() {
