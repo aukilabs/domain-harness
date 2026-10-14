@@ -185,13 +185,18 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
  // Resets editing state. `fromInspector` means the card was already closed by the app.
  function cancel(fromInspector=false){endDrawing();draft=null;editing=null;conflicted=false;form.hidden=true;const open=cardMode;cardMode=null;if(open&&!fromInspector)inspector.close();draw();showList();buttons();}
  function select(v){if(pending)return;cancel();openPanel('volumes');editing=v.id;draft=context?.editable?structuredClone(v):null;fill(v);focus(v);renderCard('view');message('');draw();showList();}
- function begin(at=[controls.target.x,0,controls.target.z]){if(!editable())return;cancel();draft={id:'',title:'',description:'',center:[at[0],1,at[2]],size:[2,2,1.2],yaw:0};fill(draft);focus(draft);draw();renderCard('create');message('');}
+ function begin(at=[controls.target.x,0,controls.target.z],title=''){if(!editable())return;cancel();draft={id:'',title,description:'',center:[at[0],1,at[2]],size:[2,2,1.2],yaw:0};fill(draft);focus(draft);draw();renderCard('create');message('');}
  // Draw mode: drag the front edge on the ground; a banner explains and offers the keyboard path.
  const banner=document.createElement('div');banner.className='placement-banner';banner.setAttribute('role','status');banner.hidden=true;
  banner.innerHTML='<span>Drag on the floor to draw the front edge · Shift locks axis</span><kbd>Esc</kbd>';
- banner.append(actionButton('Place a default box instead',{variant:'on-dark',onClick:()=>{cancel();begin();}}),actionButton('Cancel',{variant:'on-dark',onClick:()=>{cancel();message('Creation cancelled.');newVolume.focus();}}));
+ // The name is typed first, as soon as New volume is clicked; drawing the edge comes after.
+ const nameField=document.createElement('input');nameField.className='placement-name';nameField.type='text';nameField.placeholder='Name this volume';nameField.setAttribute('aria-label','Volume name');nameField.maxLength=120;
+ nameField.oninput=()=>{form.elements.title.value=nameField.value;if(draft)draft.title=nameField.value;};
+ nameField.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();const name=nameField.value;cancel();begin(undefined,name);}};
+ banner.append(nameField);
+ banner.append(actionButton('Place a default box instead',{variant:'on-dark',onClick:()=>{const name=nameField.value;cancel();begin(undefined,name);}}),actionButton('Cancel',{variant:'on-dark',onClick:()=>{cancel();message('Creation cancelled.');newVolume.focus();}}));
  renderer.domElement.parentElement.append(banner);
- newVolume.onclick=()=>{if(!editable())return;if(drawing){cancel();message('Creation cancelled.');return;}cancel();draft={id:'',title:'',description:'',center:[controls.target.x,1,controls.target.z],size:[1,2,.6],yaw:0};fill(draft);drawing=true;start=null;controls.enabled=false;/* Drawing works on the floor from any angle, so the view stays where it is. */renderer.domElement.style.cursor='crosshair';banner.hidden=false;buttons();message('');};
+ newVolume.onclick=()=>{if(!editable())return;if(drawing){cancel();message('Creation cancelled.');return;}cancel();draft={id:'',title:'',description:'',center:[controls.target.x,1,controls.target.z],size:[1,2,.6],yaw:0};fill(draft);drawing=true;start=null;controls.enabled=false;/* Drawing works on the floor from any angle, so the view stays where it is. */renderer.domElement.style.cursor='crosshair';banner.hidden=false;nameField.value='';requestAnimationFrame(()=>nameField.focus({preventScroll:true}));buttons();message('');};
  cancelButton.onclick=()=>{if(pending)return;if(cardMode==='edit'){const v=items.find(x=>x.id===editing);if(v){draft=structuredClone(v);fill(v);draw();}renderCard('view');message('');}else{cancel();message('Cancelled.');newVolume.focus();}};
  eye.onclick=()=>{const on=eye.getAttribute('aria-pressed')!=='true';eye.setAttribute('aria-pressed',String(on));group.visible=preview.visible=on;tick();};
  form.oninput=()=>{if(draft&&!pending){const v=values();if([...v.center,...v.size,v.yaw].every(Number.isFinite)&&v.size.every(n=>n>=.01)){draft=v;draw();}}};

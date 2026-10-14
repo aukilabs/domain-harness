@@ -1651,15 +1651,17 @@ for(const tool of creationTools)new MutationObserver(()=>{
 // Right-click (without dragging) on the 3D scene opens the bottom bar's tools at that spot. Each tool
 // starts from the point under the cursor, and Ask passes it to the assistant as the viewer's focus_point.
 let chatFocus=null;
-const spotMarker=new THREE.Mesh(new THREE.RingGeometry(.7,1,40),new THREE.MeshBasicMaterial({color:'#8b5cf6',side:THREE.DoubleSide,depthTest:false,transparent:true,opacity:.9}));
-spotMarker.rotation.x=-Math.PI/2;spotMarker.renderOrder=90;spotMarker.visible=false;scene.add(spotMarker);
+const spotMarker=new THREE.Mesh(new THREE.RingGeometry(.7,1,40),new THREE.MeshBasicMaterial({color:'#8b5cf6',side:THREE.DoubleSide,depthWrite:false,transparent:true,opacity:.9,polygonOffset:true,polygonOffsetFactor:-2}));
+// Drawn under notes and everything else in the scene; it only marks the floor.
+spotMarker.rotation.x=-Math.PI/2;spotMarker.renderOrder=-1;spotMarker.visible=false;scene.add(spotMarker);
 const spotMenu=document.createElement('div');spotMenu.className='spot-menu';spotMenu.hidden=true;spotMenu.setAttribute('role','menu');spotMenu.setAttribute('aria-label','Tools at this spot');document.body.append(spotMenu);
 let spot=null,rightStart=null;
 function spotTool(label,iconPath,accent,run,enabled=true){
- const button=document.createElement('button');button.type='button';button.className='agent-tool';button.dataset.accent=accent;button.setAttribute('role','menuitem');button.setAttribute('aria-label',label);button.title=label;button.disabled=!enabled;
+ const button=document.createElement('button');button.type='button';button.className='agent-tool';button.dataset.accent=accent;button.setAttribute('role','menuitem');button.setAttribute('aria-label',label);button.dataset.tip=label;button.disabled=!enabled;
  const face=document.createElement('span');face.className='rail-face';face.append(icon(iconPath,20));button.append(face);
- button.onclick=()=>{const at=spot;closeSpotMenu(false);run(at);};return button;}
-function closeSpotMenu(clearMarker=true){if(spotMenu.hidden)return;spotMenu.hidden=true;spot=null;if(clearMarker&&!chatFocus)spotMarker.visible=false;}
+ // The ring has done its job once a tool starts there; only Ask keeps it, until the question is sent.
+ button.onclick=()=>{const at=spot;closeSpotMenu();run(at);};return button;}
+function closeSpotMenu(clearMarker=true){if(spotMenu.hidden)return;spotMenu.hidden=true;clearTimeout(spotTipTimer);spotTip.hidden=true;spot=null;if(clearMarker&&!chatFocus)spotMarker.visible=false;}
 function openSpotMenu(e){
  const r=renderer.domElement.getBoundingClientRect(),ray=new THREE.Raycaster();ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,1-(e.clientY-r.top)/r.height*2),camera);
  const hit=ray.intersectObjects(selectable.filter(o=>{for(let p=o;p;p=p.parent)if(!p.visible)return false;return true;}))[0];
@@ -1669,7 +1671,7 @@ function openSpotMenu(e){
  // About 10 px across whatever the distance.
  spotMarker.position.copy(point).add(new THREE.Vector3(0,.01,0));spotMarker.scale.setScalar(camera.position.distanceTo(point)*Math.tan(camera.fov*Math.PI/360)*10/r.height);spotMarker.visible=true;
  const writable=notesWritable(),ask=document.createElement('button');ask.type='button';ask.className='agent-ask';ask.setAttribute('role','menuitem');
- ask.innerHTML='<span class="agent-orb" aria-hidden="true"></span><span class="agent-ask-label">Ask</span>';
+ ask.innerHTML='<span class="agent-orb" aria-hidden="true"></span><span class="agent-ask-label">Ask</span>';ask.dataset.tip='Ask about this spot';
  ask.onclick=()=>{chatFocus=spot.point.toArray().map(n=>Math.round(n*1000)/1000);closeSpotMenu(false);agentBar.open();};
  const divider=document.createElement('span');divider.className='agent-divider';divider.setAttribute('aria-hidden','true');
  spotMenu.replaceChildren(
@@ -1683,6 +1685,12 @@ function openSpotMenu(e){
  if(!matchMedia('(prefers-reduced-motion: reduce)').matches)spotMenu.animate([{opacity:0,transform:'translateY(6px) scale(.96)',filter:'blur(4px)'},{opacity:1,transform:'none',filter:'none'}],{duration:260,easing:'cubic-bezier(.3,1.3,.5,1)'});
  spotMenu.querySelector('button:not(:disabled)')?.focus({preventScroll:true});
 }
+// Hints come quickly here: the menu is opened to be used at once.
+const spotTip=document.createElement('div');spotTip.className='rail-tooltip tip-top';spotTip.setAttribute('aria-hidden','true');spotTip.hidden=true;document.body.append(spotTip);
+let spotTipTimer=0;
+spotMenu.addEventListener('pointerover',e=>{const button=e.target.closest('[data-tip]');if(!button)return;clearTimeout(spotTipTimer);
+ spotTipTimer=setTimeout(()=>{const box=button.getBoundingClientRect();spotTip.textContent=button.dataset.tip;spotTip.style.left=(box.left+box.width/2)+'px';spotTip.style.top=(box.top-10)+'px';spotTip.hidden=false;},spotTip.hidden?120:0);});
+spotMenu.addEventListener('pointerout',e=>{if(!e.relatedTarget?.closest?.('.spot-menu [data-tip]')){clearTimeout(spotTipTimer);spotTip.hidden=true;}});
 renderer.domElement.addEventListener('pointerdown',e=>{if(e.button===2)rightStart=[e.clientX,e.clientY];else closeSpotMenu();});
 renderer.domElement.addEventListener('pointerup',e=>{
  if(e.button!==2||!rightStart)return;const moved=Math.hypot(e.clientX-rightStart[0],e.clientY-rightStart[1]);rightStart=null;
