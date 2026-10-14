@@ -12,7 +12,7 @@ locally registered printable ArUco/AprilTag fiducials.
 Home's **Volumes** panel creates semantic boxes: drag an oriented front edge or
 enter a center, base elevation, width, depth, height, and Y-axis rotation. Each
 volume has a stable identity, required title, and optional description. Select a
-box to edit it using Peyote-style blue circular axis-rail handles: resize from
+box to edit it using circular handles in the Volumes colour: resize from
 either side, change height or depth, move on the ground, or rotate a bottom corner
 around the opposite corner. Existing-volume handle edits save on release;
 Escape cancels the active drag. Shift snaps resizing/moving to 10 cm and rotation

@@ -873,7 +873,9 @@ function keepSpriteSizes(amount){
   obj.scale.copy(base).multiplyScalar(perspective00*((1-amount)*depth+amount)/p00);
  });
 }
-renderer.setAnimationLoop(now=>{easeViewOffset();if(!cameraPan.tick(now)&&!attachedCamera.isActive())controls.update();ghostCamera.tick(now);semanticVolumes.tick();if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);updateFlatten();renderer.render(scene,camera);});
+renderer.setAnimationLoop(now=>{easeViewOffset();if(!cameraPan.tick(now)&&!attachedCamera.isActive())controls.update();ghostCamera.tick(now);if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);updateFlatten();
+ // Volume handles are HTML placed from this frame's camera: settle its matrices and projection first so they never trail a glide.
+ camera.updateMatrixWorld();semanticVolumes.tick();renderer.render(scene,camera);});
 refresh().catch(e=>{$('notice').textContent=e.message;$('notice').classList.add('error');});setInterval(()=>{if(!busy)refresh().catch(()=>{});},500);
 
 function updatePairingDownload(){const link=$('pairing-download');link.href=isLocalScene()?localSceneUrl()+'/connection':'/api/home-connection';link.download=isLocalScene()?activeMap.slice(6)+'-connection.json':'home-connection.json';link.textContent=isLocalScene()?'Download phone connection for selected scene ↗':'Download Xmart connection ↗';}
