@@ -10,7 +10,7 @@ export const orb=(size='')=>{const node=el('span','agent-orb'+(size?' '+size:'')
 
 // tools: [{label, iconPath, accent, source, onTrigger, shortcut}]. Each tool mirrors `source`'s disabled
 // and aria-pressed state, so the panel buttons and the bar always agree.
-export function createAgentBar({root,tools,onOpen}){
+export function createAgentBar({root,tools,onOpen,hasConversation=()=>true}){
  const shell=root.querySelector('.agent-shell'),toolbar=root.querySelector('.agent-tools'),toggle=root.querySelector('#agent-toggle'),
   form=root.querySelector('#scene-chat-form'),input=root.querySelector('#scene-chat-input'),close=root.querySelector('#agent-close'),sheet=root.querySelector('.agent-sheet');
  const tip=el('div','rail-tooltip tip-top');tip.setAttribute('aria-hidden','true');tip.hidden=true;document.body.append(tip);
@@ -68,7 +68,8 @@ export function createAgentBar({root,tools,onOpen}){
  function showSheet(){if(!sheetWanted())return;sheet.hidden=false;if(!reduceMotion())sheet.animate([{opacity:0,transform:'translateY(16px) scale(.97)',filter:'blur(8px)'},{opacity:1,transform:'none',filter:'none'}],{duration:520,delay:140,easing:spring,fill:'backwards'});}
  function hideSheet(done){if(sheet.hidden||reduceMotion()){sheet.hidden=true;done?.();return;}
   sheet.animate([{opacity:1,transform:'none'},{opacity:0,transform:'translateY(12px) scale(.97)',filter:'blur(6px)'}],{duration:180,easing:'cubic-bezier(.4,0,1,1)'}).finished.then(()=>{sheet.hidden=true;done?.();});}
- const sheetWanted=()=>isOpen()&&!root.classList.contains('compact');
+ // The sheet only appears once there is a conversation to show; Ask alone opens just the input.
+ const sheetWanted=()=>isOpen()&&!root.classList.contains('compact')&&hasConversation();
  function syncSheet(){if(sheetWanted()&&sheet.hidden)showSheet();else if(!sheetWanted()&&!sheet.hidden)hideSheet();}
 
  toggle.onclick=open;close.onclick=closeAgent;
