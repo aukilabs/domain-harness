@@ -487,6 +487,13 @@ async fn local_snapshot(
     Ok(Json(serde_json::to_value(snapshot).map_err(anyhow::Error::from)?))
 }
 // Reset is an explicit, snapshot-checked write, never part of normal startup.
+/// The viewer's keyboard joystick: one stick command for a robot in this
+/// scene, sent through the scene's drive relay as Home's own peer.
+async fn drive_local(State(s):State<Shared>,headers:HeaderMap,axum::extract::Path(id):axum::extract::Path<String>,Json(command):Json<spatial_home::mobile_drive::Command>)->ApiResult{
+    local_write(&headers)?;
+    let home=s.peer.borrow()["connection"]["peer_id"].as_str().map(str::to_owned).ok_or_else(||anyhow::anyhow!("Home P2P peer is not ready"))?;
+    Ok(Json(json!({"accepted":s.local_scenes.drive(&id,&home,command)?})))
+}
 async fn reset_local_mapping(State(s):State<Shared>,headers:HeaderMap,axum::extract::Path(id):axum::extract::Path<String>,Json(expected):Json<auki_scenegraph::MapSnapshot>)->ApiResult{
     local_write(&headers)?;
     expected.validate().map_err(anyhow::Error::from)?;
@@ -1521,6 +1528,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/local-scenes/{id}", get(local_scene))
         .route("/api/local-scenes/{id}/snapshot", get(local_snapshot))
         .route("/api/local-scenes/{id}/reset-mapping", post(reset_local_mapping))
+        .route("/api/local-scenes/{id}/drive", post(drive_local))
         .route("/api/local-scenes/{id}/presence", get(local_presence))
         .route("/api/phone-local-scene", get(phone_local_scene))
         .route("/api/domain-scene", get(domain_scene))

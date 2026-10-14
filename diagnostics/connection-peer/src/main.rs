@@ -8,6 +8,9 @@ mod diagnostic_log;
 #[path = "../../../src/camera_frame.rs"]
 mod camera_frame;
 mod depth;
+mod drive;
+#[path = "../../../src/drive_contract.rs"]
+mod drive_contract;
 #[path = "../../../src/component_enabled.rs"]
 mod component_enabled;
 #[path = "../../../src/depth_points.rs"]
@@ -68,17 +71,23 @@ fn read<T: serde::de::DeserializeOwned>(path: &str) -> Result<T> {
 async fn main() -> Result<()> {
     let _logging = diagnostic_log::start()?;
     let args: Vec<_> = std::env::args().collect();
+    let options = args.get(5..).unwrap_or_default();
+    let usage = "usage: auki-connection-diagnostic PEER_CONFIG HOME_CONNECTION DIAGNOSTIC_IDENTITY [--poses|--portals|--points|--check-home] [--arm-plan|--arm-motion] [--drive]";
     ensure!(
         args.len() == 4
             || (args.len() == 5
                 && matches!(args[4].as_str(), "--poses" | "--portals" | "--points" | "--check-home"))
-            || (args.len() == 6
+            || (args.len() >= 6
                 && matches!(args[4].as_str(), "--poses" | "--portals" | "--points")
-                && matches!(args[5].as_str(), "--arm-plan" | "--arm-motion")),
-        "usage: auki-connection-diagnostic PEER_CONFIG HOME_CONNECTION DIAGNOSTIC_IDENTITY [--poses|--portals|--points|--check-home] [--arm-plan|--arm-motion]"
+                && options.iter().all(|o| matches!(o.as_str(), "--arm-plan" | "--arm-motion" | "--drive"))
+                && options.iter().filter(|o| o.starts_with("--arm-")).count() <= 1
+                && options.iter().filter(|o| *o == "--drive").count() <= 1),
+        "{usage}"
     );
     // point_at plans with the arm adapter (--arm-plan) and moves (--arm-motion).
-    let arm = args.get(5).map(|v| v == "--arm-motion");
+    let arm = options.iter().find(|o| o.starts_with("--arm-")).map(|v| v == "--arm-motion");
+    // Teleop: Home's own peer drives the base through its scene's drive relay.
+    let drive = options.iter().any(|o| o == "--drive");
     let check_home = args.get(4).is_some_and(|v| v == "--check-home");
     let publish_poses = args.len() >= 5 && !check_home;
     let points = args.get(4).is_some_and(|v| v == "--points");
@@ -93,6 +102,9 @@ async fn main() -> Result<()> {
         home.schema == "spatial-harness.home-connection/v1",
         "unknown Home profile"
     );
+    let drive_scene = drive
+        .then(|| drive::scene_id(&home.frame).map(str::to_owned).context("Driving needs a scene-specific Home connection profile"))
+        .transpose()?;
     ensure!(home.domain_id == config.domain_id, "Domain mismatch");
     ensure!(
         !home.routes.is_empty() && home.routes.len() <= 16,
@@ -285,6 +297,20 @@ async fn main() -> Result<()> {
     let mut alignment_error = String::new();
     let client = ComponentProtocolClient::new(peer.protocols());
     let (tx, rx) = tokio::sync::watch::channel(None::<Instant>);
+    let drive_task = match drive_scene {
+        Some(scene) => {
+            let helper = drive::Helper::start(&home.peer_id)?;
+            let task = tokio::spawn(drive::follow(
+                ComponentProtocolClient::new(peer.protocols()),
+                expected,
+                routes.clone(),
+                scene,
+                peer.peer_id().to_string(),
+            ));
+            Some((task, helper))
+        }
+        None => None,
+    };
     let requests = tokio::spawn(async move {
         let mut revision = None;
         loop {
@@ -402,6 +428,11 @@ async fn main() -> Result<()> {
     }
     println!("disconnected");
     requests.abort();
+    if let Some((task, helper)) = drive_task {
+        task.abort();
+        let _ = task.await;
+        drop(helper);
+    }
     drop(alignment);
     if let Some(task) = home_task {
         task.abort();

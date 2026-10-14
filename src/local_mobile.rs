@@ -568,6 +568,8 @@ impl Publisher {
             },
         )?;
         drive.expose()?;
+        scenes.drives.lock().map_err(|_| anyhow!("Drive relay unavailable"))?
+            .insert(id.into(), drive_update.clone());
         endpoint.export_operable(&drive_update)?;
         endpoint.export_operable(&drive_snapshot)?;
         components.push(drive);

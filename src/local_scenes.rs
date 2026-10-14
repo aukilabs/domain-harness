@@ -18,6 +18,9 @@ pub struct LocalScenes {
     pub(crate) directory: std::path::PathBuf,
     pub(crate) mobile_views: std::sync::Mutex<BTreeMap<String, Value>>,
     pub(crate) phone_presence: std::sync::Mutex<BTreeMap<String, std::sync::Arc<std::sync::Mutex<crate::mobile_pose::Presence>>>>,
+    /// Each scene's joystick relay, so Home's own viewer drives through the
+    /// same board, single-driver rule and push stream as a phone.
+    pub(crate) drives: std::sync::Mutex<BTreeMap<String, auki_components::Operable<crate::mobile_drive::Command, bool>>>,
 }
 
 /// Stable physical-origin identity, not a coordinate-convention alias.
@@ -48,6 +51,18 @@ fn valid_id(id: &str) -> bool {
 }
 
 impl LocalScenes {
+    /// Send one stick command for `id`'s relay as `driver` (Home's own peer).
+    /// The robot, not Home, decides whether this driver may move it.
+    pub fn drive(&self, id: &str, driver: &str, command: crate::mobile_drive::Command) -> Result<bool> {
+        let relay = self.drives.lock().map_err(|_| anyhow!("Drive relay unavailable"))?
+            .get(id).cloned().ok_or_else(|| anyhow!("This scene has no drive relay"))?;
+        let context = auki_components::InvocationContext {
+            invocation_id: uuid::Uuid::new_v4().to_string(),
+            caller_peer_id: driver.into(),
+            caller_component_id: "home-viewer".into(),
+        };
+        Ok(relay.invoke(context, command).map_err(|e| anyhow!("{e}"))?.result)
+    }
     pub fn load(directory: &Path) -> Result<Self> {
         std::fs::create_dir_all(directory)?;
         crate::origin_reset::apply_pending(directory)?;
@@ -118,6 +133,7 @@ impl LocalScenes {
             directory: directory.into(),
             mobile_views: Default::default(),
             phone_presence: Default::default(),
+            drives: Default::default(),
         })
     }
     /// Read live presence independently of the 1 Hz voxel/scene publication.

@@ -52,9 +52,21 @@ independent of decoding.
 All peer data uses authenticated SDK libp2p component/registry protocols. The
 Python adapter uses local BBOS shared memory and stdout IPC only. SDK account
 authentication/discovery uses SDK infrastructure as before. This does not modify
-BBOS, start SLAM or load maps, and commands no motors unless `--arm-motion` is
-given (see `point_at` above). Dynamic camera mounts are rejected;
+BBOS, start SLAM or load maps, and commands no motors unless `--arm-motion` or `--drive` is
+given (see `point_at` and teleop above). Dynamic camera mounts are rejected;
 they require timestamped extrinsics rather than a held calibration.
+
+## Teleop from Home
+
+`--drive` (with a scene-specific Home profile) lets that Home drive the base.
+The peer follows the scene's Home drive stream (`local-scene:<id>:drive`, the
+same relay a phone joystick uses), keeps only commands for itself whose driver
+is the Home peer in its profile, and hands them to `scripts/drive-bracketbot.py`
+at full teleop speeds. That helper is fail-closed: a command older than 400 ms,
+a centred stick, low battery or another `drive.ctrl` writer is a stop, and it
+holds the writer only while commands are fresh. Home's viewer sends commands
+from the keyboard (WASD/arrows, Esc stops) through
+`POST /api/local-scenes/{id}/drive`, as Home's own peer.
 
 ## Validation and operation
 

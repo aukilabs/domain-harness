@@ -498,6 +498,31 @@ async fn phone_reports_a_new_portal_into_the_selected_scene() -> Result<()> {
             }
             _ => panic!("expected the pushed command"),
         }
+        // Home's own viewer drives through the same relay as Home's peer. The
+        // single-driver rule holds while the phone's command is still fresh.
+        let home_peer = pair.a.peer_id().to_string();
+        let keyboard_session = uuid::Uuid::new_v4().to_string();
+        let keyboard = |sequence| spatial_home::mobile_drive::Command {
+            session: keyboard_session.clone(),
+            sequence,
+            target_peer_id: robot.clone(),
+            forward: 1.,
+            turn: 0.,
+        };
+        assert!(scenes.drive("humanoid-hub-conference", &home_peer, keyboard(1)).is_err(), "another device holds the robot");
+        tokio::time::sleep(spatial_home::mobile_drive::MAX_AGE).await;
+        assert!(scenes.drive("humanoid-hub-conference", &home_peer, keyboard(2))?);
+        assert!(!scenes.drive("humanoid-hub-conference", &home_peer, keyboard(2))?, "a replay is not pushed again");
+        assert!(scenes.drive("no-such-scene", &home_peer, keyboard(3)).is_err());
+        match tokio::time::timeout(Duration::from_secs(3), pushed.next()).await?? {
+            Some(auki_component_protocol::RemoteObservationEvent::Observation(o)) => {
+                assert_eq!(
+                    (o.payload.driver_peer_id.as_str(), o.payload.target_peer_id.as_str(), o.payload.forward),
+                    (home_peer.as_str(), robot.as_str(), 1.)
+                );
+            }
+            _ => panic!("expected Home's keyboard command"),
+        }
         pushed.close().await?;
         // A restart keeps the reported Portal.
         let reloaded = LocalScenes::load(dir.path())?;

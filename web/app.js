@@ -957,6 +957,41 @@ function catalogType(entry,kind,catalog){
  if(/lidar|depth|sensor|mapping.observation|mapping-input/i.test(signature))return 'Sensors & observations';
  return 'Other';
 }
+// Keyboard teleop through the selected scene's drive relay, the same board a
+// phone joystick uses. Home moves nothing: the robot drives only for the Home
+// it is paired with, at its own speed limits, and stops when commands stop.
+const keyDrive={peer:null,session:null,sequence:0,keys:new Set(),timer:null,zeros:0,status:''};
+const DRIVE_KEYS={KeyW:[1,0],ArrowUp:[1,0],KeyS:[-1,0],ArrowDown:[-1,0],KeyA:[0,1],ArrowLeft:[0,1],KeyD:[0,-1],ArrowRight:[0,-1]};
+function driveStick(){let forward=0,turn=0;for(const key of keyDrive.keys){const [f,t]=DRIVE_KEYS[key];forward+=f;turn+=t;}return [Math.max(-1,Math.min(1,forward)),Math.max(-1,Math.min(1,turn))];}
+function driveCommand(forward,turn){return api(localSceneUrl()+'/drive',{session:keyDrive.session,sequence:++keyDrive.sequence,target_peer_id:keyDrive.peer,forward,turn});}
+function setDriveStatus(text){if(keyDrive.status===text)return;keyDrive.status=text;const hint=fleetList.querySelector('[data-drive-status]');if(hint)hint.textContent=text;}
+async function driveTick(){
+ if(!keyDrive.peer)return;if(!isLocalScene())return stopKeyDrive();
+ const [forward,turn]=driveStick();
+ // A released stick sends a few explicit zeros, then nothing: silence is a stop too.
+ if(!forward&&!turn){if(keyDrive.zeros>=3)return setDriveStatus('Driving · hold WASD or arrows · Esc to stop');keyDrive.zeros++;}else keyDrive.zeros=0;
+ try{await driveCommand(forward,turn);setDriveStatus(forward||turn?`Driving · forward ${forward} · turn ${turn}`:'Driving · stopped');}catch(error){setDriveStatus('Not sent · '+error.message);}
+}
+function startKeyDrive(peer){stopKeyDrive();keyDrive.peer=peer;keyDrive.session=crypto.randomUUID();keyDrive.sequence=0;keyDrive.keys.clear();keyDrive.zeros=3;keyDrive.status='';keyDrive.timer=setInterval(driveTick,100);fleetSignature='';renderFleetRows();setDriveStatus('Driving · hold WASD or arrows · Esc to stop');}
+function stopKeyDrive(){
+ if(!keyDrive.peer)return;keyDrive.keys.clear();clearInterval(keyDrive.timer);
+ driveCommand(0,0).catch(()=>{});keyDrive.peer=null;fleetSignature='';renderFleetRows();
+}
+function driveSection(peer){
+ const section=document.createElement('section');section.setAttribute('aria-label','Drive');const heading=document.createElement('h3');heading.textContent='Drive';section.append(heading);
+ const driving=keyDrive.peer===peer.peer_id;
+ const button=uiButton(driving?'Stop driving (Esc)':'Drive with keyboard',()=>driving?stopKeyDrive():startKeyDrive(peer.peer_id));button.setAttribute('aria-pressed',String(driving));section.append(button);
+ const hint=document.createElement('p');hint.className='panel-hint';hint.dataset.driveStatus='';hint.textContent=driving?keyDrive.status:'WASD or arrow keys while driving. The robot moves only if it was started with --drive for this Home.';section.append(hint);
+ return section;
+}
+window.addEventListener('keydown',e=>{
+ if(!keyDrive.peer)return;if(e.code==='Escape'){stopKeyDrive();return;}
+ if(!(e.code in DRIVE_KEYS)||e.target?.matches?.('input,textarea,select,[contenteditable]'))return;
+ e.preventDefault();e.stopImmediatePropagation();keyDrive.keys.add(e.code);
+},true);
+window.addEventListener('keyup',e=>{if(e.code in DRIVE_KEYS)keyDrive.keys.delete(e.code);},true);
+window.addEventListener('blur',()=>keyDrive.keys.clear());
+document.addEventListener('visibilitychange',()=>{if(document.hidden)keyDrive.keys.clear();});
 function renderFleetRows(){
  if(componentControlPending||(fleetList.contains(document.activeElement)&&document.activeElement.matches('input,textarea,select')))return;
  disconnectRobots.hidden=!fleetNetwork?.simulation;disconnectRobots.disabled=homeOffline||!(fleetNetwork?.peers||[]).some(p=>p.status==='connected');
@@ -983,6 +1018,7 @@ function renderFleetRows(){
   const poses=(catalog.products||[]).filter(p=>p.metadata?.schema==='spatial-harness.compact-pose-contract/v1');
   for(const product of poses)poseLogs.append(uiButton('Inspect '+product.manifest.product_id,()=>inspectPose(peer.peer_id,product,(peer.name||peer.peer_id)+' / '+product.manifest.product_id)));
   if(!poses.length){const hint=document.createElement('p');hint.className='panel-hint';hint.textContent='No compact pose Product advertised';poseLogs.append(hint);}group.append(poseLogs);
+  if(!peer.self&&isLocalScene()&&poses.some(p=>(p.metadata.value?.lifetime??'sampled')==='sampled'))group.append(driveSection(peer));
   for(const type of ['Cameras','Maps','Poses & odometry','Detections','Sensors & observations','Other']){
    const matching=entries.filter(item=>catalogType(item.entry,item.kind,catalog)===type).sort((a,b)=>a.entry.manifest[a.kind+'_id'].localeCompare(b.entry.manifest[b.kind+'_id'])||a.kind.localeCompare(b.kind));
    if(!matching.length)continue;

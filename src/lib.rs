@@ -79,6 +79,7 @@ pub mod mobile_geometry;
 
 pub mod mobile_depth;
 pub mod mobile_depth_image;
+pub mod drive_contract;
 pub mod mobile_drive;
 pub mod mobile_calibration;
 
