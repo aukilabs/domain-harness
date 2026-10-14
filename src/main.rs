@@ -1483,6 +1483,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/robot-health.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/robot-health.js")) }))
         .route("/robot/{*path}", get(robot_asset))
         .route("/brand/mckenna.svg", get(|| async { ([(header::CONTENT_TYPE, "image/svg+xml")], include_str!("../web/brand/mckenna.svg")) }))
+        .route("/brand/mckenna-mark.svg", get(|| async { ([(header::CONTENT_TYPE, "image/svg+xml")], include_str!("../web/brand/mckenna-mark.svg")) }))
         .route("/brand/nils-pihl.jpg", get(|| async { ([(header::CONTENT_TYPE, "image/jpeg")], include_bytes!("../web/brand/nils-pihl.jpg").as_slice()) }))
         .route("/api/sensors", get(sensor_preview))
         .route("/api/component-enabled", post(component_enabled))
