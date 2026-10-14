@@ -6,11 +6,16 @@ import { icon, icons } from './panel-ui.js';
 const reduceMotion=()=>matchMedia('(prefers-reduced-motion: reduce)').matches;
 const spring='cubic-bezier(.3,1.3,.5,1)';
 const el=(tag,className,text)=>{const node=document.createElement(tag);if(className)node.className=className;if(text!==undefined)node.textContent=text;return node;};
-export const orb=(size='')=>{const node=el('span','agent-orb'+(size?' '+size:''));node.setAttribute('aria-hidden','true');return node;};
+// Static avatar: Inco's still once it has rendered, the colour orb until then.
+let still=null;
+export function setAgentStill(url){still=url;for(const node of document.querySelectorAll('.agent-orb'))node.replaceWith(orb(node.classList.contains('small')?'small':''));}
+export const orb=(size='')=>{
+ if(still){const img=el('img','agent-still'+(size?' '+size:''));img.src=still;img.alt='';return img;}
+ const node=el('span','agent-orb'+(size?' '+size:''));node.setAttribute('aria-hidden','true');return node;};
 
 // tools: [{label, iconPath, accent, source, onTrigger, shortcut}]. Each tool mirrors `source`'s disabled
 // and aria-pressed state, so the panel buttons and the bar always agree.
-export function createAgentBar({root,tools,onOpen}){
+export function createAgentBar({root,tools,onOpen,onAvatarClick}){
  const shell=root.querySelector('.agent-shell'),toolbar=root.querySelector('.agent-tools'),toggle=root.querySelector('#agent-toggle'),
   form=root.querySelector('#scene-chat-form'),input=root.querySelector('#scene-chat-input'),close=root.querySelector('#agent-close'),sheet=root.querySelector('.agent-sheet');
  const tip=el('div','rail-tooltip tip-top');tip.setAttribute('aria-hidden','true');tip.hidden=true;document.body.append(tip);
@@ -46,7 +51,7 @@ export function createAgentBar({root,tools,onOpen}){
  // FLIP: measure, switch mode, then animate the shell's width and fly the orb to its new place.
  function morph(mode,done){
   if(root.dataset.mode===mode){done?.();return;}
-  const movingOrb=toggle.querySelector('.agent-orb'),from=shell.getBoundingClientRect(),orbFrom=movingOrb.getBoundingClientRect();
+  const movingOrb=toggle.querySelector('.agent-avatar,.agent-orb'),from=shell.getBoundingClientRect(),orbFrom=movingOrb.getBoundingClientRect();
   const leaving=[...shell.querySelectorAll(mode==='agent'?'.agent-tools,.agent-divider,.agent-ask-label,.agent-ask-key':'#scene-chat-form,.agent-shell-actions')];
   const swap=()=>{
    root.dataset.mode=mode;toggle.setAttribute('aria-expanded',String(mode==='agent'));done?.();
@@ -71,7 +76,7 @@ export function createAgentBar({root,tools,onOpen}){
  const sheetWanted=()=>isOpen()&&!root.classList.contains('compact');
  function syncSheet(){if(sheetWanted()&&sheet.hidden)showSheet();else if(!sheetWanted()&&!sheet.hidden)hideSheet();}
 
- toggle.onclick=open;close.onclick=closeAgent;
+ toggle.onclick=()=>{if(isOpen())onAvatarClick?.();else open();};close.onclick=closeAgent;
  // Escape closes from the bar, or from nowhere in particular (focus can fall to the page after sending).
  // The bar stops key events from reaching the scene, so it needs its own listener as well as the page's.
  root.addEventListener('keydown',e=>{if(e.key==='Escape'&&isOpen()){e.preventDefault();closeAgent();}});
