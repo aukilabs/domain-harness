@@ -424,6 +424,22 @@ async fn phone_reports_a_new_portal_into_the_selected_scene() -> Result<()> {
         assert!(spatial_home::scene_paths::send(&pair.b, &home, &remove).await?);
         assert!(scenes.paths.get("humanoid-hub-conference", &home.frame)?.items.is_empty());
         assert!(spatial_home::scene_paths::send(&pair.b, &home, &remove).await.is_err(), "a path already gone cannot be removed");
+        // Any peer of the scene asks Home for a route; it comes back as a path and is saved as one.
+        use spatial_home::scene_navigation::{Ask, Clear, Place, RouteRequest, Status};
+        let ask = |frame: &str, share| Ask::Plan(RouteRequest { frame: frame.into(), from: Place::Point([0., 1.4, 0.]),
+            to: Place::Point([1., 1., 1.]), agent: None, share });
+        let planned = spatial_home::scene_navigation::send(&pair.b, &home, &ask(&home.frame, None)).await?.unwrap();
+        let route = planned.path.clone().unwrap();
+        assert_eq!((planned.status, planned.frame.as_str(), route.title.as_str()), (Status::Direct, home.frame.as_str(), "Route"));
+        assert_eq!(scenes.paths.get("humanoid-hub-conference", &home.frame)?.items, vec![route.clone()]);
+        assert!(scenes.paths.get("nacs", &nacs.frame)?.items.is_empty(), "the route is in the caller's scene only");
+        let unshared = spatial_home::scene_navigation::send(&pair.b, &home, &ask(&home.frame, Some(false))).await?.unwrap();
+        assert!(unshared.path.is_some_and(|p| p.id != route.id));
+        assert_eq!(scenes.paths.get("humanoid-hub-conference", &home.frame)?.items, vec![route], "an unshared route is not saved");
+        assert!(spatial_home::scene_navigation::send(&pair.b, &nacs, &ask(&home.frame, None)).await.is_err(), "a route for another scene's frame is refused");
+        let clear = Ask::Clear(Clear { frame: home.frame.clone() });
+        assert!(spatial_home::scene_navigation::send(&pair.b, &home, &clear).await?.is_none());
+        assert!(scenes.paths.get("humanoid-hub-conference", &home.frame)?.items.is_empty(), "clearing takes the caller's route off the scene");
         // Put it back so the rest of the test sees the scene it expects.
         moved.timestamp_ns = 280;
         moved.portal_to_session = rigid(&new_in_session, &new_local, &session_frame);

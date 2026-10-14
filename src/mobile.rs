@@ -163,6 +163,8 @@ pub struct MobileState {
     #[serde(skip)]
     geometry: Option<serde_json::Value>,
     pub annotation: Option<serde_json::Value>,
+    /// Home's answer to the last route asked for: its `id` with a `route`, `cleared` or an `error`.
+    pub route: Option<serde_json::Value>,
     /// Home's answers to the last few path changes: `id`, `done` and, when not done, `error`.
     /// A list, so an answer is not lost to the next status before the app reads it.
     pub paths: std::collections::VecDeque<serde_json::Value>,
@@ -186,6 +188,8 @@ pub struct MobileClient {
     screen_demand: AtomicBool,
     local_map: tokio::sync::watch::Sender<Option<(crate::mobile_local::Snapshot, Instant)>>,
     depth: tokio::sync::watch::Sender<Option<(crate::mobile_depth::Sample, std::time::Instant)>>,
+    /// Where the AR session sits in the scene. None while the phone does not know.
+    placement: tokio::sync::watch::Sender<Option<crate::mobile_declared::Placement>>,
     pose: tokio::sync::watch::Sender<Option<crate::mobile_pose::Sample>>,
     /// Every pose in order, for this phone's own pose Product. The watch above
     /// keeps only the latest one, which is right for Home's presence push but
@@ -210,6 +214,8 @@ pub struct MobileClient {
     portal_receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::mobile_portal::Sighting>>>,
     path_changes: tokio::sync::mpsc::Sender<crate::scene_paths::Change>,
     path_receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::scene_paths::Change>>>,
+    route_asks: tokio::sync::mpsc::Sender<crate::scene_navigation::Asked>,
+    route_receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::scene_navigation::Asked>>>,
     origin_reports: tokio::sync::mpsc::Sender<crate::scene_origin::Observation>,
     origin_receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::scene_origin::Observation>>>,
     receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::mobile_notes::PlaceNote>>>,
@@ -220,6 +226,7 @@ impl Default for MobileClient {
         let (changes, change_receiver) = tokio::sync::mpsc::channel(1);
         let (portal_reports, portal_receiver) = tokio::sync::mpsc::channel(4);
         let (path_changes, path_receiver) = tokio::sync::mpsc::channel(16);
+        let (route_asks, route_receiver) = tokio::sync::mpsc::channel(4);
         let (pose_log, pose_log_receiver) = tokio::sync::mpsc::channel(256);
         let (origin_reports, origin_receiver) = tokio::sync::mpsc::channel(1);
         Self {
@@ -233,6 +240,8 @@ impl Default for MobileClient {
             portal_receiver: Mutex::new(Some(portal_receiver)),
             path_changes,
             path_receiver: Mutex::new(Some(path_receiver)),
+            route_asks,
+            route_receiver: Mutex::new(Some(route_receiver)),
             camera: tokio::sync::watch::channel(None).0,
             camera_configuration:tokio::sync::watch::channel(None).0,
             camera_active: AtomicBool::new(false),
@@ -247,6 +256,7 @@ impl Default for MobileClient {
             name: tokio::sync::watch::channel(String::new()).0,
             geo: tokio::sync::watch::channel(None).0,
             depth: tokio::sync::watch::channel(None).0,
+            placement: tokio::sync::watch::channel(None).0,
             commands,
             receiver: Mutex::new(Some(receiver)),
             stop: CancellationToken::new(),
@@ -257,6 +267,7 @@ impl Default for MobileClient {
                 reference: None,
                 geometry: None,
                 annotation: None,
+                route: None,
                 paths: Default::default(),
                 state: "connecting",
                 detail: "Signing in to Auki development services".into(),
@@ -304,6 +315,10 @@ impl MobileClient {
     pub fn update_depth(&self, sample: Option<crate::mobile_depth::Sample>) {
         self.depth
             .send_replace(sample.map(|s| (s, std::time::Instant::now())));
+    }
+    /// The session-to-scene transform the app holds, published whether or not depth is shared.
+    pub fn update_placement(&self, placement: Option<crate::mobile_declared::Placement>) {
+        self.placement.send_replace(placement);
     }
     fn depth_status(&self, detail: String) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -370,6 +385,10 @@ impl MobileClient {
     /// Queue a drawn path for Home to save, or a saved one for Home to remove.
     pub fn change_path(&self, change: crate::scene_paths::Change) -> bool {
         self.snapshot().state == "live" && self.path_changes.try_send(change).is_ok()
+    }
+    /// Queue a route for Home to plan, or this phone's route for Home to take away.
+    pub fn ask_route(&self, asked: crate::scene_navigation::Asked) -> bool {
+        self.snapshot().state == "live" && self.route_asks.try_send(asked).is_ok()
     }
     /// Queue a newly seen Portal for Home to add to the scene.
     pub fn report_portal(&self, report: crate::mobile_portal::Sighting) -> bool {
@@ -635,6 +654,31 @@ impl MobileClient {
                         state.paths.push_back(serde_json::json!({"id": id, "done": error.is_none(), "error": error}));
                     }
                 };
+                let mut route_asks = self.route_receiver.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap();
+                let route_work = async {
+                    use crate::scene_navigation::{Ask, COMPONENT, Route};
+                    while let Some(asked) = route_asks.recv().await {
+                        let component = home.scoped_component(COMPONENT);
+                        let request = uuid::Uuid::new_v4().to_string();
+                        let result = tokio::time::timeout(Duration::from_secs(4), async {
+                            Ok::<_, anyhow::Error>(match &asked.ask {
+                                Ask::Plan(plan) => serde_json::json!({"id": asked.id, "route":
+                                    operations.invoke::<_, Route>(&component, "plan", "phone-route", &request, Duration::from_secs(3), plan).await?}),
+                                Ask::Clear(clear) => serde_json::json!({"id": asked.id, "cleared":
+                                    operations.invoke::<_, bool>(&component, "clear", "phone-route", &request, Duration::from_secs(3), clear).await?}),
+                            })
+                        })
+                        .await;
+                        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                        state.version += 1;
+                        // The app matches these on the ID it asked with.
+                        state.route = Some(match result {
+                            Ok(Ok(answer)) => answer,
+                            Ok(Err(error)) => serde_json::json!({"id": asked.id, "error": error.to_string()}),
+                            Err(_) => serde_json::json!({"id": asked.id, "error": "Home did not answer"}),
+                        });
+                    }
+                };
                 let portal_work = async {
                     while let Some(report) = portal_reports.recv().await {
                         let code = report.code.clone();
@@ -860,6 +904,30 @@ impl MobileClient {
                         }
                     }
                 };
+                // Where this AR session sits in the scene is published as the app learns it,
+                // and again on each connection. It does not wait for a depth capture.
+                let mut placements = self.placement.subscribe();
+                placements.mark_changed();
+                let placement_work = async {
+                    while placements.changed().await.is_ok() {
+                        let latest = placements.borrow_and_update().clone();
+                        let published = (|| {
+                            let mut declared = declared();
+                            let Some(placement) = latest else {
+                                return declared.placed.as_mut().map_or(Ok(()), |placed| placed.lose());
+                            };
+                            if declared.placed.as_ref().is_some_and(|p| !p.serves(&placement.session, &home.peer_id, &home.frame))
+                                && let Some(old) = declared.placed.take() {
+                                old.close()?;
+                            }
+                            if declared.placed.is_none() {
+                                declared.placed = Some(crate::mobile_declared::Publisher::new(&products, &placement.session, &home.peer_id, &home.frame)?);
+                            }
+                            declared.placed.as_mut().unwrap().align(placement.timestamp_ns, &placement.session_to_scene)
+                        })();
+                        if let Err(error) = published { self.local_status(format!("Scene transform not published: {error}")); }
+                    }
+                };
                 let mut depths = self.depth.subscribe();
                 let depth_work = async {
                     let mut tick = tokio::time::interval(Duration::from_millis(500));
@@ -870,8 +938,9 @@ impl MobileClient {
                         }
                         let latest = depths.borrow_and_update().clone();
                         let Some((sample, received)) = latest else {
-                            // No capture means no alignment to vouch for either.
-                            if let Some(placed) = declared().placed.as_mut() { let _ = placed.lose(); }
+                            // An app that does not say where it is apart from its captures has,
+                            // with no capture, no alignment to vouch for either.
+                            if self.placement.borrow().is_none() && let Some(placed) = declared().placed.as_mut() { let _ = placed.lose(); }
                             self.depth_status("Depth sharing paused".into());
                             continue;
                         };
@@ -940,6 +1009,8 @@ impl MobileClient {
                     _ = change_work => Ok(()),
                     _ = portal_work => Ok(()),
                     _ = path_work => Ok(()),
+                    _ = route_work => Ok(()),
+                    _ = placement_work => Ok(()),
                     _ = origin_work => Ok(()),
                     _ = drive_work => Ok(()),
                     _ = name_work => Ok(()),

@@ -23,6 +23,7 @@ use auki_odometry::{Pose, Tracking};
 use auki_protocols::registry::v3::{RegistryEntryEnvelope, RegistryKind};
 use auki_registry::FrameRegistryEntry;
 use auki_scenegraph::RigidTransform;
+use serde::Deserialize;
 use std::sync::Arc;
 
 pub use crate::depth_points::{Points, PointsContract, POINTS_SCHEMA, POINTS_METADATA, MAX_POINTS};
@@ -33,6 +34,15 @@ pub fn transform_product_id(session: &str) -> String {
 }
 pub fn points_product_id(session: &str) -> String {
     format!("depth-points:{session}")
+}
+
+/// Where the app's AR session sits in the scene, as the app last measured it.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Placement {
+    pub session: String,
+    pub timestamp_ns: u64,
+    pub session_to_scene: RigidTransform,
 }
 
 /// The transform as a pose: translation, and an XYZW quaternion of unit length.
