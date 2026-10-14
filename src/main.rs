@@ -1496,6 +1496,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/semantic-volumes", get(get_volumes).post(create_volume))
         .route("/api/semantic-volumes/{id}", axum::routing::patch(update_volume).delete(delete_volume))
         .route("/panel-ui.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/panel-ui.js")) }))
+        .route("/agent-bar.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/agent-bar.js")) }))
         .route("/semantic-volumes.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/semantic-volumes.js")) }))
         .route("/map-2d.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/map-2d.js")) }))
         .route("/crayon.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/crayon.js")) }))
