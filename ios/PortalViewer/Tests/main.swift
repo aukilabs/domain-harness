@@ -245,6 +245,22 @@ let shared = MessageRoute.path(corner, id: "a", to: " the printer ")!
 check(shared.title == "Way to the printer" && shared.segments.count == 1 && shared.segments[0].first == [0, 0, 0] && shared.segments[0].last == [2, 0, 2]
       && CrayonStroke.widths.contains(shared.width_m), "a way is a path like any drawn one, from its start to its end")
 check(MessageRoute.path([SIMD3(0, 0, 0), SIMD3(0.01, 0, 0)], id: "a", to: "x") == nil, "already there: nothing to draw")
+let between = MessageRoute.path(corner, id: "b", to: "the printer", from: " the door ")!
+check(between.title == "Way from the door to the printer" && between.segments == shared.segments, "a way between two messages says where it starts")
+check(abs(MessageRoute.length(corner) - 4) < 0.0001 && MessageRoute.length([SIMD3(1, 0, 1)]) == 0, "a way is as long as its stretches together")
+check(MessageRoute.apart(corner, corner) < 0.0001 && abs(MessageRoute.apart(corner, [SIMD3(0, 0, 0), SIMD3(2, 0, 2)]) - 1.4142) < 0.05
+      && MessageRoute.apart([SIMD3(0, 0, 0), SIMD3(2, 0, 2)], corner) == MessageRoute.apart(corner, [SIMD3(0, 0, 0), SIMD3(2, 0, 2)]),
+      "two ways are as far apart as the farthest either gets from the other")
+var pairBox = MessageInbox()
+func pairNote(_ id: String, _ text: String, _ x: Float) -> RenderScene.Note {
+    try! JSONDecoder().decode(RenderScene.Note.self, from: JSONSerialization.data(withJSONObject: ["id": id, "text": text, "position": [x, 1, 0]]))
+}
+_ = pairBox.record([pairNote("d", "door", 0), pairNote("p", "printer", 3)], frame: "f")
+let picked = MessageInbox.Pair(from: pairBox.messages[0], to: pairBox.messages[1])
+_ = pairBox.record([pairNote("d", "door", 0), pairNote("p", "printer", 5)], frame: "f")
+check(pairBox.current(picked)?.to.position.x == 5 && pairBox.current(picked)?.from == picked.from, "the two being joined follow Home's edits")
+_ = pairBox.record([pairNote("d", "door", 0)], frame: "f")
+check(pairBox.current(picked) == nil, "with either gone there is no way between them")
 print("Message route checks passed")
 
 let firstPortal = try JSONSerialization.jsonObject(with: JSONEncoder().encode(PortalReport(

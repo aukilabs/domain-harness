@@ -1495,6 +1495,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private var guideSaved: Date?
     /// When a way was last offered to Home, so a Home that cannot take one is not asked constantly.
     private var guideOffered = Date.distantPast
+    /// What the way is for: the message being looked for, or the two being joined.
+    private var guideKey: String?
     private func endGuide() {
         guard guidePlanned != nil || !guideRoute.isEmpty || messages.way != nil || guideShared != nil else { return }
         guideRoot.childNodes.forEach { $0.removeFromParentNode() }
@@ -1506,9 +1508,9 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     }
     /// Show a freshly planned way to everyone. A way already shown is kept while the phone is
     /// still on it and it still leads to the right place, so the map is not redrawn at every step.
-    private func share(_ route: [SIMD3<Float>], to target: MessageInbox.Message, from phone: SIMD3<Float>, frame: String) {
-        if let shared = guideShared, shared.frame == frame, simd_distance(shared.goal, target.position) < 0.3,
-           MessageRoute.stray(phone, from: shared.route) < 1 { return }
+    private func share(_ route: [SIMD3<Float>], to goal: SIMD3<Float>, named name: String, from origin: String? = nil,
+                       frame: String, keep: ([SIMD3<Float>]) -> Bool) {
+        if let shared = guideShared, shared.frame == frame, simd_distance(shared.goal, goal) < 0.3, keep(shared.route) { return }
         // Home is offered a way at most every few seconds.
         guard Date().timeIntervalSince(guideOffered) > 3 else { return }
         guideOffered = Date()
@@ -1516,7 +1518,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         guideRoot.childNodes.forEach { $0.removeFromParentNode() }
         guideShared = nil; guideSaved = nil
         let id = UUID().uuidString.lowercased()
-        guard let path = MessageRoute.path(route, id: id, to: target.text) else { return }
+        guard let path = MessageRoute.path(route, id: id, to: name, from: origin) else { return }
         let color = UInt32(path.color.dropFirst(), radix: 16) ?? 0xff5fa8
         let material = Self.crayonMaterial(UIColor(red: CGFloat((color >> 16) & 255) / 255, green: CGFloat((color >> 8) & 255) / 255,
                                                    blue: CGFloat(color & 255) / 255, alpha: 1))
@@ -1524,7 +1526,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             node.name = id
             guideRoot.addChildNode(node)
         }
-        guideShared = (id, route, target.position, frame)
+        guideShared = (id, route, goal, frame)
         // If Home cannot take it, the phone still shows its own copy, and offers it again:
         // a way nobody else can see is not yet shared.
         onStroke?(path, frame) { [weak self] saved in
@@ -1541,7 +1543,14 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     /// everyone, and say which way to head next. Planned again as the phone moves and the
     /// map fills in.
     private func guideToMessage(_ frame: ARFrame) {
-        guard let target = messages.target else { endGuide(); return }
+        let between = messages.target == nil ? messages.between : nil
+        let key = messages.target?.id ?? between.map { $0.from.id + ">" + $0.to.id }
+        // A way drawn for something else comes off the map first.
+        if key != guideKey { endGuide(); guideKey = key }
+        guard let target = messages.target else {
+            if let between { guideBetween(between, key: key ?? "", at: frame.timestamp) }
+            return
+        }
         // A moment without tracking is not the end of the way.
         guard aligned, case .normal = frame.camera.trackingState, let map, let scene = map.render,
               scene.frame == map.scenegraph.map.frame.id, view.bounds.width > 0 else {
@@ -1565,7 +1574,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                     guard self.messages.target?.id == target.id, self.map?.scenegraph.map.frame.id == home else { return }
                     self.guidePlanned = (target.id, time)
                     self.guideRoute = route
-                    self.share(route, to: target, from: phone, frame: home)
+                    self.share(route, to: target.position, named: target.text, frame: home) { MessageRoute.stray(phone, from: $0) < 1 }
                 }
             }
         }
@@ -1576,6 +1585,30 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                              lens: frame.camera.projectionMatrix(for: .portrait, viewportSize: view.bounds.size, zNear: 0.01, zFar: 100))
         }
         if way != messages.way { messages.way = way }
+    }
+    /// The way from one message to another, drawn for everyone like the way to a message.
+    /// It does not depend on where the phone is, so it is planned without a Portal in sight.
+    private func guideBetween(_ pair: MessageInbox.Pair, key: String, at time: TimeInterval) {
+        guard let map, let scene = map.render, scene.frame == map.scenegraph.map.frame.id else { return }
+        // Nobody is walking this one, so it is only planned again now and then, as the map fills in.
+        guard !guidePlanning, guidePlanned?.id != key || time - (guidePlanned?.at ?? 0) > (guideShared == nil ? 1.5 : 5) else { return }
+        guidePlanning = true
+        let voxels = scene.voxels, size = scene.voxel_size, home = scene.frame
+        guideQueue.async {
+            let centers = voxels.compactMap { $0.center.count == 3 ? SIMD3($0.center[0], $0.center[1], $0.center[2]) : nil }
+            let route = MessageRoute.plan(from: pair.from.position, to: pair.to.position, voxels: centers, size: size)
+            DispatchQueue.main.async {
+                self.guidePlanning = false
+                guard self.messages.target == nil, self.messages.between == pair, self.map?.scenegraph.map.frame.id == home else { return }
+                self.guidePlanned = (key, time)
+                self.guideRoute = route
+                let length = MessageRoute.length(route)
+                if self.messages.betweenLength != length { self.messages.betweenLength = length }
+                self.share(route, to: pair.to.position, named: pair.to.text, from: pair.from.text, frame: home) {
+                    MessageRoute.apart(route, $0) < 0.5
+                }
+            }
+        }
     }
     /// Where the message being looked for is from the phone, on every camera frame.
     private func aimAtMessage(_ frame: ARFrame) {
@@ -3103,6 +3136,13 @@ final class MessageCenter: ObservableObject {
     var asleep = false
     /// The message just reached, shown for a moment as the reward for getting there.
     @Published var found: MessageInbox.Message?
+    /// The two messages the way is being shown between.
+    @Published private(set) var between: MessageInbox.Pair?
+    /// How long that way is across the floor. Nil until it has been planned.
+    @Published var betweenLength: Float?
+    /// Choosing those two in the list. The first tap is where the way starts.
+    @Published var pairing = false { didSet { if !pairing, picked != nil { picked = nil } } }
+    @Published private(set) var picked: MessageInbox.Message?
     private var celebrated = 0
     /// The phone has got to the message it was looking for.
     func arrive() -> MessageInbox.Message? {
@@ -3130,6 +3170,11 @@ final class MessageCenter: ObservableObject {
             self.target = inbox.messages.first { $0.id == target.id }
             if self.target == nil { aim = nil }
         }
+        if let pair = between, inbox.current(pair) != pair {
+            between = inbox.current(pair)
+            if between == nil { betweenLength = nil }
+        }
+        if let first = picked, !inbox.messages.contains(where: { $0.id == first.id }) { picked = nil }
         MessageAlert.allow()
         guard !arrived.isEmpty else { return }
         MessageAlert.post(arrived, asleep: asleep)
@@ -3148,8 +3193,22 @@ final class MessageCenter: ObservableObject {
         banner = []
         aim = nil; way = nil
         target = inbox.messages.first { $0.id == message.id }
+        pairing = false; between = nil; betweenLength = nil
     }
     func stop() { target = nil; aim = nil; way = nil }
+    /// Choose one end of a way between two messages. True once both are chosen.
+    func pick(_ message: MessageInbox.Message) -> Bool {
+        guard let first = picked else { picked = message; return false }
+        // The same one again lets go of it.
+        guard first.id != message.id else { picked = nil; return false }
+        inbox.open(first.id); inbox.open(message.id)
+        banner = []
+        stop()
+        pairing = false; betweenLength = nil
+        between = inbox.current(MessageInbox.Pair(from: first, to: message))
+        return between != nil
+    }
+    func stopBetween() { between = nil; betweenLength = nil }
 }
 
 /// A notification from iOS itself for a new message, for when nobody is looking at the app:
@@ -3252,6 +3311,15 @@ struct MessageList: View {
                 Spacer()
                 Text(unread > 0 ? "\(unread) new" : "First to last").themeLabel(10, .semibold)
                     .foregroundStyle(unread > 0 ? Theme.accent : Theme.dim)
+                // The way between two of them takes at least two.
+                if center.inbox.messages.count > 1 {
+                    Button { center.pairing.toggle() } label: {
+                        Image(systemName: "point.topleft.down.curvedto.point.bottomright.up").font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(center.pairing ? Theme.onAccent : Theme.ink)
+                            .frame(width: 30, height: 30).background(center.pairing ? Theme.accent : Theme.well, in: Circle())
+                    }
+                    .accessibilityLabel(center.pairing ? "Stop choosing two messages" : "Show the way between two messages")
+                }
             }
             // Only a long list scrolls.
             ViewThatFits(in: .vertical) {
@@ -3259,14 +3327,19 @@ struct MessageList: View {
                 ScrollView { rows }
             }
             .frame(maxHeight: 300)
-            Text("Tap a message to be shown where it is.").themeText(10).foregroundStyle(Theme.dim)
+            Text(!center.pairing ? "Tap a message to be shown where it is."
+                 : center.picked == nil ? "Tap the message the way starts at." : "Now tap the message it leads to.")
+                .themeText(10).foregroundStyle(center.pairing ? Theme.accent : Theme.dim)
         }
         .themePanel(padding: 14).frame(maxWidth: 300)
     }
     private var rows: some View {
         VStack(alignment: .leading, spacing: 2) {
             ForEach(Array(center.inbox.messages.enumerated()), id: \.element.id) { index, message in
-                Button { center.find(message); close() } label: {
+                Button {
+                    if !center.pairing { center.find(message); close() }
+                    else if center.pick(message) { close() }
+                } label: {
                     HStack(spacing: 8) {
                         Text("\(index + 1)").themeLabel(10, .semibold).foregroundStyle(Theme.dim).frame(width: 22, alignment: .trailing)
                         Text(message.text).themeText(12, message.unread ? .bold : .regular)
@@ -3274,7 +3347,8 @@ struct MessageList: View {
                         Spacer(minLength: 0)
                         if message.unread { Circle().fill(Theme.accent).frame(width: 8, height: 8) }
                     }
-                    .themeRow(selected: message.id == center.target?.id)
+                    .themeRow(selected: center.pairing ? message.id == center.picked?.id
+                              : message.id == center.target?.id || message.id == center.between?.from.id || message.id == center.between?.to.id)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Message \(index + 1)\(message.unread ? ", new" : ""): \(message.text)")
@@ -3369,6 +3443,24 @@ struct MessageGuide: View {
                 }.accessibilityLabel("Stop looking for this message")
             }
             .foregroundStyle(Theme.ink).themeBubble()
+        } else if let pair = center.between {
+            HStack(spacing: 10) {
+                Image(systemName: "point.topleft.down.curvedto.point.bottomright.up")
+                    .font(.system(size: 18, weight: .bold)).foregroundStyle(Theme.accent).frame(width: 26)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(pair.from.text) → \(pair.to.text)").themeLabel(12, .bold).lineLimit(1)
+                    Text(center.betweenLength.map { String(format: "The way is on the map · %.1f m", $0) } ?? "Finding the way between them.")
+                        .themeText(11).foregroundStyle(Theme.dim).lineLimit(2)
+                }
+                Spacer(minLength: 0)
+                Button { withAnimation { center.stopBetween() } } label: {
+                    Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).foregroundStyle(Theme.ink)
+                        .frame(width: 30, height: 30).background(Theme.well, in: Circle())
+                }.accessibilityLabel("Stop showing the way between these messages")
+            }
+            .foregroundStyle(Theme.ink).themeBubble()
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Way from \(pair.from.text) to \(pair.to.text)")
         }
     }
     private var way: String {

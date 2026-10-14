@@ -580,6 +580,17 @@ struct MessageInbox: Equatable {
     mutating func open(_ id: String) {
         if let index = messages.firstIndex(where: { $0.id == id }) { messages[index].unread = false }
     }
+    /// Two messages to show the way between, from the first to the second.
+    struct Pair: Equatable {
+        var from: Message
+        var to: Message
+    }
+    /// The same two as Home has them now. Nil once either is gone.
+    func current(_ pair: Pair) -> Pair? {
+        guard let from = messages.first(where: { $0.id == pair.from.id }),
+              let to = messages.first(where: { $0.id == pair.to.id }) else { return nil }
+        return Pair(from: from, to: to)
+    }
 }
 
 /// A way across the floor to a spot, round what the map shows is in the way.
@@ -728,16 +739,31 @@ enum MessageRoute {
     }
 
     /// The route as a path for everyone in the scene to see: a line drawn without a crayon.
-    static func path(_ route: [SIMD3<Float>], id: String, to name: String) -> CrayonStroke? {
+    /// A way between two messages says where it starts as well.
+    static func path(_ route: [SIMD3<Float>], id: String, to name: String, from origin: String? = nil) -> CrayonStroke? {
         guard let start = route.first else { return nil }
         // Closely spaced points keep the smooth line on the route round corners.
         let points = [start] + crumbs(route, every: 0.3)
         guard points.count >= 2, simd_distance(start, points[points.count - 1]) > 0.05 else { return nil }
-        let title = String(("Way to " + name.trimmingCharacters(in: .whitespacesAndNewlines)).prefix(120))
+        let leg = origin.map { "Way from " + $0.trimmingCharacters(in: .whitespacesAndNewlines) + " to " } ?? "Way to "
+        let title = String((leg + name.trimmingCharacters(in: .whitespacesAndNewlines)).prefix(120))
         return CrayonStroke(id: id, title: title, color: color, width_m: width, segments: [points.map { [$0.x, $0.y, $0.z] }])
     }
     static let color = "#ff5fa8"
     static let width: Float = 0.05
+
+    /// How far it is along the route from its start to its end.
+    static func length(_ route: [SIMD3<Float>]) -> Float {
+        zip(route, route.dropFirst()).reduce(0) { $0 + simd_distance($1.0, $1.1) }
+    }
+
+    /// How far apart two routes get, across the floor. Small when they are the same way.
+    static func apart(_ a: [SIMD3<Float>], _ b: [SIMD3<Float>]) -> Float {
+        func off(_ route: [SIMD3<Float>], from other: [SIMD3<Float>]) -> Float {
+            (route + crumbs(route, every: 0.3)).map { stray($0, from: other) }.max() ?? .infinity
+        }
+        return max(off(a, from: b), off(b, from: a))
+    }
 
     /// The spot `distance` along the route from its start: where to head next.
     static func ahead(_ route: [SIMD3<Float>], by distance: Float) -> SIMD3<Float>? {
