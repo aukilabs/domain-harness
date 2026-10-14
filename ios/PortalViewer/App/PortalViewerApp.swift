@@ -252,7 +252,9 @@ struct ViewerScreen: View {
         }
         .animation(.easeInOut(duration: 0.3), value: controller.snoozed)
         .onChange(of: peer.annotationResult) { _, result in
-            guard let result, let id = peer.takeDeletedNote(result.id), !result.saved else { return }
+            guard let result, let id = peer.takeDeletedNote(result.id) else { return }
+            print("[message] Delete of \(id): \(result.saved ? "done" : result.detail)")
+            guard !result.saved else { return }
             controller.messages.keep(id)
             controller.showMessageResult("Home did not delete that message: \(result.detail)")
         }
@@ -269,8 +271,12 @@ struct ViewerScreen: View {
             controller.onStroke = { peer.saveStroke($0, frame: $1, done: $2) }
             controller.onErase = { peer.eraseStroke($0, frame: $1, done: $2) }
             controller.messages.onDelete = { [weak controller] message in
-                guard let frame = controller?.map?.scenegraph.map.frame.id else { return false }
-                return peer.deleteNote(message.id, frame: frame)
+                guard let frame = controller?.map?.scenegraph.map.frame.id, peer.deleteNote(message.id, frame: frame) else {
+                    print("[message] Delete of \(message.id) not sent: not connected to Home")
+                    controller?.showMessageResult("Not connected to Home, so the message was not deleted.")
+                    return false
+                }
+                return true
             }
             peer.onPortalResult = { controller.showPortalResult($0) }
             // A Portal seen before Home's map has arrived offers sign-in once.
@@ -3320,6 +3326,8 @@ struct MessageButton: View {
 struct MessageList: View {
     @ObservedObject var center: MessageCenter
     let close: () -> Void
+    /// The message held down, which shows its Delete button.
+    @State private var armed: String?
     var body: some View {
         let unread = center.inbox.unread
         VStack(alignment: .leading, spacing: 8) {
@@ -3342,7 +3350,7 @@ struct MessageList: View {
     private var rows: some View {
         VStack(alignment: .leading, spacing: 2) {
             ForEach(Array(center.listed.enumerated()), id: \.element.id) { index, message in
-                Button { center.find(message); close() } label: {
+                HStack(spacing: 6) {
                     HStack(spacing: 8) {
                         Text("\(index + 1)").themeLabel(10, .semibold).foregroundStyle(Theme.dim).frame(width: 22, alignment: .trailing)
                         Text(message.text).themeText(12, message.unread ? .bold : .regular)
@@ -3350,13 +3358,28 @@ struct MessageList: View {
                         Spacer(minLength: 0)
                         if message.unread { Circle().fill(Theme.accent).frame(width: 8, height: 8) }
                     }
-                    .themeRow(selected: message.id == center.target?.id)
+                    // Held, a message offers Delete. Tapping anything else puts it back.
+                    if armed == message.id {
+                        Button { armed = nil; center.delete(message) } label: {
+                            Image(systemName: "trash.fill").font(.system(size: 12, weight: .bold)).foregroundStyle(Theme.onAccent)
+                                .frame(width: 30, height: 30).background(Theme.accent, in: Circle())
+                        }
+                        .accessibilityLabel("Delete this message for everyone")
+                        .transition(.scale.combined(with: .opacity))
+                    }
                 }
-                .buttonStyle(.plain)
-                // Hold a message to delete it, for everyone.
-                .contextMenu {
-                    Button(role: .destructive) { center.delete(message) } label: { Label("Delete message", systemImage: "trash") }
+                .themeRow(selected: armed == message.id || (message.id == center.target?.id))
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    if armed != nil { withAnimation { armed = nil }; return }
+                    center.find(message); close()
                 }
+                .onLongPressGesture(minimumDuration: 0.45) {
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { armed = message.id }
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isButton)
                 .accessibilityLabel("Message \(index + 1)\(message.unread ? ", new" : ""): \(message.text)")
                 .accessibilityAction(named: "Delete") { center.delete(message) }
             }
