@@ -10,7 +10,7 @@ export function createPipWindow(pip) {
  const margin=8,clamp=(n,a,b)=>Math.max(a,Math.min(n,b));
  function metrics(){
   const p=parent.getBoundingClientRect(),r=pip.getBoundingClientRect();
-  const ratio=image.width>0&&image.height>0?image.width/image.height:16/9;
+  const ratio=Number(stage.dataset.displayRatio)||(image.width>0&&image.height>0?image.width/image.height:16/9);
   return {width:parent.clientWidth,height:parent.clientHeight,left:r.left-p.left-parent.clientLeft,top:r.top-p.top-parent.clientTop,
    boxWidth:r.width,boxHeight:r.height,ratio,chrome:r.height-stage.getBoundingClientRect().height};
  }
@@ -34,7 +34,7 @@ export function createPipWindow(pip) {
  function schedule(){if(!queued){queued=true;requestAnimationFrame(()=>{queued=false;fit();});}}
  function start(e,kind){
   if(e.button!==0||!e.isPrimary||gesture)return;
-  if(kind==='move'&&e.target.closest('button,input,label'))return;
+  if(kind==='move'&&e.target.closest('button,input,label,select'))return;
   e.preventDefault();e.stopPropagation();fit();
   gesture={kind,id:e.pointerId,x:e.clientX,y:e.clientY,...layout,ratio:metrics().ratio,target:e.currentTarget};
   e.currentTarget.setPointerCapture(e.pointerId);pip.classList.add('pip-interacting');

@@ -1410,6 +1410,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/robot/{*path}", get(robot_asset))
         .route("/api/sensors", get(sensor_preview))
         .route("/pose-inspector.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/pose-inspector.js")) }))
+        .route("/video-presentation.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/video-presentation.js")) }))
         .route("/compact-pose-trail.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/compact-pose-trail.js")) }))
         .route("/api/robot-occupancy", get(robot_occupancy))
         .route("/api/scene", get(scene))

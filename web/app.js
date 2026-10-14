@@ -9,6 +9,7 @@ import { createCrayon } from './crayon.js';
 import { createGhostCamera, createCameraPan, isEditing } from './ghost-camera.js';
 import { createNoteBubble } from './note-bubble.js';
 import { createPipWindow } from './pip-window.js';
+import { createVideoPresentation } from './video-presentation.js';
 import { moveMapCamera } from './view-camera.js';
 import { createAttachedCamera } from './attached-camera.js';
 import { createRobotModel } from './robot-model.js';
@@ -744,13 +745,13 @@ renderer.domElement.addEventListener('contextmenu',e=>{e.preventDefault();
 $('sensor-stage').addEventListener('contextmenu',e=>{e.preventDefault();e.stopPropagation();
  const f=displayedCamera;
  if(!f?.token||Date.now()-f.receivedAt>10000){beginLabel(null,f?.error||'Waiting for a fresh capture-matched camera pose. Try again when calibrated video arrives.');return;}
- const rect=sensorCanvas.getBoundingClientRect();
- beginLabel({source:'camera',camera_token:f.token,pixel:[(e.clientX-rect.left)/rect.width*f.width,(e.clientY-rect.top)/rect.height*f.height]});
+ beginLabel({source:'camera',camera_token:f.token,pixel:videoPresentation.pixel(e.clientX,e.clientY)});
 });
 
 // Camera previews are independent of the selected map and never control the robot.
 const sensorSelect=document.querySelector('#sensor-select'),pip=document.querySelector('#sensor-pip'),sensorCanvas=document.querySelector('#sensor-image');
 const pipWindow=createPipWindow(pip);
+const videoPresentation=createVideoPresentation($('sensor-stage'),pip.querySelector('.sensor-pip-heading'),()=>{pipWindow.fit();arOverlay?.setRotation(Number($('sensor-stage').dataset.rotation)||0);});
 let sensorGeneration=0,lastSensorSequence=null,lastSensorChange=0;
 const arToggle=$('sensor-ar'),arStatus=$('sensor-ar-status');
 let arOverlay=null,arLastSuccess=0;
@@ -824,7 +825,8 @@ async function watchSensor(generation){
     for(let i=0;i<f.width*f.height;i++){image.data[i*4]=bytes[i*channels];image.data[i*4+1]=bytes[i*channels+(channels===3?1:0)];image.data[i*4+2]=bytes[i*channels+(channels===3?2:0)];image.data[i*4+3]=255;}ctx.putImageData(image,0,0);
    }
    displayedCamera={token:f.camera_token,error:f.pick_error,width:f.width,height:f.height,receivedAt:Date.now()};
-   if(arToggle.checked){arOverlay??=createArOverlay($('sensor-ar-overlay'));arOverlay.show(f);arLastSuccess=Date.now();arStatus.textContent=['sdk-camera','sdk-fisheye'].includes(f.ar?.projection)?'AR · Home scene voxels + notes · capture-matched camera':'AR · Home live voxels + notes · synchronized mapping camera';}
+   videoPresentation.update(f);
+   if(arToggle.checked){arOverlay??=createArOverlay($('sensor-ar-overlay'));arOverlay.show(f,Number($('sensor-stage').dataset.rotation)||0);arLastSuccess=Date.now();arStatus.textContent=['sdk-camera','sdk-fisheye'].includes(f.ar?.projection)?'AR · Home scene voxels + notes · capture-matched camera':'AR · Home live voxels + notes · synchronized mapping camera';}
    lastSensorSequence=f.sequence;lastSensorChange=Date.now();
   }
   status.textContent=Date.now()-lastSensorChange>3000?'Stale · no new frames':'Receiving · frame '+f.sequence;
@@ -832,6 +834,7 @@ async function watchSensor(generation){
  if(generation===sensorGeneration)setTimeout(()=>watchSensor(generation),100);
 }
 sensorSelect.addEventListener('change',()=>{
+ videoPresentation.select(sensorSelect.value);
  pip.hidden=!sensorSelect.value;arToggle.checked=false;updateArAvailability();
  sensorCanvas.getContext('2d').clearRect(0,0,sensorCanvas.width,sensorCanvas.height);
  document.querySelector('#sensor-title').textContent=sensorSelect.selectedOptions[0].textContent;
