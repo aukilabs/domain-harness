@@ -289,7 +289,36 @@ $('demo-view').onclick=()=>{camera.position.set(-.5,4.5,5.5);controls.target.set
 scene.add(new THREE.HemisphereLight(0xffffff,0x1a2438,1.7));
 const sun=new THREE.DirectionalLight(0xffffff,2.4);sun.position.set(-3,7,4);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);Object.assign(sun.shadow.camera,{left:-5,right:5,top:5,bottom:-5,near:.1,far:20});sun.shadow.bias=-.0005;scene.add(sun);
 const ground=new THREE.Mesh(new THREE.PlaneGeometry(200,200),new THREE.MeshStandardMaterial({color:document.documentElement.dataset.theme==='light'?'#e0e3e8':'#101014',roughness:1}));ground.rotation.x=-Math.PI/2;ground.position.y=-.15;ground.receiveShadow=true;scene.add(ground);
-const grid=new THREE.GridHelper(6,30,0x4f8ef7,0x24242b);grid.position.y=-.14;grid.material.transparent=true;grid.material.opacity=.28;scene.add(grid);
+// Ground grid: line grids (0.5 m minor, 2.5 m major) that follow the camera in whole major cells, so they
+// never run out and never swim. A small shader patch fades each line with distance from the camera; lines
+// only cost their own pixels, which keeps software-rendered browsers (and the browser tests) fast.
+// `grid.material.opacity` stays the opacity setting and drives both layers.
+const gridFade={uCam:{value:new THREE.Vector3()},uFadeFar:{value:40}};
+// Fades a line material with distance from the camera; `reach` scales how far out it stays visible.
+function fadeWithDistance(material,reach){
+ material.onBeforeCompile=shader=>{Object.assign(shader.uniforms,gridFade,{uReach:{value:reach}});
+  shader.vertexShader='varying vec3 vGridWorld;\n'+shader.vertexShader.replace('#include <project_vertex>','#include <project_vertex>\nvGridWorld=(modelMatrix*vec4(position,1.)).xyz;');
+  shader.fragmentShader='varying vec3 vGridWorld;uniform vec3 uCam;uniform float uFadeFar;uniform float uReach;\n'+shader.fragmentShader.replace('#include <color_fragment>','#include <color_fragment>\ndiffuseColor.a*=1.-smoothstep(uFadeFar*uReach*.3,uFadeFar*uReach,distance(uCam.xz,vGridWorld.xz));');};
+ return material;
+}
+function lineGrid(spacing,extent,reach){
+ const points=[],half=extent/2;
+ for(let v=-half;v<=half+1e-6;v+=spacing)points.push(-half,0,v,half,0,v,v,0,-half,v,0,half);
+ const geometry=new THREE.BufferGeometry();geometry.setAttribute('position',new THREE.Float32BufferAttribute(points,3));
+ return new THREE.LineSegments(geometry,fadeWithDistance(new THREE.LineBasicMaterial({color:'#52525b',transparent:true,depthWrite:false}),reach));
+}
+const gridMinor=lineGrid(.5,90,.45),gridMajor=lineGrid(2.5,400,1);
+const gridAxes=new THREE.LineSegments(new THREE.BufferGeometry().setAttribute('position',new THREE.Float32BufferAttribute([-200,0,0,200,0,0,0,0,-200,0,0,200],3)),fadeWithDistance(new THREE.LineBasicMaterial({color:'#4f8ef7',transparent:true,depthWrite:false}),1));
+gridAxes.position.y=-.139;
+const grid=new THREE.Group();grid.add(gridMinor,gridMajor);grid.position.y=-.14;
+// One opacity for the whole grid (the Settings slider): minor lines at half strength, major and axes at full.
+grid.material={get opacity(){return gridMajor.material.opacity;},set opacity(v){gridMajor.material.opacity=gridAxes.material.opacity=v;gridMinor.material.opacity=v*.55;}};
+grid.material.opacity=.32;
+// Follow the camera in whole major cells so the lines stay put in the world while the grid never ends.
+gridMajor.onBeforeRender=()=>{const snap=2.5;grid.position.x=Math.round(controls.target.x/snap)*snap;grid.position.z=Math.round(controls.target.z/snap)*snap;grid.updateMatrixWorld();
+ gridFade.uCam.value.copy(camera.position);gridFade.uFadeFar.value=Math.max(24,camera.position.distanceTo(controls.target)*3.5);};
+// The axes mark the world origin, so they stay put rather than following the camera.
+scene.add(grid,gridAxes);
 const groups=Object.fromEntries(['voxels','portals','objects','rays','notes'].map(k=>[k,new THREE.Group()]));Object.values(groups).forEach(g=>scene.add(g));
 crayon=createCrayon({button:$('crayon'),canvas:renderer.domElement,camera,controls,scene,voxels:groups.voxels,
  state:()=>({map:activeMap,frame:current?.frame,paths:current?.paths,editable:isLocalScene()&&!!current&&!map2D.isActive()}),
@@ -673,7 +702,7 @@ function updateMapUI(){
  document.querySelector('.flow').hidden=domain||!current?.demo;
  $('demo-view').hidden=!current?.demo;
  document.querySelector('#inspect-snapshot').href=document.querySelector('.export').href=activeMap==='home-live'?'/api/home-live-snapshot':isRunner()?runnerUrl('/api/runner-snapshot'):domain?'/api/domain-snapshot':'/api/snapshots';
- ground.visible=Boolean(current?.demo);scene.fog=null;grid.scale.setScalar(3);grid.position.x=local?0:-5;grid.position.z=local?0:3;
+ ground.visible=Boolean(current?.demo);scene.fog=null;grid.position.x=local?0:-5;grid.position.z=local?0:3;
  const list=$('portal-list');list.replaceChildren();{for(const p of (current?.portals||[]).filter(p=>p.anchor_id.length===11||p.anchor_id.startsWith('home:'))){const button=document.createElement('button');button.className='portal-row';button.textContent=p.anchor_id;const size=document.createElement('span');size.textContent=`${Math.round(p.side_length_m*100)} cm`;button.append(size);button.onclick=()=>focusPortal(p);list.append(button);}}
  list.hidden=Boolean(current?.landmarks);renderSpatialLists();
  if(isLocalScene()) {
@@ -1618,7 +1647,7 @@ function renderNotes(){
  if(focused)notesList.querySelector(`[data-note-row="${CSS.escape(focused)}"],[data-path-row="${CSS.escape(focused)}"]`)?.focus();
 }
 setInterval(()=>{const signature=JSON.stringify([activeMap,current?.notes||[],current?.paths]);if(signature!==noteSignature){noteSignature=signature;renderNotes();}},500);renderNotes();
-function applyTheme(light){document.documentElement.dataset.theme=light?'light':'dark';scene.background.set(light?'#e8e8f0':'#0d0d0f');scene.fog?.color.copy(scene.background);ground.material.color.set(light?'#e0e3e8':'#101014');for(const choice of document.querySelectorAll('[data-theme-choice]'))choice.setAttribute(choice.getAttribute('role')==='radio'?'aria-checked':'aria-pressed',String((choice.dataset.themeChoice==='light')===light));}
+function applyTheme(light){document.documentElement.dataset.theme=light?'light':'dark';scene.background.set(light?'#e8e8f0':'#0d0d0f');scene.fog?.color.copy(scene.background);ground.material.color.set(light?'#e0e3e8':'#101014');for(const layer of [gridMinor,gridMajor])layer.material.color.set(light?'#52525b':'#a1a1aa');for(const choice of document.querySelectorAll('[data-theme-choice]'))choice.setAttribute(choice.getAttribute('role')==='radio'?'aria-checked':'aria-pressed',String((choice.dataset.themeChoice==='light')===light));}
 for(const choice of document.querySelectorAll('[data-theme-choice]'))choice.onclick=()=>{const light=choice.dataset.themeChoice==='light';applyTheme(light);try{localStorage.setItem('spatial-theme',light?'light':'dark');}catch{}};
 try{applyTheme(localStorage.getItem('spatial-theme')==='light');}catch{}
 const opacityLabel=document.createElement('label');opacityLabel.className='layer';opacityLabel.textContent='Grid opacity';const opacityInput=document.createElement('input');opacityInput.type='range';opacityInput.min='0';opacityInput.max='1';opacityInput.step='.01';opacityInput.value=String(grid.material.opacity);opacityInput.oninput=()=>{grid.material.opacity=Number(opacityInput.value);};opacityLabel.append(opacityInput);panelBodies.settings.append(opacityLabel);
