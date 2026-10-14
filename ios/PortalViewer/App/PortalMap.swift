@@ -200,6 +200,9 @@ struct RenderScene: Decodable, Equatable {
         let name: String?
         let state: String?
         let pose: Portal.Pose
+        /// A robot's joint angles and motor health, when its runner reports them.
+        var joints: RobotJoints? = nil
+        var health: RobotHealth? = nil
     }
     struct Mapping: Decodable, Equatable {
         let robot_pose: RobotPose?

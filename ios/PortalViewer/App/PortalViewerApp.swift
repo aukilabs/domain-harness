@@ -808,6 +808,12 @@ enum RobotGlow {
 
 /// The robot's 3D model drawn over the mini map. Its camera is orthographic and
 /// copies the map's own projection, so the model orbits, trucks and zooms with it.
+extension RobotKinematics {
+    /// The Bracketbot's URDF, the same file the Home viewer draws; nil if it is missing.
+    static let bracketbot: RobotKinematics? = Bundle.main.url(forResource: "robot", withExtension: "urdf")
+        .flatMap { try? Data(contentsOf: $0) }.flatMap { try? load($0) }
+}
+
 struct RobotMapLayer: UIViewRepresentable {
     let robots: [MiniMapRobot]
     let center: SIMD3<Float>
@@ -2255,8 +2261,9 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         unsynced.removeAll { kept in scene.notes.contains { $0.id == kept.id } }
         for kept in unsynced where kept.frame == scene.frame { addBubble(kept.text, at: kept.position, photo: photos[kept.id]) }
         for note in scene.notes {
-            guard let pose = note.robot_pose?.pose, pose.translation.count == 3, pose.rotation_wxyz.count == 4 else { continue }
-            root.addChildNode(robotBody(at: pose.matrix))
+            guard let robot = note.robot_pose, robot.pose.translation.count == 3, robot.pose.rotation_wxyz.count == 4 else { continue }
+            root.addChildNode(robotBody(at: robot.pose.matrix))
+            addRobotHealth(robot, base: robot.pose.matrix)
         }
         if let runners = scene.local_mapping?.runners, !runners.isEmpty {
             for (id, runner) in runners { addRobot(runner.robot_pose, name: String(id.suffix(8))) }
@@ -2386,6 +2393,95 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         label.position = SCNVector3(position[0], position[1], position[2])
         label.constraints = [SCNBillboardConstraint()]
         root.addChildNode(label)
+    }
+
+    /// A robot's motor health on its model, as in the Home viewer: a dot on each
+    /// joint coloured by motor temperature (with the temperature beside warm and
+    /// hot ones), and above the head the battery and the hottest joint if it is warm.
+    /// Joints are placed by the Home viewer's URDF at the robot's reported angles.
+    private func addRobotHealth(_ robot: RenderScene.PhonePose, base: simd_float4x4) {
+        guard let health = robot.health else { return }
+        // The URDF model stands on the base turned a quarter turn about up, as in the Home viewer.
+        let holder = SCNNode()
+        holder.name = "robot-health"
+        holder.simdTransform = base * simd_float4x4(simd_quatf(angle: .pi / 2, axis: SIMD3(0, 0, 1)))
+        if let joints = health.joints, let kinematics = RobotKinematics.bracketbot {
+            let frames = kinematics.frames(robot.joints?.positions ?? [:])
+            for (name, joint) in joints {
+                guard let frame = frames[name] else { continue }
+                let position = SIMD3(Float(frame.columns.3.x), Float(frame.columns.3.y), Float(frame.columns.3.z))
+                let color = Self.uiColor(RobotHealth.color(celsius: joint.temperature_c))
+                let sphere = SCNSphere(radius: 0.022)
+                sphere.firstMaterial?.diffuse.contents = color
+                sphere.firstMaterial?.lightingModel = .constant
+                // Drawn through the model, like the Home viewer's badges.
+                sphere.firstMaterial?.readsFromDepthBuffer = false
+                let dot = SCNNode(geometry: sphere)
+                dot.renderingOrder = 50
+                dot.simdPosition = position
+                holder.addChildNode(dot)
+                if RobotHealth.level(celsius: joint.temperature_c) != .ok,
+                   let tag = billboard(Self.healthText([(String(format: "%.0f°C", joint.temperature_c), color)]), height: 0.04) {
+                    tag.simdPosition = position + SIMD3(0, 0, 0.05)
+                    holder.addChildNode(tag)
+                }
+            }
+        }
+        var parts = [(String, UIColor)]()
+        if let battery = health.battery {
+            parts.append((String(format: "Battery %.0f%%", battery.percent), Self.levelColor(RobotHealth.level(batteryPercent: battery.percent))))
+        }
+        if let warning = health.warning {
+            parts.append((String(format: "%@ %.0f°C", warning.joint, warning.celsius), Self.levelColor(warning.level)))
+        }
+        if !parts.isEmpty, let chip = billboard(Self.healthText(parts), height: 0.07) {
+            // Above the head: the model is about 1.57 m tall, as in the Home viewer.
+            chip.simdPosition = SIMD3(0, 0, 1.82)
+            holder.addChildNode(chip)
+        }
+        root.addChildNode(holder)
+    }
+
+    private static func uiColor(_ rgb: SIMD3<Double>) -> UIColor {
+        UIColor(red: rgb.x, green: rgb.y, blue: rgb.z, alpha: 1)
+    }
+    private static func levelColor(_ level: RobotHealth.Level) -> UIColor {
+        switch level {
+        case .ok: return uiColor(RobotHealth.color(celsius: RobotHealth.coolC))
+        case .warm: return uiColor(RobotHealth.color(celsius: RobotHealth.warmC))
+        case .hot: return uiColor(RobotHealth.color(celsius: RobotHealth.limitC))
+        }
+    }
+
+    /// Coloured runs of text on a dark pill, as an image.
+    private static func healthText(_ parts: [(String, UIColor)]) -> UIImage {
+        let font = Theme.uiFont(40, .semibold)
+        let text = NSMutableAttributedString()
+        for (i, (part, color)) in parts.enumerated() {
+            if i > 0 { text.append(NSAttributedString(string: "  ·  ", attributes: [.font: font, .foregroundColor: UIColor.white.withAlphaComponent(0.6)])) }
+            text.append(NSAttributedString(string: part, attributes: [.font: font, .foregroundColor: color]))
+        }
+        let size = text.size(), pad = CGSize(width: 28, height: 12)
+        let bounds = CGRect(origin: .zero, size: CGSize(width: ceil(size.width) + pad.width * 2, height: ceil(size.height) + pad.height * 2))
+        return UIGraphicsImageRenderer(size: bounds.size).image { _ in
+            UIColor(red: 0.04, green: 0.06, blue: 0.08, alpha: 0.82).setFill()
+            UIBezierPath(roundedRect: bounds, cornerRadius: bounds.height / 2).fill()
+            text.draw(at: CGPoint(x: pad.width, y: pad.height))
+        }
+    }
+
+    /// An image on a camera-facing plane `height` metres tall, drawn over the model.
+    private func billboard(_ image: UIImage, height: CGFloat) -> SCNNode? {
+        guard image.size.height > 0 else { return nil }
+        let plane = SCNPlane(width: height * image.size.width / image.size.height, height: height)
+        plane.firstMaterial?.diffuse.contents = image
+        plane.firstMaterial?.lightingModel = .constant
+        plane.firstMaterial?.readsFromDepthBuffer = false
+        plane.firstMaterial?.isDoubleSided = true
+        let node = SCNNode(geometry: plane)
+        node.renderingOrder = 60
+        node.constraints = [SCNBillboardConstraint()]
+        return node
     }
 
     /// A robot's path as a ribbon just above the floor. A robot Home no longer
