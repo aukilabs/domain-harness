@@ -29,7 +29,7 @@ test('sensor POV follows full pose, pauses without guessing, detaches, and never
   return r.fulfill({json:{reply:'Requested.',model:'test',changes:[],...(command==='Attach'?{ui_actions:[action]}:command==='Detach'?{ui_actions:[{type:'detach_camera',scene:body.scene,frame:body.viewer.frame}]}:{})}});
  });
  await page.goto('/');await expect(page.locator('#connection')).toHaveText('Home Server online');
- const send=async text=>{await page.locator('#scene-chat-input').fill(text);await page.locator('#scene-chat-form button[type="submit"]').click();};
+ const send=async text=>{await page.locator('#agent-toggle').click();await page.locator('#scene-chat-input').fill(text);await page.locator('#scene-chat-form button[type="submit"]').click();};
  const panel=page.getByLabel('Attached camera',{exact:true});await expect(panel).toBeHidden();
  await send('Attach');await expect(panel).toContainText("Following · Dan's Phone");
  pose=[4,2,3];await expect.poll(()=>followCalls).toBeGreaterThan(2);
@@ -44,7 +44,7 @@ test('sensor POV follows full pose, pauses without guessing, detaches, and never
  const stopped=followCalls;await page.waitForTimeout(500);expect(followCalls).toBe(stopped);
  expect(videoCalls).toBe(0);await expect(page.locator('#sensor-pip')).toBeHidden();
  lost=false;frozen=false;await send('Attach');await expect(panel).toContainText('Following');
- await page.locator('#scene-chat-input').focus();await page.keyboard.type('wasd');await expect(panel).toBeVisible();
+ await page.locator('#agent-toggle').click();await page.locator('#scene-chat-input').focus();await page.keyboard.type('wasd');await expect(panel).toBeVisible();
  await page.locator('#scene-chat-input').evaluate(e=>e.blur());
  await page.keyboard.down('w');await expect(panel).toBeHidden();await page.waitForTimeout(250);await page.keyboard.up('w');
  const callsAfterMove=followCalls;await page.waitForTimeout(300);expect(followCalls).toBe(callsAfterMove);

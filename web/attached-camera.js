@@ -1,9 +1,8 @@
 // A live, browser-local viewpoint driven only by measured SDK sensor poses.
 export function createAttachedCamera({host,camera,controls,map2D,context,request}) {
  const panel=document.createElement('div');panel.hidden=true;panel.setAttribute('aria-label','Attached camera');
- panel.style.cssText='position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:91;background:#171b23;color:#dce6f4;padding:8px 12px;border:1px solid #39485c;border-radius:6px;font:12px system-ui';
- const status=document.createElement('span'),button=document.createElement('button');button.textContent='Detach';button.type='button';panel.append(status,button);host.append(panel);
- button.style.marginLeft='12px';
+ panel.className='placement-banner attached-camera-banner';panel.setAttribute('role','status');
+ const status=document.createElement('span'),button=document.createElement('button');button.textContent='Detach';button.type='button';button.className='btn btn-on-dark';panel.append(status,button);host.append(panel);
  let binding=null,generation=0,busy=false,pending=null,lastStamp=null,freshAt=0;
  function detach(){generation++;pending?.abort();pending=null;binding=null;busy=false;panel.hidden=true;
   camera.up.set(0,1,0);controls.enabled=!map2D.isActive();controls.minDistance=.01;controls.maxPolarAngle=Math.PI;

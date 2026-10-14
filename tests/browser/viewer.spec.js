@@ -3,7 +3,10 @@ test('Home omits prototype footer and profile tagline',async({page})=>{
  const errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.goto('/');
  await expect(page.locator('#connection')).toHaveText('Home Server online');
- await expect(page.getByRole('heading',{name:'Home Server.'})).toBeVisible();
+ await expect(page.getByRole('link',{name:'McKenna home'})).toBeVisible();
+ await page.getByRole('button',{name:'Nils Pihl'}).click();
+ await expect(page.getByRole('heading',{name:'Home server'})).toBeVisible();
+ await page.keyboard.press('Escape');
  await expect(page.getByText('CANONICAL MAP',{exact:true})).toHaveCount(0);
  await expect(page.getByText(/A shared understanding/)).toHaveCount(0);
  await expect(page.locator('.main-footer')).toHaveCount(0);
@@ -26,7 +29,7 @@ test('Home lists and inspects anchors and landmarks in Maps',async({page})=>{
  await expect(page.locator('#landmark-count')).toHaveText('52');
  await expect(browser.locator('[data-spatial-kind="anchor"]')).toHaveCount(13);
  await expect(browser.locator('[data-spatial-kind="landmark"]')).toHaveCount(52);
- await page.getByLabel('Find by name or type').fill('UCOF1J40N7O');
+ await page.getByLabel('Search anchors and landmarks').fill('UCOF1J40N7O');
  await expect(page.locator('#anchor-count')).toHaveText('1 / 13');
  await expect(page.locator('#landmark-count')).toHaveText('4 / 52');
  await browser.getByRole('button',{name:'Anchor UCOF1J40N7O',exact:true}).click();
@@ -34,8 +37,8 @@ test('Home lists and inspects anchors and landmarks in Maps',async({page})=>{
  await expect(selected).toContainText('Full pose');
  await expect(selected).toContainText('Rotation (w, x, y, z)');
  await expect(selected).toContainText('Portal size');
- const corner=browser.getByRole('button',{name:'Landmark UCOF1J40N7O/top_left',exact:true});
- await corner.click();await expect(corner).toHaveAttribute('aria-pressed','true');
+ const corner=browser.getByRole('button',{name:'Landmark Top left of UCOF1J40N7O',exact:true});
+ await corner.click();await expect(corner).toHaveAttribute('aria-current','true');
  await expect(selected).toContainText('Position only');
  await expect(selected).toContainText('Stored position');
  await expect(selected).not.toContainText('Parent anchor');
@@ -46,10 +49,10 @@ test('Home lists and inspects anchors and landmarks in Maps',async({page})=>{
  await expect(selected).toContainText('Detected byNot recorded');
  await expect(selected).not.toContainText('Rotation');
  await page.screenshot({path:'test-results/anchors-landmarks-desktop.png'});
- await page.getByLabel('Find by name or type').fill('no-such-feature');
+ await page.getByLabel('Search anchors and landmarks').fill('no-such-feature');
  await expect(page.locator('#landmark-count')).toHaveText('0 / 52');
- await expect(page.locator('#landmark-list')).toHaveText('No matches');
- await page.getByLabel('Find by name or type').fill('');
+ await expect(page.locator('#anchor-list')).toContainText('No matches');
+ await page.getByLabel('Search anchors and landmarks').fill('');
  await page.setViewportSize({width:390,height:844});
  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
  await expect(browser).toBeVisible();
@@ -76,7 +79,8 @@ test('landmark inspection resolves parents, refreshes positions and follows sele
  let live={...base};delete live.landmarks;
  await page.route('**/api/home-live-scene',route=>route.fulfill({json:live}));
  await page.goto('/');await page.getByRole('button',{name:'Maps',exact:true}).click();
- await page.getByRole('button',{name:'Landmark corner',exact:true}).click();
+ await page.getByRole('button',{name:'Show 1 landmark of reference',exact:true}).click();
+ await page.getByRole('button',{name:'Landmark Corner of reference',exact:true}).click();
  const selected=page.locator('#selection');
  await expect(selected).toContainText('[8.0000, 19.0000, 33.0000] m');
  await expect(selected).toContainText('[-1.0000, 2.0000, 3.0000] m');
@@ -98,7 +102,6 @@ test('landmark inspection resolves parents, refreshes positions and follows sele
  await expect(page.locator('#portal-list')).toBeVisible();
  live={...base,landmarks:{...scene.landmarks,anchors:{},landmarks:{}}};
  await expect(page.locator('#anchor-list')).toHaveText('No anchors in this scene');
- await expect(page.locator('#landmark-list')).toHaveText('No landmarks in this scene');
  expect(errors).toEqual([]);
 });
 
@@ -142,7 +145,7 @@ test('Home generates and registers exact-size ArUco and AprilTag markers',async(
  const snapshot=await (await request.get('/api/snapshots')).json();expect(snapshot.registries.fiducials.schema).toBe('spatial.fiducials/v1');expect(snapshot.registries.fiducials.items.find(item=>item.id===7).side_length_m).toBe(.12);
  const svg=await (await request.get(marker.download_url)).text();expect(svg).toContain('width="160.0000mm"');expect(svg).toContain('viewBox="0 0 8 8"');expect(svg).toContain('outer_black_square_mm=120.0000');
  const print=await request.get(marker.print_url);expect(print.ok()).toBeTruthy();expect(await print.text()).toContain('Print at 100% / Actual size');
- await page.getByLabel('Tag family').selectOption('apriltag_36h11');await page.getByLabel('Marker ID (optional)').fill('11');await page.getByLabel('Printed marker size (mm)').fill('160');await page.getByRole('button',{name:'Generate tag',exact:true}).click();
+ await page.getByRole('button',{name:'New tag',exact:true}).click();await page.getByLabel('Tag family').selectOption('apriltag_36h11');await page.getByLabel('Marker ID (optional)').fill('11');await page.getByLabel('Printed marker size (mm)').fill('160');await page.getByRole('button',{name:'Generate tag',exact:true}).click();
  await expect(page.locator('.fiducial-card').filter({hasText:'AprilTag 36h11 · 11'})).toContainText('160 mm black square');
  const endpoint='/api/fiducials/aruco_4x4_50/7';
  const denied=await request.patch(endpoint,{headers:{Origin:'https://foreign.invalid'},data:{side_length_m:.148}});expect(denied.ok()).toBeFalsy();
@@ -166,8 +169,9 @@ test('map, project, replay, inspect, and adapt to mobile',async({page,request})=
  const domain=await (await request.get('/api/domain-scene')).json();expect(domain.portals).toHaveLength(13);expect(domain.portals.every(p=>p.pose_in_map.translation[1]===0)).toBe(true);
  const initial=await (await request.get('/api/scene')).json();expect(initial.frame).toBe('domain:b2881524-954d-4979-b715-240ed8f02807:home-origin-UCOF1J40N7O');expect(initial.portals).toHaveLength(14);expect(initial.portals.find(p=>p.anchor_id==='UCOF1J40N7O').pose_in_map.translation).toEqual([0,0,0]);
  await page.getByRole('button',{name:'2ZWHV5L6I04 5 cm'}).click();await expect(page.locator('#selection')).toContainText('-2.0787');
- await page.getByRole('button',{name:'Reset camera view'}).click();
+ await page.locator('#fit').evaluate(button=>button.click());
  await page.screenshot({path:'test-results/domain-portals.png'});
+ await page.getByRole('button',{name:'Settings',exact:true}).click();await page.getByRole('button',{name:'Demo tools',exact:true}).click();
  await page.getByRole('button',{name:'Load two test peers'}).click();
  const fixtures=await (await request.get('/api/fixtures')).json();const scanCount=fixtures.contributions.reduce((n,c)=>n+c.observations.length,0);await expect(page.locator('#observation-count')).toHaveText(String(scanCount));
  await expect(page.locator('#empty')).toBeHidden();
@@ -187,7 +191,7 @@ test('map, project, replay, inspect, and adapt to mobile',async({page,request})=
  await expect(page.getByLabel('2D occupancy map',{exact:true})).toBeVisible();
  await page.getByRole('button',{name:'Switch to 3D mode',exact:true}).click();
  await expect(page.locator('#canvas')).toHaveAttribute('data-view-mode','3d');
- await page.getByRole('button',{name:'Reset camera view'}).click();
+ await page.locator('#fit').evaluate(button=>button.click());
  await page.screenshot({path:'test-results/home-desktop.png'});
  await page.locator('#map-select').selectOption('domain');await expect(page.locator('#scene-title')).toHaveText('13 stored domain portals');
  await page.locator('#map-select').selectOption('demo');await expect(page.locator('#scene-title')).toHaveText('Domain + synthetic scene');
@@ -440,10 +444,10 @@ test('right-click labels use Home voxel hits and the displayed camera frame',asy
   return r.fulfill({json:{sequence:++sequence,camera_token:'displayed-frame',width:320,height:240,encoding:'luma8',data:Buffer.alloc(320*240,80).toString('base64')}});
  });
  await page.goto('/');await expect(page.locator('#connection')).toHaveText('Home Server online');
- await page.locator('#canvas canvas').click({button:'right',position:{x:200,y:200}});
+ await page.locator('.agent-tool[aria-label="New note"]').click();await page.locator('#canvas canvas').click({position:{x:200,y:200}});
  await expect(page.locator('#label-dialog')).toBeVisible();await expect(page.locator('#label-dialog-text')).toBeEnabled();
  expect(picked[0].source).toBe('scene');expect(picked[0].origin).toHaveLength(3);
- await page.locator('#label-dialog-text').fill('Shelf');await page.getByRole('button',{name:'Save label',exact:true}).click();
+ await page.locator('#label-dialog-text').fill('Shelf');await page.getByRole('button',{name:'Save note',exact:true}).click();
  await expect(page.locator('#label-dialog')).not.toBeVisible();expect(saved).toEqual([{token:'hit-token',text:'Shelf'}]);
  await page.selectOption('#sensor-select','peer/camera');await expect(page.locator('#sensor-feed-status')).toContainText('Receiving');
  await page.locator('#sensor-image').click({button:'right',position:{x:100,y:80}});
@@ -453,8 +457,8 @@ test('right-click labels use Home voxel hits and the displayed camera frame',asy
  const held=await page.locator('#sensor-image').evaluate(c=>c.toDataURL());
  await page.getByRole('button',{name:'Cancel',exact:true}).click();expect(saved).toHaveLength(1);expect(held).toContain('data:image/png');
  await page.locator('#sensor-close').click();
- miss=true;await page.locator('#canvas canvas').click({button:'right',position:{x:200,y:200}});
- await expect(page.locator('#label-dialog-status')).toContainText('No occupied Home voxel');await expect(page.getByRole('button',{name:'Save label',exact:true})).toBeDisabled();
+ miss=true;await page.locator('.agent-tool[aria-label="New note"]').click();await page.locator('#canvas canvas').click({position:{x:200,y:200}});
+ await expect(page.locator('#label-dialog-status')).toContainText('No occupied Home voxel');await expect(page.getByRole('button',{name:'Save note',exact:true})).toBeDisabled();
  await page.keyboard.press('Escape');await expect(page.locator('#label-dialog')).not.toBeVisible();expect(saved).toHaveLength(1);
  expect(errors).toEqual([]);
 });
@@ -471,14 +475,14 @@ test('selected annotations can be deleted during live updates and disappear from
  });
  await page.goto('/');await page.selectOption('#map-select','home-live');
  await expect(page.locator('#canvas')).toHaveAttribute('data-note-count','1');
- const remove=page.getByRole('button',{name:'Delete annotation',exact:true});
+ const remove=page.getByRole('button',{name:'Delete',exact:true});
  // The map change eases the orbit camera toward its target; click once it settles.
  await expect(async()=>{await page.locator('#canvas canvas').click();await expect(remove).toBeVisible({timeout:500});}).toPass({timeout:10000});
  const before=requests;await expect.poll(()=>requests).toBeGreaterThan(before+2);await expect(remove).toBeVisible();
  await page.selectOption('#sensor-select','peer/camera');await page.getByLabel('AR',{exact:true}).check();
  await expect(page.locator('#sensor-ar-overlay')).toHaveAttribute('data-note-count','1');
  const denied=await request.delete('/api/notes/'+note.id,{headers:{Origin:'https://foreign.invalid'}});expect(denied.ok()).toBeFalsy();expect(await notes()).toHaveLength(1);
- await remove.click();await expect(page.locator('#canvas')).toHaveAttribute('data-note-count','0');
+ await remove.click();await page.getByRole('button',{name:'Delete note',exact:true}).click();await expect(page.locator('#canvas')).toHaveAttribute('data-note-count','0');
  await expect(page.locator('#sensor-ar-overlay')).toHaveAttribute('data-note-count','0');
  expect(await notes()).toHaveLength(0);await expect(remove).toHaveCount(0);
  await page.reload();expect(await notes()).toHaveLength(0);
