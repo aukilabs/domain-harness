@@ -68,6 +68,8 @@ struct ViewerScreen: View {
             if !controller.snoozed { MessageFound(center: controller.messages) }
             VStack(spacing: 0) {
                 MessageBanner(center: controller.messages) { withAnimation { showMessages = true } }
+                // The messages open at the top, beside the buttons, not under them.
+                ZStack(alignment: .topTrailing) {
                 HStack(alignment: .top) {
                     VolumeControls(editor: controller.volumes, peer: peer)
                     Spacer(minLength: 0)
@@ -126,8 +128,9 @@ struct ViewerScreen: View {
                 }
                 if showMessages && !controller.snoozed {
                     MessageList(center: controller.messages) { withAnimation { showMessages = false } }
-                        .padding(.horizontal).frame(maxWidth: .infinity, alignment: .trailing)
+                        .padding(.top, 16).padding(.trailing, 80)
                         .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .topTrailing)))
+                }
                 }
                 Spacer()
             }
@@ -248,6 +251,13 @@ struct ViewerScreen: View {
             }
         }
         .animation(.easeInOut(duration: 0.3), value: controller.snoozed)
+        .onChange(of: peer.annotationResult) { _, result in
+            guard let result, let id = peer.takeDeletedNote(result.id) else { return }
+            print("[message] Delete of \(id): \(result.saved ? "done" : result.detail)")
+            guard !result.saved else { return }
+            controller.messages.keep(id)
+            controller.showMessageResult("Home did not delete that message: \(result.detail)")
+        }
         .onAppear {
             screen.start()
             peer.onMap = { controller.load($0) }
@@ -260,6 +270,14 @@ struct ViewerScreen: View {
             controller.onGeo = { peer.setGeo($0) }
             controller.onStroke = { peer.saveStroke($0, frame: $1, done: $2) }
             controller.onErase = { peer.eraseStroke($0, frame: $1, done: $2) }
+            controller.messages.onDelete = { [weak controller] message in
+                guard let frame = controller?.map?.scenegraph.map.frame.id, peer.deleteNote(message.id, frame: frame) else {
+                    print("[message] Delete of \(message.id) not sent: not connected to Home")
+                    controller?.showMessageResult("Not connected to Home, so the message was not deleted.")
+                    return false
+                }
+                return true
+            }
             peer.onPortalResult = { controller.showPortalResult($0) }
             // A Portal seen before Home's map has arrived offers sign-in once.
             controller.onPortalSeen = { _ in
@@ -1504,6 +1522,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private var guideShared: (id: String, route: [SIMD3<Float>], goal: SIMD3<Float>, frame: String)?
     /// When Home said it had saved that way. Nil while waiting to hear.
     private var guideSaved: Date?
+    /// Every way this phone has put on the map. Only the current one may stay there.
+    private var guideMine = Set<String>()
     /// When a way was last offered to Home, so a Home that cannot take one is not asked constantly.
     private var guideOffered = Date.distantPast
     private func endGuide() {
@@ -1512,8 +1532,18 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         guideRoute = []; guidePlanned = nil
         if messages.way != nil { messages.way = nil }
         // Nobody is being led any more, so the way comes off everyone's map.
-        if let shared = guideShared { onErase?(shared.id, shared.frame) { _ in } }
+        if let shared = guideShared { retire(shared.id, frame: shared.frame) }
         guideShared = nil; guideSaved = nil
+    }
+    /// Take a way nobody is following off the map: from this phone at once, and from Home,
+    /// asked again if it does not, so it does not stay on everyone's map.
+    private func retire(_ id: String, frame: String, tries: Int = 3) {
+        erasing.insert(id)
+        (root.childNodes + povRoot.childNodes).filter { $0.name == "scene-path:" + id }.forEach { $0.isHidden = true }
+        onErase?(id, frame) { [weak self] erased in
+            guard !erased, tries > 1 else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { self?.retire(id, frame: frame, tries: tries - 1) }
+        }
     }
     /// Show a freshly planned way to everyone. A way already shown is kept while the phone is
     /// still on it and it still leads to the right place, so the map is not redrawn at every step.
@@ -1523,19 +1553,21 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         // Home is offered a way at most every few seconds.
         guard Date().timeIntervalSince(guideOffered) > 3 else { return }
         guideOffered = Date()
-        if let old = guideShared { onErase?(old.id, old.frame) { _ in } }
+        if let old = guideShared { retire(old.id, frame: old.frame) }
         guideRoot.childNodes.forEach { $0.removeFromParentNode() }
         guideShared = nil; guideSaved = nil
         let id = UUID().uuidString.lowercased()
         guard let path = MessageRoute.path(route, id: id, to: target.text) else { return }
         let color = UInt32(path.color.dropFirst(), radix: 16) ?? 0xff5fa8
-        let material = Self.crayonMaterial(UIColor(red: CGFloat((color >> 16) & 255) / 255, green: CGFloat((color >> 8) & 255) / 255,
-                                                   blue: CGFloat(color & 255) / 255, alpha: 1))
-        if let node = Self.pathNode(path.segments[0].map { SIMD3($0[0], $0[1], $0[2]) }, width: path.width_m, material: material) {
+        let shade = UIColor(red: CGFloat((color >> 16) & 255) / 255, green: CGFloat((color >> 8) & 255) / 255,
+                            blue: CGFloat(color & 255) / 255, alpha: 1)
+        let material = Self.flowingMaterial(shade)
+        if let node = Self.pathNode(path.segments[0].map { SIMD3($0[0], $0[1], $0[2]) }, width: path.width_m, material: material, cap: shade) {
             node.name = id
             guideRoot.addChildNode(node)
         }
         guideShared = (id, route, target.position, frame)
+        guideMine.insert(id)
         // If Home cannot take it, the phone still shows its own copy, and offers it again:
         // a way nobody else can see is not yet shared.
         onStroke?(path, frame) { [weak self] saved in
@@ -1918,6 +1950,12 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         let saved = Set(map.render?.paths?.items.map(\.id) ?? [])
         crayonRoot.childNodes.filter { $0.isHidden }.forEach { $0.removeFromParentNode() }
         erasing.formIntersection(saved)
+        // One way at a time: an older way of this phone's that Home still lists, because its
+        // answer was lost or came late, is hidden here and erased.
+        let frame = map.scenegraph.map.frame.id
+        for id in saved where guideMine.contains(id) && id != guideShared?.id && !erasing.contains(id) {
+            retire(id, frame: frame)
+        }
         crayonRoot.childNodes.filter { saved.contains($0.name ?? "") }.forEach { $0.removeFromParentNode() }
         if crayonRoot.parent == nil { root.addChildNode(crayonRoot) }
         for portal in map.scenegraph.anchors.values.sorted(by: { $0.anchor_id < $1.anchor_id }) {
@@ -1954,11 +1992,13 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         if let paths = map.render?.paths, paths.frame == map.scenegraph.map.frame.id {
             for stroke in paths.items where CrayonStroke.widths.contains(stroke.width_m) && !erasing.contains(stroke.id) {
                 let color = UInt32(stroke.color.dropFirst(), radix: 16) ?? 0xffca55
-                let material = Self.crayonMaterial(UIColor(red: CGFloat((color >> 16) & 255)/255,
-                    green: CGFloat((color >> 8) & 255)/255, blue: CGFloat(color & 255)/255, alpha: 1))
-                for segment in stroke.segments {
+                let shade = UIColor(red: CGFloat((color >> 16) & 255)/255,
+                    green: CGFloat((color >> 8) & 255)/255, blue: CGFloat(color & 255)/255, alpha: 1)
+                let material = Self.flowingMaterial(shade)
+                for (index, segment) in stroke.segments.enumerated() {
                     let points = segment.filter { $0.count == 3 }.map { SIMD3<Float>($0[0], $0[1], $0[2]) }
-                    guard let node = Self.pathNode(points, width: stroke.width_m, material: material) else { continue }
+                    guard let node = Self.pathNode(points, width: stroke.width_m, material: material,
+                                                   cap: index == stroke.segments.count - 1 ? shade : nil) else { continue }
                     node.name = "scene-path:" + stroke.id
                     root.addChildNode(node)
                 }
@@ -2454,14 +2494,63 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         return material
     }
 
+    /// A saved path's colour with a glow that runs along it the way it was drawn: a long
+    /// brightening tail and a sharp head, so even a still frame shows which way it goes.
+    private static func flowingMaterial(_ color: UIColor) -> SCNMaterial {
+        let material = crayonMaterial(color)
+        material.diffuse.contents = glow(color)
+        material.diffuse.wrapS = .repeat; material.diffuse.wrapT = .clamp
+        material.diffuse.contentsTransform = flowShift
+        flowing.add(material.diffuse)
+        return material
+    }
+    /// Metres between glows, and how fast they travel.
+    private static let flowTile: Float = 0.45, flowSpeed: Float = 0.7
+    private static let flowing = NSHashTable<SCNMaterialProperty>.weakObjects()
+    private static var flowShift = SCNMatrix4MakeScale(1 / flowTile, 1, 1)
+    /// Moves every path's glow on, from one clock, so a path rebuilt when Home's map
+    /// changes carries on where it was instead of starting again.
+    private static func flow(at time: TimeInterval) {
+        let shift = Float((time * Double(flowSpeed / flowTile)).truncatingRemainder(dividingBy: 1))
+        flowShift = SCNMatrix4Mult(SCNMatrix4MakeScale(1 / flowTile, 1, 1), SCNMatrix4MakeTranslation(-shift, 0, 0))
+        for property in flowing.allObjects { property.contentsTransform = flowShift }
+    }
+    private static var glowTiles = [UIColor: UIImage]()
+    private static func glow(_ color: UIColor) -> UIImage {
+        if let tile = glowTiles[color] { return tile }
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        color.getRed(&r, green: &g, blue: &b, alpha: &a)
+        let light = UIColor(red: r + (1 - r) * 0.75, green: g + (1 - g) * 0.75, blue: b + (1 - b) * 0.75, alpha: 1)
+        let tile = UIGraphicsImageRenderer(size: CGSize(width: 128, height: 4)).image { drawn in
+            let colors = [color, color, light, light, color].map(\.cgColor) as CFArray
+            let locations: [CGFloat] = [0, 0.3, 0.86, 0.92, 1]
+            if let ramp = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: locations) {
+                drawn.cgContext.drawLinearGradient(ramp, start: .zero, end: CGPoint(x: 128, y: 0), options: [])
+            }
+        }
+        glowTiles[color] = tile
+        return tile
+    }
+
     /// One smooth tube through a segment's points.
-    private static func pathNode(_ points: [SIMD3<Float>], width: Float, material: SCNMaterial) -> SCNNode? {
+    /// With `cap`, a small ball of that colour marks where the line ends.
+    private static func pathNode(_ points: [SIMD3<Float>], width: Float, material: SCNMaterial, cap: UIColor? = nil) -> SCNNode? {
         guard let mesh = CrayonTube.mesh(points, radius: width / 2) else { return nil }
-        let geometry = SCNGeometry(sources: [SCNGeometrySource(vertices: mesh.vertices.map { SCNVector3($0.x, $0.y, $0.z) })],
+        let geometry = SCNGeometry(sources: [SCNGeometrySource(vertices: mesh.vertices.map { SCNVector3($0.x, $0.y, $0.z) }),
+                                             SCNGeometrySource(textureCoordinates: mesh.along.map { CGPoint(x: CGFloat($0.x), y: CGFloat($0.y)) })],
                                    elements: [SCNGeometryElement(indices: mesh.indices, primitiveType: .triangles)])
         material.isDoubleSided = true
         geometry.materials = [material]
-        return SCNNode(geometry: geometry)
+        let node = SCNNode(geometry: geometry)
+        if let cap, let end = points.last {
+            let ball = SCNSphere(radius: CGFloat(width) * 1.1)
+            ball.segmentCount = 16
+            ball.materials = [crayonMaterial(cap)]
+            let capNode = SCNNode(geometry: ball)
+            capNode.simdPosition = end
+            node.addChildNode(capNode)
+        }
+        return node
     }
 
     private func abandonStroke() {
@@ -2470,11 +2559,16 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     /// Add the point under the finger to the line being drawn, and redraw the piece it changed.
+    private var crayonMissLogged = false
     private func sampleCrayon() {
         guard let touch = crayonTouch, let node = crayonNode, crayonTool != .erase else { return }
         let ray = sceneRay(at: touch)
         let point = crayonTool == .spray ? ray.map { $0.origin + $0.direction * 0.5 }
                                          : ray.flatMap { SceneRay.hit(origin: $0.origin, direction: $0.direction, scene: map?.render) }
+        if point == nil, crayonTool == .surface, !crayonMissLogged {
+            crayonMissLogged = true
+            print("[crayon] Nothing under the finger: ray \(ray.map { "from \($0.origin) along \($0.direction)" } ?? "none (not aligned or tracking limited)"), \(map?.render?.voxels.count ?? -1) voxels")
+        }
         guard crayonDraft.add(point) != nil else { return }
         let index = crayonDraft.segments.count - 1
         let material = node.childNodes.first?.geometry?.firstMaterial ?? Self.crayonMaterial(UIColor(crayonColor))
@@ -2519,6 +2613,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         switch gesture.state {
         case .began where crayonTool != .erase:
             abandonStroke()
+            crayonMissLogged = false
             let node = SCNNode(); node.name = UUID().uuidString.lowercased()
             crayonRoot.addChildNode(node); crayonNode = node
             crayonTouch = point
@@ -2682,6 +2777,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     /// Report an unknown Portal once two measurements a moment apart agree, so
     /// one noisy read cannot place it. Needs an alignment from a known Portal,
     /// unless the scene has no Portals: then this one is offered as its origin.
+    func showMessageResult(_ text: String) { showToast(text, good: false) }
     func showPortalResult(_ text: String) {
         let good = text.contains("added to Home") || text.contains("moved in Home")
         UINotificationFeedbackGenerator().notificationOccurred(good ? .success : .error)
@@ -2873,6 +2969,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         if snoozed { return }
         checkRest(frame)
         if snoozed { return }
+        Self.flow(at: frame.timestamp)
         sampleCrayon()
         // Aligned frames are shared below, together with their pose.
         if !aligned { shareCamera(frame, alignment: 0, withPose: false) }
@@ -3131,8 +3228,24 @@ final class MessageCenter: ObservableObject {
         return reached
     }
     private var shown = 0
+    /// Asks Home to delete a message, and says whether the request went out.
+    var onDelete: ((MessageInbox.Message) -> Bool)?
+    /// Deleted on this phone and still in Home's last scene, so kept out of the list.
+    @Published private(set) var deleting = Set<String>()
+    var listed: [MessageInbox.Message] { inbox.messages.filter { !deleting.contains($0.id) } }
+    func delete(_ message: MessageInbox.Message) {
+        guard onDelete?(message) == true else { return }
+        deleting.insert(message.id)
+        if target?.id == message.id { target = nil; aim = nil; way = nil }
+        banner.removeAll { $0.id == message.id }
+    }
+    /// Home did not delete it, so it comes back.
+    func keep(_ id: String) { deleting.remove(id) }
 
     func record(_ notes: [RenderScene.Note], frame: String, mine: Set<String>) {
+        // Once Home's scene drops a deleted message there is nothing left to hide.
+        let present = Set(notes.map(\.id))
+        if !deleting.isSubset(of: present) { deleting.formIntersection(present) }
         var next = inbox
         let arrived = next.record(notes, frame: frame, mine: mine)
         if next != inbox { inbox = next }
@@ -3255,6 +3368,8 @@ struct MessageButton: View {
 struct MessageList: View {
     @ObservedObject var center: MessageCenter
     let close: () -> Void
+    /// The message held down, which shows its Delete button.
+    @State private var armed: String?
     var body: some View {
         let unread = center.inbox.unread
         VStack(alignment: .leading, spacing: 8) {
@@ -3269,26 +3384,46 @@ struct MessageList: View {
                 rows
                 ScrollView { rows }
             }
-            .frame(maxHeight: 300)
+            .frame(maxHeight: 150)
             Text("Tap a message to be shown where it is.").themeText(10).foregroundStyle(Theme.dim)
         }
-        .themePanel(padding: 14).frame(maxWidth: 300)
+        .themePanel(padding: 12).frame(maxWidth: 260)
     }
     private var rows: some View {
         VStack(alignment: .leading, spacing: 2) {
-            ForEach(Array(center.inbox.messages.enumerated()), id: \.element.id) { index, message in
-                Button { center.find(message); close() } label: {
+            ForEach(Array(center.listed.enumerated()), id: \.element.id) { index, message in
+                HStack(spacing: 6) {
                     HStack(spacing: 8) {
                         Text("\(index + 1)").themeLabel(10, .semibold).foregroundStyle(Theme.dim).frame(width: 22, alignment: .trailing)
                         Text(message.text).themeText(12, message.unread ? .bold : .regular)
-                            .lineLimit(2).multilineTextAlignment(.leading)
+                            .lineLimit(1).multilineTextAlignment(.leading)
                         Spacer(minLength: 0)
                         if message.unread { Circle().fill(Theme.accent).frame(width: 8, height: 8) }
                     }
-                    .themeRow(selected: message.id == center.target?.id)
+                    // Held, a message offers Delete. Tapping anything else puts it back.
+                    if armed == message.id {
+                        Button { armed = nil; center.delete(message) } label: {
+                            Image(systemName: "trash.fill").font(.system(size: 12, weight: .bold)).foregroundStyle(Theme.onAccent)
+                                .frame(width: 30, height: 30).background(Theme.accent, in: Circle())
+                        }
+                        .accessibilityLabel("Delete this message for everyone")
+                        .transition(.scale.combined(with: .opacity))
+                    }
                 }
-                .buttonStyle(.plain)
+                .themeRow(selected: armed == message.id || (message.id == center.target?.id))
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    if armed != nil { withAnimation { armed = nil }; return }
+                    center.find(message); close()
+                }
+                .onLongPressGesture(minimumDuration: 0.45) {
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { armed = message.id }
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isButton)
                 .accessibilityLabel("Message \(index + 1)\(message.unread ? ", new" : ""): \(message.text)")
+                .accessibilityAction(named: "Delete") { center.delete(message) }
             }
         }
     }

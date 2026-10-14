@@ -57,6 +57,18 @@ final class HomePeer: ObservableObject {
         annotationResult = nil
         return json.withCString { spatial_mobile_annotate($0) == 1 }
     }
+    /// Ask Home to delete a note. Home answers in `annotationResult` under the returned id.
+    private var deletingNotes = [String: String]()
+    /// The note a delete request was for, once, when its answer comes.
+    func takeDeletedNote(_ request: String) -> String? { deletingNotes.removeValue(forKey: request) }
+    func deleteNote(_ id: String, frame: String) -> Bool {
+        let request = UUID().uuidString.lowercased()
+        let body: [String: Any] = ["request_id": request, "frame": frame, "action": ["kind": "delete", "id": id]]
+        guard let data = try? JSONSerialization.data(withJSONObject: body),
+              let json = String(data: data, encoding: .utf8), changeAnnotation(json) else { return false }
+        deletingNotes[request] = id
+        return true
+    }
     func changeAnnotation(_ json: String) -> Bool {
         guard state == "live" else { return false }
         annotationResult = nil
@@ -120,9 +132,12 @@ final class HomePeer: ObservableObject {
     private var pathAnswers = [String: (Bool) -> Void]()
     private func changePath(_ id: String, _ change: some Encodable, done: @escaping (Bool) -> Void) {
         guard state == "live", let data = try? JSONEncoder().encode(change), let json = String(data: data, encoding: .utf8),
-              json.withCString({ spatial_mobile_change_path($0) == 1 }) else { done(false); return }
+              json.withCString({ spatial_mobile_change_path($0) == 1 }) else { print("[crayon] Path \(id) not sent: Home is not connected, or too many changes are waiting"); done(false); return }
         pathAnswers[id] = done
-        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in self?.pathAnswers.removeValue(forKey: id)?(false) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
+            guard let done = self?.pathAnswers.removeValue(forKey: id) else { return }
+            print("[crayon] Path \(id): no answer from Home in 6 s"); done(false)
+        }
     }
     var onMap: ((PortalMap) -> Void)?
     /// Home's answer to a new-Portal report, for the user to see.
@@ -237,6 +252,12 @@ final class HomePeer: ObservableObject {
         let annotation: AnnotationResult?
         let depth_detail: String
         let local_detail: String?
+        let paths: [PathAnswer]?
+    }
+    private struct PathAnswer: Decodable {
+        let id: String
+        let done: Bool
+        let error: String?
     }
     private func poll() {
         guard let pointer = spatial_mobile_poll() else { return }
@@ -248,13 +269,10 @@ final class HomePeer: ObservableObject {
                 // User-requested Stop must not briefly redisplay an in-flight scene.
                 if state != "stopping" {
                     depthDetail = response.update.depth_detail
-                    // "Path <id> saved", "Path <id> removed", or "Path <id> not …: why".
-                    if let note = response.update.local_detail, note.hasPrefix("Path ") {
-                        let words = note.split(separator: " ", maxSplits: 3)
-                        if words.count >= 3, let done = pathAnswers.removeValue(forKey: String(words[1])) {
-                            if words[2] == "not" { print("[crayon] \(note)") }
-                            done(words[2] != "not")
-                        }
+                    for answer in response.update.paths ?? [] {
+                        guard let done = pathAnswers.removeValue(forKey: answer.id) else { continue }
+                        if let error = answer.error { print("[crayon] Path \(answer.id) not changed: \(error)") }
+                        done(answer.done)
                     }
                     if let note = response.update.local_detail, note != portalDetail, note.hasPrefix("Portal ") || note.hasPrefix("Home did not add") {
                         portalDetail = note
