@@ -5,6 +5,30 @@ use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 
+pub fn tool() -> Value {
+    json!({"type":"function","function":{"name":"get_peer_pose","description":"Read one peer's current calibrated pose in the selected Home scene, using the same registry-backed resolver as the viewer. Resolve its exact peer_id from inspect_scenegraph or inspect_catalog first. Use for peer whereabouts, distance, and choosing a viewpoint. Returns capture clock/time, source provenance and arrival freshness; unavailable, stale, lost or ambiguous poses fail without using saved peer labels or guessing coordinates. Does not move a robot or camera.","parameters":{"type":"object","properties":{"peer_id":{"type":"string","minLength":1}},"required":["peer_id"],"additionalProperties":false}}})
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Query { peer_id: String }
+
+/// Read only the requested peer. Scene identity is supplied by Home, never by
+/// tool arguments. The viewer owns subscription, authentication and transforms.
+pub async fn get(tx: &mpsc::Sender<crate::sensor_preview::Request>, network: &Value, args: Value, frame: &str) -> Result<Value> {
+    let query: Query = serde_json::from_value(args)?;
+    ensure!(!query.peer_id.trim().is_empty(), "Peer ID required");
+    let value = read_peer(tx, network, &query.peer_id, frame).await?;
+    let row = peer_row(network, &query.peer_id)?;
+    let location = sourced_location(&value, product(row)?, frame)?;
+    Ok(json!({"peer_id":query.peer_id,"location":location}))
+}
+
+fn peer_row<'a>(network: &'a Value, peer: &str) -> Result<&'a Value> {
+    network["peers"].as_array().and_then(|p| p.iter().find(|p| p["peer_id"] == peer))
+        .ok_or_else(|| anyhow!("Peer unavailable"))
+}
+
 fn product(peer: &Value) -> Result<&Value> {
     let products = peer["catalog"]["products"].as_array().ok_or_else(||anyhow!("Peer Catalog unavailable"))?;
     let mut sampled = products.iter().filter(|p| p["metadata"]["schema"] == crate::compact_pose::METADATA
@@ -27,6 +51,40 @@ fn location(value: &Value, frame: &str, additional_age: Duration) -> Result<Valu
     ensure!(position.iter().all(|v|v.is_finite()), "Invalid pose position");
     Ok(json!({"position":position,"frame":frame,"received_age_ms":age,
         "capture_timestamp_ns":value["timestamp_ns"],"source":"registry-backed live pose"}))
+}
+
+/// Keep the exact source identity and capture clock from the validated viewer
+/// result, without returning its 300-sample inspector history to the model.
+fn sourced_location(value: &Value, product: &Value, frame: &str) -> Result<Value> {
+    let mut result = location(value, frame, Duration::ZERO)?;
+    let pose: auki_odometry::Pose = serde_json::from_value(value["home_pose"]["tracking"]["pose"].clone())?;
+    pose.validate()?;
+    let contract: crate::compact_pose::Contract = serde_json::from_value(value["resolved"]["references"].clone())?;
+    let resolved: auki_odometry::PoseContract = serde_json::from_value(value["resolved"]["contract"].clone())?;
+    resolved.validate()?;
+    ensure!(contract.from_frame == (&resolved.from_frame).into()
+        && contract.to_frame == (&resolved.to_frame).into()
+        && contract.clock == resolved.clock && contract.session_id == resolved.session_id,
+        "Resolved pose provenance mismatch");
+    let clock: auki_components::clock::ClockRegistryEntry = serde_json::from_value(value["resolved"]["clock_definition"].clone())?;
+    ensure!(crate::model::clock_ref(&clock) == contract.clock, "Capture clock definition mismatch");
+    let manifest: auki_components::ProductManifest = serde_json::from_value(product["manifest"].clone())?;
+    ensure!(product["manifest_hash"] == manifest.hash(), "Pose Product hash mismatch");
+    let output: auki_components::OutputReference = serde_json::from_value(value["observation"]["output"].clone())?;
+    ensure!(output == manifest.producer && output.output_id == contract.output_id(), "Pose source Output mismatch");
+    let timestamp = value["observation"]["timestamp_ns"].as_u64().ok_or_else(|| anyhow!("Pose capture timestamp unavailable"))?;
+    let sequence = value["observation"]["sequence"].as_u64().ok_or_else(|| anyhow!("Pose source sequence unavailable"))?;
+    // The viewer emits strings alongside the u64 Observation so browser/model
+    // consumers never round nanoseconds through a floating-point JSON number.
+    ensure!(value["timestamp_ns"] == timestamp.to_string() && value["sequence"] == sequence.to_string(), "Pose capture provenance mismatch");
+    result["rotation_xyzw"] = json!(pose.rotation_xyzw);
+    result["clock"] = json!(contract.clock);
+    result["freshness"] = json!({"status":"live","basis":"arrival","maximum_received_age_ms":2000});
+    result["alignment_timestamp_ns"] = value["home_pose"]["alignment_timestamp_ns"].clone();
+    result["source"] = json!({"product":manifest.reference(),"output":output,"sequence":sequence.to_string(),
+        "contract":contract,"frame_definitions":{"from_frame":resolved.from_frame,"to_frame":resolved.to_frame},
+        "clock_definition":clock});
+    Ok(result)
 }
 
 pub async fn read(tx: &mpsc::Sender<crate::sensor_preview::Request>, peer: &Value, frame: &str) -> Result<Value> {
@@ -68,7 +126,7 @@ pub fn relative(value:&Value,frame:&str,direction:&str,distance:f64)->Result<[f6
 }
 
 pub async fn read_peer(tx:&mpsc::Sender<crate::sensor_preview::Request>,network:&Value,peer:&str,frame:&str)->Result<Value> {
-    let row=network["peers"].as_array().and_then(|p|p.iter().find(|p|p["peer_id"]==peer)).ok_or_else(||anyhow!("Peer unavailable"))?;
+    let row=peer_row(network,peer)?;
     let value=read(tx,row,frame).await?;location(&value,frame,Duration::ZERO)?;Ok(value)
 }
 
@@ -96,6 +154,37 @@ pub async fn enrich(mut scene: Value, network: Value, tx: mpsc::Sender<crate::se
 
 #[cfg(test)] mod tests {
     use super::*;
+    #[tokio::test] async fn only_requested_peer_is_read_and_failures_are_not_substituted() {
+        let target=json!({"peer_id":"wanted","catalog":{"products":[{"manifest":{"peer_id":"wanted","product_id":"poses"},"manifest_hash":"wanted-hash","metadata":{"schema":crate::compact_pose::METADATA,"value":{}}}]}});
+        let unavailable=json!({"peer_id":"unrelated-slow","catalog":{"products":[{"manifest":{"peer_id":"unrelated-slow","product_id":"poses"},"manifest_hash":"slow-hash","metadata":{"schema":crate::compact_pose::METADATA,"value":{}}}]}});
+        let network=json!({"peers":[unavailable,{"peer_id":"unrelated-offline","catalog":null},target]});
+        for error in ["Tracking is not valid", "Pose is stale", "Scene transform was revoked at capture time"] {
+            let (tx,mut rx)=mpsc::channel::<crate::sensor_preview::Request>(2);
+            let worker=tokio::spawn(async move {
+                let query=rx.recv().await.unwrap();
+                assert_eq!(query.sensor.as_deref(),Some("wanted/poses"));
+                assert_eq!(query.home_frame.as_deref(),Some("selected-home"));
+                assert_eq!(query.expected_manifest.as_deref(),Some("wanted-hash"));
+                query.reply.send(Err(anyhow!(error))).unwrap();
+                assert!(rx.try_recv().is_err());
+            });
+            let result=tokio::time::timeout(Duration::from_millis(500),get(&tx,&network,json!({"peer_id":"wanted"}),"selected-home")).await.unwrap();
+            assert_eq!(result.unwrap_err().to_string(),error);
+            worker.await.unwrap();
+        }
+    }
+    #[tokio::test] async fn invalid_arguments_missing_peers_and_ambiguous_products_do_not_request_poses() {
+        let (tx,mut rx)=mpsc::channel(2);
+        let network=json!({"peers":[]});
+        for args in [json!({"peer_id":""}),json!({"peer_id":"missing"}),json!({"peer_id":"missing","frame":"another-scene"})] {
+            assert!(get(&tx,&network,args,"home").await.is_err());
+        }
+        let p=json!({"manifest":{"peer_id":"peer","product_id":"pose"},"manifest_hash":"hash","metadata":{"schema":crate::compact_pose::METADATA,"value":{}}});
+        let ambiguous=json!({"peers":[{"peer_id":"peer","catalog":{"products":[p,p]}}]});
+        assert_eq!(get(&tx,&ambiguous,json!({"peer_id":"peer"}),"home").await.unwrap_err().to_string(),"Ambiguous sampled pose Products");
+        assert!(rx.try_recv().is_err());
+        assert_eq!(tool()["function"]["parameters"]["additionalProperties"],false);
+    }
     #[test] fn relative_offsets_follow_registry_axes_not_peer_names() {
         for (source,expected) in [
             (auki_registry::FrameRegistryEntry::opengl("arbitrary","camera"),[1.,2.,1.]),
