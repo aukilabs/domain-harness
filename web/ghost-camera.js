@@ -58,6 +58,8 @@ export function createGhostCamera({camera,controls,enabled,canvas,host=window,do
  return {tick(now){
   if(blocked()){reset();return false;}
   const dt=last===null?0:Math.min(.05,(now-last)/1000);last=now;
+  // Idle: nothing held and nothing still coasting, so skip the per-frame vector work.
+  if(!keys.size&&!velocity[0]&&!velocity[1]&&!velocity[2])return false;
   const distance=camera.position.distanceTo(controls.target);
   // Turning: orbit the camera around the target about the vertical.
   const turn=Number(keys.has('KeyE'))-Number(keys.has('KeyQ'));

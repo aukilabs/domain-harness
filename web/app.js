@@ -915,15 +915,18 @@ function updateFlatten(){
 // Screen-sized sprites (note bubbles) rely on a perspective matrix to stay constant on screen; while the
 // projection is blended, scale them so their on-screen size doesn't change. Restores them when flat ends.
 const spriteView=new THREE.Vector3();
+// The screen-sized sprites are gathered every 30 frames rather than walking the whole scene each frame
+// (the default top-down view keeps the flatten on constantly).
+let flatSprites=[],flatSpritesAge=Infinity;
 function keepSpriteSizes(amount){
  camera.updateMatrixWorld();const p00=camera.projectionMatrix.elements[0],perspective00=flatPerspective.elements[0];
- scene.traverse(obj=>{
-  if(!obj.isSprite||obj.material.sizeAttenuation!==false)return;
-  if(!amount){if(obj.userData.baseScale){obj.scale.copy(obj.userData.baseScale);delete obj.userData.baseScale;}return;}
+ if(!amount||++flatSpritesAge>30){flatSprites=[];scene.traverse(obj=>{if(obj.isSprite&&obj.material.sizeAttenuation===false)flatSprites.push(obj);});flatSpritesAge=0;}
+ for(const obj of flatSprites){
+  if(!amount){if(obj.userData.baseScale){obj.scale.copy(obj.userData.baseScale);delete obj.userData.baseScale;}continue;}
   const base=obj.userData.baseScale??=obj.scale.clone();
   const depth=-spriteView.setFromMatrixPosition(obj.matrixWorld).applyMatrix4(camera.matrixWorldInverse).z;
   obj.scale.copy(base).multiplyScalar(perspective00*((1-amount)*depth+amount)/p00);
- });
+ }
 }
 renderer.setAnimationLoop(now=>{easeViewOffset();if(!cameraPan.tick(now)&&!attachedCamera.isActive())controls.update();ghostCamera.tick(now);if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);updateFlatten();
  // Volume handles are HTML placed from this frame's camera: settle its matrices and projection first so they never trail a glide.
