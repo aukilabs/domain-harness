@@ -194,7 +194,7 @@ const fleetList=document.createElement('div');fleetList.id='fleet-sensors';panel
 const {createPoseInspector}=await import('/pose-inspector.js');
 const inspectPose=createPoseInspector(panelBodies.fleet);
 const disconnectRobots=document.createElement('button');disconnectRobots.id='disconnect-robots';disconnectRobots.className='panel-row';disconnectRobots.textContent='Disconnect simulated robots';disconnectRobots.hidden=true;panelBodies.fleet.append(disconnectRobots);
-disconnectRobots.onclick=async()=>{disconnectRobots.disabled=true;try{await api('/api/simulation/disconnect',{});}catch(e){disconnectRobots.disabled=false;availability.hidden=false;availability.textContent=e.message;}};
+disconnectRobots.onclick=async()=>{disconnectRobots.disabled=true;try{await api('/api/simulation/disconnect',{});}catch(e){disconnectRobots.disabled=false;showAvailability(e.message);}};
 const notesBody=panelBodies.notes;
 const tagsBody=panelBodies.tags;
 let fleetNetwork=null,fleetSignature='';
@@ -223,8 +223,20 @@ let homeOffline=false,catalogInitialized=false;
 function isLocalScene(map=activeMap){return map.startsWith('local:');}
 function localSceneUrl(map=activeMap){return '/api/local-scenes/'+encodeURIComponent(map.slice(6));}
 function noteUrl(id,map=activeMap){return '/api/notes/'+encodeURIComponent(id)+(isLocalScene(map)?'?scene='+encodeURIComponent(map.slice(6)):'');}
-const availability=document.createElement('div');availability.id='scene-availability';availability.setAttribute('role','status');availability.style.cssText='position:absolute;top:48px;left:12px;right:12px;z-index:90;padding:10px;background:#432b20;color:#fff;font:12px system-ui;pointer-events:none';availability.hidden=true;$('canvas').append(availability);
-function markOffline(){homeOffline=true;availability.hidden=false;availability.textContent='Home offline · showing a cached browser view, not a live or saved map';renderMapRows();}
+// Scene status notice: a glass pill at the top of the view. The text before the first " · " is the title and
+// the rest the detail; the dot's tone comes from the wording (unavailable/offline/failed, read-only, live).
+const availability=document.createElement('div');availability.id='scene-availability';availability.className='scene-notice';availability.setAttribute('role','status');availability.hidden=true;
+availability.innerHTML='<span class="scene-notice-dot" aria-hidden="true"></span><span class="scene-notice-text"><strong></strong><span></span></span><button type="button" class="scene-notice-close" aria-label="Dismiss"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4.5 4.5l9 9M13.5 4.5l-9 9"/></svg></button>';
+availability.querySelector('.scene-notice-close').onclick=()=>{availability.hidden=true;};$('canvas').append(availability);
+function availabilityText(text){
+ if(availability.title===String(text))return;
+ const [title,...rest]=String(text).split(' · '),detail=rest.join(' · ');
+ availability.querySelector('strong').textContent=title;availability.querySelector('.scene-notice-text>span').textContent=detail;availability.title=text;
+ availability.dataset.tone=/unavailable|offline|fail|error|invalid|no compact|multiple/i.test(text)?'error':/read-only|retained|unaligned/i.test(text)?'warn':'info';
+ if(!availability.hidden&&!matchMedia('(prefers-reduced-motion: reduce)').matches)availability.animate([{opacity:.4,transform:'translate(-50%,-4px)'},{opacity:1,transform:'translate(-50%,0)'}],{duration:240,easing:'cubic-bezier(.2,.8,.2,1)'});
+}
+function showAvailability(text){availability.hidden=false;availabilityText(text);}
+function markOffline(){homeOffline=true;showAvailability('Home offline · showing a cached browser view, not a live or saved map');renderMapRows();}
 function isRunner(map=activeMap){return map==='runner'||map.startsWith('runner:');}
 function isSimulation(map=activeMap){return map==='sim-voxels'||map==='sim-occupancy';}
 function runnerUrl(endpoint,map=activeMap){return endpoint+(map.startsWith('runner:')?'?peer='+encodeURIComponent(map.slice(7)):'');}
@@ -353,8 +365,8 @@ async function refreshCompactTrail(){
  $('scene-title').textContent=(peer?.name||peer?.peer_id||'Peer')+' · pose trail';
  $('frame-info').textContent='Native peer space · no Home alignment';
  $('portal-info').textContent='Last 300 received poses since opening · older ghosts are fainter';
- if(!products.length){compactTrail.reset();availability.hidden=false;availability.textContent='No compact pose Product advertised by this peer';return;}
- if(products.length!==1){compactTrail.reset();availability.hidden=false;availability.textContent='Multiple sampled pose Products; inspect the desired Product in Devices';return;}
+ if(!products.length){compactTrail.reset();showAvailability('No compact pose Product advertised by this peer');return;}
+ if(products.length!==1){compactTrail.reset();showAvailability('Multiple sampled pose Products; inspect the desired Product in Devices');return;}
  // Each Product has its own declared frame/session; do not mix unrelated outputs.
  const product=products[0];
  const query=new URLSearchParams({debug_pose:'true',sensor:peer.peer_id+'/'+product.manifest.product_id,expected_manifest:product.manifest_hash});
@@ -363,8 +375,8 @@ async function refreshCompactTrail(){
   const result=compactTrail.update(data);
   $('frame-info').textContent=result.frame+' · native coordinates (registry-oriented display)';
   $('observation-count').textContent=String(result.count);
-  availability.hidden=false;availability.textContent=result.status+' · '+data.stream+' · '+product.manifest.product_id+(products.length>1?' · first pose Product':'');
- }catch(error){if(activeMap!==selected)return;compactTrail.reset();availability.hidden=false;availability.textContent='Pose trail unavailable · '+error.message;}
+  showAvailability(result.status+' · '+data.stream+' · '+product.manifest.product_id+(products.length>1?' · first pose Product':''));
+ }catch(error){if(activeMap!==selected)return;compactTrail.reset();showAvailability('Pose trail unavailable · '+error.message);}
 }
 // The volume module renders into the shared inspector card through this small interface.
 const volumeInspector={element:$('selection'),
@@ -858,7 +870,7 @@ function peerSceneUrl(map){return '/api/sensors?scene=true&sensor='+encodeURICom
 // shows the default grid, the camera jump or a flash of the empty state. A fallback reveals it regardless.
 function revealScene(){if(!$('canvas').classList.contains('scene-loading'))return;resizeCanvas();requestAnimationFrame(()=>requestAnimationFrame(()=>$('canvas').classList.remove('scene-loading')));}
 setTimeout(revealScene,5000);
-async function refresh(){if(activeMap.startsWith('peer-pose:')){if(refreshing)return;refreshing=true;try{await refreshCompactTrail();}finally{refreshing=false;}return;}if(refreshing)return;refreshing=true;refreshPeer();if(!isSimulation())refreshMapping();try{const selected=activeMap;const data=await api(isLocalScene(selected)?localSceneUrl(selected):selected.startsWith('peer-scene:')?peerSceneUrl(selected):selected.startsWith('phone:')?'/api/phone-local-scene?peer='+encodeURIComponent(selected.slice(6)):isSimulation(selected)?'/api/simulation/'+selected.slice(4):selected==='home-live'?'/api/home-live-scene':isRunner(selected)?runnerUrl('/api/runner-scene',selected):selected==='domain'?'/api/domain-scene':'/api/scene');if(selected!==activeMap)return;const content=JSON.stringify({...data,remote_status:undefined});if(content!==lastScene){lastScene=content;build(data);}else {data.receivedAt=performance.now();current=data;}homeOffline=false;renderMapRows();availability.hidden=!(selected==='sim-occupancy'&&data.simulation_status!=='running');if(!availability.hidden)availability.textContent='Retained on Home · robot publishers offline · no new observations';$('connection').textContent='Home Server online';}catch(e){revealScene();if(!e.status){markOffline();}else{availability.hidden=false;availability.textContent='Scene unavailable · '+e.message;if(activeMap==='sim-voxels'||activeMap.startsWith('peer-scene:')){Object.values(groups).forEach(clear);hideRobots();current=null;lastScene=null;}}$('connection').textContent=e.status?'Home online · scene unavailable':'Home offline';throw e;}finally{refreshing=false;}}
+async function refresh(){if(activeMap.startsWith('peer-pose:')){if(refreshing)return;refreshing=true;try{await refreshCompactTrail();}finally{refreshing=false;}return;}if(refreshing)return;refreshing=true;refreshPeer();if(!isSimulation())refreshMapping();try{const selected=activeMap;const data=await api(isLocalScene(selected)?localSceneUrl(selected):selected.startsWith('peer-scene:')?peerSceneUrl(selected):selected.startsWith('phone:')?'/api/phone-local-scene?peer='+encodeURIComponent(selected.slice(6)):isSimulation(selected)?'/api/simulation/'+selected.slice(4):selected==='home-live'?'/api/home-live-scene':isRunner(selected)?runnerUrl('/api/runner-scene',selected):selected==='domain'?'/api/domain-scene':'/api/scene');if(selected!==activeMap)return;const content=JSON.stringify({...data,remote_status:undefined});if(content!==lastScene){lastScene=content;build(data);}else {data.receivedAt=performance.now();current=data;}homeOffline=false;renderMapRows();availability.hidden=!(selected==='sim-occupancy'&&data.simulation_status!=='running');if(!availability.hidden)availabilityText('Retained on Home · robot publishers offline · no new observations');$('connection').textContent='Home Server online';}catch(e){revealScene();if(!e.status){markOffline();}else{showAvailability('Scene unavailable · '+e.message);if(activeMap==='sim-voxels'||activeMap.startsWith('peer-scene:')){Object.values(groups).forEach(clear);hideRobots();current=null;lastScene=null;}}$('connection').textContent=e.status?'Home online · scene unavailable':'Home offline';throw e;}finally{refreshing=false;}}
 async function action(fn){if(busy)return;busy=true;document.querySelectorAll('#load,#project,#replay').forEach(b=>b.disabled=true);$('notice').classList.remove('error');$('notice').textContent='Integrating…';try{await fn();await refresh();}catch(e){$('notice').textContent=e.message;$('notice').classList.add('error');}finally{busy=false;$('load').disabled=false;$('project').disabled=!current?.voxels.length;$('replay').disabled=!current?.sources.iphone;}}
 $('load').onclick=()=>action(async()=>{const f=await api('/api/fixtures');for(const c of f.contributions)await api('/api/contributions',c);$('notice').textContent='Two scans aligned through Portal A. Ready to project a detection.';});
 $('project').onclick=()=>action(async()=>{const f=await api('/api/fixtures');const result=await api('/api/detections',f.detection);$('notice').textContent=result.applied?'Book placed at the first occupied voxel hit.':'This detection is already placed. No duplicate object created.';});
@@ -1104,8 +1116,8 @@ function startNotePlacement(target=null){if(!current)return;if(!target)clearSele
 function stopNotePlacement(){placingNote=false;placementTarget=null;placementBanner.hidden=true;renderer.domElement.style.cursor='';newNoteButton.setAttribute('aria-pressed','false');}
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&placingNote){e.stopPropagation();stopNotePlacement();newNoteButton.focus();}},true);
 async function beginLabel(request,error){
- if(request?.source!=='camera'&&activeMap.startsWith('peer-scene:')) {availability.hidden=false;availability.textContent='Peer maps are read-only.';return;}
- if(request?.source!=='camera'&&activeMap.startsWith('phone:')) {availability.hidden=false;availability.textContent='Phone-local maps are unaligned and read-only.';return;}
+ if(request?.source!=='camera'&&activeMap.startsWith('peer-scene:')) {showAvailability('Peer maps are read-only.');return;}
+ if(request?.source!=='camera'&&activeMap.startsWith('phone:')) {showAvailability('Phone-local maps are unaligned and read-only.');return;}
  createNoteCard({request,error});
 }
 const shortId=id=>id.length>14?`${id.slice(0,6)}…${id.slice(-4)}`:id;
