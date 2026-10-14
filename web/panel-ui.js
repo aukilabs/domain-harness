@@ -138,3 +138,31 @@ export function toast(text){
  if(!region){region=element('div','toast');region.id='toast';region.setAttribute('role','status');document.querySelector('.viewport')?.append(region)||document.body.append(region);}
  region.textContent=text;region.hidden=false;clearTimeout(region.timer);region.timer=setTimeout(()=>{region.hidden=true;},3500);
 }
+
+// Animated reveal and hide for anything that expands: height plus a short fade.
+const reduceMotion=()=>matchMedia('(prefers-reduced-motion: reduce)').matches;
+export function reveal(el){
+ if(!el||reduceMotion())return;
+ const height=el.scrollHeight;if(!height)return;
+ el.style.overflow='hidden';
+ el.animate([{height:'0px',opacity:0,transform:'translateY(-4px)'},{height:height+'px',opacity:1,transform:'none'}],{duration:260,easing:'cubic-bezier(.2,.8,.2,1)'}).onfinish=()=>{el.style.overflow='';};
+}
+export function conceal(el,done){
+ if(!el||reduceMotion()||el.hidden||!el.offsetHeight){done?.();return;}
+ el.style.overflow='hidden';
+ const animation=el.animate([{height:el.offsetHeight+'px',opacity:1},{height:'0px',opacity:0}],{duration:180,easing:'cubic-bezier(.4,0,1,1)'});
+ animation.onfinish=()=>{el.style.overflow='';done?.();};
+}
+// Native <details>: animate between the summary's height and the full height.
+export function animateDetails(root=document){
+ root.addEventListener('click',e=>{
+  const summary=e.target.closest('summary');const details=summary?.parentElement;
+  if(!details||details.tagName!=='DETAILS'||reduceMotion()||details.dataset.animating)return;
+  e.preventDefault();details.dataset.animating='true';
+  const closed=summary.offsetHeight+'px';
+  if(!details.open){details.open=true;const open=details.scrollHeight+'px';details.style.overflow='hidden';
+   details.animate([{height:closed},{height:open}],{duration:260,easing:'cubic-bezier(.2,.8,.2,1)'}).onfinish=()=>{details.style.overflow='';delete details.dataset.animating;details.dispatchEvent(new Event('toggle'));};}
+  else{const open=details.offsetHeight+'px';details.style.overflow='hidden';
+   details.animate([{height:open},{height:closed}],{duration:180,easing:'cubic-bezier(.4,0,1,1)'}).onfinish=()=>{details.open=false;details.style.overflow='';delete details.dataset.animating;};}
+ });
+}
