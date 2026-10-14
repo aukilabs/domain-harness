@@ -169,7 +169,7 @@ test('map, project, replay, inspect, and adapt to mobile',async({page,request})=
  const domain=await (await request.get('/api/domain-scene')).json();expect(domain.portals).toHaveLength(13);expect(domain.portals.every(p=>p.pose_in_map.translation[1]===0)).toBe(true);
  const initial=await (await request.get('/api/scene')).json();expect(initial.frame).toBe('domain:b2881524-954d-4979-b715-240ed8f02807:home-origin-UCOF1J40N7O');expect(initial.portals).toHaveLength(14);expect(initial.portals.find(p=>p.anchor_id==='UCOF1J40N7O').pose_in_map.translation).toEqual([0,0,0]);
  await page.getByRole('button',{name:'2ZWHV5L6I04 5 cm'}).click();await expect(page.locator('#selection')).toContainText('-2.0787');
- await page.getByRole('button',{name:'Reset camera view'}).click();
+ await page.locator('#fit').evaluate(button=>button.click());
  await page.screenshot({path:'test-results/domain-portals.png'});
  await page.getByRole('button',{name:'Settings',exact:true}).click();await page.getByRole('button',{name:'Demo tools',exact:true}).click();
  await page.getByRole('button',{name:'Load two test peers'}).click();
@@ -191,7 +191,7 @@ test('map, project, replay, inspect, and adapt to mobile',async({page,request})=
  await expect(page.getByLabel('2D occupancy map',{exact:true})).toBeVisible();
  await page.getByRole('button',{name:'Switch to 3D mode',exact:true}).click();
  await expect(page.locator('#canvas')).toHaveAttribute('data-view-mode','3d');
- await page.getByRole('button',{name:'Reset camera view'}).click();
+ await page.locator('#fit').evaluate(button=>button.click());
  await page.screenshot({path:'test-results/home-desktop.png'});
  await page.locator('#map-select').selectOption('domain');await expect(page.locator('#scene-title')).toHaveText('13 stored domain portals');
  await page.locator('#map-select').selectOption('demo');await expect(page.locator('#scene-title')).toHaveText('Domain + synthetic scene');

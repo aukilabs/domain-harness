@@ -1,12 +1,11 @@
 // Bottom bar: scene tools plus the scene assistant. "Ask" morphs the toolbar into the chat input and
 // raises the conversation sheet above it. The chat itself (sending, history) stays in app.js; this
 // module owns the bar's modes, the tool buttons and the motion. Styles live in style.css under "Agent bar".
-import { icon, icons } from './panel-ui.js';
+import { icon } from './panel-ui.js';
 
 const reduceMotion=()=>matchMedia('(prefers-reduced-motion: reduce)').matches;
 const spring='cubic-bezier(.3,1.3,.5,1)';
 const el=(tag,className,text)=>{const node=document.createElement(tag);if(className)node.className=className;if(text!==undefined)node.textContent=text;return node;};
-export const orb=(size='')=>{const node=el('span','agent-orb'+(size?' '+size:''));node.setAttribute('aria-hidden','true');return node;};
 
 // tools: [{label, iconPath, accent, source, onTrigger, shortcut}]. Each tool mirrors `source`'s disabled
 // and aria-pressed state, so the panel buttons and the bar always agree.
@@ -39,18 +38,20 @@ export function createAgentBar({root,tools,onOpen,hasConversation=()=>true}){
   toolbar.append(button);
  }
  toolbar.addEventListener('animationend',e=>{if(e.animationName==='rail-wash')e.target.closest('.agent-tool')?.classList.remove('pulse');});
- // Arrow keys move between tools (one tab stop for the toolbar).
+ // Arrow keys move between tools.
  toolbar.addEventListener('keydown',e=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;
   const items=[...toolbar.querySelectorAll('.agent-tool:not(:disabled)')];const at=items.indexOf(document.activeElement);if(at<0)return;e.preventDefault();
   const next=e.key==='Home'?0:e.key==='End'?items.length-1:(at+(e.key==='ArrowRight'?1:-1)+items.length)%items.length;items[next].focus();});
 
- const isOpen=()=>root.dataset.mode==='agent';
+ // The wanted mode flips at once, so quick repeat input ("/" twice, Escape mid-morph) is judged against it.
+ let targetMode='tools';const isOpen=()=>targetMode==='agent';
  // FLIP: measure, switch mode, then animate the shell's width and fly the orb to its new place.
  function morph(mode,done){
-  if(root.dataset.mode===mode){done?.();return;}
+  if(targetMode===mode&&root.dataset.mode===mode){done?.();return;}targetMode=mode;
   const movingOrb=toggle.querySelector('.agent-orb'),from=shell.getBoundingClientRect(),orbFrom=movingOrb.getBoundingClientRect();
   const leaving=[...shell.querySelectorAll(mode==='agent'?'.agent-tools,.map2d-strip,.agent-divider,.agent-ask-label,.agent-ask-key':'#scene-chat-form,.agent-shell-actions')];
   const swap=()=>{
+   if(targetMode!==mode)return; // A newer morph (Escape right after "/") has taken over.
    root.dataset.mode=mode;toggle.setAttribute('aria-expanded',String(mode==='agent'));done?.();
    if(reduceMotion())return;
    const to=shell.getBoundingClientRect(),orbTo=movingOrb.getBoundingClientRect();

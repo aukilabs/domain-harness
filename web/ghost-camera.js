@@ -45,8 +45,10 @@ export function createGhostCamera({camera,controls,enabled,canvas,host=window,do
  host.addEventListener('keydown',e=>{
   if(!MOVE_KEYS.includes(e.code))return;
   if(blocked(e)){reset();return;}
-  // Shift with the mouse held belongs to the click (multi-select, snapping), not to sinking.
-  if(e.code.startsWith('Shift')&&pointerHeld)return;
+  // Space and Shift only move the camera when nothing is focused; on a focused control they keep their usual
+  // jobs (Space activates, Shift+Tab and Shift+Arrow). Shift with the mouse held belongs to the click.
+  const free=!doc.activeElement||doc.activeElement===doc.body||doc.activeElement===canvas;
+  if((e.code==='Space'||e.code.startsWith('Shift'))&&(!free||pointerHeld))return;
   e.preventDefault();if(!keys.size)onMove();keys.add(e.code);
  },true);
  host.addEventListener('keyup',e=>{keys.delete(e.code);},true);
@@ -65,10 +67,11 @@ export function createGhostCamera({camera,controls,enabled,canvas,host=window,do
   const turn=Number(keys.has('KeyE'))-Number(keys.has('KeyQ'));
   if(turn&&dt){const offset=camera.position.clone().sub(controls.target).applyAxisAngle(camera.up,-turn*TURN_SPEED*dt);camera.position.copy(controls.target).add(offset);camera.lookAt(controls.target);}
   // Moving: ease towards the wanted velocity (about 150 ms up to speed, a quick settle on release).
-  // Heading: forward on the ground. Straight down, forward has no ground part, but the screen's up does and
-  // points the same way at every tilt, so the two together are always defined.
-  const forward=camera.getWorldDirection(camera.position.clone()),screenUp=camera.up.clone().set(0,1,0).applyQuaternion(camera.quaternion);
-  const wanted=groundDirection(keys,[forward.x+screenUp.x,forward.z+screenUp.z]).map(v=>v*moveSpeed(distance));
+  // Heading: forward on the ground. Straight down, forward has no ground part, but the screen's up does, so
+  // the two together are always defined.
+  // Screen-up points along the heading when looking down and against it when looking up, hence the sign.
+  const forward=camera.getWorldDirection(camera.position.clone()),screenUp=camera.up.clone().set(0,1,0).applyQuaternion(camera.quaternion),sign=forward.y>0?-1:1;
+  const wanted=groundDirection(keys,[forward.x+sign*screenUp.x,forward.z+sign*screenUp.z]).map(v=>v*moveSpeed(distance));
   const ease=1-Math.exp(-dt*(keys.size?16:22));
   for(let i=0;i<3;i++)velocity[i]+=(wanted[i]-velocity[i])*ease;
   if(Math.hypot(...velocity)<.002){velocity.fill(0);return !!turn;}
