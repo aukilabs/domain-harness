@@ -206,9 +206,9 @@ const camera=new THREE.PerspectiveCamera(42,1,.01,100);
 const renderer=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true});renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.1;
 $('canvas').append(renderer.domElement);renderer.domElement.setAttribute('aria-label','3D voxel map');
 const controls=new OrbitControls(camera,renderer.domElement);controls.enableDamping=true;
-// Mouse matches Peyote: left-drag pans across the ground (a click without a drag still selects), right- or
-// middle-drag orbits, and the wheel zooms toward the cursor. Touch: one finger pans, two pinch and rotate.
-controls.mouseButtons={LEFT:THREE.MOUSE.PAN,MIDDLE:THREE.MOUSE.ROTATE,RIGHT:THREE.MOUSE.ROTATE};controls.touches={ONE:THREE.TOUCH.PAN,TWO:THREE.TOUCH.DOLLY_ROTATE};
+// Mouse: left-drag looks around (orbits; a click without a drag still selects), right- or middle-drag pans
+// across the ground, and the wheel zooms toward the cursor. Touch: one finger pans, two pinch and rotate.
+controls.mouseButtons={LEFT:THREE.MOUSE.ROTATE,MIDDLE:THREE.MOUSE.PAN,RIGHT:THREE.MOUSE.PAN};controls.touches={ONE:THREE.TOUCH.PAN,TWO:THREE.TOUCH.DOLLY_ROTATE};
 controls.screenSpacePanning=false;controls.zoomToCursor=true;controls.minDistance=1.2;controls.maxDistance=60;controls.maxPolarAngle=Math.PI*.49;
 let crayon=null;
 const cameraPan=createCameraPan({camera,controls});
@@ -217,7 +217,7 @@ renderer.domElement.addEventListener('wheel',()=>cameraPan.cancel(),{capture:tru
 for(const id of ['map-select','fit','top','demo-view'])$(id).addEventListener(id==='map-select'?'change':'click',()=>cameraPan.cancel(),true);
 const ghostCamera=createGhostCamera({camera,controls,canvas:renderer.domElement,enabled:()=>!map2D.isActive()&&!crayon?.isActive(),onMove:()=>{cameraPan.cancel();if(attachedCamera.isActive())attachedCamera.detach();
  // The first time someone moves with the keyboard, show the whole scheme once.
- try{if(!localStorage.getItem('camera-keys-hint')){localStorage.setItem('camera-keys-hint','1');toast('WASD move · Space / Shift up and down · Q / E turn · drag to pan · right-drag to orbit');}}catch{}}});
+ try{if(!localStorage.getItem('camera-keys-hint')){localStorage.setItem('camera-keys-hint','1');toast('WASD move · Space / Shift up and down · Q / E turn · drag to look around · right-drag to pan');}}catch{}}});
 let activeMap='demo',current=null,busy=false,refreshing=false,lastScene=null,selectable=[],selectedNoteId=null,selectedPathId=null,deletingPathId=null,deletingNoteId=null,selectedSpatialNode=null,spatialSignature='';
 let homeOffline=false,catalogInitialized=false;
 function isLocalScene(map=activeMap){return map.startsWith('local:');}
@@ -307,14 +307,17 @@ function fadeWithDistance(material,reach){
   shader.fragmentShader='varying vec3 vGridWorld;uniform vec3 uCam;uniform float uFadeFar;uniform float uReach;\n'+shader.fragmentShader.replace('#include <color_fragment>','#include <color_fragment>\ndiffuseColor.a*=1.-smoothstep(uFadeFar*uReach*.35,uFadeFar*uReach,distance(uCam.xz,vGridWorld.xz));');};
  return material;
 }
-function lineGrid(spacing,extent,reach){
+// Each line is split into short pieces: the fade reads each fragment's world position, and one line hundreds of
+// metres long interpolates that position badly once clipped, leaving full-length lines across the screen.
+function lineGrid(spacing,extent,reach,piece){
  const points=[],half=extent/2;
- for(let v=-half;v<=half+1e-6;v+=spacing)points.push(-half,0,v,half,0,v,v,0,-half,v,0,half);
+ for(let v=-half;v<=half+1e-6;v+=spacing)for(let a=-half;a<half-1e-6;a+=piece){const b=Math.min(half,a+piece);points.push(a,0,v,b,0,v,v,0,a,v,0,b);}
  const geometry=new THREE.BufferGeometry();geometry.setAttribute('position',new THREE.Float32BufferAttribute(points,3));
  return new THREE.LineSegments(geometry,fadeWithDistance(new THREE.LineBasicMaterial({color:'#52525b',transparent:true,depthWrite:false}),reach));
 }
-const gridMinor=lineGrid(.5,90,.45),gridMajor=lineGrid(2.5,400,1);
-const gridAxes=new THREE.LineSegments(new THREE.BufferGeometry().setAttribute('position',new THREE.Float32BufferAttribute([-200,0,0,200,0,0,0,0,-200,0,0,200],3)),fadeWithDistance(new THREE.LineBasicMaterial({color:'#4f8ef7',transparent:true,depthWrite:false}),1));
+const gridMinor=lineGrid(.5,90,.45,1),gridMajor=lineGrid(2.5,400,1,5);
+const axisPoints=[];for(let a=-200;a<200;a+=5)axisPoints.push(a,0,0,a+5,0,0,0,0,a,0,0,a+5);
+const gridAxes=new THREE.LineSegments(new THREE.BufferGeometry().setAttribute('position',new THREE.Float32BufferAttribute(axisPoints,3)),fadeWithDistance(new THREE.LineBasicMaterial({color:'#4f8ef7',transparent:true,depthWrite:false}),1));
 gridAxes.position.y=-.139;
 const grid=new THREE.Group();grid.add(gridMinor,gridMajor);grid.position.y=-.14;
 // One opacity for the whole grid (the Settings slider): minor lines at half strength, major and axes at full.
@@ -325,6 +328,8 @@ gridMajor.onBeforeRender=()=>{const snap=2.5;grid.position.x=Math.round(controls
  gridFade.uCam.value.copy(camera.position);gridFade.uFadeFar.value=Math.max(8,camera.position.distanceTo(controls.target)*1.15);};
 // The axes mark the world origin, so they stay put rather than following the camera.
 scene.add(grid,gridAxes);
+// The demo floor plane dissolves into the background the same way, instead of ending in a hard edge.
+fadeWithDistance(ground.material,1.3);ground.material.transparent=true;ground.renderOrder=-2;
 const groups=Object.fromEntries(['voxels','portals','objects','rays','notes'].map(k=>[k,new THREE.Group()]));Object.values(groups).forEach(g=>scene.add(g));
 crayon=createCrayon({button:$('crayon'),canvas:renderer.domElement,camera,controls,scene,voxels:groups.voxels,
  state:()=>({map:activeMap,frame:current?.frame,paths:current?.paths,editable:isLocalScene()&&!!current&&!map2D.isActive()}),
@@ -1173,7 +1178,7 @@ function createNoteCard({request,error,portal=false}={}){
    const created=(current?.notes||[]).find(n=>n.id===note.id);if(created)showNoteSelection(created);else clearSelection();toast('Note saved');
   }catch(err){status.textContent=err.message;save.disabled=false;}};
 }
-// Right-drag orbits the 3D view, so right-click no longer places notes there; New note does that.
+// Right-drag pans the 3D view, so right-click no longer places notes there; New note does that.
 renderer.domElement.addEventListener('contextmenu',e=>e.preventDefault());
 $('sensor-stage').addEventListener('contextmenu',e=>{e.preventDefault();e.stopPropagation();
  const f=displayedCamera;
@@ -1243,7 +1248,7 @@ async function watchSensor(generation){
  try{
   const response=await fetch('/api/sensors?sensor='+encodeURIComponent(sensorSelect.value)+(arToggle.checked?'&ar=true':'')+(arAvailable.get(sensorSelect.value)?'&pick=true':''));const f=await readCameraResponse(response);
   if(generation!==sensorGeneration)return;
-  if(f.sequence!==lastSensorSequence&&!noteCardMode==='create'){
+  if(f.sequence!==lastSensorSequence&&noteCardMode!=='create'){
    const bytes=f.bytes;
    if(!Number.isInteger(f.width)||!Number.isInteger(f.height)||f.width<1||f.height<1||f.width>4096||f.height>4096)throw Error('Invalid image dimensions');
    const bitmap=(f.encoding==='jpeg'||f.encoding==='jpg')?await createImageBitmap(new Blob([bytes],{type:'image/jpeg'})):null;
@@ -1261,7 +1266,7 @@ async function watchSensor(generation){
    if(arToggle.checked){arOverlay??=createArOverlay($('sensor-ar-overlay'));arOverlay.show(f,Number($('sensor-stage').dataset.rotation)||0);arLastSuccess=Date.now();arStatus.textContent='AR · Home notes + drawings · capture-matched camera';}
    lastSensorSequence=f.sequence;lastSensorChange=Date.now();
   }
-  status.textContent=Date.now()-lastSensorChange>3000?'Stale · no new frames':'Receiving · frame '+f.sequence;
+  const stale=Date.now()-lastSensorChange>3000;status.textContent=stale?'Stale · no new frames':'Receiving · frame '+f.sequence;status.dataset.state=stale?'stale':'live';
  }catch(e){if(generation===sensorGeneration){displayedCamera=null;status.textContent=(lastSensorSequence!==null?'Stale image · ':'Waiting · ')+e.message;if(!noteCardMode==='create')hideAr();if(arToggle.checked){arStatus.hidden=false;arStatus.textContent='AR paused · '+e.message;}}}
  if(generation===sensorGeneration)setTimeout(()=>watchSensor(generation),100);
 }
