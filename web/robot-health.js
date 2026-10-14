@@ -9,7 +9,7 @@ import * as THREE from 'three';
 const TEMP_COOL_C = 35, TEMP_WARM_C = 42, TEMP_LIMIT_C = 50;
 const CURRENT_FULL_A = 3;
 // Above the head, in the model's ROS body frame (+Z up); the model is ~1.57 m.
-const BATTERY_HEIGHT_M = 1.82;
+const BATTERY_HEIGHT_M = 1.70;
 
 const COOL = new THREE.Color('#22c55e'), WARM = new THREE.Color('#f59e0b'), HOT = new THREE.Color('#ef4444');
 
@@ -99,6 +99,8 @@ function dispose(s) { s.parent?.remove(s); s.material.map.dispose(); s.material.
 // badges keep their joint's height but are pushed apart vertically, with a
 // leader line back to the joint, so stacked wrist joints stay readable.
 const COLUMN_Y_M = 0.36, BADGE_SPACING_M = 0.085;
+// Share of the way from each joint out to its column the badge sits at.
+const COLUMN_REACH = 0.5;
 const sideOf = name => /^(l|left)/.test(name) ? 1 : -1;
 
 function dot(color) {
@@ -148,7 +150,7 @@ export function applyRobotHealth(glyph, health) {
     }
     const z = Math.min(at.z, lowest - BADGE_SPACING_M);
     lowest = z;
-    entry.badge.position.set(at.x, side * COLUMN_Y_M, z);
+    entry.badge.position.set(at.x, at.y + (side * COLUMN_Y_M - at.y) * COLUMN_REACH, z);
     entry.line.geometry.setFromPoints([at, entry.badge.position]);
     entry.dot.material.color.copy(color);
     entry.line.material.color.copy(color);
