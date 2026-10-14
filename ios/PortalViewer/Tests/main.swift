@@ -118,6 +118,36 @@ check(decodedScene.render?.notes.first?.text == "Hello", "scene note preserved")
 check(decodedScene.scenegraph == matchingMap.scenegraph, "geometry updates preserve calibration reference")
 print("Full scene decoding checks passed")
 
+func note(_ id: String, _ text: String = "Hi") -> RenderScene.Note {
+    RenderScene.Note(id: id, text: text, position: [1, 0, -2], phone_pose: nil)
+}
+var inbox = MessageInbox()
+check(inbox.record([note("a"), note("b")], frame: "home").isEmpty && inbox.unread == 0 && inbox.messages.map(\.id) == ["a", "b"],
+      "what a scene already holds is listed in order and is not news")
+check(inbox.record([note("a"), note("b"), note("c"), note("d")], frame: "home", mine: ["d"]).map(\.id) == ["c"] && inbox.unread == 1,
+      "a note from someone else is news; this phone's own is not")
+check(inbox.record([note("a"), note("b"), note("c", "Edited"), note("d")], frame: "home").isEmpty && inbox.unread == 1
+      && inbox.messages[2].text == "Edited", "a message stays unread, and follows Home's edits, until it is opened")
+inbox.open("c")
+check(inbox.unread == 0 && inbox.record([note("b"), note("c")], frame: "home").isEmpty && inbox.messages.map(\.id) == ["b", "c"],
+      "an opened message is read and a deleted one leaves the list")
+check(inbox.record([note("z")], frame: "other").isEmpty && inbox.unread == 0, "another scene starts again with nothing new")
+let phoneLabel = RenderScene.Note(id: "p", text: "Phone", position: [0, 0, 0],
+    phone_pose: RenderScene.PhonePose(peer_id: "p", name: nil, state: nil, pose: decodedScene.scenegraph.anchors.values.first!.pose_in_map))
+check(inbox.record([note("z"), phoneLabel], frame: "other").isEmpty && inbox.messages.count == 1, "Home's device labels are not messages")
+// A 90 degree lens on a square screen.
+let lens = simd_float4x4(SIMD4(1, 0, 0, 0), SIMD4(0, 1, 0, 0), SIMD4(0, 0, -1, -1), SIMD4(0, 0, -0.02, 0))
+let ahead = MessageAim(spot: SIMD3(0.5, 0.5, -2), lens: lens)
+check(ahead.screen == SIMD2(0.625, 0.375) && ahead.hint == "Here", "a spot in view is marked on the screen, up being towards the top")
+check(MessageAim(spot: SIMD3(3, 0, -1), lens: lens).hint == "Turn right" && MessageAim(spot: SIMD3(-3, 0, -1), lens: lens).hint == "Turn left"
+      && MessageAim(spot: SIMD3(0, 3, -1), lens: lens).hint == "Tilt up" && MessageAim(spot: SIMD3(0, -3, -1), lens: lens).hint == "Tilt down",
+      "a spot out of view says which way to turn")
+let behind = MessageAim(spot: SIMD3(-0.2, 0.1, 2), lens: lens)
+check(behind.screen == nil && behind.hint == "Turn around" && behind.turn < 0, "a spot behind is never on screen, and turns the nearer way")
+check(abs(MessageAim(spot: SIMD3(3, 0, -1), lens: lens).turn - .pi / 2) < 0.001 && abs(MessageAim(spot: SIMD3(0, 0, 4), lens: lens).distance - 4) < 0.001,
+      "the arrow points across the screen and the distance is in metres")
+print("Message checks passed")
+
 let floorHit = SceneRay.hit(origin: SIMD3(0,2,0), direction: SIMD3(0,-1,0), scene: nil)
 check(floorHit == SIMD3(0,0,0), "empty scene still intersects Home floor")
 check(SceneRay.hit(origin: SIMD3(0,2,0), direction: SIMD3(1,0,0), scene: nil) == nil, "parallel ray misses floor")
@@ -191,6 +221,31 @@ check(tube.vertices.prefix(72).enumerated().allSatisfy { abs(simd_distance($1, c
       "every ring sits one radius from the line")
 check(CrayonTube.mesh([bend[0]], radius: 0.02) == nil && CrayonTube.mesh([bend[0], bend[0]], radius: 0.02) == nil, "a point is not a line")
 print("Crayon stroke checks passed")
+
+// A wall across the way at body height, with a gap at its far end, on floor the map has seen.
+var walled = [SIMD3<Float>]()
+for x in stride(from: Float(-2), to: 2, by: 0.1) { for z in stride(from: Float(-1), to: 3, by: 0.1) { walled.append(SIMD3(x + 0.05, 0.05, z + 0.05)) } }
+for x in stride(from: Float(-2), to: 1, by: 0.1) { for y in stride(from: Float(0.35), to: 1.5, by: 0.1) { walled.append(SIMD3(x + 0.05, y, 1.05)) } }
+let walkway = MessageRoute.plan(from: SIMD3(-1, 1.4, 0), to: SIMD3(-1, 1.2, 2), voxels: walled, size: 0.1)
+check(walkway.count > 2 && walkway.first == SIMD3(-1, MessageRoute.lift, 0) && walkway.last == SIMD3(-1, MessageRoute.lift, 2), "the way starts under the phone and ends under the message")
+check(walkway.contains { $0.x > 1.2 } && zip(walkway, walkway.dropFirst()).allSatisfy { a, b in
+    (0...20).allSatisfy { step in
+        let p = a + (b - a) * (Float(step) / 20)
+        return !(p.x < 1.0 && abs(p.z - 1.05) < 0.05)
+    } }, "the way goes round the wall through the gap, never through it")
+check(MessageRoute.plan(from: SIMD3(0, 1, 0), to: SIMD3(1, 1, 1), voxels: [], size: 0.1).count == 2, "with nothing known in the way it is the straight line")
+check(MessageRoute.plan(from: SIMD3(0, 1, 0), to: SIMD3(900, 1, 0), voxels: walled, size: 0.1).count == 2, "too far to plan across is the straight line")
+let crumbTrail = MessageRoute.crumbs([SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(1, 0, 1)], every: 0.4)
+check(crumbTrail.count == 5 && abs(crumbTrail[0].x - 0.4) < 0.0001 && abs(crumbTrail[2].z - 0.2) < 0.0001 && crumbTrail.last == SIMD3(1, 0, 1), "crumbs are evenly spaced round a corner and end on the spot")
+check(MessageRoute.ahead([SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(1, 0, 1)], by: 1.5) == SIMD3(1, 0, 0.5) && MessageRoute.ahead([SIMD3(0, 0, 0), SIMD3(1, 0, 0)], by: 9) == SIMD3(1, 0, 0), "the next spot to head for is along the way, not past its end")
+let corner = [SIMD3<Float>(0, 0, 0), SIMD3(2, 0, 0), SIMD3(2, 0, 2)]
+check(abs(MessageRoute.stray(SIMD3(1, 1.4, 0.5), from: corner) - 0.5) < 0.0001 && abs(MessageRoute.stray(SIMD3(3, 0, 3), from: corner) - 1.4142) < 0.001,
+      "how far off the way a spot is, across the floor, ignoring its height")
+let shared = MessageRoute.path(corner, id: "a", to: " the printer ")!
+check(shared.title == "Way to the printer" && shared.segments.count == 1 && shared.segments[0].first == [0, 0, 0] && shared.segments[0].last == [2, 0, 2]
+      && CrayonStroke.widths.contains(shared.width_m), "a way is a path like any drawn one, from its start to its end")
+check(MessageRoute.path([SIMD3(0, 0, 0), SIMD3(0.01, 0, 0)], id: "a", to: "x") == nil, "already there: nothing to draw")
+print("Message route checks passed")
 
 let firstPortal = try JSONSerialization.jsonObject(with: JSONEncoder().encode(PortalReport(
     session: "s", timestamp_ns: 7, code: "NV16FWJ9G2X", side_length_m: PortalReport.assumedSide,

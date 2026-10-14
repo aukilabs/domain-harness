@@ -5,6 +5,8 @@ import Vision
 import CoreMotion
 import UniformTypeIdentifiers
 import PhotosUI
+import UserNotifications
+import AudioToolbox
 import SpatialPortalBridge
 
 @main
@@ -28,6 +30,9 @@ struct ViewerScreen: View {
     /// Off by default: most people only need the Components bar.
     @AppStorage("showDetails") private var showDetails = false
     @State private var promptedForLogin = false
+    @State private var showMessages = false
+    /// The panel for leaving a note, surface or box. Out of the way until asked for.
+    @State private var showNotes = false
     @Environment(\.scenePhase) private var phase
     /// Whether voxels are reaching Home right now: ink sending, orange failing, grey idle.
     private var sending: Bool {
@@ -59,7 +64,9 @@ struct ViewerScreen: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             CameraView(controller: controller).ignoresSafeArea()
-            VStack {
+            if !controller.snoozed { MessageFound(center: controller.messages) }
+            VStack(spacing: 0) {
+                MessageBanner(center: controller.messages) { withAnimation { showMessages = true } }
                 HStack(alignment: .top) {
                     VolumeControls(editor: controller.volumes, peer: peer)
                     Spacer(minLength: 0)
@@ -76,14 +83,20 @@ struct ViewerScreen: View {
                     }
                     .padding()
                     .accessibilityLabel(showDetails ? "Hide scene details" : "Show scene details")
-                    // Sometimes the room is easier to read without the voxels over it.
-                    Button { controller.showVoxels.toggle() } label: {
-                        Image(systemName: "square.grid.2x2.fill").font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(controller.showVoxels ? Theme.accent : Theme.dim)
-                            .frame(width: 36, height: 36).background(Theme.paper, in: Circle())
+                    // Three looks, in turn: the room alone, the voxels alone, and the voxels over the room.
+                    Button { controller.voxelLook = controller.voxelLook.next } label: {
+                        Image(systemName: controller.voxelLook == .camera ? "square.grid.2x2" : "square.grid.2x2.fill")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(controller.voxelLook == .camera ? Theme.dim
+                                             : controller.voxelLook == .voxels ? Theme.onAccent : Theme.accent)
+                            .frame(width: 36, height: 36)
+                            .background(controller.voxelLook == .voxels ? Theme.accent : Theme.paper, in: Circle())
                             .shadow(color: Theme.glow, radius: 4, y: 2)
                     }
-                    .accessibilityLabel(controller.showVoxels ? "Hide voxels" : "Show voxels")
+                    .accessibilityLabel("Voxels")
+                    .accessibilityValue(controller.voxelLook == .camera ? "Camera only"
+                                        : controller.voxelLook == .voxels ? "Voxels only" : "Voxels over the camera")
+                    .accessibilityHint("Changes what the camera view shows")
                     // Draw on the scene with a finger, as Home's Crayon does.
                     Button { controller.drawing.toggle() } label: {
                         Image(systemName: "scribble.variable").font(.system(size: 16, weight: .semibold))
@@ -94,8 +107,26 @@ struct ViewerScreen: View {
                     .padding(.top, 10)
                     .accessibilityLabel(controller.drawing ? "Stop drawing" : "Draw on the scene")
                     if controller.drawing { CrayonTools(controller: controller).padding(.top, 10) }
+                    // Leave a note, surface or box. One thing at a time: it and drawing take turns.
+                    Button {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { showNotes.toggle() }
+                        if showNotes { controller.drawing = false } else { controller.volumes.cancel() }
+                    } label: {
+                        Image(systemName: "square.and.pencil").font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(showNotes ? Theme.accent : Theme.dim)
+                            .frame(width: 36, height: 36).background(Theme.paper, in: Circle())
+                            .shadow(color: Theme.glow, radius: 4, y: 2)
+                    }
+                    .padding(.top, 10)
+                    .accessibilityLabel(showNotes ? "Close notes" : "Leave a note")
+                    MessageButton(center: controller.messages, open: $showMessages).padding(.top, 10)
                     }
                     .opacity(controller.snoozed ? 0 : 1).disabled(controller.snoozed)
+                }
+                if showMessages && !controller.snoozed {
+                    MessageList(center: controller.messages) { withAnimation { showMessages = false } }
+                        .padding(.horizontal).frame(maxWidth: .infinity, alignment: .trailing)
+                        .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .topTrailing)))
                 }
                 Spacer()
             }
@@ -121,12 +152,14 @@ struct ViewerScreen: View {
                 .onTapGesture { controller.wake() }
             }
             VStack(spacing: 12) {
+                if !controller.snoozed { MessageGuide(center: controller.messages) }
                 // Naming a point takes the bar's place, so the field sits just above the keyboard.
                 if let placement = controller.placement {
                     AnnotationEditor(controller: controller, peer: peer, placement: placement, close: { controller.clearPlacement() })
                         .id(placement.id)
-                } else if !controller.snoozed {
+                } else if showNotes && !controller.snoozed {
                     ComponentsBar(controller: controller, editor: controller.volumes, peer: peer, connect: { connecting = true })
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
                 // The scene panel is more than most people need; the Auki button brings it up.
                 if (showDetails && controller.placement == nil) || controller.snoozed {
@@ -201,6 +234,8 @@ struct ViewerScreen: View {
                 }
             }
             .padding()
+            // Last, so the way to a message is never under a panel or a button.
+            if !controller.snoozed { MessageMarker(center: controller.messages) }
         }
         .animation(.easeInOut(duration: 0.3), value: controller.snoozed)
         .onAppear {
@@ -220,6 +255,10 @@ struct ViewerScreen: View {
                 guard !peer.running, !connecting, !promptedForLogin else { return }
                 promptedForLogin = true; connecting = true
             }
+        }
+        .onChange(of: controller.drawing) { _, drawing in
+            // Drawing takes the screen: the notes panel, and anything half made in it, goes.
+            if drawing, showNotes { withAnimation { showNotes = false }; controller.volumes.cancel() }
         }
         .sheet(isPresented: $connecting) {
             NavigationStack {
@@ -1238,11 +1277,34 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private let crayonRoot = SCNNode()
     private var crayonDraft = CrayonDraft()
     private var crayonNode: SCNNode?
-    /// Home's voxels in the AR view and the POV tab.
-    @Published var showVoxels = UserDefaults.standard.object(forKey: "arVoxelsVisible") as? Bool ?? true {
+    /// What the AR view shows: the camera alone, Home's voxels alone, or the voxels over the camera.
+    enum VoxelLook: String {
+        case camera, voxels, both
+        var next: VoxelLook { self == .camera ? .voxels : self == .voxels ? .both : .camera }
+    }
+    /// Not remembered: every launch starts on the camera alone.
+    @Published var voxelLook = VoxelLook.camera {
         didSet {
-            UserDefaults.standard.set(showVoxels, forKey: "arVoxelsVisible")
             for node in root.childNodes + povRoot.childNodes where node.name == "voxels" { node.isHidden = !showVoxels }
+            applyCameraFeed()
+            // Whether people hide the map is part of the session; running it again keeps the tracking.
+            if (voxelLook == .voxels) != (oldValue == .voxels) { start() }
+        }
+    }
+    /// Home's voxels in the AR view and the POV tab.
+    private var showVoxels: Bool { voxelLook != .camera }
+    /// ARKit's camera picture, kept while black stands in for it.
+    private var cameraFeed: Any?
+    /// Voxels alone go on black. Until the map is placed there are none to show,
+    /// and a Portal still has to be found, so the camera stays until then.
+    private func applyCameraFeed() {
+        let hide = voxelLook == .voxels && !root.isHidden
+        if hide, cameraFeed == nil {
+            cameraFeed = view.scene.background.contents
+            view.scene.background.contents = UIColor.black
+        } else if !hide, let feed = cameraFeed {
+            view.scene.background.contents = feed
+            cameraFeed = nil
         }
     }
     private func applyVolumeVisibility() {
@@ -1371,7 +1433,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private var unsynced = [(id: String, frame: String, text: String, position: [Float])]()
     /// The locked point stays where it is, whether or not Home can be reached right now.
     func keepPoint(_ placement: NotePlacement, text: String) {
-        guard let at = placement.at else { return }
+        ownNotes.insert(placement.id)
+        guard let at = placement.at else { ownTexts.append(text); return }
         unsynced.append((placement.id, placement.frame, text, at))
         photos[placement.id] = floatingPhoto
         // No longer the preview, so closing the editor leaves it in the room.
@@ -1402,6 +1465,129 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         fade.values = [0, 1, 0]; fade.keyTimes = [0, 0.15, 1]
         dust.propertyControllers = [.opacity: SCNParticlePropertyController(animation: fade)]
         return dust
+    }
+    /// Notes other people leave in the scene, as messages to be told about and led to.
+    let messages = MessageCenter()
+    /// Notes this phone wrote, which are not news to it. One placed by a tap comes back
+    /// under an id of Home's choosing, so it is known by its words.
+    private var ownNotes = Set<String>()
+    private var ownTexts = [String]()
+    private func recordMessages(_ scene: RenderScene) {
+        for note in scene.notes where !ownNotes.contains(note.id) && !messages.inbox.messages.contains(where: { $0.id == note.id }) {
+            guard let sent = ownTexts.firstIndex(of: note.text) else { continue }
+            ownTexts.remove(at: sent)
+            ownNotes.insert(note.id)
+        }
+        messages.asleep = snoozed
+        messages.record(scene.notes, frame: scene.frame, mine: ownNotes)
+    }
+    /// The way to the message being looked for, drawn as a path. It is saved to Home like a
+    /// drawn path so everyone in the scene sees it; this holds the phone's own copy until
+    /// Home's arrives. Survives Home's redraws.
+    private let guideRoot = SCNNode()
+    private var guideRoute = [SIMD3<Float>]()
+    private var guidePlanned: (id: String, at: TimeInterval)?
+    private var guidePlanning = false
+    private let guideQueue = DispatchQueue(label: "home.phone.route")
+    /// The way everyone can see now: its path in Home, where it leads, and the frame it is in.
+    private var guideShared: (id: String, route: [SIMD3<Float>], goal: SIMD3<Float>, frame: String)?
+    /// When Home said it had saved that way. Nil while waiting to hear.
+    private var guideSaved: Date?
+    /// When a way was last offered to Home, so a Home that cannot take one is not asked constantly.
+    private var guideOffered = Date.distantPast
+    private func endGuide() {
+        guard guidePlanned != nil || !guideRoute.isEmpty || messages.way != nil || guideShared != nil else { return }
+        guideRoot.childNodes.forEach { $0.removeFromParentNode() }
+        guideRoute = []; guidePlanned = nil
+        if messages.way != nil { messages.way = nil }
+        // Nobody is being led any more, so the way comes off everyone's map.
+        if let shared = guideShared { onErase?(shared.id, shared.frame) { _ in } }
+        guideShared = nil; guideSaved = nil
+    }
+    /// Show a freshly planned way to everyone. A way already shown is kept while the phone is
+    /// still on it and it still leads to the right place, so the map is not redrawn at every step.
+    private func share(_ route: [SIMD3<Float>], to target: MessageInbox.Message, from phone: SIMD3<Float>, frame: String) {
+        if let shared = guideShared, shared.frame == frame, simd_distance(shared.goal, target.position) < 0.3,
+           MessageRoute.stray(phone, from: shared.route) < 1 { return }
+        // Home is offered a way at most every few seconds.
+        guard Date().timeIntervalSince(guideOffered) > 3 else { return }
+        guideOffered = Date()
+        if let old = guideShared { onErase?(old.id, old.frame) { _ in } }
+        guideRoot.childNodes.forEach { $0.removeFromParentNode() }
+        guideShared = nil; guideSaved = nil
+        let id = UUID().uuidString.lowercased()
+        guard let path = MessageRoute.path(route, id: id, to: target.text) else { return }
+        let color = UInt32(path.color.dropFirst(), radix: 16) ?? 0xff5fa8
+        let material = Self.crayonMaterial(UIColor(red: CGFloat((color >> 16) & 255) / 255, green: CGFloat((color >> 8) & 255) / 255,
+                                                   blue: CGFloat(color & 255) / 255, alpha: 1))
+        if let node = Self.pathNode(path.segments[0].map { SIMD3($0[0], $0[1], $0[2]) }, width: path.width_m, material: material) {
+            node.name = id
+            guideRoot.addChildNode(node)
+        }
+        guideShared = (id, route, target.position, frame)
+        // If Home cannot take it, the phone still shows its own copy, and offers it again:
+        // a way nobody else can see is not yet shared.
+        onStroke?(path, frame) { [weak self] saved in
+            guard let self, self.guideShared?.id == id else { return }
+            if saved { self.guideSaved = Date() } else { self.guideShared = nil }
+        }
+    }
+    /// The phone has reached the message: reward the user and take the way off the map.
+    private func arrive() {
+        guard messages.arrive() != nil else { return }
+        endGuide()
+    }
+    /// Plan the way to the message across the floor, round what the map shows, draw it for
+    /// everyone, and say which way to head next. Planned again as the phone moves and the
+    /// map fills in.
+    private func guideToMessage(_ frame: ARFrame) {
+        guard let target = messages.target else { endGuide(); return }
+        // A moment without tracking is not the end of the way.
+        guard aligned, case .normal = frame.camera.trackingState, let map, let scene = map.render,
+              scene.frame == map.scenegraph.map.frame.id, view.bounds.width > 0 else {
+            if messages.way != nil { messages.way = nil }
+            return
+        }
+        let inHome = root.simdTransform.inverse * frame.camera.transform.columns.3
+        let phone = SIMD3(inHome.x, inHome.y, inHome.z)
+        // Within a pace of it across the floor is there.
+        if simd_distance(SIMD2(phone.x, phone.z), SIMD2(target.position.x, target.position.z)) < 0.8 {
+            arrive(); return
+        }
+        if !guidePlanning, guidePlanned?.id != target.id || frame.timestamp - (guidePlanned?.at ?? 0) > 1.5 {
+            guidePlanning = true
+            let voxels = scene.voxels, size = scene.voxel_size, time = frame.timestamp, home = scene.frame
+            guideQueue.async {
+                let centers = voxels.compactMap { $0.center.count == 3 ? SIMD3($0.center[0], $0.center[1], $0.center[2]) : nil }
+                let route = MessageRoute.plan(from: phone, to: target.position, voxels: centers, size: size)
+                DispatchQueue.main.async {
+                    self.guidePlanning = false
+                    guard self.messages.target?.id == target.id, self.map?.scenegraph.map.frame.id == home else { return }
+                    self.guidePlanned = (target.id, time)
+                    self.guideRoute = route
+                    self.share(route, to: target, from: phone, frame: home)
+                }
+            }
+        }
+        var way: MessageAim?
+        if let next = MessageRoute.ahead(guideRoute, by: 1.2) {
+            let spot = frame.camera.viewMatrix(for: .portrait) * (root.simdTransform * SIMD4(next.x, next.y, next.z, 1))
+            way = MessageAim(spot: SIMD3(spot.x, spot.y, spot.z),
+                             lens: frame.camera.projectionMatrix(for: .portrait, viewportSize: view.bounds.size, zNear: 0.01, zFar: 100))
+        }
+        if way != messages.way { messages.way = way }
+    }
+    /// Where the message being looked for is from the phone, on every camera frame.
+    private func aimAtMessage(_ frame: ARFrame) {
+        guard let target = messages.target else { return }
+        var aim: MessageAim?
+        if aligned, case .normal = frame.camera.trackingState, view.bounds.width > 0 {
+            let inRoom = root.simdTransform * SIMD4(target.position.x, target.position.y, target.position.z, 1)
+            let spot = frame.camera.viewMatrix(for: .portrait) * inRoom
+            aim = MessageAim(spot: SIMD3(spot.x, spot.y, spot.z),
+                             lens: frame.camera.projectionMatrix(for: .portrait, viewportSize: view.bounds.size, zNear: 0.01, zFar: 100))
+        }
+        if aim != messages.aim { messages.aim = aim }
     }
     @Published var status = "Connect to Home to receive its scene"
     @Published var shareDepth = true {
@@ -1573,7 +1759,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             config.frameSemantics.insert(.sceneDepth)
         } else { depthStatus = "This phone does not provide LiDAR scene depth" }
         // People in front of the map hide it, using their measured depth.
-        if ARWorldTrackingConfiguration.supportsFrameSemantics(.personSegmentationWithDepth) {
+        // Not with the voxels alone: there the camera's picture of them would cut holes in the black.
+        if voxelLook != .voxels, ARWorldTrackingConfiguration.supportsFrameSemantics(.personSegmentationWithDepth) {
             config.frameSemantics.insert(.personSegmentationWithDepth)
         }
         view.session.run(config)
@@ -1701,12 +1888,21 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             }
         }
         self.map = map
+        if let scene = map.render, scene.frame == map.scenegraph.map.frame.id { recordMessages(scene) }
         miniMap = MiniMapData(map)
         trackedDevices = trails.record(map.render?.notes ?? [], frame: map.scenegraph.map.frame.id,
                                        ownFrame: "phone-camera:" + poseSession)
         // Everything is redrawn except the point still being carried: taking it out and putting it
         // back would restart its dust trail every time Home sends an update.
-        root.childNodes.filter { $0 !== floating && $0 !== crayonRoot }.forEach { $0.removeFromParentNode() }
+        root.childNodes.filter { $0 !== floating && $0 !== crayonRoot && $0 !== guideRoot }.forEach { $0.removeFromParentNode() }
+        if guideRoot.parent == nil { root.addChildNode(guideRoot) }
+        let listed = Set(map.render?.paths?.items.map(\.id) ?? [])
+        guideRoot.childNodes.filter { listed.contains($0.name ?? "") }.forEach { $0.removeFromParentNode() }
+        // Home said it saved the way, yet no longer lists it: it restarted, or someone erased
+        // it. Forget it, so the next plan shares the way again.
+        if let shared = guideShared, let saved = guideSaved, !listed.contains(shared.id), Date().timeIntervalSince(saved) > 4 {
+            guideShared = nil; guideSaved = nil
+        }
         // A stroke drawn here is dropped once Home's own copy of it arrives.
         let saved = Set(map.render?.paths?.items.map(\.id) ?? [])
         crayonRoot.childNodes.filter { $0.isHidden }.forEach { $0.removeFromParentNode() }
@@ -1763,7 +1959,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         }
         volumes.redraw()
         povRoot.childNodes.forEach { $0.removeFromParentNode() }
-        root.childNodes.forEach { povRoot.addChildNode($0.clone()) }
+        root.childNodes.filter { $0 !== guideRoot }.forEach { povRoot.addChildNode($0.clone()) }
         applyVolumeVisibility()
         remoteDevices = Self.remoteDevices(map, ownSession: poseSession)
         refreshDevices()
@@ -2177,7 +2373,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         depthAlignment = nil
         alignedThrough = [:]
         depthStatus = shareDepth ? "Scan a Portal to share depth" : "Depth sharing off"
-        generation += 1; aligned = false; cooldown.reset(); root.isHidden = true
+        generation += 1; aligned = false; cooldown.reset(); root.isHidden = true; applyCameraFeed()
         alignment.reset()
         miniPhone = nil
         if selfInHome != nil { selfInHome = nil; refreshDevices() }
@@ -2669,6 +2865,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         sampleCrayon()
         // Aligned frames are shared below, together with their pose.
         if !aligned { shareCamera(frame, alignment: 0, withPose: false) }
+        aimAtMessage(frame)
+        guideToMessage(frame)
         if north == .searching {
             searchNorth(frame)
             // This frame, and any already on their way, are still in the compass's axes.
@@ -2708,7 +2906,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         updateGeo(frame)
         updateCompass(frame)
         if aligned {
-            root.isHidden = false
+            root.isHidden = false; applyCameraFeed()
             captureDepth(frame)
             if let map, frame.timestamp - lastPosePublication >= 0.2 {
                 lastPosePublication = frame.timestamp
@@ -2797,7 +2995,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                     portalInHome: SIMD3(stored.x, stored.y, stored.z), edgePixels: edgePixels)
                 let transform = self.alignment.transform
                 self.root.simdTransform = transform
-                self.root.isHidden = false
+                self.root.isHidden = false; self.applyCameraFeed()
                 self.aligned = true
                 // Home checks that the session-to-scene transform follows from the
                 // Portal's pose in the session, so report the Portal where the fused
@@ -2889,6 +3087,300 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
 
 
 /// A small card for naming a new point. The camera stays in view behind it.
+/// Messages left in the scene: the list, the banner for a new one, and the way to the one being looked for.
+final class MessageCenter: ObservableObject {
+    @Published private(set) var inbox = MessageInbox()
+    /// Just arrived. Shown across the top for a few seconds.
+    @Published var banner = [MessageInbox.Message]()
+    /// The message being looked for.
+    @Published private(set) var target: MessageInbox.Message?
+    /// Nil while the phone does not know where it is in the scene.
+    @Published var aim: MessageAim?
+    /// The next spot to head for along the way there, which is not always
+    /// straight at the message. Nil until a way has been found.
+    @Published var way: MessageAim?
+    /// The phone is lying asleep with the app open, so nobody is looking at the screen.
+    var asleep = false
+    /// The message just reached, shown for a moment as the reward for getting there.
+    @Published var found: MessageInbox.Message?
+    private var celebrated = 0
+    /// The phone has got to the message it was looking for.
+    func arrive() -> MessageInbox.Message? {
+        guard let reached = target else { return nil }
+        target = nil; aim = nil; way = nil
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        AudioServicesPlaySystemSound(1025)
+        celebrated += 1
+        let showing = celebrated
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.55)) { found = reached }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { [weak self] in
+            guard let self, self.celebrated == showing else { return }
+            withAnimation { self.found = nil }
+        }
+        return reached
+    }
+    private var shown = 0
+
+    func record(_ notes: [RenderScene.Note], frame: String, mine: Set<String>) {
+        var next = inbox
+        let arrived = next.record(notes, frame: frame, mine: mine)
+        if next != inbox { inbox = next }
+        // The one being looked for follows Home's edits, and ends if Home no longer has it.
+        if let target, target != inbox.messages.first(where: { $0.id == target.id }) {
+            self.target = inbox.messages.first { $0.id == target.id }
+            if self.target == nil { aim = nil }
+        }
+        MessageAlert.allow()
+        guard !arrived.isEmpty else { return }
+        MessageAlert.post(arrived, asleep: asleep)
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        shown += 1
+        let showing = shown
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { banner = arrived }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+            guard let self, self.shown == showing else { return }
+            withAnimation { self.banner = [] }
+        }
+    }
+    /// Open a message and start pointing the way to it.
+    func find(_ message: MessageInbox.Message) {
+        inbox.open(message.id)
+        banner = []
+        aim = nil; way = nil
+        target = inbox.messages.first { $0.id == message.id }
+    }
+    func stop() { target = nil; aim = nil; way = nil }
+}
+
+/// A notification from iOS itself for a new message, for when nobody is looking at the app:
+/// the phone asleep on a table with the app open, or the app just put away. It is raised by
+/// the phone when it hears of the message from Home, so it cannot arrive once iOS has
+/// suspended the app; that would take a push sent from outside.
+enum MessageAlert {
+    private final class Presenter: NSObject, UNUserNotificationCenterDelegate {
+        var asleep = false
+        // With the app in front and awake, its own banner is enough.
+        func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+                                    withCompletionHandler done: @escaping (UNNotificationPresentationOptions) -> Void) {
+            done(asleep ? [.banner, .list, .sound] : [])
+        }
+    }
+    private static let presenter = Presenter()
+    private static var asked = false
+    /// Ask once, the first time there are messages to hear about.
+    static func allow() {
+        guard !asked else { return }
+        asked = true
+        UNUserNotificationCenter.current().delegate = presenter
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+    static func post(_ messages: [MessageInbox.Message], asleep: Bool) {
+        guard let first = messages.first else { return }
+        presenter.asleep = asleep
+        guard asleep || UIApplication.shared.applicationState != .active else { return }
+        let content = UNMutableNotificationContent()
+        content.title = messages.count == 1 ? "New message" : "\(messages.count) new messages"
+        content.body = first.text
+        content.sound = .default
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: first.id, content: content, trigger: nil))
+    }
+}
+
+/// A new message, across the top. Tapping it points the way to the message.
+struct MessageBanner: View {
+    @ObservedObject var center: MessageCenter
+    let openList: () -> Void
+    var body: some View {
+        if let first = center.banner.first {
+            let one = center.banner.count == 1
+            Button {
+                if one { withAnimation { center.find(first) } }
+                else { withAnimation { center.banner = [] }; openList() }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "bubble.left.fill").font(.system(size: 18, weight: .semibold)).foregroundStyle(Theme.accent)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(one ? "New message" : "\(center.banner.count) new messages").themeLabel(12, .bold)
+                        Text(one ? first.text : "Tap to see them, first to last").themeText(11).foregroundStyle(Theme.dim)
+                            .lineLimit(2).multilineTextAlignment(.leading)
+                    }
+                    Spacer(minLength: 0)
+                    Text(one ? "Find it" : "List").themeLabel(10, .bold).foregroundStyle(Theme.accent)
+                }
+                .foregroundStyle(Theme.ink).themeBubble()
+            }
+            .buttonStyle(SquishButtonStyle())
+            .padding(.horizontal).padding(.top, 8)
+            .transition(.move(edge: .top).combined(with: .opacity))
+        }
+    }
+}
+
+/// Opens the list of messages. The number is how many have not been opened.
+struct MessageButton: View {
+    @ObservedObject var center: MessageCenter
+    @Binding var open: Bool
+    var body: some View {
+        if !center.inbox.messages.isEmpty {
+            let unread = center.inbox.unread
+            Button { withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { open.toggle() } } label: {
+                Image(systemName: "bubble.left.fill").font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(open ? Theme.accent : Theme.ink).themeDot()
+                    .overlay(alignment: .topTrailing) {
+                        if unread > 0 {
+                            Text("\(unread)").themeLabel(9, .bold).foregroundStyle(Theme.onAccent)
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(Theme.accent, in: Capsule()).offset(x: 8, y: -6)
+                        }
+                    }
+            }
+            .frame(width: 44)
+            .accessibilityLabel(unread > 0 ? "Messages, \(unread) new" : "Messages")
+        }
+    }
+}
+
+/// Every message in the scene, first to last. Tapping one points the way to it.
+struct MessageList: View {
+    @ObservedObject var center: MessageCenter
+    let close: () -> Void
+    var body: some View {
+        let unread = center.inbox.unread
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Messages").themeLabel(15, .bold)
+                Spacer()
+                Text(unread > 0 ? "\(unread) new" : "First to last").themeLabel(10, .semibold)
+                    .foregroundStyle(unread > 0 ? Theme.accent : Theme.dim)
+            }
+            // Only a long list scrolls.
+            ViewThatFits(in: .vertical) {
+                rows
+                ScrollView { rows }
+            }
+            .frame(maxHeight: 300)
+            Text("Tap a message to be shown where it is.").themeText(10).foregroundStyle(Theme.dim)
+        }
+        .themePanel(padding: 14).frame(maxWidth: 300)
+    }
+    private var rows: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(Array(center.inbox.messages.enumerated()), id: \.element.id) { index, message in
+                Button { center.find(message); close() } label: {
+                    HStack(spacing: 8) {
+                        Text("\(index + 1)").themeLabel(10, .semibold).foregroundStyle(Theme.dim).frame(width: 22, alignment: .trailing)
+                        Text(message.text).themeText(12, message.unread ? .bold : .regular)
+                            .lineLimit(2).multilineTextAlignment(.leading)
+                        Spacer(minLength: 0)
+                        if message.unread { Circle().fill(Theme.accent).frame(width: 8, height: 8) }
+                    }
+                    .themeRow(selected: message.id == center.target?.id)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Message \(index + 1)\(message.unread ? ", new" : ""): \(message.text)")
+            }
+        }
+    }
+}
+
+/// Over the camera: brackets round the message when it is in view, or an arrow the way to turn when it is not.
+struct MessageMarker: View {
+    @ObservedObject var center: MessageCenter
+    var body: some View {
+        // Laid out in the safe area, so the arrow keeps clear of the notch and the home bar.
+        GeometryReader { area in
+            if center.target != nil, let aim = center.aim {
+                if let spot = aim.screen {
+                    // The spot is a fraction of the whole screen, which starts above and left of the safe area.
+                    let inset = area.safeAreaInsets
+                    Brackets(arm: 14).stroke(Theme.accent, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                        .frame(width: 84, height: 84).shadow(color: .black.opacity(0.35), radius: 3)
+                        .position(x: CGFloat(spot.x) * (area.size.width + inset.leading + inset.trailing) - inset.leading,
+                                  y: CGFloat(spot.y) * (area.size.height + inset.top + inset.bottom) - inset.top)
+                } else if let way = center.way ?? Optional(aim), way.screen == nil {
+                    // Out of view: an arrow at the edge of the screen, on the side to move
+                    // toward. It points along the way there, which may be round something.
+                    // Once that way is in view the line on the floor takes over.
+                    // Its outer edge runs along the safe area drawn in by a twentieth on every side.
+                    let badge = CGSize(width: 64, height: 84)
+                    let box = CGRect(origin: .zero, size: area.size)
+                        .insetBy(dx: min(area.size.width * 0.05 + badge.width / 2, area.size.width / 2 - 1),
+                                 dy: min(area.size.height * 0.05 + badge.height / 2, area.size.height / 2 - 1))
+                    let across = CGFloat(sin(way.turn)), down = CGFloat(-cos(way.turn))
+                    let scale = min(box.width / 2 / max(abs(across), 0.0001), box.height / 2 / max(abs(down), 0.0001))
+                    VStack(spacing: 4) {
+                        Image(systemName: "arrow.up").font(.system(size: 28, weight: .heavy)).foregroundStyle(Theme.onAccent)
+                            .frame(width: 56, height: 56).background(Theme.accent, in: Circle())
+                            .overlay(Circle().stroke(Theme.paper, lineWidth: 3))
+                            .rotationEffect(.radians(Double(way.turn)))
+                        Text(String(format: "%.1f m", aim.distance)).themeLabel(11, .bold).foregroundStyle(Theme.ink)
+                            .padding(.horizontal, 8).padding(.vertical, 3).background(Theme.paper, in: Capsule())
+                    }
+                    .frame(width: badge.width, height: badge.height)
+                    .shadow(color: .black.opacity(0.35), radius: 4)
+                    .position(x: box.midX + across * scale, y: box.midY + down * scale)
+                    .animation(.easeOut(duration: 0.15), value: way.turn)
+                }
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+/// The reward for reaching a message: a big tick and its words, for a few seconds.
+struct MessageFound: View {
+    @ObservedObject var center: MessageCenter
+    var body: some View {
+        if let found = center.found {
+            VStack(spacing: 12) {
+                Image(systemName: "checkmark").font(.system(size: 54, weight: .heavy)).foregroundStyle(Theme.onAccent)
+                    .frame(width: 116, height: 116).background(Theme.accent, in: Circle())
+                    .overlay(Circle().stroke(Theme.paper, lineWidth: 5))
+                    .shadow(color: Theme.glow, radius: 18)
+                Text("You found it").themeLabel(18, .bold)
+                Text(found.text).themeText(13).foregroundStyle(Theme.dim).lineLimit(2).multilineTextAlignment(.center)
+            }
+            .padding(22).foregroundStyle(Theme.ink).themeBubble()
+            .frame(maxWidth: 260).frame(maxWidth: .infinity, maxHeight: .infinity)
+            .transition(.scale(scale: 0.4).combined(with: .opacity))
+            .allowsHitTesting(false)
+            .accessibilityLabel("You found the message: \(found.text)")
+        }
+    }
+}
+
+/// The message being looked for, and in words which way to point the phone.
+struct MessageGuide: View {
+    @ObservedObject var center: MessageCenter
+    var body: some View {
+        if let target = center.target {
+            HStack(spacing: 10) {
+                Image(systemName: center.aim == nil ? "qrcode.viewfinder" : center.aim?.screen == nil ? "arrow.up" : "scope")
+                    .font(.system(size: 18, weight: .bold)).foregroundStyle(Theme.accent)
+                    .rotationEffect(.radians(Double(center.aim?.turn ?? 0))).frame(width: 26)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(target.text).themeLabel(12, .bold).lineLimit(1)
+                    Text(way).themeText(11).foregroundStyle(Theme.dim).lineLimit(2)
+                }
+                Spacer(minLength: 0)
+                Button { withAnimation { center.stop() } } label: {
+                    Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).foregroundStyle(Theme.ink)
+                        .frame(width: 30, height: 30).background(Theme.well, in: Circle())
+                }.accessibilityLabel("Stop looking for this message")
+            }
+            .foregroundStyle(Theme.ink).themeBubble()
+        }
+    }
+    private var way: String {
+        guard let aim = center.aim else { return "Scan a Portal so the phone knows where it is." }
+        let far = String(format: "%.1f m away", aim.distance)
+        guard aim.screen == nil else { return "It is here · \(far)" }
+        // With a way planned, the words follow it and not the straight line through a wall.
+        guard let way = center.way else { return "\(aim.hint) · \(far)" }
+        return "\(way.screen == nil ? way.hint : "Follow the line") · \(far)"
+    }
+}
+
 struct AnnotationEditor: View {
     let controller: ViewerController
     @ObservedObject var peer: HomePeer
