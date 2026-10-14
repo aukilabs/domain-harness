@@ -1,7 +1,7 @@
 //! Home's follower for declared robot bodies: one continuing SDK subscription
 //! per robot-state Product in the discovered Catalogs, latest fresh observation
 //! cached for the viewer. Ages are Home receipt ages, so no clocks are compared.
-use crate::robot_state::{BodyContract, HEALTH_SCHEMA, Health, JOINTS_SCHEMA, Joints, METADATA};
+use crate::robot_state::{BodyContract, HEALTH_SCHEMA, Health, JOINTS_SCHEMA, Joints, METADATA, POINTING_SCHEMA, Pointing};
 use anyhow::{Result, ensure};
 use auki_component_protocol::{ComponentProtocolClient, ObservationStart, RemoteObservationEvent};
 use auki_components::*;
@@ -19,12 +19,14 @@ const MAX_PRODUCTS: usize = 64;
 enum Kind {
     Joints,
     Health,
+    Pointing,
 }
 impl Kind {
     fn of(schema: &str) -> Option<Self> {
         match schema {
             JOINTS_SCHEMA => Some(Self::Joints),
             HEALTH_SCHEMA => Some(Self::Health),
+            POINTING_SCHEMA => Some(Self::Pointing),
             _ => None,
         }
     }
@@ -32,6 +34,7 @@ impl Kind {
         match self {
             Self::Joints => "joints",
             Self::Health => "health",
+            Self::Pointing => "pointing",
         }
     }
 }
@@ -74,7 +77,7 @@ impl RobotStates {
         for e in entries.values() {
             let key = serde_json::to_string(&(&e.owner, &e.body)).unwrap();
             let robot = robots.entry(key).or_insert_with(|| json!({"peer_id":e.owner,"model":e.body.model,
-                "base_frame":e.body.base_frame,"session_id":e.body.session_id,"joints":null,"health":null}));
+                "base_frame":e.body.base_frame,"session_id":e.body.session_id,"joints":null,"health":null,"pointing":null}));
             if let Some(l) = &e.latest {
                 robot[e.kind.name()] = json!({"sequence":l.sequence,"timestamp_ns":l.timestamp_ns.to_string(),
                     "age_ms":l.received.elapsed().as_millis() as u64,"state":l.payload});
@@ -125,6 +128,7 @@ impl RobotStates {
                 let task = match kind {
                     Kind::Joints => tokio::spawn(follow::<Joints>(client.clone(), sensor, self.clone(), key.clone(), cancel.clone(), Joints::validate)),
                     Kind::Health => tokio::spawn(follow::<Health>(client.clone(), sensor, self.clone(), key.clone(), cancel.clone(), Health::validate)),
+                    Kind::Pointing => tokio::spawn(follow::<Pointing>(client.clone(), sensor, self.clone(), key.clone(), cancel.clone(), Pointing::validate)),
                 };
                 workers.insert(key, (fingerprint, cancel, task));
             }

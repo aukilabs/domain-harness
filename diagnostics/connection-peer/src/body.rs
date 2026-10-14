@@ -1,16 +1,17 @@
-//! Bracketbot body state: `bbos-joints` and `bbos-health`, each declaring the
-//! body model rooted at the published pose's base frame, on the pose clock.
+//! Bracketbot body state: `bbos-joints`, `bbos-health` and `bbos-pointing`, each
+//! declaring the body model rooted at the published pose's base frame, on the pose clock.
 use anyhow::{Result, ensure};
 use auki_components::*;
 use serde::Deserialize;
 use std::sync::Arc;
-use crate::robot_state::{Battery, BodyContract, Health, JointHealth, Joints, HEALTH_SCHEMA, JOINTS_SCHEMA, METADATA};
+use crate::robot_state::{Battery, BodyContract, Health, JointHealth, Joints, Pointing, HEALTH_SCHEMA, JOINTS_SCHEMA, METADATA, POINTING_SCHEMA};
 use std::collections::BTreeMap;
 
 /// The URDF the Home viewer serves for this body.
 const MODEL: &str = "bracketbot";
 const JOINTS: &str = "bbos-joints";
 const HEALTH: &str = "bbos-health";
+const POINTING: &str = "bbos-pointing";
 
 #[derive(Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -85,6 +86,7 @@ impl<T: ContractType + Send + Sync + 'static> Stream<T> {
 pub struct Body {
     joints: Stream<Joints>,
     health: Stream<Health>,
+    pointing: Stream<Pointing>,
 }
 impl Body {
     pub fn mount(p: &crate::poses::Publisher) -> Result<Self> {
@@ -94,6 +96,7 @@ impl Body {
         Ok(Self {
             joints: stream(p, &body, JOINTS, JOINTS_SCHEMA, "urdf_joint_positions")?,
             health: stream(p, &body, HEALTH, HEALTH_SCHEMA, "motor_and_battery_health")?,
+            pointing: stream(p, &body, POINTING, POINTING_SCHEMA, "pointing_request_status")?,
         })
     }
     pub fn publish(&mut self, sample: Sample) -> Result<()> {
@@ -110,11 +113,21 @@ impl Body {
             }
         }
     }
+    /// The latest pointing phase, stamped now on the capture clock (UTC ns).
+    pub fn publish_pointing(&mut self, pointing: Pointing) -> Result<()> {
+        pointing.validate()?;
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos() as u64;
+        // Phases can share a nanosecond; keep every one, in order.
+        let timestamp_ns = now.max(self.pointing.last + 1);
+        self.pointing.publish(timestamp_ns, pointing)
+    }
     pub fn close(self, p: &crate::poses::Publisher) -> Result<()> {
         p.endpoint.unexport_product(JOINTS);
         p.endpoint.unexport_product(HEALTH);
+        p.endpoint.unexport_product(POINTING);
         self.joints.capture.delete()?;
         self.health.capture.delete()?;
+        self.pointing.capture.delete()?;
         Ok(())
     }
 }

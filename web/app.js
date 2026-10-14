@@ -14,7 +14,7 @@ import { readCameraResponse } from './camera-frame.js';
 import { moveMapCamera, applyChatActions, chatResultPresentation } from './view-camera.js';
 import { createAttachedCamera } from './attached-camera.js';
 import { createRobotModel } from './robot-model.js';
-import { applyRobotHealth } from './robot-health.js';
+import { applyRobotHealth, applyPointingStatus } from './robot-health.js';
 const $=id=>document.getElementById(id);
 const chatForm=$('scene-chat-form'),chatInput=$('scene-chat-input'),chatStatus=$('scene-chat-status');
 chatForm.querySelector('button').disabled=true;
@@ -582,7 +582,7 @@ function setGlyphModel(glyph,model){
  if(model!=='bracketbot')return;
  createRobotModel().then(robot=>{
   if(glyph.model!=='bracketbot'||glyph.robot)return;
-  glyph.robot=robot;glyph.group.add(robot.root);glyph.body.visible=false;applyJoints(glyph);applyRobotHealth(glyph,glyph.health);
+  glyph.robot=robot;glyph.group.add(robot.root);glyph.body.visible=false;applyJoints(glyph);applyRobotHealth(glyph,glyph.health);applyPointingStatus(glyph,glyph.pointing);
  }).catch(e=>console.warn('Robot model unavailable; keeping pose glyph',e));
 }
 // URDF joint positions published next to the pose; joints left out keep their last value.
@@ -647,6 +647,7 @@ function renderRunners(entries){
   setGlyphModel(glyph,state.model||null);
   if(state.joints&&state.joints!==glyph.joints){glyph.joints=state.joints;applyJoints(glyph);}
   glyph.health=state.health||null;applyRobotHealth(glyph,glyph.health);
+  glyph.pointing=state.pointing||null;applyPointingStatus(glyph,glyph.pointing);
   glyph.material.color.set(state.status==='live'?glyph.color:'#84908f');glyph.material.opacity=state.status==='live'?.82:.35;glyph.arrow.setColor(state.status==='live'?glyph.color:'#84908f');
   const row=list.children[i];row.dataset.status=state.status;row.dataset.visible=String(glyph.group.visible);
   row.dataset.position=state.pose?JSON.stringify(glyph.group.position.toArray()):'';row.dataset.rotation=state.pose?JSON.stringify(glyph.group.quaternion.toArray()):'';
@@ -705,7 +706,8 @@ async function refreshRunner(){
    let pose;try{pose=declaredGlyphPose(r);}catch(e){console.warn('Robot body not drawn:',e.message);continue;}
    const age=r.received_age_ms+performance.now()-r.receivedAt;
    entries.push({key:'body:'+r.peer_id,name:r.name,state:{status:age<2000?'live':'stale',pose,model:r.body.model,
-    joints:freshState(r.body.joints,3000)?.positions,health:freshState(r.body.health,5000)}});
+    joints:freshState(r.body.joints,3000)?.positions,health:freshState(r.body.health,5000),
+    pointing:freshState(r.body.pointing,20000)}});
   }
   if(!entries.length){hideRobots();$('runner-status').textContent='No robot aligned to this scene';return;}
   renderRunners(entries);
