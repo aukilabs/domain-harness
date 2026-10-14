@@ -83,7 +83,7 @@ struct ViewerScreen: View {
                     }
                     .padding()
                     .accessibilityLabel(showDetails ? "Hide scene details" : "Show scene details")
-                    // Three looks, in turn: the room alone, the voxels alone, and the voxels over the room.
+                    // Three looks, in turn: the room alone, the voxels over the room, and the voxels alone.
                     Button { controller.voxelLook = controller.voxelLook.next } label: {
                         Image(systemName: controller.voxelLook == .camera ? "square.grid.2x2" : "square.grid.2x2.fill")
                             .font(.system(size: 16, weight: .semibold))
@@ -1280,7 +1280,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     /// What the AR view shows: the camera alone, Home's voxels alone, or the voxels over the camera.
     enum VoxelLook: String {
         case camera, voxels, both
-        var next: VoxelLook { self == .camera ? .voxels : self == .voxels ? .both : .camera }
+        var next: VoxelLook { self == .camera ? .both : self == .both ? .voxels : .camera }
     }
     /// Not remembered: every launch starts on the camera alone.
     @Published var voxelLook = VoxelLook.camera {
