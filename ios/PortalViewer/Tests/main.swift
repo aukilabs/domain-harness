@@ -85,6 +85,17 @@ var mixedPairing = conferencePairing; mixedPairing["product_id"] = "local-scene:
 check((try? HomeProfile.load(JSONSerialization.data(withJSONObject: mixedPairing))) == nil, "different scene Product rejected")
 mixedPairing = conferencePairing; mixedPairing["product_id"] = "canonical-scene"
 check((try? HomeProfile.load(JSONSerialization.data(withJSONObject: mixedPairing))) == nil, "legacy Product cannot masquerade as conference")
+// Scenes whose origin is the first observed Portal name it `:origin`.
+var originPairing = pairing
+originPairing["frame"] = "local-scene:bb-lab:origin"
+originPairing["product_id"] = "local-scene:bb-lab:mobile"
+let originProfile = try HomeProfile.load(JSONSerialization.data(withJSONObject: originPairing))
+check(originProfile.sceneID == "bb-lab", "origin-named scene retained")
+check(originProfile.sceneLabel == "Bb Lab", "origin-named scene visible on phone")
+var badOrigin = originPairing; badOrigin["frame"] = "local-scene:BB_Lab:origin"
+check((try? HomeProfile.load(JSONSerialization.data(withJSONObject: badOrigin))) == nil, "invalid scene ID rejected")
+badOrigin = originPairing; badOrigin["product_id"] = "local-scene:nacs:mobile"
+check((try? HomeProfile.load(JSONSerialization.data(withJSONObject: badOrigin))) == nil, "origin scene Product must match")
 print("Independent scene pairing checks passed")
 
 var cooldown = CalibrationCooldown()
