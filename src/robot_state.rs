@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 
 pub const JOINTS_SCHEMA: &str = "spatial-harness.robot-joints/v1";
 pub const HEALTH_SCHEMA: &str = "spatial-harness.robot-health/v1";
+pub const POINTING_SCHEMA: &str = "spatial-harness.robot-pointing/v1";
 pub const METADATA: &str = "spatial-harness.robot-body/v1";
 const MAX_JOINTS: usize = 64;
 
@@ -99,6 +100,37 @@ impl Health {
     }
 }
 
+/// The latest pointing request: its phase, and why it was refused or stopped.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Pointing {
+    pub request_id: String,
+    /// planned, moving, holding, returning, done, rejected or fault.
+    pub phase: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arm: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// A short cause for alerts: hot, current, unreachable or other.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+}
+impl ContractType for Pointing {
+    const DATATYPE: &'static str = POINTING_SCHEMA;
+}
+impl Pointing {
+    pub fn validate(&self) -> Result<()> {
+        const PHASES: [&str; 7] = ["planned", "moving", "holding", "returning", "done", "rejected", "fault"];
+        ensure!(!self.request_id.is_empty() && self.request_id.len() <= 128, "Invalid pointing request ID");
+        ensure!(PHASES.contains(&self.phase.as_str()), "Unknown pointing phase");
+        ensure!(self.arm.as_ref().is_none_or(|a| joint_name(a)), "Invalid pointing arm");
+        ensure!(self.reason.as_ref().is_none_or(|r| r.len() <= 300), "Pointing reason too long");
+        ensure!(self.code.as_ref().is_none_or(|c| !c.is_empty() && c.len() <= 32
+            && c.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')), "Invalid pointing code");
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,5 +165,13 @@ mod tests {
         assert!(Health{joints:BTreeMap::new(),battery:Some(Battery{voltage:19.,percent:101.})}.validate().is_err());
         Health{joints:[("j".into(),JointHealth{temperature_c:40.,current_a:-0.5})].into(),battery:None}.validate().unwrap();
         assert!(serde_json::from_str::<Health>(r#"{"timestamp_ns":1,"joints":{}}"#).is_err());
+    }
+    #[test]
+    fn pointing_status_names_known_phases_and_short_codes() {
+        let fault = Pointing {request_id:"r".into(), phase:"fault".into(), arm:Some("arm_left".into()),
+            reason:Some("lj0 at 50 C (limit 50 C)".into()), code:Some("hot".into())};
+        fault.validate().unwrap();
+        assert!(Pointing {phase:"exploded".into(), ..fault.clone()}.validate().is_err());
+        assert!(Pointing {code:Some("Hot!".into()), ..fault}.validate().is_err());
     }
 }

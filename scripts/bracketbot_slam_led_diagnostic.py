@@ -10,9 +10,14 @@ import argparse
 import json
 import math
 import os
+from pathlib import Path
 import select
+import shutil
 import signal
 import subprocess
+import sys
+import tempfile
+import threading
 import time
 
 
@@ -24,6 +29,46 @@ def status(health, received, now):
     if bool(health['stalled']):
         return 'stalled'
     return 'tracking' if bool(health['localized']) else 'unlocalized'
+
+
+# A refused or stopped point_at request: blink for a few seconds and say why.
+ALERT_SECONDS = 6
+ALERT_COLORS = {'unreachable': [255, 140, 0]}
+ALERT_SPEECH = {
+    'hot': "Sorry, I can't point right now. My arm motor is too hot.",
+    'current': 'Sorry, I stopped pointing. My arm was straining too hard.',
+    'unreachable': "Sorry, I can't point there.",
+}
+
+
+def alert_color(code, since):
+    """Blinking alert colour, or None once the alert is over."""
+    if since > ALERT_SECONDS:
+        return None
+    on = int(since*4) % 2 == 0
+    return ALERT_COLORS.get(code, [255, 0, 0]) if on else [0, 0, 0]
+
+
+def speak(code):
+    """Say why pointing stopped, through BBOS's speaker; silent without espeak-ng."""
+    backend = shutil.which('espeak-ng') or shutil.which('espeak')
+    if backend is None:
+        return None
+    here = Path(__file__).resolve().parent
+
+    def run():
+        with tempfile.TemporaryDirectory(prefix='bracketbot-alert-') as directory:
+            wave = str(Path(directory)/'alert.wav')
+            text = ALERT_SPEECH.get(code, "Sorry, I couldn't point.")
+            # Text is stdin, never a shell command or option.
+            if subprocess.run([backend, '--stdin', '-w', wave], input=text.encode(), timeout=30,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+                subprocess.run([sys.executable, str(here/'bracketbot-python.py'), '--daemon', 'speaker',
+                                str(here/'play-bracketbot-speech.py'), wave], timeout=60,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread
 
 
 def led_color(tracking, connected):
@@ -76,6 +121,7 @@ def main():
         connection_received = 0
         pending = b''
         previous_color = None
+        alert = None
         pose_reader = None
         last_pose_sent = 0
         last_pose_write = 0
@@ -100,6 +146,11 @@ def main():
                                 if line in (b'connected', b'disconnected'):
                                     connected = line == b'connected'
                                     connection_received = now
+                                elif line.startswith(b'alert '):
+                                    code = line[6:].decode(errors='replace')[:32]
+                                    print(time.strftime('%Y-%m-%dT%H:%M:%S%z'), 'pointing alert', code, flush=True)
+                                    alert = (code, now)
+                                    speak(code)
                             if len(pending) > 4096:
                                 raise RuntimeError('Invalid peer status output')
                         if peer.poll() is not None or now - connection_received > 3:
@@ -133,6 +184,12 @@ def main():
                               'Home connected' if connected else 'Home disconnected', flush=True)
                         previous = state
                     color = led_color(current, connected)
+                    if alert is not None:
+                        flash = alert_color(alert[0], now-alert[1])
+                        if flash is None:
+                            alert = None
+                        else:
+                            color = flash
                     if color is not None:
                         if writer is None:
                             writer = Writer('led.ctrl', Type('led_ctrl'))
