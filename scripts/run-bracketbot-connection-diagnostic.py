@@ -91,6 +91,7 @@ def main():
     parser.add_argument('--robot', default='182')
     parser.add_argument('--home-connection', type=Path, required=True)
     parser.add_argument('--binary', type=Path, required=True)
+    parser.add_argument('--peer-config', type=Path, help="Peer config whose Domain and auth endpoints to use (default: config/bracketbot-182.peer.json); nothing else is copied")
     parser.add_argument('--poses', action='store_true', help='Expose only the typed BBOS pose Product')
     parser.add_argument('--portals', action='store_true', help='Add one head camera and Arshak QR detector; implies poses')
     parser.add_argument('--points', action='store_true', help='Add measured depth points; implies portals and poses')
@@ -112,8 +113,8 @@ def main():
     with tempfile.TemporaryFile() as payload:
         with tarfile.open(fileobj=payload, mode='w:gz', compresslevel=3) as archive:
             archive.add(args.binary, arcname='bin/auki-connection-diagnostic.next')
-            # Only shared auth endpoints/Domain; never copy 182's routes or identity.
-            source = json.loads((repo/'config/bracketbot-182.peer.json').read_text())
+            # Only shared auth endpoints/Domain; never copy routes, identity or secrets.
+            source = json.loads((args.peer_config or repo/'config/bracketbot-182.peer.json').read_text())
             config = json.dumps({key: source[key] for key in
                                  ('domain_id', 'api_url', 'dds_url', 'dms_url', 'login')}).encode()
             entry = tarfile.TarInfo('peer.json')
