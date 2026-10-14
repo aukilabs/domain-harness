@@ -43,9 +43,11 @@ export class PhoneTrailHistory {
 /// is turned back. Null when the phone declares no camera.
 export function cameraShape(catalog){
  for(const component of catalog?.components||[])for(const output of Object.values(component.current_outputs||{})){
-  const payload=output?.manifest?.payload;
+  const payload=output?.manifest?.payload,frame=output?.manifest?.spatial_frame_id||'';
   if(payload?.kind!=='camera'||!(payload.width>0)||!(payload.height>0))continue;
-  return /:turned-(90|270)$/.test(output.manifest.spatial_frame_id||'')?[payload.height,payload.width]:[payload.width,payload.height];
+  // A shared screen is published as a camera too, but the pose is the camera's: only the camera's image shapes the outline.
+  if(frame.startsWith('phone-screen:'))continue;
+  return /:turned-(90|270)$/.test(frame)?[payload.height,payload.width]:[payload.width,payload.height];
  }
  return null;
 }

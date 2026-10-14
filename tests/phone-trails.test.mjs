@@ -35,6 +35,9 @@ test('a phone is drawn with the size of the camera image it declares, in the cam
  assert.deepEqual(cameraShape(camera(480,640,'phone-camera:s:turned-90')),[640,480]);
  assert.deepEqual(cameraShape(camera(480,640,'phone-camera:s:turned-270')),[640,480]);
  assert.deepEqual(cameraShape(camera(640,480,'phone-camera:s:turned-180')),[640,480]);
+ // A shared screen is a camera output too, listed first here; the camera still shapes the outline.
+ assert.deepEqual(cameraShape({components:[{current_outputs:{frames:{manifest:{spatial_frame_id:'phone-screen:s',payload:{kind:'camera',width:294,height:640}}}}},
+  ...camera(640,480,'phone-camera:s').components]}),[640,480]);
  assert.equal(cameraShape({components:[]}),null);assert.equal(cameraShape(undefined),null);
  const close=(a,b)=>a.forEach((v,i)=>assert.ok(Math.abs(v-b[i])<1e-9));
  close(outlineExtents([640,480]),[.08,.06]);close(outlineExtents([1080,1920]),[.045,.08]);
