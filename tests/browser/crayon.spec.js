@@ -7,7 +7,7 @@ test.beforeEach(async({request})=>{
 test('shares one growing stroke before release, without Done',async({page,request})=>{
  const url='/api/paths?scene=local:humanoid-hub-conference';
  await page.goto('/');await page.getByRole('button',{name:'Maps',exact:true}).click();
- await page.locator('[data-map="local:humanoid-hub-conference"]').click();await page.locator('#crayon').click();
+ await page.locator('[data-map="local:humanoid-hub-conference"]').click();await page.locator('.agent-tool[aria-label="Draw path"]').click();
  const rect=await page.locator('#canvas > canvas').boundingBox();
  await page.mouse.move(rect.x+rect.width*.3,rect.y+rect.height*.7);await page.mouse.down();
  await page.mouse.move(rect.x+rect.width*.4,rect.y+rect.height*.7,{steps:12});
@@ -18,7 +18,7 @@ test('shares one growing stroke before release, without Done',async({page,reques
  await expect.poll(async()=>(await (await request.get(url)).json()).items[0].segments[0].length).toBeGreaterThan(first.segments[0].length);
  expect((await (await request.get(url)).json()).items.map(p=>p.id)).toEqual([first.id]);
  await page.mouse.up();await expect(page.locator('.crayon-panel [role=status]')).toHaveText('Path saved to Home.');
- await expect(page.locator('#crayon')).toHaveAttribute('aria-pressed','true');
+ await expect(page.locator('.agent-tool[aria-label="Draw path"]')).toHaveAttribute('aria-pressed','true');
  await page.getByRole('button',{name:'Undo last path'}).click();
  await expect.poll(async()=>(await (await request.get(url)).json()).items).toEqual([]);
 });
@@ -27,7 +27,7 @@ test('draw floor path, persist across reload, isolate scenes, undo',async({page,
  await page.goto('/');await page.getByRole('button',{name:'Maps',exact:true}).click();
  await page.locator('[data-map="local:humanoid-hub-conference"]').click();
  await expect(page.locator('#scene-title')).toHaveText('Humanoid Hub Conference');
- await page.locator('#crayon').click();await expect(page.locator('#crayon')).toHaveAttribute('aria-pressed','true');
+ await page.locator('.agent-tool[aria-label="Draw path"]').click();await expect(page.locator('.agent-tool[aria-label="Draw path"]')).toHaveAttribute('aria-pressed','true');
  const canvas=page.locator('#canvas > canvas'),rect=await canvas.boundingBox();
  await page.mouse.move(rect.x+rect.width*.4,rect.y+rect.height*.7);await page.mouse.down();
  await page.mouse.move(rect.x+rect.width*.6,rect.y+rect.height*.7,{steps:20});await page.mouse.up();
@@ -42,7 +42,7 @@ test('draw floor path, persist across reload, isolate scenes, undo',async({page,
  await page.reload();await page.getByRole('button',{name:'Maps',exact:true}).click();await page.locator('[data-map="local:humanoid-hub-conference"]').click();
  expect((await (await request.get(url)).json()).items).toEqual(saved.items);
  expect((await (await request.get('/api/paths?scene=local:nacs')).json()).items).toEqual([]);
- await page.locator('#crayon').click();await page.getByRole('button',{name:'Undo last path'}).click();
+ await page.locator('.agent-tool[aria-label="Draw path"]').click();await page.getByRole('button',{name:'Undo last path'}).click();
  await expect(page.locator('.crayon-panel [role=status]')).toHaveText('Last path removed.');
  expect((await (await request.get(url)).json()).items).toEqual([]);
  expect(errors).toEqual([]);

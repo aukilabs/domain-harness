@@ -86,7 +86,7 @@ iconPaths.volumes='M2 5l7-3 7 3v8l-7 3-7-3ZM2 5l7 3 7-3M9 8v8';
 const railIcon=(path,weight=1.5)=>`<svg aria-hidden="true" width="20" height="20" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="${weight}" stroke-linecap="round" stroke-linejoin="round"><path d="${path}"/></svg>`;
 // The McKenna mark heads the dock; the floating header keeps only status, scene tools and the account.
 const railLogo=document.createElement('a');railLogo.className='rail-logo';railLogo.href='/';railLogo.setAttribute('aria-label','McKenna home');// The McKenna mark: a colour version over a grey one, revealed along a traced pen route (see style.css).
-railLogo.innerHTML='<svg viewBox="0 0 231 118" aria-hidden="true"><defs><linearGradient id="mark-hue" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="231" y2="118"><stop offset="0.00" stop-color="#10b981"/><stop offset="0.20" stop-color="#3b82f6"/><stop offset="0.40" stop-color="#8b5cf6"/><stop offset="0.60" stop-color="#ec4899"/><stop offset="0.80" stop-color="#f59e0b"/><stop offset="1.00" stop-color="#06b6d4"/><animateTransform attributeName="gradientTransform" type="rotate" from="0 115 59" to="360 115 59" dur="10s" repeatCount="indefinite"/></linearGradient><mask id="mark-pen" maskUnits="userSpaceOnUse" x="-20" y="-20" width="271" height="158"><path class="mark-pen" d="M4 50C12 30 30 6 46 6C52 6 54 12 50 30C44 55 30 85 34 113C38 95 48 70 58 52C75 25 95 5 110 5C118 5 122 12 118 25C110 55 96 90 100 113C106 95 115 70 126 52C145 25 162 5 176 5C186 5 190 12 186 30C178 60 168 90 174 106C178 116 188 112 198 100C212 85 222 65 228 52" pathLength="1" fill="none" stroke="#fff" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/></mask></defs><path class="mark-base" d="M44.3657 0.0950353C46.975 -0.280215 50.568 0.523793 53.0372 1.31804C65.3195 5.26779 65.4902 15.351 63.0022 26.139C61.1842 34.0218 58.8415 41.4885 56.1087 49.0798C65.6655 32.6545 84.049 9.78554 101.899 2.31954C107.802 -0.149712 114.08 -0.764712 120.087 1.73329C123.845 3.29604 127.782 5.6543 129.348 9.6203C133.205 19.384 124.303 40.7483 120.279 49.8878C122.834 47.1308 126.484 41.4368 129.196 38.155C140.357 24.651 154.131 9.17354 170.484 2.23754C176.469 -0.137963 182.828 -0.913212 188.816 1.81954C198.433 6.20979 198.806 14.356 196.806 23.378C195.741 28.0323 194.341 32.6028 192.613 37.0533C187.681 49.9518 169.454 87.7148 174.308 99.5728C175.117 101.55 176.217 102.406 178.156 103.223C193.258 102.005 209.268 76.0905 215.678 63.8703C217.238 60.8693 218.706 57.8208 220.078 54.7295C220.913 52.8038 223.121 46.67 224.658 46.2288C230.816 44.4623 231.721 49.3138 230.348 53.4903C222.953 75.9843 192.981 127.158 163.411 115.368C158.162 113.221 153.986 109.07 151.806 103.835C145.191 88.239 154.445 65.3803 160.272 50.9063C164.921 39.422 171.766 25.9425 174.335 14.1935C166.294 16.7703 157.646 23.8343 151.66 29.8013C133.91 47.4945 117.948 70.3805 109.417 94.0003C107.829 98.3965 105.971 105.906 105.93 110.482C104.078 112.38 102.118 113.468 99.4557 112.966C83.3645 109.935 81.0105 98.16 83.483 83.9145C86.3002 67.681 93.3437 52.728 99.2995 37.576C101.989 30.7318 106.097 22.0493 106.863 15.0548C101.127 16.4648 94.7292 21.4115 90.3262 25.5003C70.9725 43.6363 56.6862 67.421 46.908 91.9313C43.937 99.3785 42.6125 107.748 40.2237 115.318C39.3235 116.509 36.5507 117.035 35.3475 117.004C7.63623 116.312 18.4755 84.888 23.417 68.8513C26.8595 57.6783 30.9715 48.1453 34.7202 37.3653C37.553 29.2193 42.073 19.097 41.9872 10.7438C29.6255 15.914 18.082 27.0875 12.037 39.195C10.7577 41.7575 10.1167 46.4215 8.47448 48.5588C7.96973 49.2158 5.27648 49.0088 4.26873 48.973C2.19073 47.6003 0.033724 45.8583 0.000973951 43.1483C-0.094526 35.2535 6.85372 26.1438 11.7555 20.5168C20.1292 10.9038 31.1815 1.21304 44.3657 0.0950353Z"/><path class="mark-ink" d="M44.3657 0.0950353C46.975 -0.280215 50.568 0.523793 53.0372 1.31804C65.3195 5.26779 65.4902 15.351 63.0022 26.139C61.1842 34.0218 58.8415 41.4885 56.1087 49.0798C65.6655 32.6545 84.049 9.78554 101.899 2.31954C107.802 -0.149712 114.08 -0.764712 120.087 1.73329C123.845 3.29604 127.782 5.6543 129.348 9.6203C133.205 19.384 124.303 40.7483 120.279 49.8878C122.834 47.1308 126.484 41.4368 129.196 38.155C140.357 24.651 154.131 9.17354 170.484 2.23754C176.469 -0.137963 182.828 -0.913212 188.816 1.81954C198.433 6.20979 198.806 14.356 196.806 23.378C195.741 28.0323 194.341 32.6028 192.613 37.0533C187.681 49.9518 169.454 87.7148 174.308 99.5728C175.117 101.55 176.217 102.406 178.156 103.223C193.258 102.005 209.268 76.0905 215.678 63.8703C217.238 60.8693 218.706 57.8208 220.078 54.7295C220.913 52.8038 223.121 46.67 224.658 46.2288C230.816 44.4623 231.721 49.3138 230.348 53.4903C222.953 75.9843 192.981 127.158 163.411 115.368C158.162 113.221 153.986 109.07 151.806 103.835C145.191 88.239 154.445 65.3803 160.272 50.9063C164.921 39.422 171.766 25.9425 174.335 14.1935C166.294 16.7703 157.646 23.8343 151.66 29.8013C133.91 47.4945 117.948 70.3805 109.417 94.0003C107.829 98.3965 105.971 105.906 105.93 110.482C104.078 112.38 102.118 113.468 99.4557 112.966C83.3645 109.935 81.0105 98.16 83.483 83.9145C86.3002 67.681 93.3437 52.728 99.2995 37.576C101.989 30.7318 106.097 22.0493 106.863 15.0548C101.127 16.4648 94.7292 21.4115 90.3262 25.5003C70.9725 43.6363 56.6862 67.421 46.908 91.9313C43.937 99.3785 42.6125 107.748 40.2237 115.318C39.3235 116.509 36.5507 117.035 35.3475 117.004C7.63623 116.312 18.4755 84.888 23.417 68.8513C26.8595 57.6783 30.9715 48.1453 34.7202 37.3653C37.553 29.2193 42.073 19.097 41.9872 10.7438C29.6255 15.914 18.082 27.0875 12.037 39.195C10.7577 41.7575 10.1167 46.4215 8.47448 48.5588C7.96973 49.2158 5.27648 49.0088 4.26873 48.973C2.19073 47.6003 0.033724 45.8583 0.000973951 43.1483C-0.094526 35.2535 6.85372 26.1438 11.7555 20.5168C20.1292 10.9038 31.1815 1.21304 44.3657 0.0950353Z" fill="url(#mark-hue)" mask="url(#mark-pen)"/></svg>';rail.append(railLogo);
+railLogo.innerHTML='<svg viewBox="0 0 231 118" aria-hidden="true"><defs><linearGradient id="mark-hue" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="231" y2="118"><stop offset="0.00" stop-color="#10b981"/><stop offset="0.20" stop-color="#3b82f6"/><stop offset="0.40" stop-color="#8b5cf6"/><stop offset="0.60" stop-color="#ec4899"/><stop offset="0.80" stop-color="#f59e0b"/><stop offset="1.00" stop-color="#06b6d4"/><animateTransform attributeName="gradientTransform" type="rotate" from="0 115 59" to="360 115 59" dur="10s" repeatCount="indefinite"/></linearGradient><mask id="mark-pen" maskUnits="userSpaceOnUse" x="-20" y="-20" width="271" height="158"><path class="mark-pen" d="M4 50C12 30 30 6 46 6C52 6 54 12 50 30C44 55 30 85 34 113C38 95 48 70 58 52C75 25 95 5 110 5C118 5 122 12 118 25C110 55 96 90 100 113C106 95 115 70 126 52C145 25 162 5 176 5C186 5 190 12 186 30C178 60 168 90 174 106C178 116 188 112 198 100C212 85 222 65 228 52" pathLength="1" fill="none" stroke="#fff" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/></mask></defs><path class="mark-base" d="M44.3657 0.0950353C46.975 -0.280215 50.568 0.523793 53.0372 1.31804C65.3195 5.26779 65.4902 15.351 63.0022 26.139C61.1842 34.0218 58.8415 41.4885 56.1087 49.0798C65.6655 32.6545 84.049 9.78554 101.899 2.31954C107.802 -0.149712 114.08 -0.764712 120.087 1.73329C123.845 3.29604 127.782 5.6543 129.348 9.6203C133.205 19.384 124.303 40.7483 120.279 49.8878C122.834 47.1308 126.484 41.4368 129.196 38.155C140.357 24.651 154.131 9.17354 170.484 2.23754C176.469 -0.137963 182.828 -0.913212 188.816 1.81954C198.433 6.20979 198.806 14.356 196.806 23.378C195.741 28.0323 194.341 32.6028 192.613 37.0533C187.681 49.9518 169.454 87.7148 174.308 99.5728C175.117 101.55 176.217 102.406 178.156 103.223C193.258 102.005 209.268 76.0905 215.678 63.8703C217.238 60.8693 218.706 57.8208 220.078 54.7295C220.913 52.8038 223.121 46.67 224.658 46.2288C230.816 44.4623 231.721 49.3138 230.348 53.4903C222.953 75.9843 192.981 127.158 163.411 115.368C158.162 113.221 153.986 109.07 151.806 103.835C145.191 88.239 154.445 65.3803 160.272 50.9063C164.921 39.422 171.766 25.9425 174.335 14.1935C166.294 16.7703 157.646 23.8343 151.66 29.8013C133.91 47.4945 117.948 70.3805 109.417 94.0003C107.829 98.3965 105.971 105.906 105.93 110.482C104.078 112.38 102.118 113.468 99.4557 112.966C83.3645 109.935 81.0105 98.16 83.483 83.9145C86.3002 67.681 93.3437 52.728 99.2995 37.576C101.989 30.7318 106.097 22.0493 106.863 15.0548C101.127 16.4648 94.7292 21.4115 90.3262 25.5003C70.9725 43.6363 56.6862 67.421 46.908 91.9313C43.937 99.3785 42.6125 107.748 40.2237 115.318C39.3235 116.509 36.5507 117.035 35.3475 117.004C7.63623 116.312 18.4755 84.888 23.417 68.8513C26.8595 57.6783 30.9715 48.1453 34.7202 37.3653C37.553 29.2193 42.073 19.097 41.9872 10.7438C29.6255 15.914 18.082 27.0875 12.037 39.195C10.7577 41.7575 10.1167 46.4215 8.47448 48.5588C7.96973 49.2158 5.27648 49.0088 4.26873 48.973C2.19073 47.6003 0.033724 45.8583 0.000973951 43.1483C-0.094526 35.2535 6.85372 26.1438 11.7555 20.5168C20.1292 10.9038 31.1815 1.21304 44.3657 0.0950353Z"/><path class="mark-ink" d="M44.3657 0.0950353C46.975 -0.280215 50.568 0.523793 53.0372 1.31804C65.3195 5.26779 65.4902 15.351 63.0022 26.139C61.1842 34.0218 58.8415 41.4885 56.1087 49.0798C65.6655 32.6545 84.049 9.78554 101.899 2.31954C107.802 -0.149712 114.08 -0.764712 120.087 1.73329C123.845 3.29604 127.782 5.6543 129.348 9.6203C133.205 19.384 124.303 40.7483 120.279 49.8878C122.834 47.1308 126.484 41.4368 129.196 38.155C140.357 24.651 154.131 9.17354 170.484 2.23754C176.469 -0.137963 182.828 -0.913212 188.816 1.81954C198.433 6.20979 198.806 14.356 196.806 23.378C195.741 28.0323 194.341 32.6028 192.613 37.0533C187.681 49.9518 169.454 87.7148 174.308 99.5728C175.117 101.55 176.217 102.406 178.156 103.223C193.258 102.005 209.268 76.0905 215.678 63.8703C217.238 60.8693 218.706 57.8208 220.078 54.7295C220.913 52.8038 223.121 46.67 224.658 46.2288C230.816 44.4623 231.721 49.3138 230.348 53.4903C222.953 75.9843 192.981 127.158 163.411 115.368C158.162 113.221 153.986 109.07 151.806 103.835C145.191 88.239 154.445 65.3803 160.272 50.9063C164.921 39.422 171.766 25.9425 174.335 14.1935C166.294 16.7703 157.646 23.8343 151.66 29.8013C133.91 47.4945 117.948 70.3805 109.417 94.0003C107.829 98.3965 105.971 105.906 105.93 110.482C104.078 112.38 102.118 113.468 99.4557 112.966C83.3645 109.935 81.0105 98.16 83.483 83.9145C86.3002 67.681 93.3437 52.728 99.2995 37.576C101.989 30.7318 106.097 22.0493 106.863 15.0548C101.127 16.4648 94.7292 21.4115 90.3262 25.5003C70.9725 43.6363 56.6862 67.421 46.908 91.9313C43.937 99.3785 42.6125 107.748 40.2237 115.318C39.3235 116.509 36.5507 117.035 35.3475 117.004C7.63623 116.312 18.4755 84.888 23.417 68.8513C26.8595 57.6783 30.9715 48.1453 34.7202 37.3653C37.553 29.2193 42.073 19.097 41.9872 10.7438C29.6255 15.914 18.082 27.0875 12.037 39.195C10.7577 41.7575 10.1167 46.4215 8.47448 48.5588C7.96973 49.2158 5.27648 49.0088 4.26873 48.973C2.19073 47.6003 0.033724 45.8583 0.000973951 43.1483C-0.094526 35.2535 6.85372 26.1438 11.7555 20.5168C20.1292 10.9038 31.1815 1.21304 44.3657 0.0950353Z" fill="url(#mark-hue)" mask="url(#mark-pen)"/></svg>';rail.append(railLogo);if(matchMedia('(prefers-reduced-motion: reduce)').matches)railLogo.querySelector('animateTransform')?.remove();
 const railTabs=document.createElement('div');railTabs.className='rail-tabs';rail.append(railTabs);
 for(const [id,name] of Object.entries(panelNames)){
  const button=document.createElement('button');button.type='button';button.className='rail-tab';button.dataset.panel=id;button.dataset.accent=panelAccents[id];button.setAttribute('aria-label',name);button.setAttribute('aria-controls','panel-'+id);
@@ -95,14 +95,12 @@ for(const [id,name] of Object.entries(panelNames)){
  const panel=document.createElement('section');panel.id='panel-'+id;panel.className='workspace-panel';panel.dataset.accent=panelAccents[id];panel.setAttribute('aria-labelledby','panel-title-'+id);
  panel.innerHTML=`<div class="panel-heading"><span class="panel-heading-icon" aria-hidden="true">${railIcon(iconPaths[id])}</span><h2 id="panel-title-${id}">${name}</h2><button type="button" class="panel-close" aria-label="Close ${name} panel">${railIcon('M4.5 4.5l9 9M13.5 4.5l-9 9')}</button></div><div class="panel-body"></div>`;
  panel.querySelector('.panel-close').onclick=()=>{openPanel(null);button.focus();};
- panel.addEventListener('keydown',e=>{if(e.key==='Escape'&&!e.target.closest('input,textarea,select,dialog')){openPanel(null);button.focus();}});
+ panel.addEventListener('keydown',e=>{if(e.key==='Escape'&&!e.target.closest('input,textarea,select,dialog')){e.stopPropagation();openPanel(null);button.focus();}});
  panelBodies[id]=panel.lastElementChild;sidebar.append(panel);
 }
 // Rail motion: the hovered plate tilts away from the cursor, and a click pulses it into the tab colour.
 const railMotion=!matchMedia('(prefers-reduced-motion: reduce)').matches;
 function pulseRailTab(button){if(!railMotion)return;button.classList.remove('pulse');void button.offsetWidth;button.classList.add('pulse');}
-const railIndicator=document.createElement('span');railIndicator.className='rail-indicator';railIndicator.setAttribute('aria-hidden','true');railIndicator.hidden=true;railTabs.prepend(railIndicator);
-function moveRailIndicator(){const tab=railTabs.querySelector('[aria-expanded="true"]');railIndicator.hidden=!tab;if(!tab)return;railIndicator.style.setProperty('--tab',getComputedStyle(tab).getPropertyValue('--tab'));railIndicator.style.setProperty('--indicator-y',(tab.offsetTop+tab.offsetHeight+2)+'px');}
 railTabs.addEventListener('animationend',e=>{if(e.animationName==='rail-wash')e.target.closest('.rail-tab')?.classList.remove('pulse');});
 // The tab bar's tilt, spotlight and press feel, shared with every other control.
 const ICON_BUTTONS='.panel-close,.inspector-close,.icon-toggle,.tree-toggle,.copy-button,.search-clear,.agent-icon-button';
@@ -110,16 +108,16 @@ tactile(document,[{selector:'.rail-tab,.agent-tool',tilt:7},{selector:ICON_BUTTO
 // One shared tooltip shows each rail button's name on hover and keyboard focus (WCAG 1.4.13: dismissible, hoverable, persistent).
 // It repeats the button's aria-label, so it is hidden from assistive technology.
 const railTip=document.createElement('div');railTip.className='rail-tooltip';railTip.setAttribute('aria-hidden','true');railTip.hidden=true;document.body.append(railTip);
-let railTipTimer=0,railTipTarget=null;
+let railTipTimer=0;
 function showRailTip(button,immediate){
  clearTimeout(railTipTimer);
  const show=()=>{
-  railTipTarget=button;railTip.textContent=button.getAttribute('aria-label');
+  railTip.textContent=button.getAttribute('aria-label');
   const box=button.getBoundingClientRect();railTip.style.top=(box.top+box.height/2)+'px';railTip.style.left=(box.right+10)+'px';railTip.hidden=false;
  };
  if(immediate||!railTip.hidden)show();else railTipTimer=setTimeout(show,300);
 }
-function hideRailTip(delay=0){clearTimeout(railTipTimer);railTipTimer=setTimeout(()=>{railTip.hidden=true;railTipTarget=null;},delay);}
+function hideRailTip(delay=0){clearTimeout(railTipTimer);railTipTimer=setTimeout(()=>{railTip.hidden=true;},delay);}
 // The logo carries no tooltip; its own animation is the hover response.
 rail.addEventListener('pointerover',e=>{const button=e.target.closest('button,a');if(button&&!button.matches('.rail-logo'))showRailTip(button);});
 rail.addEventListener('pointerout',e=>{if(!rail.contains(e.relatedTarget)&&!railTip.contains(e.relatedTarget))hideRailTip(120);});
@@ -169,7 +167,7 @@ function switchPanel(id){
 }
 // Panel contents settle in one after another.
 function enterPanel(id){if(!railMotion)return;const body=$('panel-'+id);body.classList.remove('entering');void body.offsetWidth;body.classList.add('entering');setTimeout(()=>body.classList.remove('entering'),700);}
-function openPanel(id){activePanel=id;shell.classList.toggle('panel-collapsed',!id);for(const key of Object.keys(panelNames)){$('panel-'+key).hidden=key!==id;rail.querySelector(`[data-panel="${key}"]`).setAttribute('aria-expanded',String(key===id));}syncRailTabStops();moveRailIndicator?.();if(typeof measurePanelCover==='function')measurePanelCover();}
+function openPanel(id){activePanel=id;shell.classList.toggle('panel-collapsed',!id);for(const key of Object.keys(panelNames)){$('panel-'+key).hidden=key!==id;rail.querySelector(`[data-panel="${key}"]`).setAttribute('aria-expanded',String(key===id));}syncRailTabStops();if(typeof measurePanelCover==='function')measurePanelCover();}
 const userMenu=$('user-menu'),userMenuButton=$('user-menu-button');
 userMenuButton.setAttribute('aria-expanded','false');
 userMenu.addEventListener('beforetoggle',e=>{if(e.newState!=='open')return;const box=userMenuButton.getBoundingClientRect();userMenu.style.top=(box.bottom+6)+'px';userMenu.style.right=(innerWidth-box.right)+'px';});
@@ -227,7 +225,7 @@ function noteUrl(id,map=activeMap){return '/api/notes/'+encodeURIComponent(id)+(
 // the rest the detail; the dot's tone comes from the wording (unavailable/offline/failed, read-only, live).
 const availability=document.createElement('div');availability.id='scene-availability';availability.className='scene-notice';availability.setAttribute('role','status');availability.hidden=true;
 availability.innerHTML='<span class="scene-notice-dot" aria-hidden="true"></span><span class="scene-notice-text"><strong></strong><span></span></span><button type="button" class="scene-notice-close" aria-label="Dismiss"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4.5 4.5l9 9M13.5 4.5l-9 9"/></svg></button>';
-availability.querySelector('.scene-notice-close').onclick=()=>{availability.hidden=true;};$('canvas').append(availability);
+let dismissedNotice=null;availability.querySelector('.scene-notice-close').onclick=()=>{dismissedNotice=availability.title;availability.hidden=true;};$('canvas').append(availability);
 function availabilityText(text){
  if(availability.title===String(text))return;
  const [title,...rest]=String(text).split(' · '),detail=rest.join(' · ');
@@ -235,7 +233,7 @@ function availabilityText(text){
  availability.dataset.tone=/unavailable|offline|fail|error|invalid|no compact|multiple/i.test(text)?'error':/read-only|retained|unaligned/i.test(text)?'warn':'info';
  if(!availability.hidden&&!matchMedia('(prefers-reduced-motion: reduce)').matches)availability.animate([{opacity:.4,transform:'translate(-50%,-4px)'},{opacity:1,transform:'translate(-50%,0)'}],{duration:240,easing:'cubic-bezier(.2,.8,.2,1)'});
 }
-function showAvailability(text){availability.hidden=false;availabilityText(text);}
+function showAvailability(text){if(String(text)===dismissedNotice)return;dismissedNotice=null;availability.hidden=false;availabilityText(text);}
 function markOffline(){homeOffline=true;showAvailability('Home offline · showing a cached browser view, not a live or saved map');renderMapRows();}
 function isRunner(map=activeMap){return map==='runner'||map.startsWith('runner:');}
 function isSimulation(map=activeMap){return map==='sim-voxels'||map==='sim-occupancy';}
@@ -382,10 +380,12 @@ async function refreshCompactTrail(){
 const volumeInspector={element:$('selection'),
  open(nodes){if(noteCardMode!=='volume'){selectedPathId=null;crayon.select(null);selectedNoteId=null;selectedSpatialNode=null;updateSpatialSelection();renderNotes();}
   const card=$('selection');for(const key of ['noteId','pathId','spatialId','spatialKind'])delete card.dataset[key];
-  const close=document.createElement('button');close.type='button';close.className='inspector-close';close.setAttribute('aria-label','Close inspector');close.append(icon(icons.close));close.onclick=clearSelection;
+  const close=document.createElement('button');close.type='button';close.className='inspector-close';close.setAttribute('aria-label','Close inspector');close.append(icon(icons.close));close.onclick=closeCard;
   card.replaceChildren(close,...nodes);card.hidden=false;noteCardMode='volume';},
  close(){if(noteCardMode==='volume'){noteCardMode='view';$('selection').hidden=true;}}};
 const semanticVolumes=createSemanticVolumes({scene,camera,renderer,controls,panel:panelBodies.volumes,api,label,clear,openPanel,inspector:volumeInspector,toast,flyTo:(position,target)=>cameraPan.start(position,target),priorityPickObjects:()=>[...selectable.filter(o=>o.userData.kind==='note'),...crayon.objects()]});
+// The volume tool draws on the 3D floor, so it can't start while the 2D plan is open.
+$('volume-draw').addEventListener('click',e=>{if(map2D.isActive())e.stopImmediatePropagation();},true);
 $('map-select').addEventListener('change',()=>semanticVolumes.reset());
 let phonePresenceBusy=false;
 const homePoseStatus=document.createElement('p');homePoseStatus.className='panel-hint';panelBodies.maps.append(homePoseStatus);
@@ -412,7 +412,7 @@ async function refreshPhonePresence(){
  }catch{if(activeMap===map)phoneTrails.ingest(frame,[]);}finally{phonePresenceBusy=false;}
 }
 setInterval(refreshPhonePresence,200);
-function build(data){
+function build(data){flatSpritesAge=Infinity;
  map2D.update(data);
  semanticVolumes.update(activeMap,data);
  const first=current===null||current?.frame!==data.frame;data.receivedAt=performance.now();current=data;selectable=[];Object.values(groups).forEach(clear);
@@ -504,11 +504,6 @@ function focusPath(path){
  const distance=Math.max(2,box.getSize(new THREE.Vector3()).length());
  if(attachedCamera.isActive())attachedCamera.detach();
  cameraPan.start(center.clone().add(new THREE.Vector3(distance*.4,distance,distance)),center);showPathSelection(path);
-}
-function pathDeleteButton(path){
- const map=activeMap,frame=current?.frame;
- const button=uiButton('Delete path',()=>deletePath(path,map,frame,button));
- button.dataset.deletePath=path.id;button.disabled=!!deletingPathId;return button;
 }
 async function deletePath(path,map=activeMap,frame=current?.frame,button=null){
   if(deletingPathId||activeMap!==map||current?.frame!==frame)return false;
@@ -724,7 +719,7 @@ function updateMapUI(){
  $('scene-note').textContent=activeMap==='home-live'?'Mapped on Home from both robots’ raw observations, each calibrated through known portal poses. UCOF1J40N7O defines the fixed origin.':local?(current?.display_alignment?`Display aligned via ${current.display_alignment.portal}. Robot data remains in its native frame.`:current?.frame_transform?.validity==='stale'?'Robot-native map. Portal transform is stale; waiting for a fresh tracked observation.':'Robot-native map. Waiting for a shared portal transform from its Catalog.'):domain?'Supplied poses and sizes. Grid is a coordinate reference, not a measured floor.':(current?.demo?'Illustrative L-shaped workspace fitted to the marker footprint. Furniture and walls are synthetic; stored portal poses are unchanged.':'Canonical portal record with supplied poses and sizes. Live geometry is in Home live map.');
  document.querySelector('.flow').hidden=domain||!current?.demo;
  $('demo-view').hidden=!current?.demo;
- document.querySelector('#inspect-snapshot').href=document.querySelector('.export').href=activeMap==='home-live'?'/api/home-live-snapshot':isRunner()?runnerUrl('/api/runner-snapshot'):domain?'/api/domain-snapshot':'/api/snapshots';
+ setSnapshotLinks(activeMap==='home-live'?'/api/home-live-snapshot':isRunner()?runnerUrl('/api/runner-snapshot'):domain?'/api/domain-snapshot':'/api/snapshots');
  ground.visible=Boolean(current?.demo);scene.fog=null;grid.position.x=local?0:-5;grid.position.z=local?0:3;
  const list=$('portal-list');list.replaceChildren();{for(const p of (current?.portals||[]).filter(p=>p.anchor_id.length===11||p.anchor_id.startsWith('home:'))){const button=document.createElement('button');button.className='portal-row';button.textContent=p.anchor_id;const size=document.createElement('span');size.textContent=`${Math.round(p.side_length_m*100)} cm`;button.append(size);button.onclick=()=>focusPortal(p);list.append(button);}}
  list.hidden=Boolean(current?.landmarks);renderSpatialLists();
@@ -736,7 +731,7 @@ function updateMapUI(){
   $('scene-note').textContent='Independent Home scenegraph. Pair your phone with this scene and scan its Portal to share depth and annotations. Grid assumes a flat floor at Y = 0.';
   $('mapping-status').textContent=current?.mobile_enabled?'Phone mapping · '+(current.integrated_observations||0)+' scans':'Saved reference · phone mapping unavailable';
   $('mapping-detail').textContent=(current?.portals.length||0)+' Portal(s) · observations and notes remain separate from other scenes';
-  document.querySelector('#inspect-snapshot').href=document.querySelector('.export').href=localSceneUrl()+'/snapshot';
+  setSnapshotLinks(localSceneUrl()+'/snapshot');
   grid.position.x=0;grid.position.z=0;
  }
  if(activeMap.startsWith('peer-scene:') && current) {
@@ -755,7 +750,7 @@ function updateMapUI(){
    $('scene-note').textContent='Phone-owned 10 cm voxels · read directly from its SDK Catalog Product';
    $('mapping-status').textContent='Phone-local depth mapping';
   }
-  document.querySelector('#inspect-snapshot').href=document.querySelector('.export').href=peerSceneUrl(activeMap);
+  setSnapshotLinks(peerSceneUrl(activeMap));
   if(current.layer_type==='occupancy_2d'){
    $('scene-badge').textContent='OCCUPANCY 2D';
    $('scene-note').textContent='Robot-owned 10 cm occupancy · first meter above the flat floor · 2 m cells · unaligned';
@@ -774,7 +769,7 @@ function updateMapUI(){
   $('scene-note').textContent='Real depth hits accumulated into 10 cm voxels on the phone. Tracking loss starts a new map. Unknown space is not free space.';
   $('mapping-status').textContent='Phone-local depth mapping';
   $('mapping-detail').textContent='Unaligned · read-only · removed after 10 seconds without updates';
-  document.querySelector('#inspect-snapshot').href=document.querySelector('.export').href='/api/phone-local-scene?peer='+encodeURIComponent(activeMap.slice(6));
+  setSnapshotLinks('/api/phone-local-scene?peer='+encodeURIComponent(activeMap.slice(6)));
  }
  if(isSimulation()){
   const occupancy=activeMap==='sim-occupancy';
@@ -787,17 +782,22 @@ function updateMapUI(){
   $('scene-note').textContent=occupancy?'Accumulated occupancy from robot observations. Outside view retains its last evidence; obstacles clear only when observed free. No time decay; mapper: 1 Hz.':`${robotCount||1} robot(s) producing live voxel observations with a 1.5 m footprint. A low block shuttles every 12 seconds.`;
   $('mapping-status').textContent='Simulation · '+(current?.simulation_status||'starting')+(occupancy?' · '+(current?.occupancy_status||'waiting'):'');
   $('mapping-detail').textContent=current?.simulation_detail||'Waiting for the synthetic peer';
-  document.querySelector('#inspect-snapshot').href=document.querySelector('.export').href='/api/simulation/'+(occupancy?'occupancy':'voxels')+'?snapshot=true';
+  setSnapshotLinks('/api/simulation/'+(occupancy?'occupancy':'voxels')+'?snapshot=true');
   grid.position.x=0;grid.position.z=0;
  }
 }
 $('map-select').onchange=async()=>{activeMap=$('map-select').value;selectedPathId=null;crayon.select(null);selectedNoteId=null;selectedSpatialNode=null;lastScene=null;current=null;crayon.update();hideRobots();selectable=[];Object.values(groups).forEach(clear);$('selection').hidden=true;updateMapUI();$('scene-title').textContent='Loading selected scene…';$('voxel-count').textContent='—';$('observation-count').textContent='—';$('object-count').textContent='—';try{await refresh();}catch{$('scene-title').textContent=isRunner()?'Waiting for Galbot scenegraph':'Scene unavailable';}};
+// Closing the card returns focus to whatever opened it (a row), so keyboard users aren't dropped on the page.
+function closeCard(){const back=cardReturn;clearSelection();back?.()?.focus?.();}
+// Snapshot links: the legacy pair and the account menu's pair always point at the selected scene.
+function setSnapshotLinks(url){for(const link of document.querySelectorAll('#inspect-snapshot,.export,[data-snapshot-link]'))link.href=url;}
+function setConnection(text){if($('connection').textContent!==text)$('connection').textContent=text;}
 function clearSelection(){const volumeOpen=noteCardMode==='volume';noteCardMode='view';if(volumeOpen)semanticVolumes.closed();placementGeneration++;placement=null;selectedPathId=null;crayon.select(null);selectedNoteId=null;selectedSpatialNode=null;updateSpatialSelection();$('selection').hidden=true;if(scene.userData.placementPin)scene.userData.placementPin.visible=false;renderNotes();}
 let cardReturn=null;
 // Keyboard activation moves focus into the card; Escape brings it back to the row.
 function focusCard(event,back){cardReturn=back;if(event?.detail!==0)return;const heading=$('selection').querySelector('.card-title,:scope>strong');if(heading){heading.tabIndex=-1;heading.focus();}}
 function showSelection(title,body,note,{kind,subtitle,onSubtitle,monoTitle=false,facts}={}){if(noteCardMode==='volume'){noteCardMode='view';semanticVolumes.closed();}selectedPathId=null;crayon?.select(null);delete $('selection').dataset.pathId;selectedNoteId=null;selectedSpatialNode=null;updateSpatialSelection();const el=$('selection');delete el.dataset.noteId;delete el.dataset.spatialId;delete el.dataset.spatialKind;el.replaceChildren();
- const close=document.createElement('button');close.type='button';close.className='inspector-close';close.setAttribute('aria-label','Close inspector');close.append(icon(icons.close));close.onclick=clearSelection;el.append(close);
+ const close=document.createElement('button');close.type='button';close.className='inspector-close';close.setAttribute('aria-label','Close inspector');close.append(icon(icons.close));close.onclick=closeCard;el.append(close);
  if(kind){const chip=document.createElement('span');chip.className='inspector-kind';chip.textContent=kind;el.append(chip);}
  const strong=document.createElement('strong');strong.textContent=title;if(monoTitle)strong.className='mono-id';el.append(strong);
  if(subtitle){const parent=document.createElement('button');parent.type='button';parent.className='text-action inspector-parent';parent.textContent=subtitle;parent.onclick=onSubtitle;el.append(parent);}
@@ -814,7 +814,7 @@ const xyz=(values,digits=2)=>['x','y','z'].map((axis,i)=>`${axis} ${values[i].to
 const CUBE_ICON='M9 1.5 15.5 5v8L9 16.5 2.5 13V5ZM2.5 5 9 8.5l6.5-3.5M9 8.5v8';
 const CARD_KINDS=[[/note/i,'amber',icons.note],[/path/i,'amber',icons.pen],[/volume/i,'violet',CUBE_ICON],[/anchor/i,'emerald',icons.anchor],[/landmark/i,'emerald',icons.landmark],[/portal/i,'emerald',icons.pin],[/robot/i,'cyan',icons.device],[/.*/,'zinc',CUBE_ICON]];
 function decorateCard(card){
- if(!card.querySelector(':scope>.inspector-close')){const close=document.createElement('button');close.type='button';close.className='inspector-close';close.setAttribute('aria-label','Close inspector');close.append(icon(icons.close));close.onclick=clearSelection;card.prepend(close);}
+ if(!card.querySelector(':scope>.inspector-close')){const close=document.createElement('button');close.type='button';close.className='inspector-close';close.setAttribute('aria-label','Close inspector');close.append(icon(icons.close));close.onclick=closeCard;card.prepend(close);}
  const chip=card.querySelector('.inspector-kind');if(!chip||chip.closest('.card-head'))return;
  const [,accent,path]=CARD_KINDS.find(([pattern])=>pattern.test(chip.textContent));
  const head=document.createElement('div');head.className='card-head';const tile=document.createElement('span');tile.className='card-tile';tile.dataset.accent=accent;tile.append(icon(path,16));
@@ -870,7 +870,7 @@ function peerSceneUrl(map){return '/api/sensors?scene=true&sensor='+encodeURICom
 // shows the default grid, the camera jump or a flash of the empty state. A fallback reveals it regardless.
 function revealScene(){if(!$('canvas').classList.contains('scene-loading'))return;resizeCanvas();requestAnimationFrame(()=>requestAnimationFrame(()=>$('canvas').classList.remove('scene-loading')));}
 setTimeout(revealScene,5000);
-async function refresh(){if(activeMap.startsWith('peer-pose:')){if(refreshing)return;refreshing=true;try{await refreshCompactTrail();}finally{refreshing=false;}return;}if(refreshing)return;refreshing=true;refreshPeer();if(!isSimulation())refreshMapping();try{const selected=activeMap;const data=await api(isLocalScene(selected)?localSceneUrl(selected):selected.startsWith('peer-scene:')?peerSceneUrl(selected):selected.startsWith('phone:')?'/api/phone-local-scene?peer='+encodeURIComponent(selected.slice(6)):isSimulation(selected)?'/api/simulation/'+selected.slice(4):selected==='home-live'?'/api/home-live-scene':isRunner(selected)?runnerUrl('/api/runner-scene',selected):selected==='domain'?'/api/domain-scene':'/api/scene');if(selected!==activeMap)return;const content=JSON.stringify({...data,remote_status:undefined});if(content!==lastScene){lastScene=content;build(data);}else {data.receivedAt=performance.now();current=data;}homeOffline=false;renderMapRows();availability.hidden=!(selected==='sim-occupancy'&&data.simulation_status!=='running');if(!availability.hidden)availabilityText('Retained on Home · robot publishers offline · no new observations');$('connection').textContent='Home Server online';}catch(e){revealScene();if(!e.status){markOffline();}else{showAvailability('Scene unavailable · '+e.message);if(activeMap==='sim-voxels'||activeMap.startsWith('peer-scene:')){Object.values(groups).forEach(clear);hideRobots();current=null;lastScene=null;}}$('connection').textContent=e.status?'Home online · scene unavailable':'Home offline';throw e;}finally{refreshing=false;}}
+async function refresh(){if(activeMap.startsWith('peer-pose:')){if(refreshing)return;refreshing=true;try{await refreshCompactTrail();}finally{refreshing=false;}return;}if(refreshing)return;refreshing=true;refreshPeer();if(!isSimulation())refreshMapping();try{const selected=activeMap;const data=await api(isLocalScene(selected)?localSceneUrl(selected):selected.startsWith('peer-scene:')?peerSceneUrl(selected):selected.startsWith('phone:')?'/api/phone-local-scene?peer='+encodeURIComponent(selected.slice(6)):isSimulation(selected)?'/api/simulation/'+selected.slice(4):selected==='home-live'?'/api/home-live-scene':isRunner(selected)?runnerUrl('/api/runner-scene',selected):selected==='domain'?'/api/domain-scene':'/api/scene');if(selected!==activeMap)return;const content=JSON.stringify({...data,remote_status:undefined});if(content!==lastScene){lastScene=content;build(data);}else {data.receivedAt=performance.now();current=data;}homeOffline=false;renderMapRows();availability.hidden=!(selected==='sim-occupancy'&&data.simulation_status!=='running');if(!availability.hidden)availabilityText('Retained on Home · robot publishers offline · no new observations');setConnection('Home Server online');}catch(e){revealScene();if(!e.status){markOffline();}else{showAvailability('Scene unavailable · '+e.message);if(activeMap==='sim-voxels'||activeMap.startsWith('peer-scene:')){Object.values(groups).forEach(clear);hideRobots();current=null;lastScene=null;}}setConnection(e.status?'Home online · scene unavailable':'Home offline');throw e;}finally{refreshing=false;}}
 async function action(fn){if(busy)return;busy=true;document.querySelectorAll('#load,#project,#replay').forEach(b=>b.disabled=true);$('notice').classList.remove('error');$('notice').textContent='Integrating…';try{await fn();await refresh();}catch(e){$('notice').textContent=e.message;$('notice').classList.add('error');}finally{busy=false;$('load').disabled=false;$('project').disabled=!current?.voxels.length;$('replay').disabled=!current?.sources.iphone;}}
 $('load').onclick=()=>action(async()=>{const f=await api('/api/fixtures');for(const c of f.contributions)await api('/api/contributions',c);$('notice').textContent='Two scans aligned through Portal A. Ready to project a detection.';});
 $('project').onclick=()=>action(async()=>{const f=await api('/api/fixtures');const result=await api('/api/detections',f.detection);$('notice').textContent=result.applied?'Book placed at the first occupied voxel hit.':'This detection is already placed. No duplicate object created.';});
@@ -1115,7 +1115,7 @@ const placementBanner=document.createElement('div');placementBanner.className='p
 placementBanner.innerHTML='<span>Click a surface to place your note</span><kbd>Esc</kbd>';
 placementBanner.append(actionButton('Use a portal instead',{variant:'on-dark',onClick:()=>{stopNotePlacement();createNoteCard({portal:true});}}),actionButton('Cancel',{variant:'on-dark',onClick:()=>{stopNotePlacement();newNoteButton.focus();}}));
 document.querySelector('.viewport').append(placementBanner);
-function startNotePlacement(target=null){if(!current)return;if(!target)clearSelection();placingNote=true;placementTarget=target;placementBanner.hidden=false;renderer.domElement.style.cursor='crosshair';newNoteButton.setAttribute('aria-pressed','true');}
+function startNotePlacement(target=null){if(!current||map2D.isActive())return;if(!target)clearSelection();placingNote=true;placementTarget=target;placementBanner.hidden=false;renderer.domElement.style.cursor='crosshair';newNoteButton.setAttribute('aria-pressed','true');}
 function stopNotePlacement(){placingNote=false;placementTarget=null;placementBanner.hidden=true;renderer.domElement.style.cursor='';newNoteButton.setAttribute('aria-pressed','false');}
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&placingNote){e.stopPropagation();stopNotePlacement();newNoteButton.focus();}},true);
 async function beginLabel(request,error){
@@ -1243,7 +1243,7 @@ async function applyChatCamera(actions,map){
  }});
 }
 arToggle.addEventListener('change',restartSensor);
-setInterval(()=>{if(!noteCardMode==='create'&&arToggle.checked&&arLastSuccess&&Date.now()-arLastSuccess>3000){hideAr();arStatus.hidden=false;arStatus.textContent='AR paused · camera frames are stale';}},500);
+setInterval(()=>{if(noteCardMode!=='create'&&arToggle.checked&&arLastSuccess&&Date.now()-arLastSuccess>3000){hideAr();arStatus.hidden=false;arStatus.textContent='AR paused · camera frames are stale';}},500);
 async function sensorCatalog(){
  try{
   const response=await fetch('/api/sensors');const data=await response.json();if(!response.ok)throw Error(data.error);
@@ -1282,7 +1282,7 @@ async function watchSensor(generation){
    lastSensorSequence=f.sequence;lastSensorChange=Date.now();
   }
   const stale=Date.now()-lastSensorChange>3000;status.textContent=stale?'Stale · no new frames':'Receiving · frame '+f.sequence;status.dataset.state=stale?'stale':'live';
- }catch(e){if(generation===sensorGeneration){displayedCamera=null;status.textContent=(lastSensorSequence!==null?'Stale image · ':'Waiting · ')+e.message;if(!noteCardMode==='create')hideAr();if(arToggle.checked){arStatus.hidden=false;arStatus.textContent='AR paused · '+e.message;}}}
+ }catch(e){if(generation===sensorGeneration){displayedCamera=null;status.textContent=(lastSensorSequence!==null?'Stale image · ':'Waiting · ')+e.message;if(noteCardMode!=='create')hideAr();if(arToggle.checked){arStatus.hidden=false;arStatus.textContent='AR paused · '+e.message;}}}
  if(generation===sensorGeneration)setTimeout(()=>watchSensor(generation),100);
 }
 sensorSelect.addEventListener('change',()=>{
@@ -1412,8 +1412,9 @@ function deviceStatusSentence(peer){
  return peer.status||'Connected peer';
 }
 function deviceSummary(peer,feeds){return feeds?plural(feeds,'camera'):'';}
-function technicalDetails(rows){
- const box=document.createElement('details');box.className='technical-details';box.innerHTML='<summary>Technical details</summary>';
+let openedTechnical=new Set();
+function technicalDetails(rows,key){
+ const box=document.createElement('details');box.className='technical-details';if(key){box.dataset.technical=key;box.open=openedTechnical.has(key);}box.innerHTML='<summary>Technical details</summary>';
  const list=document.createElement('dl');list.className='spatial-fields technical-list';box.append(list);
  for(const [name,value,copy] of rows){if(value===undefined||value===null||value==='')continue;const dt=document.createElement('dt'),dd=document.createElement('dd'),text=document.createElement('span');dt.textContent=name;text.className='mono-id';text.textContent=value;dd.append(text);if(copy)dd.append(copyButton(String(value),'Copy '+name.toLowerCase()));list.append(dt,dd);}
  return box;
@@ -1424,10 +1425,11 @@ function renderFleetRows(){
  const selfId=fleetNetwork?.connection?.peer_id;
  const peers=[{peer_id:selfId||'self',name:'Home Server',self:true,catalog:fleetNetwork?.catalog},...Array.from(new Map((fleetNetwork?.peers||[]).filter(p=>p.peer_id&&p.peer_id!==selfId).map(p=>[p.peer_id,p])).values())];
  const sensors=Array.from($('sensor-select').options).filter(o=>o.value);
- const signature=JSON.stringify([peers,fleetNetwork?.enabled,fleetNetwork?.status,fleetNetwork?.aliases,sensors.map(o=>[o.value,o.textContent,o.dataset.peer]),$('sensor-select').value,deviceView,deviceOfflineOpen]);
+ for(const peer of peers){const line=fleetList.querySelector(`[data-observations-peer="${CSS.escape(peer.peer_id)}"]`);if(line&&peer.received_observations!==undefined)line.textContent=deviceStatusSentence(peer);}
+ const signature=JSON.stringify([peers.map(({received_observations,...rest})=>rest),fleetNetwork?.enabled,fleetNetwork?.status,fleetNetwork?.aliases,sensors.map(o=>[o.value,o.textContent,o.dataset.peer]),$('sensor-select').value,deviceView,deviceOfflineOpen]);
  if(signature===fleetSignature)return;fleetSignature=signature;
  const focus=fleetList.contains(document.activeElement)?document.activeElement.dataset.focusKey:null;
- const openedTechnical=new Set(Array.from(fleetList.querySelectorAll('details[open][data-technical]'),d=>d.dataset.technical));
+ openedTechnical=new Set(Array.from(fleetList.querySelectorAll('details[open][data-technical]'),d=>d.dataset.technical));
  fleetList.replaceChildren();
  const peer=deviceView&&peers.find(p=>p.peer_id===deviceView);
  if(deviceView&&!peer)deviceView=null;
@@ -1493,7 +1495,7 @@ function renderDeviceDetail(peer,feeds,openedTechnical){
  const statusBox=document.createElement('div');statusBox.className='device-status';
  const kind=peer.self?(fleetNetwork?.enabled?'live':null):statusKind(peer.status);
  if(kind)statusBox.append(statusBadge(kind));
- const sentence=document.createElement('p');sentence.textContent=deviceStatusSentence(peer);if(peer.received_observations!==undefined)sentence.dataset.observations=String(peer.received_observations);statusBox.append(sentence);
+ const sentence=document.createElement('p');sentence.textContent=deviceStatusSentence(peer);if(peer.received_observations!==undefined){sentence.dataset.observations=String(peer.received_observations);sentence.dataset.observationsPeer=peer.peer_id;}statusBox.append(sentence);
  if(!peer.self){
   const catalogNote=document.createElement('p');catalogNote.className='device-note';catalogNote.dataset.catalogStatus=peer.catalog_status||'unknown';
   if(peer.catalog_status==='unavailable'){catalogNote.classList.add('warning');catalogNote.textContent='Component catalog unavailable · capabilities can’t be shown';}
@@ -1530,7 +1532,7 @@ function renderDeviceDetail(peer,feeds,openedTechnical){
   }
   view.append(capabilities);
  }
- view.append(technicalDetails([['Peer ID',peer.peer_id,true],['Status',peer.self?(fleetNetwork?.status||''):peer.status],['Catalog',peer.catalog_status],['Catalog detail',peer.catalog_detail],['Catalog cache',peer.catalog_cached?'Using last known entries':''],['Registry',peer.registries?`${peer.registries.status} · ${Object.keys(peer.registries.definitions||{}).length} resolved definitions`:'']]));
+ view.append(technicalDetails([['Peer ID',peer.peer_id,true],['Status',peer.self?(fleetNetwork?.status||''):peer.status],['Catalog',peer.catalog_status],['Catalog detail',peer.catalog_detail],['Catalog cache',peer.catalog_cached?'Using last known entries':''],['Registry',peer.registries?`${peer.registries.status} · ${Object.keys(peer.registries.definitions||{}).length} resolved definitions`:'']],'device:'+peer.peer_id));
  fleetList.append(view);
  if(deviceRenaming&&!peer.self)showRename();
 }

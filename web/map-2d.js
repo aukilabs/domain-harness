@@ -42,11 +42,13 @@ export function createMap2D(host,onToggle){
  for(const step of strip.querySelectorAll('.map2d-step'))step.onclick=()=>{floor.value=(Number(floor.value)+Number(step.dataset.step)).toFixed(2);request();};
  const palette=()=>PALETTES[document.documentElement.dataset.theme==='light'?'light':'dark'];
  new MutationObserver(request).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
- function tiles(){return data?.occupancy_tiles||projectColumns(data?.voxels,data?.voxel_size||.1,Number(floor.value));}
+ // Voxel columns are projected once per scene and floor height, not on every pan or zoom frame.
+ let columnsKey=null,columns=[];
+ function tiles(){if(data?.occupancy_tiles)return data.occupancy_tiles;const key=data?.frame+'|'+(data?.voxels?.length||0)+'|'+floor.value;if(key!==columnsKey){columnsKey=key;columns=projectColumns(data?.voxels,data?.voxel_size||.1,Number(floor.value));}return columns;}
  function draw(){
   if(!active)return;
   const {width,height}=host.getBoundingClientRect(),ratio=Math.min(devicePixelRatio||1,2);
-  canvas.width=Math.round(width*ratio);canvas.height=Math.round(height*ratio);
+  const w=Math.round(width*ratio),h=Math.round(height*ratio);if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;}
   const ctx=canvas.getContext('2d'),colors=palette();ctx.setTransform(ratio,0,0,ratio,0,0);
   ctx.fillStyle=colors.background;ctx.fillRect(0,0,width,height);
   const point=p=>[width/2+(p[0]-center[0])*scale,height/2+(p[2]-center[1])*scale];
@@ -100,5 +102,5 @@ export function createMap2D(host,onToggle){
   if(reduce()){panel.hidden=true;return;}
   panel.animate([{opacity:1},{opacity:0}],{duration:200,easing:'ease-in'}).finished.then(()=>{if(!active)panel.hidden=true;});
  }
- return {toggle(){active=!active;show(active);onToggle(active);if(active)fit();},update(value){const changed=data?.frame!==value.frame;data=value;if(changed&&active)fit();else request();},fit,isActive:()=>active,controlStrip:strip};
+ return {toggle(){active=!active;show(active);onToggle(active);if(active)fit();},update(value){const changed=data?.frame!==value.frame;if(value!==data)columnsKey=null;data=value;if(changed&&active)fit();else request();},fit,isActive:()=>active,controlStrip:strip};
 }

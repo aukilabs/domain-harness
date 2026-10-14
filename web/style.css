@@ -85,7 +85,6 @@ main{width:100%;min-width:0;min-height:0;padding:0;position:relative;background:
 h2{font-size:13px;font-weight:600;letter-spacing:0;margin:2px 0 0;color:var(--text)}
 .export{font-size:10px;border:1px solid var(--line);border-radius:4px;padding:6px 9px;background:var(--panel-3);color:var(--text-2)}
 .viewport{min-height:0;height:auto;background:#0d0d0f;border:0;border-radius:0;position:relative;overflow:hidden}
-.viewport:before{content:"";position:absolute;inset:0;pointer-events:none;opacity:.16;background-image:linear-gradient(#4f8ef744 1px,transparent 1px),linear-gradient(90deg,#4f8ef744 1px,transparent 1px),linear-gradient(#4f8ef722 1px,transparent 1px),linear-gradient(90deg,#4f8ef722 1px,transparent 1px);background-size:100px 100px,100px 100px,20px 20px,20px 20px;z-index:1}
 #canvas{position:absolute;inset:0}
 #canvas canvas{width:100%;height:100%;display:block;outline:none}
 .viewport-heading{position:absolute;top:10px;left:12px;display:flex;align-items:center;gap:8px;pointer-events:none;z-index:2}
@@ -160,8 +159,6 @@ h3{font-size:13px;font-weight:600;letter-spacing:0;margin:8px 0 5px;color:var(--
 /* Workspace navigation: a labelled icon rail and mutually exclusive slide-out panels. */
 /* Header: logo, account menu and Home connection. */
 .app-header{position:relative;z-index:30;height:56px;display:flex;align-items:center;gap:12px;padding:0 16px 0 12px;background:var(--nav-panel);border-bottom:1px solid var(--nav-line);color:var(--nav-text)}
-.app-logo{display:flex;align-items:center;height:40px;padding:0 4px;border-radius:8px;color:var(--nav-text)}
-.app-logo-mark{display:block;width:117px;height:18px;background:currentColor;-webkit-mask:url(/brand/mckenna.svg) center/contain no-repeat;mask:url(/brand/mckenna.svg) center/contain no-repeat}
 .user-menu-button{height:40px;display:flex;align-items:center;gap:8px;padding:4px 8px 4px 4px;border:0;border-radius:999px;background:transparent;color:var(--nav-text);font-size:13px;font-weight:500}
 .user-menu-button img,.user-menu-identity img{border-radius:50%;object-fit:cover;flex-shrink:0}
 .user-menu-button:hover,.user-menu-button[aria-expanded="true"]{background:var(--nav-hover)}
@@ -204,8 +201,6 @@ h3{font-size:13px;font-weight:600;letter-spacing:0;margin:8px 0 5px;color:var(--
 .rail-tab[aria-expanded="true"] svg{background:var(--tab);color:#fff}
 .rail-tab[aria-expanded="true"]::before{content:"";position:absolute;left:-8px;top:10px;bottom:10px;width:2px;border-radius:0 2px 2px 0;background:var(--tab)}
 .icon-rail .rail-tab:focus-visible{outline:none;box-shadow:0 0 0 2px var(--nav-rail),0 0 0 4px var(--nav-ring)}
-.icon-rail #theme-toggle{margin-top:auto}
-.icon-rail #theme-toggle::after{content:"";position:absolute;top:-7px;left:8px;right:8px;height:1px;background:var(--nav-line)}
 aside{display:block;padding:0;min-width:0;max-height:none;overflow:hidden;background:var(--nav-panel);border-right:1px solid var(--nav-line);box-shadow:var(--nav-shadow);z-index:9}
 .workspace-panel{width:288px;height:100%;overflow-y:auto;overscroll-behavior:contain}
 .panel-heading{position:sticky;top:0;z-index:2;height:56px;display:flex;align-items:center;gap:10px;padding:0 12px 0 16px;border-bottom:1px solid var(--nav-line);background:var(--nav-panel)}
@@ -257,10 +252,6 @@ aside{display:block;padding:0;min-width:0;max-height:none;overflow:hidden;backgr
 .volume-resize-handle.active .handle-ring{stroke:#f8fafc}
 .volume-resize-handle:active{cursor:grabbing}
 .volume-resize-handle:focus-visible{outline:3px solid var(--accent);outline-offset:3px}
-.volume-tool-bar{position:absolute;bottom:19px;left:50%;transform:translateX(-50%);display:flex;gap:4px;padding:4px;border:1px solid var(--line);border-radius:12px;background:var(--panel-3);box-shadow:0 8px 20px #0005;z-index:81;white-space:nowrap}
-.volume-tool-bar button{display:flex;align-items:center;gap:6px;background:transparent;border:0;border-radius:8px;color:#a1a1aa;padding:8px 12px;font:500 12px system-ui;cursor:pointer}
-.volume-tool-bar button[aria-pressed="true"]{background:#3b82f6;color:#f8fafc}
-.volume-tool-bar button:disabled{opacity:.4;cursor:default}
 .volume-layer{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:11px}
 #volume-list small{display:block;white-space:pre-wrap;color:var(--muted);margin-top:4px}
 .note-form input{display:block;width:100%;height:auto;margin-top:5px;padding:7px;border:1px solid var(--line);border-radius:3px;color:var(--text);background:var(--panel-3);font:inherit;cursor:text}
@@ -434,9 +425,6 @@ textarea.form-control{height:96px;padding:8px 10px;line-height:1.45;resize:verti
 .card-confirm .card-actions{margin-top:10px;padding-top:0;border-top:0}
 .card-readonly{display:flex;align-items:center;gap:6px;margin:16px 0 0;padding-top:14px;border-top:1px solid var(--nav-line);font-size:12px;color:var(--muted)}
 .note-card-form .inspector-kind{margin-bottom:2px}
-.placement-portal{margin-top:12px;padding:10px 12px;border:1px solid var(--nav-line);border-radius:10px}
-.placement-portal summary{cursor:pointer;font-size:13px;font-weight:500;color:var(--nav-text)}
-.placement-portal .form-field:first-of-type{margin-top:10px}
 .stepper{display:grid;grid-template-columns:36px 1fr auto 36px;align-items:center;gap:6px}
 .stepper .btn{width:36px;padding:0;font-size:16px}
 .stepper-unit{font-size:13px;color:var(--muted)}
@@ -617,8 +605,6 @@ a.btn{text-decoration:none}
 .rail-tab[aria-expanded="true"] .rail-face svg,.rail-tab[aria-expanded="true"]:hover .rail-face svg,.agent-tool[aria-pressed="true"] .rail-face svg,.agent-tool[aria-pressed="true"]:hover .rail-face svg{color:#fff;filter:drop-shadow(0 1px 1px rgba(0,0,0,.2))}
 .rail-tab[aria-expanded="true"]::before{display:none}
 /* One indicator bar slides between tabs and glows in the section colour. */
-.rail-indicator{position:absolute;left:-8px;top:0;width:3px;height:24px;border-radius:0 3px 3px 0;background:var(--tab,#3b82f6);box-shadow:0 0 8px color-mix(in srgb,var(--tab,#3b82f6) 50%,transparent);transform:translateY(var(--indicator-y,0));transition:transform .22s cubic-bezier(.2,.8,.2,1),background-color .22s ease,opacity .15s ease;pointer-events:none}
-.rail-indicator[hidden]{display:block!important;opacity:0}
 /* Click: a quick colour wash over the metal and a fading ring. */
 .rail-tab .rail-face::before,.agent-tool .rail-face::before{content:"";position:absolute;inset:0;z-index:0;background:var(--tab);mix-blend-mode:color;opacity:0;pointer-events:none}
 .rail-tab.pulse .rail-face::before,.agent-tool.pulse .rail-face::before{animation:rail-wash .35s ease-out}
@@ -650,7 +636,6 @@ a.btn{text-decoration:none}
 @media(max-width:720px){.shell:not(.panel-collapsed) .viewport-heading{left:76px}}
 /* Glass dock: the rail hugs its tabs; the indicator sits inside it. */
 .shell>.icon-rail{bottom:auto;padding:8px 0}
-.rail-indicator{left:-4px;height:20px;border-radius:2px}
 :root:not([data-theme="light"]) .shell>.icon-rail,:root:not([data-theme="light"]) .shell>aside{border-color:rgba(255,255,255,.08)}
 /* The scene toolbar joins the glass language. */
 .view-controls{padding:4px;gap:4px;border:1px solid rgba(255,255,255,.6);border-radius:12px;background:color-mix(in srgb,var(--nav-panel) 86%,transparent);-webkit-backdrop-filter:blur(18px) saturate(1.3);backdrop-filter:blur(18px) saturate(1.3);box-shadow:0 8px 24px -10px rgba(24,24,27,.25)}
@@ -662,10 +647,7 @@ a.btn{text-decoration:none}
 @media (prefers-reduced-transparency:reduce){.shell>.icon-rail,.shell>aside,.view-controls{-webkit-backdrop-filter:none;backdrop-filter:none;background:var(--nav-panel)}}
 /* Selected tab: a small dot in the section colour beneath the icon, sliding between tabs. */
 .rail-tabs{gap:10px}
-.rail-indicator{left:50%;top:0;width:4px;height:4px;border-radius:50%;transform:translate(-50%,var(--indicator-y,0));box-shadow:0 0 6px color-mix(in srgb,var(--tab,#3b82f6) 55%,transparent)}
-@media(prefers-reduced-motion:reduce){.rail-indicator{transform:translate(-50%,var(--indicator-y,0))!important}}
 /* No selection dot: the solid tile carries the selection. */
-.rail-indicator{display:none!important}
 .rail-tabs{gap:4px}
 /* Dock logo: the McKenna mark above a hairline divider. */
 .rail-logo{position:relative;display:grid;place-items:center;width:40px;height:40px;margin:0 auto 10px;border-radius:11px;color:var(--rail-glyph)}
@@ -675,9 +657,6 @@ a.btn{text-decoration:none}
 /* Floating header cluster at top right: scene tools, Home status and the account. */
 body>.app-header{position:fixed;top:12px;right:12px;z-index:40;height:auto;width:auto;display:flex;align-items:center;gap:4px;padding:4px;border:1px solid rgba(255,255,255,.6);border-radius:14px;background:color-mix(in srgb,var(--nav-panel) 90%,transparent);-webkit-backdrop-filter:blur(18px) saturate(1.3);backdrop-filter:blur(18px) saturate(1.3);box-shadow:0 12px 32px -12px rgba(24,24,27,.28),0 2px 6px rgba(24,24,27,.06)}
 :root:not([data-theme="light"]) body>.app-header{border-color:rgba(255,255,255,.08)}
-.app-header .view-controls{position:static;padding:0;border:0;border-radius:0;background:none;box-shadow:none;-webkit-backdrop-filter:none;backdrop-filter:none}
-.app-header .view-controls::after{content:"";width:1px;height:24px;margin:0 4px;background:var(--nav-line);align-self:center}
-.app-header .view-controls button{height:36px;min-width:36px}
 .app-header .connection{margin-left:0;background:transparent;padding:6px 10px}
 .app-header .user-menu-button{height:36px}
 .shell{height:100dvh}
@@ -722,7 +701,6 @@ body>.app-header{position:fixed;top:12px;right:12px;z-index:40;height:auto;width
 .scene-bar .viewport-heading strong{color:var(--nav-text)}
 .scene-bar .view-controls{position:static;display:flex;align-items:center;gap:2px;padding:0 0 0 8px;margin-left:6px;border:0;border-left:1px solid var(--nav-line);border-radius:0;background:none;box-shadow:none;-webkit-backdrop-filter:none;backdrop-filter:none}
 .scene-bar .view-controls button{height:36px;min-width:36px}
-.app-header .view-controls::after{display:none}
 .mode-toggle{display:inline-grid!important;grid-auto-flow:column;align-items:center;gap:2px;width:auto!important;padding:3px!important;border-radius:9px!important;background:var(--glass-fill)!important;box-shadow:inset 0 0 0 1px var(--glass-rim)}
 .mode-toggle span{display:grid;place-items:center;min-width:30px;height:28px;border-radius:7px;font-size:12px;font-weight:600;color:var(--muted)}
 .mode-toggle[aria-pressed="false"] span:first-child,.mode-toggle[aria-pressed="true"] span:last-child{background:var(--nav-row-selected);color:var(--nav-text);box-shadow:0 1px 2px rgba(24,24,27,.12)}
@@ -972,7 +950,6 @@ select.form-control{appearance:none;-webkit-appearance:none;padding-right:30px;b
 .agent-sheet[hidden]{display:none}
 :root:not([data-theme="light"]) .agent-sheet{border-color:rgba(255,255,255,.08)}
 .agent-sheet-head{display:flex;align-items:center;gap:12px;padding:16px 12px 12px 18px}
-.agent-sheet-head .agent-orb{width:30px;height:30px}
 .agent-sheet-head h2{margin:0;color:var(--nav-text);font-size:14px;font-weight:600;line-height:18px}
 .agent-sheet-head p{margin:0;color:var(--nav-muted);font-size:12px;line-height:16px}
 .agent-sheet-head .agent-icon-button{margin-left:auto}
@@ -980,7 +957,6 @@ select.form-control{appearance:none;-webkit-appearance:none;padding-right:30px;b
 .scene-chat-message{display:flex;align-items:flex-start;gap:10px;margin:0 0 14px}
 .scene-chat-message.user{justify-content:flex-end}
 .scene-chat-text{max-width:100%;color:var(--nav-text);font-size:13.5px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}
-.scene-chat-message.assistant .agent-orb{margin-top:2px}
 .scene-chat-message.user .scene-chat-text{max-width:82%;padding:9px 14px;border-radius:18px 18px 6px 18px;background:var(--ink);color:var(--ink-text);box-shadow:var(--ink-shadow)}
 .scene-chat-message.enter{animation:message-in .5s var(--ease-spring) both}
 .scene-chat-message.user.enter{transform-origin:100% 100%}
@@ -988,7 +964,6 @@ select.form-control{appearance:none;-webkit-appearance:none;padding-right:30px;b
 @keyframes message-in{from{opacity:0;transform:translateY(10px) scale(.96);filter:blur(4px)}}
 /* Thinking: the words shimmer while the orb breathes. */
 .scene-chat-message.thinking .scene-chat-text{background:linear-gradient(90deg,var(--nav-muted) 0%,var(--nav-muted) 35%,var(--nav-text) 50%,var(--nav-muted) 65%,var(--nav-muted) 100%);background-size:250% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:shimmer 1.6s linear infinite;font-weight:500}
-.scene-chat-message.thinking .agent-orb{animation:orb-breathe 1.2s ease-in-out infinite}
 @keyframes shimmer{from{background-position:100% 0}to{background-position:-150% 0}}
 #scene-chat-status{margin:0;padding:10px 18px 12px;border-top:1px solid var(--nav-line);color:var(--nav-muted);font-size:11.5px;line-height:16px}
 /* Tooltips above the bar. */
@@ -1176,7 +1151,6 @@ select.form-control{appearance:none;-webkit-appearance:none;padding-right:30px;b
 #sensor-pip .pip-resize:hover{color:var(--nav-text);background:var(--glass-fill)}
 #sensor-pip .pip-resize::after{right:6px;bottom:6px;width:8px;height:8px;border-width:1.5px;border-radius:0 0 3px 0}
 /* The old decorative blueprint grid over the viewport is gone; the scene has its own ground grid. */
-.viewport:before{display:none}
 /* Scene notice: one glass pill at the top of the view for scene status and errors. */
 .scene-notice{position:absolute;top:16px;left:50%;z-index:90;display:flex;align-items:flex-start;gap:10px;width:max-content;max-width:min(560px,calc(100% - 32px));padding:10px 8px 10px 14px;border:1px solid rgba(255,255,255,.6);border-radius:14px;background:color-mix(in srgb,var(--nav-panel) 92%,transparent);-webkit-backdrop-filter:blur(24px) saturate(1.3);backdrop-filter:blur(24px) saturate(1.3);box-shadow:0 12px 32px -12px rgba(24,24,27,.3),0 2px 6px rgba(24,24,27,.06);color:var(--nav-text);font-size:12.5px;line-height:17px;transform:translateX(-50%);animation:notice-in .32s cubic-bezier(.3,1.25,.5,1)}
 .scene-notice[hidden]{display:none}
@@ -1210,3 +1184,13 @@ select.form-control{appearance:none;-webkit-appearance:none;padding-right:30px;b
 .agent-bar[data-plan] .agent-tools{display:none}
 .agent-shell .map2d-legend{padding-left:2px}
 @media(max-width:720px){.agent-shell .map2d-legend{display:none}}
+
+/* Dark mode contrast: these light-mode colours were unreadable or below AA on dark glass. */
+:root:not([data-theme="light"]) .photo-drop:hover{background:rgba(96,165,250,.1);color:var(--nav-text)}
+:root:not([data-theme="light"]) .photo-preview-actions .btn{background:rgba(24,24,27,.92);color:#fafafa}
+:root:not([data-theme="light"]) .fiducial-card[data-created="true"]{background:rgba(96,165,250,.08)}
+:root:not([data-theme="light"]) .card-alert{color:#fca5a5}
+:root:not([data-theme="light"]) .device-note.warning{color:#fbbf24}
+:root:not([data-theme="light"]) .btn-danger-ghost{color:#f87171}
+/* Mode banners and the scene notice share the top centre: the notice steps below a visible banner. */
+body:has(.placement-banner:not([hidden])) .scene-notice{top:68px}
