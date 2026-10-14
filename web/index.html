@@ -5,7 +5,7 @@
 <title>Spatial Harness · Home</title>
 <script>try{if(localStorage.getItem('spatial-theme')==='light')document.documentElement.dataset.theme='light';}catch{}</script>
 <link rel="stylesheet" href="/style.css">
-<script type="importmap">{"imports":{"three":"/vendor/three.module.js","three/addons/controls/OrbitControls.js":"/vendor/OrbitControls.js","three/addons/loaders/GLTFLoader.js":"/vendor/GLTFLoader.js","three/addons/environments/RoomEnvironment.js":"/vendor/RoomEnvironment.js","three/addons/loaders/DRACOLoader.js":"/vendor/DRACOLoader.js","/utils/BufferGeometryUtils.js":"/vendor/BufferGeometryUtils.js"}}</script>
+<script type="importmap">{"imports":{"three":"/vendor/three.module.js","three/addons/controls/OrbitControls.js":"/vendor/OrbitControls.js","three/addons/loaders/GLTFLoader.js":"/vendor/GLTFLoader.js","three/addons/loaders/DRACOLoader.js":"/vendor/DRACOLoader.js","/utils/BufferGeometryUtils.js":"/vendor/BufferGeometryUtils.js"}}</script>
 </head>
 <body>
 <header class="app-header">
@@ -68,7 +68,7 @@
 <div class="agent-shell">
 <div class="agent-tools" role="toolbar" aria-label="Scene tools"></div>
 <span class="agent-divider" aria-hidden="true"></span>
-<button id="agent-toggle" class="agent-ask" type="button" aria-expanded="false" aria-controls="agent-sheet" aria-label="Ask the scene assistant" data-tip="Ask the scene assistant" data-shortcut="/"><span class="agent-avatar" aria-hidden="true"></span><span class="agent-ask-label">Ask</span><kbd class="agent-ask-key" aria-hidden="true">/</kbd></button>
+<button id="agent-toggle" class="agent-ask" type="button" aria-expanded="false" aria-controls="agent-sheet" aria-label="Ask the scene assistant" data-tip="Ask the scene assistant" data-shortcut="/"><span class="agent-orb" aria-hidden="true"></span><span class="agent-ask-label">Ask</span><kbd class="agent-ask-key" aria-hidden="true">/</kbd></button>
 <form id="scene-chat-form" class="scene-chat-form">
 <label class="scene-chat-label" for="scene-chat-input">Message your scene assistant</label>
 <input id="scene-chat-input" type="text" autocomplete="off" maxlength="4000" placeholder="Ask about this scene…">

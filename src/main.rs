@@ -956,29 +956,12 @@ async fn label_save(
     s.changes.send_replace(());
     Ok(Json(json!(note)))
 }
-/// Inco, the scene assistant's avatar: the model and its skin variants (from GettingSpatial).
-async fn inco_model(axum::extract::Path(name): axum::extract::Path<String>) -> Response {
-    let bytes: &[u8] = match name.as_str() {
-        "inco.glb" => include_bytes!("../web/models/inco.glb"),
-        "Tex_Inco_Skin_04.webp" => include_bytes!("../web/models/Tex_Inco_Skin_04.webp"),
-        "Tex_Inco_Skin_05.webp" => include_bytes!("../web/models/Tex_Inco_Skin_05.webp"),
-        "Tex_Inco_Skin_07.webp" => include_bytes!("../web/models/Tex_Inco_Skin_07.webp"),
-        "Tex_Inco_Skin_08.webp" => include_bytes!("../web/models/Tex_Inco_Skin_08.webp"),
-        "Tex_Inco_Skin_11.webp" => include_bytes!("../web/models/Tex_Inco_Skin_11.webp"),
-        "Tex_Inco_Skin_12.webp" => include_bytes!("../web/models/Tex_Inco_Skin_12.webp"),
-        _ => return StatusCode::NOT_FOUND.into_response(),
-    };
-    let content_type = if name.ends_with(".glb") { "model/gltf-binary" } else { "image/webp" };
-    ([(header::CONTENT_TYPE, content_type)], bytes).into_response()
-}
-
 async fn vendor(axum::extract::Path(name): axum::extract::Path<String>) -> Response {
     let path = match name.as_str() {
         "three.module.js" => "node_modules/three/build/three.module.js",
         "three.core.js" => "node_modules/three/build/three.core.js",
         "OrbitControls.js" => "node_modules/three/examples/jsm/controls/OrbitControls.js",
         "GLTFLoader.js" => "node_modules/three/examples/jsm/loaders/GLTFLoader.js",
-        "RoomEnvironment.js" => "node_modules/three/examples/jsm/environments/RoomEnvironment.js",
         "DRACOLoader.js" => "node_modules/three/examples/jsm/loaders/DRACOLoader.js",
         "BufferGeometryUtils.js" => "node_modules/three/examples/jsm/utils/BufferGeometryUtils.js",
         "draco_wasm_wrapper.js" => "node_modules/three/examples/jsm/libs/draco/draco_wasm_wrapper.js",
@@ -1502,8 +1485,6 @@ async fn main() -> anyhow::Result<()> {
         .route("/brand/mckenna.svg", get(|| async { ([(header::CONTENT_TYPE, "image/svg+xml")], include_str!("../web/brand/mckenna.svg")) }))
         .route("/brand/mckenna-mark.svg", get(|| async { ([(header::CONTENT_TYPE, "image/svg+xml")], include_str!("../web/brand/mckenna-mark.svg")) }))
         .route("/brand/nils-pihl.jpg", get(|| async { ([(header::CONTENT_TYPE, "image/jpeg")], include_bytes!("../web/brand/nils-pihl.jpg").as_slice()) }))
-        .route("/inco.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/inco.js")) }))
-        .route("/models/{name}", get(inco_model))
         .route("/api/sensors", get(sensor_preview))
         .route("/api/component-enabled", post(component_enabled))
         .route("/camera-frame.js", get(|| async { ([(header::CONTENT_TYPE,"text/javascript")],include_str!("../web/camera-frame.js")) }))
