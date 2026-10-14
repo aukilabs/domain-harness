@@ -26,13 +26,15 @@ export function createAgentBar({root,tools,onOpen,hasConversation=()=>true}){
  root.addEventListener('focusout',hideTip);
  root.addEventListener('pointerdown',hideTip);
 
+ // lock(reason) disables every tool (for example in the 2D plan, where they can't place anything).
+ let lockReason=null;const syncs=[];
  for(const tool of tools){
   const button=el('button','agent-tool');button.type='button';button.dataset.accent=tool.accent;button.setAttribute('aria-label',tool.label);
   if(tool.shortcut)button.dataset.shortcut=tool.shortcut;
   const face=el('span','rail-face');face.append(icon(tool.iconPath,20));const glint=el('span','rail-glint');glint.setAttribute('aria-hidden','true');face.append(glint);button.append(face);
   button.onclick=()=>{tool.onTrigger();button.classList.remove('pulse');void button.offsetWidth;button.classList.add('pulse');};
-  const sync=()=>{button.disabled=!!tool.source.disabled;button.setAttribute('aria-pressed',tool.source.getAttribute('aria-pressed')==='true'?'true':'false');
-   const reason=tool.source.disabled?tool.disabledReason?.():'';button.dataset.tip=reason?`${tool.label} · ${reason}`:tool.label;};
+  const sync=()=>{button.disabled=!!tool.source.disabled||!!lockReason;button.setAttribute('aria-pressed',tool.source.getAttribute('aria-pressed')==='true'?'true':'false');
+   const reason=lockReason||(tool.source.disabled?tool.disabledReason?.():'');button.dataset.tip=reason?`${tool.label} · ${reason}`:tool.label;};syncs.push(sync);
   new MutationObserver(sync).observe(tool.source,{attributes:true,attributeFilter:['disabled','aria-pressed']});sync();
   toolbar.append(button);
  }
@@ -80,5 +82,5 @@ export function createAgentBar({root,tools,onOpen,hasConversation=()=>true}){
  // "/" opens the assistant from anywhere that isn't a text field.
  document.addEventListener('keydown',e=>{if(e.key!=='/'||e.metaKey||e.ctrlKey||e.altKey||e.target.closest?.('input,textarea,select,[contenteditable="true"]'))return;e.preventDefault();open();});
  root.dataset.mode='tools';sheet.hidden=true;
- return {open,close:closeAgent,isOpen,syncSheet};
+ return {open,close:closeAgent,isOpen,syncSheet,lock(reason){lockReason=reason||null;syncs.forEach(sync=>sync());}};
 }
