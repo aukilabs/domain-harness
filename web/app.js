@@ -205,13 +205,19 @@ const scene=new THREE.Scene();scene.background=new THREE.Color(sceneBackground);
 const camera=new THREE.PerspectiveCamera(42,1,.01,100);
 const renderer=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true});renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.1;
 $('canvas').append(renderer.domElement);renderer.domElement.setAttribute('aria-label','3D voxel map');
-const controls=new OrbitControls(camera,renderer.domElement);controls.enableDamping=true;controls.minDistance=1.2;controls.maxDistance=60;controls.maxPolarAngle=Math.PI*.49;
+const controls=new OrbitControls(camera,renderer.domElement);controls.enableDamping=true;
+// Mouse matches Peyote: left-drag pans across the ground (a click without a drag still selects), right- or
+// middle-drag orbits, and the wheel zooms toward the cursor. Touch: one finger pans, two pinch and rotate.
+controls.mouseButtons={LEFT:THREE.MOUSE.PAN,MIDDLE:THREE.MOUSE.ROTATE,RIGHT:THREE.MOUSE.ROTATE};controls.touches={ONE:THREE.TOUCH.PAN,TWO:THREE.TOUCH.DOLLY_ROTATE};
+controls.screenSpacePanning=false;controls.zoomToCursor=true;controls.minDistance=1.2;controls.maxDistance=60;controls.maxPolarAngle=Math.PI*.49;
 let crayon=null;
 const cameraPan=createCameraPan({camera,controls});
 renderer.domElement.addEventListener('pointerdown',()=>cameraPan.cancel(),true);
 renderer.domElement.addEventListener('wheel',()=>cameraPan.cancel(),{capture:true,passive:true});
 for(const id of ['map-select','fit','top','demo-view'])$(id).addEventListener(id==='map-select'?'change':'click',()=>cameraPan.cancel(),true);
-const ghostCamera=createGhostCamera({camera,controls,canvas:renderer.domElement,enabled:()=>!map2D.isActive()&&!crayon?.isActive(),onMove:()=>{cameraPan.cancel();if(attachedCamera.isActive())attachedCamera.detach();}});
+const ghostCamera=createGhostCamera({camera,controls,canvas:renderer.domElement,enabled:()=>!map2D.isActive()&&!crayon?.isActive(),onMove:()=>{cameraPan.cancel();if(attachedCamera.isActive())attachedCamera.detach();
+ // The first time someone moves with the keyboard, show the whole scheme once.
+ try{if(!localStorage.getItem('camera-keys-hint')){localStorage.setItem('camera-keys-hint','1');toast('WASD move · Space / Shift up and down · Q / E turn · drag to pan · right-drag to orbit');}}catch{}}});
 let activeMap='demo',current=null,busy=false,refreshing=false,lastScene=null,selectable=[],selectedNoteId=null,selectedPathId=null,deletingPathId=null,deletingNoteId=null,selectedSpatialNode=null,spatialSignature='';
 let homeOffline=false,catalogInitialized=false;
 function isLocalScene(map=activeMap){return map.startsWith('local:');}
@@ -298,7 +304,7 @@ const gridFade={uCam:{value:new THREE.Vector3()},uFadeFar:{value:40}};
 function fadeWithDistance(material,reach){
  material.onBeforeCompile=shader=>{Object.assign(shader.uniforms,gridFade,{uReach:{value:reach}});
   shader.vertexShader='varying vec3 vGridWorld;\n'+shader.vertexShader.replace('#include <project_vertex>','#include <project_vertex>\nvGridWorld=(modelMatrix*vec4(position,1.)).xyz;');
-  shader.fragmentShader='varying vec3 vGridWorld;uniform vec3 uCam;uniform float uFadeFar;uniform float uReach;\n'+shader.fragmentShader.replace('#include <color_fragment>','#include <color_fragment>\ndiffuseColor.a*=1.-smoothstep(uFadeFar*uReach*.3,uFadeFar*uReach,distance(uCam.xz,vGridWorld.xz));');};
+  shader.fragmentShader='varying vec3 vGridWorld;uniform vec3 uCam;uniform float uFadeFar;uniform float uReach;\n'+shader.fragmentShader.replace('#include <color_fragment>','#include <color_fragment>\ndiffuseColor.a*=1.-smoothstep(uFadeFar*uReach*.35,uFadeFar*uReach,distance(uCam.xz,vGridWorld.xz));');};
  return material;
 }
 function lineGrid(spacing,extent,reach){
@@ -316,7 +322,7 @@ grid.material={get opacity(){return gridMajor.material.opacity;},set opacity(v){
 grid.material.opacity=.32;
 // Follow the camera in whole major cells so the lines stay put in the world while the grid never ends.
 gridMajor.onBeforeRender=()=>{const snap=2.5;grid.position.x=Math.round(controls.target.x/snap)*snap;grid.position.z=Math.round(controls.target.z/snap)*snap;grid.updateMatrixWorld();
- gridFade.uCam.value.copy(camera.position);gridFade.uFadeFar.value=Math.max(24,camera.position.distanceTo(controls.target)*3.5);};
+ gridFade.uCam.value.copy(camera.position);gridFade.uFadeFar.value=Math.max(8,camera.position.distanceTo(controls.target)*1.15);};
 // The axes mark the world origin, so they stay put rather than following the camera.
 scene.add(grid,gridAxes);
 const groups=Object.fromEntries(['voxels','portals','objects','rays','notes'].map(k=>[k,new THREE.Group()]));Object.values(groups).forEach(g=>scene.add(g));
@@ -1167,13 +1173,8 @@ function createNoteCard({request,error,portal=false}={}){
    const created=(current?.notes||[]).find(n=>n.id===note.id);if(created)showNoteSelection(created);else clearSelection();toast('Note saved');
   }catch(err){status.textContent=err.message;save.disabled=false;}};
 }
-renderer.domElement.addEventListener('contextmenu',e=>{e.preventDefault();
- if(crayon.isActive())return;
- if(!current){beginLabel(null,'Wait for Home’s map to load.');return;}
- const rect=renderer.domElement.getBoundingClientRect(),ray=new THREE.Raycaster();
- ray.setFromCamera(new THREE.Vector2((e.clientX-rect.left)/rect.width*2-1,1-(e.clientY-rect.top)/rect.height*2),camera);
- beginLabel({source:'scene',frame:current.frame,origin:ray.ray.origin.toArray(),direction:ray.ray.direction.toArray()});
-});
+// Right-drag orbits the 3D view, so right-click no longer places notes there; New note does that.
+renderer.domElement.addEventListener('contextmenu',e=>e.preventDefault());
 $('sensor-stage').addEventListener('contextmenu',e=>{e.preventDefault();e.stopPropagation();
  const f=displayedCamera;
  if(!f?.token||Date.now()-f.receivedAt>10000){beginLabel(null,f?.error||'Waiting for a fresh capture-matched camera pose. Try again when calibrated video arrives.');return;}
