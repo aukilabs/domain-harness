@@ -2,6 +2,10 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {PhoneTrailHistory,cameraShape,outlineExtents} from '../web/phone-trails.js';
 const pose=(stamp,peer='phone',session='a',frame='room')=>({peer_id:peer,clock:{session_id:session},capture_timestamp_ns:stamp,pose:{to_frame_id:frame,translation:[1,2,3],rotation_wxyz:[1,0,0,0]}});
+test('compact timestamps retain nanosecond precision beyond JS safe integers',()=>{
+ const h=new PhoneTrailHistory();h.ingest('room',[pose('1791917200123456789'),pose('1791917200123456790')],0);
+ assert.equal(h.samples(0).length,2);h.ingest('room',[pose('1791917200123456789')],1);assert.equal(h.samples(1).length,2);
+});
 test('fades for ten seconds, duplicates never extend lifetime',()=>{
  const h=new PhoneTrailHistory();h.ingest('room',[pose(1)],100);
  assert.equal(h.samples(5100)[0].opacity,.5);

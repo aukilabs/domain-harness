@@ -117,6 +117,8 @@ pub fn device_rows(peer: &AukiPeer, catalogs: &Catalogs) -> Vec<Value> {
 
 pub async fn monitor(
     peer: &AukiPeer,
+    local_registry: &crate::product_registry::Definitions,
+    scenes: &crate::local_scenes::LocalScenes,
     profiles: &[(String, Vec<String>)],
     output: watch::Sender<Catalogs>,
     stop: &CancellationToken,
@@ -126,6 +128,7 @@ pub async fn monitor(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! { _ = stop.cancelled() => break, _ = tick.tick() => {} }
+        for id in scenes.snapshots.keys(){if let Ok(view)=scenes.view(id){if let Some(frame)=view["frame"].as_str(){if let Ok(definition)=crate::conventions::registry(&peer.peer_id().to_string(),frame){let _=crate::product_registry::frame(local_registry,&definition);}}}}
         let mut candidates: BTreeMap<PeerId, (Vec<String>, bool)> = BTreeMap::new();
         let discovery = tokio::select! {
             _ = stop.cancelled() => break,
@@ -177,12 +180,19 @@ pub async fn monitor(
                 .or_insert_with(|| json!({"catalog_status":"loading","discovered":discovered}));
         }
         output.send_replace(current);
+        let previous=output.borrow().clone();
         let mut fetches = stream::iter(candidates.into_iter().map(
-            |(id, (routes, discovered))| async move {
+            |(id, (routes, discovered))| {let previous=previous.get(&id.to_string()).cloned();let output=output.clone();async move {
                 let mut result = fetch(peer, id, &routes).await;
+                result["discovered"]=json!(discovered);
+                if result["catalog_status"]=="ready" {
+                    let mut pending=result.clone();pending["registries"]=previous.as_ref().map(|r|r["registries"].clone()).unwrap_or_else(||json!({"status":"loading"}));
+                    output.send_modify(|rows|{rows.insert(id.to_string(),pending);});
+                }
+                if result["catalog_status"]=="ready" {result["registries"]=crate::product_registry::resolve(peer,id,&result,previous.as_ref().map(|r|&r["registries"]),local_registry).await;}
                 result["discovered"] = json!(discovered);
                 (id.to_string(), result)
-            },
+            }},
         ))
         .buffer_unordered(4);
         loop {

@@ -22,6 +22,9 @@ pub struct LocalScenes {
 
 /// Stable physical-origin identity, not a coordinate-convention alias.
 pub fn frame_scene_id(frame: &str) -> Option<&str> {
+    if let Some((id,epoch))=frame.strip_prefix("local-scene:").and_then(|s|s.split_once(":epoch-")) {
+        return (valid_id(id) && uuid::Uuid::parse_str(epoch).is_ok()).then_some(id);
+    }
     if let Some(id)=frame.strip_prefix("local-scene:").and_then(|s|s.strip_suffix(":origin")) {return valid_id(id).then_some(id);}
     let (id, portal) = frame.strip_prefix("local-scene:")?.split_once(":portal-")?;
     (valid_id(id)
@@ -47,6 +50,7 @@ fn valid_id(id: &str) -> bool {
 impl LocalScenes {
     pub fn load(directory: &Path) -> Result<Self> {
         std::fs::create_dir_all(directory)?;
+        crate::origin_reset::apply_pending(directory)?;
         // Independent local scenes start uncalibrated. Historical origin entries
         // identify configured scenes, but their short codes are never seeded.
         for env in &crate::environments::CATALOG.environments {

@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 async fn preview(tx: &mpsc::Sender<Request>, sensor: Option<String>) -> Result<serde_json::Value> {
     let (reply, answer) = oneshot::channel();
     tx.send(Request {
+        home_frame: None, debug_pose: false,
         scene: false,
         sensor,
         ar: false,
@@ -54,7 +55,8 @@ async fn phone_camera_shares_sdk_catalog_and_home_consumes_only_on_demand() -> R
     let stop = CancellationToken::new();
     let dir=tempfile::tempdir()?;
     let homes=spatial_home::local_scenes::LocalScenes::load(dir.path())?;
-    let serve = sensor_preview::serve(&pair.a, catalog_rx, rx, live, &frames, &homes, &stop);
+    let held = spatial_home::frame_alignment::HeldTransforms::default();
+    let serve = sensor_preview::serve(&pair.a, catalog_rx, rx, live, &frames, &homes, &held, &stop);
     let exercise = async {
         let listing = preview(&tx, None).await?;
         let id = listing["sensors"][0]["id"].as_str().unwrap().to_owned();
@@ -237,7 +239,7 @@ async fn phone_camera_joins_the_ar_session_and_declares_its_calibration() -> Res
 }
 
 /// Home draws its scene over a phone's camera through the same path it uses
-/// for a robot: the camera names its pose Product, image and pose share a
+/// for a robot: exact frame references resolve its pose, image and pose share a
 /// frame, a clock and a capture time, and Home reads the camera in the axes
 /// it declares.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -262,7 +264,7 @@ async fn home_draws_over_a_phone_camera_without_a_phone_adapter() -> Result<()> 
         timestamp_ns: 1000,
         pose: auki_scenegraph::RigidTransform {
             from_frame_id: format!("phone-camera:{session}"),
-            to_frame_id: home_frame.clone(),
+            to_frame_id: format!("phone-ar:{session}"),
             translation: [1., 1.5, 2.],
             rotation_wxyz: [1., 0., 0., 0.],
         },
@@ -271,24 +273,36 @@ async fn home_draws_over_a_phone_camera_without_a_phone_adapter() -> Result<()> 
     let mut pose = spatial_home::mobile_odometry::Publisher::new(&products, &home_peer, &sample)?;
     pose.publish(&home_peer, &sample)?;
 
+    let mut declared = spatial_home::mobile_declared::Publisher::new(&products, &session, &home_peer, &home_frame)?;
+    declared.align(77, &auki_scenegraph::RigidTransform {
+        from_frame_id: format!("phone-ar:{session}"), to_frame_id: home_frame.clone(),
+        translation:[0.;3], rotation_wxyz:[1.,0.,0.,0.],
+    })?;
+    let definitions=spatial_home::product_registry::Definitions::default();
+    spatial_home::product_registry::frame(&definitions,&spatial_home::conventions::registry(&home_peer,&home_frame)?)?;
+
     let routes = pair.b.listen_addresses().iter().map(ToString::to_string).collect::<Vec<_>>();
-    let catalogs = Catalogs::from([(pair.b.peer_id().to_string(), fetch(&pair.a, pair.b.peer_id(), &routes).await)]);
+    let mut row=fetch(&pair.a, pair.b.peer_id(), &routes).await;
+    row["registries"]=spatial_home::product_registry::resolve(&pair.a,pair.b.peer_id(),&row,None,&definitions).await;
+    let catalogs = Catalogs::from([(pair.b.peer_id().to_string(), row)]);
     let (_catalog_tx, catalog_rx) = watch::channel(catalogs);
     let (tx, rx) = mpsc::channel(4);
     let (_live_tx, live) = watch::channel(spatial_home::scene_mirror::RemoteScene::default());
     let frames = spatial_home::ar_preview::Frames::default();
     let stop = CancellationToken::new();
-    let serve = sensor_preview::serve(&pair.a, catalog_rx, rx, live, &frames, &homes, &stop);
+    let held = spatial_home::frame_alignment::HeldTransforms::default();
+    let subscriptions = held.serve(&pair.a, catalog_rx.clone(), &stop);
+    let serve = sensor_preview::serve(&pair.a, catalog_rx, rx, live, &frames, &homes, &held, &stop);
     let exercise = async {
         let listing = preview(&tx, None).await?;
         let listed = listing["sensors"].as_array().unwrap().iter().find(|s| s["label"] == "phone-camera").unwrap();
-        assert_eq!(listed["ar_available"], true, "the camera's pose is found by pose_product_id");
+        assert_eq!(listed["ar_available"], true, "the camera's pose is found by exact frame and clock");
         let id = listed["id"].as_str().unwrap().to_owned();
         let mut last = String::new();
         let drawn = tokio::time::timeout(Duration::from_secs(8), async {
             loop {
                 let (reply, answer) = oneshot::channel();
-                tx.send(Request { scene: false, sensor: Some(id.clone()), ar: true, pick: false, follow: false,
+                tx.send(Request { home_frame: None, debug_pose: false, scene: false, sensor: Some(id.clone()), ar: true, pick: false, follow: false,
                     capture: false, expected_manifest: None, reply }).await?;
                 match answer.await? {
                     Ok(frame) => break Ok::<_, anyhow::Error>(frame),
@@ -310,12 +324,13 @@ async fn home_draws_over_a_phone_camera_without_a_phone_adapter() -> Result<()> 
         assert!((q[0].abs() - 1.).abs() < 1e-9 && q[1].abs() + q[2].abs() + q[3].abs() < 1e-9, "{q:?}");
         Ok::<_, anyhow::Error>(())
     };
-    let (_, result) = tokio::join!(serve, async {
+    let (_, _, result) = tokio::join!(serve, subscriptions, async {
         let r = exercise.await;
         stop.cancel();
         r
     });
     pose.close()?;
+    declared.close()?;
     camera.close()?;
     products.close().await?;
     pair.shutdown().await?;

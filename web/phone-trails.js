@@ -8,7 +8,7 @@ export class PhoneTrailHistory {
   if(frame!==this.frame)this.reset(frame);
   for(const sample of poses){
    const {peer_id:peer,clock,pose,capture_timestamp_ns:stamp}=sample;
-   if(!peer||!clock?.session_id||pose?.to_frame_id!==frame||!Number.isFinite(stamp)||
+   if(!peer||!clock?.session_id||pose?.to_frame_id!==frame||!(typeof stamp==='string'?/^\d+$/.test(stamp):Number.isSafeInteger(stamp))||
       !Array.isArray(pose.translation)||pose.translation.length!==3||!pose.translation.every(Number.isFinite)||
       !Array.isArray(pose.rotation_wxyz)||pose.rotation_wxyz.length!==4||!pose.rotation_wxyz.every(Number.isFinite))continue;
    let state=this.peers.get(peer);
@@ -17,7 +17,7 @@ export class PhoneTrailHistory {
     state={session:clock.session_id,last:-1,entries:[]};this.peers.set(peer,state);
    }
    // Duplicate polling must not extend a ghost's life; reject out-of-order samples.
-   if(stamp<=state.last)continue;
+   if(BigInt(stamp)<=BigInt(state.last))continue;
    state.last=stamp;
    const age=Math.max(0,Number(sample.received_age_ms)||0);
    if(age>=PHONE_TRAIL_MS)continue;
