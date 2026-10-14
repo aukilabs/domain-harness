@@ -148,6 +148,26 @@ export function markSelected(row,list,id){
  lastSelected.set(list,id);row.classList.add('select-pop');setTimeout(()=>row.classList.remove('select-pop'),600);
 }
 
+// Tactile surfaces: the tab bar's hover language for any control. While the pointer is over a match it
+// sets --spot-x/--spot-y (the cursor, for spotlights), --light-x/--light-y (the opposite side, for the
+// plate's highlight) and --tilt-x/--tilt-y (degrees, up to `tilt`); `pulse` adds a press ring.
+// targets: [{selector, tilt, pulse}], first match wins. One delegated listener covers re-rendered lists.
+const TACTILE_VARS=['--tilt-x','--tilt-y','--light-x','--light-y','--spot-x','--spot-y'];
+export function tactile(root,targets){
+ const selector=targets.map(t=>t.selector).join(','),target=el=>el?.closest?.(selector);
+ let frame=0,last=null;
+ const apply=()=>{frame=0;const e=last,el=target(e.target);if(!el)return;
+  const {tilt=0}=targets.find(t=>el.matches(t.selector)),box=el.getBoundingClientRect();
+  const dx=Math.max(-1,Math.min(1,(e.clientX-box.left)/box.width*2-1)),dy=Math.max(-1,Math.min(1,(e.clientY-box.top)/box.height*2-1));
+  el.classList.add('tilting');
+  for(const [name,value] of [['--tilt-x',-dy*tilt+'deg'],['--tilt-y',dx*tilt+'deg'],['--light-x',(1-dx)*50+'%'],['--light-y',(1-dy)*50+'%'],['--spot-x',(dx+1)*50+'%'],['--spot-y',(dy+1)*50+'%']])el.style.setProperty(name,value);};
+ root.addEventListener('pointermove',e=>{if(e.pointerType==='touch'||reduceMotion())return;last=e;if(!frame)frame=requestAnimationFrame(apply);});
+ root.addEventListener('pointerout',e=>{const el=target(e.target);if(el&&!el.contains(e.relatedTarget)){el.classList.remove('tilting');for(const name of TACTILE_VARS)el.style.removeProperty(name);}});
+ root.addEventListener('pointerdown',e=>{const el=target(e.target);if(!el||el.disabled||reduceMotion()||!targets.find(t=>el.matches(t.selector)).pulse)return;
+  el.classList.remove('pulse');void el.offsetWidth;el.classList.add('pulse');});
+ root.addEventListener('animationend',e=>{if(e.animationName==='tactile-ring')target(e.target)?.classList.remove('pulse');});
+}
+
 // Animated reveal and hide for anything that expands: height plus a short fade.
 const reduceMotion=()=>matchMedia('(prefers-reduced-motion: reduce)').matches;
 export function reveal(el){
