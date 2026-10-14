@@ -11,6 +11,8 @@ import { createNoteBubble } from './note-bubble.js';
 import { createPipWindow } from './pip-window.js';
 import { createVideoPresentation } from './video-presentation.js';
 import { readCameraResponse } from './camera-frame.js';
+import { icons, icon, deviceIcon, sectionHeader, disclosure, statusKind, statusBadge, listRow, searchField, copyButton, emptyState, actionButton, formField, toast } from './panel-ui.js';
+const plural=(count,word)=>`${count} ${word}${count===1?'':'s'}`;
 import { moveMapCamera, applyChatActions, chatResultPresentation } from './view-camera.js';
 import { createAttachedCamera } from './attached-camera.js';
 import { createRobotModel } from './robot-model.js';
@@ -47,35 +49,80 @@ $('map-select').addEventListener('change',()=>{renderChat();chatStatus.textConte
 for(const event of ['pointerdown','pointerup','click','dblclick','contextmenu','wheel','keydown','keyup']){
  document.querySelector('.scene-chat').addEventListener(event,e=>e.stopPropagation());
 }
-// Organize existing live controls into the mockup's rail and exclusive panels.
+// Organize existing live controls into a labelled icon rail and exclusive panels.
 const sidebar=document.querySelector('aside'),shell=document.querySelector('.shell');
 const rail=document.createElement('nav');rail.className='icon-rail';rail.setAttribute('aria-label','Workspace panels');shell.prepend(rail);
-const panelNames={profile:'Profile',maps:'Maps',notes:'Notes',volumes:'Volumes',tags:'Tags',fleet:'Devices',settings:'Settings'};
-const iconPaths={profile:'M9 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6M3 16c0-7 12-7 12 0',maps:'M2 4l5-2 4 2 5-2v12l-5 2-4-2-5 2ZM7 2v12M11 4v12',notes:'M4 2h10v14H4ZM6 6h6M6 9h6M6 12h4',tags:'M2 6V2h4M12 2h4v4M16 12v4h-4M6 16H2v-4M6 6h6v6H6Z',fleet:'M4 6h10v9H4ZM6 2h6v4M7 9h.1M11 9h.1M7 12h4M1 10h3M14 10h3',settings:'M9 1v3M9 14v3M1 9h3M14 9h3M3 3l2 2M13 13l2 2M3 15l2-2M13 5l2-2M12 9a3 3 0 1 0-6 0 3 3 0 0 0 6 0'};
-const panelBodies={};let activePanel='profile';
+const panelNames={maps:'Maps',notes:'Notes',volumes:'Volumes',tags:'Tags',fleet:'Devices',settings:'Settings'};
+const panelAccents={maps:'emerald',notes:'amber',volumes:'violet',tags:'pink',fleet:'cyan',settings:'zinc'};
+const iconPaths={maps:'M2 4l5-2 4 2 5-2v12l-5 2-4-2-5 2ZM7 2v12M11 4v12',notes:'M4 2h10v14H4ZM6 6h6M6 9h6M6 12h4',tags:'M2 2h6.5l7.5 7.5-6.5 6.5L2 8.5ZM5.5 5.5h.01',fleet:'M4 6h10v9H4ZM6 2h6v4M7 9h.1M11 9h.1M7 12h4M1 10h3M14 10h3',settings:'M2 5h8M14 5h2M2 13h2M8 13h8M10 5a2 2 0 1 0 4 0 2 2 0 1 0-4 0M4 13a2 2 0 1 0 4 0 2 2 0 1 0-4 0'};
+const panelBodies={};let activePanel=null;
 iconPaths.volumes='M2 5l7-3 7 3v8l-7 3-7-3ZM2 5l7 3 7-3M9 8v8';
+const railIcon=path=>`<svg aria-hidden="true" width="20" height="20" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="${path}"/></svg>`;
+const railTabs=document.createElement('div');railTabs.className='rail-tabs';rail.append(railTabs);
 for(const [id,name] of Object.entries(panelNames)){
- const button=document.createElement('button');button.type='button';button.dataset.panel=id;button.title=name;button.setAttribute('aria-label',name);button.setAttribute('aria-controls','panel-'+id);
- button.innerHTML=`<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="${iconPaths[id]}"/></svg>`;
- button.onclick=()=>openPanel(activePanel===id?null:id);rail.append(button);
- const panel=document.createElement('section');panel.id='panel-'+id;panel.className='workspace-panel';panel.setAttribute('aria-label',name);panel.innerHTML=`<div class="panel-heading">${name==='Maps'?'Scenegraphs':name}<button aria-label="Close ${name} panel">×</button></div><div class="panel-body"></div>`;panel.querySelector('button').onclick=()=>openPanel(null);panelBodies[id]=panel.lastElementChild;sidebar.append(panel);
+ const button=document.createElement('button');button.type='button';button.className='rail-tab';button.dataset.panel=id;button.dataset.accent=panelAccents[id];button.setAttribute('aria-label',name);button.setAttribute('aria-controls','panel-'+id);
+ button.innerHTML=railIcon(iconPaths[id]);
+ button.onclick=()=>openPanel(activePanel===id?null:id);railTabs.append(button);
+ const panel=document.createElement('section');panel.id='panel-'+id;panel.className='workspace-panel';panel.dataset.accent=panelAccents[id];panel.setAttribute('aria-labelledby','panel-title-'+id);
+ panel.innerHTML=`<div class="panel-heading"><span class="panel-heading-icon" aria-hidden="true">${railIcon(iconPaths[id])}</span><h2 id="panel-title-${id}">${name}</h2><button type="button" class="panel-close" aria-label="Close ${name} panel">${railIcon('M4.5 4.5l9 9M13.5 4.5l-9 9')}</button></div><div class="panel-body"></div>`;
+ panel.querySelector('.panel-close').onclick=()=>{openPanel(null);button.focus();};
+ panel.addEventListener('keydown',e=>{if(e.key==='Escape'&&!e.target.closest('input,textarea,select,dialog')){openPanel(null);button.focus();}});
+ panelBodies[id]=panel.lastElementChild;sidebar.append(panel);
 }
+// One shared tooltip shows each rail button's name on hover and keyboard focus (WCAG 1.4.13: dismissible, hoverable, persistent).
+// It repeats the button's aria-label, so it is hidden from assistive technology.
+const railTip=document.createElement('div');railTip.className='rail-tooltip';railTip.setAttribute('aria-hidden','true');railTip.hidden=true;document.body.append(railTip);
+let railTipTimer=0,railTipTarget=null;
+function showRailTip(button,immediate){
+ clearTimeout(railTipTimer);
+ const show=()=>{
+  railTipTarget=button;railTip.textContent=button.getAttribute('aria-label');
+  const box=button.getBoundingClientRect();railTip.style.top=(box.top+box.height/2)+'px';railTip.style.left=(box.right+10)+'px';railTip.hidden=false;
+ };
+ if(immediate||!railTip.hidden)show();else railTipTimer=setTimeout(show,300);
+}
+function hideRailTip(delay=0){clearTimeout(railTipTimer);railTipTimer=setTimeout(()=>{railTip.hidden=true;railTipTarget=null;},delay);}
+rail.addEventListener('pointerover',e=>{const button=e.target.closest('button,a');if(button)showRailTip(button);});
+rail.addEventListener('pointerout',e=>{if(!rail.contains(e.relatedTarget)&&!railTip.contains(e.relatedTarget))hideRailTip(120);});
+railTip.addEventListener('pointerenter',()=>clearTimeout(railTipTimer));
+railTip.addEventListener('pointerleave',e=>{if(!rail.contains(e.relatedTarget))hideRailTip(120);});
+rail.addEventListener('focusin',e=>{if(e.target.matches(':focus-visible'))showRailTip(e.target,true);});
+rail.addEventListener('focusout',()=>hideRailTip());
+rail.addEventListener('click',()=>hideRailTip());
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!railTip.hidden){hideRailTip();e.stopPropagation();}},true);
+// Arrow keys move between rail buttons; Tab enters and leaves the rail at the active one.
+const railButtons=()=>[...rail.querySelectorAll('button')];
+function syncRailTabStops(){const buttons=railButtons(),active=rail.querySelector('[aria-expanded="true"]')||buttons[0];for(const b of buttons)b.tabIndex=b===active?0:-1;}
+rail.addEventListener('keydown',e=>{
+ if(e.key==='Escape'&&activePanel){e.preventDefault();const tab=rail.querySelector(`[data-panel="${activePanel}"]`);openPanel(null);tab.focus();return;}
+ const buttons=railButtons(),index=buttons.indexOf(document.activeElement);if(index<0)return;
+ const next={ArrowDown:index+1,ArrowUp:index-1,Home:0,End:buttons.length-1}[e.key];if(next===undefined)return;
+ e.preventDefault();const target=buttons[(next+buttons.length)%buttons.length];for(const b of buttons)b.tabIndex=b===target?0:-1;target.focus();
+});
 function moveTo(panel,selector){document.querySelectorAll(selector).forEach(el=>panelBodies[panel].append(el));}
-moveTo('profile','aside > .eyebrow, aside > h1, aside > .intro, aside > .network-status:not(#runner-card):not(#mapping-card)');
+// Home server status lives in the account menu; the old profile heading is retired.
+document.querySelectorAll('aside > .network-status:not(#runner-card):not(#mapping-card)').forEach(el=>$('user-menu-server').append(el));
+document.querySelectorAll('aside > .eyebrow, aside > h1, aside > .intro').forEach(el=>el.remove());
 moveTo('maps','#map-select, #mapping-card, #domain-info, .sidebar-footer');
 moveTo('fleet','#runner-card, #sensor-select, #sensor-catalog-status');
 $('runner-card').hidden=true;
 $('sensor-catalog-status').hidden=true;
 moveTo('settings','#demo-controls, aside > .section-label, aside > .layer, #robot-volume-status');
 sidebar.querySelectorAll(':scope > .map-label').forEach(el=>el.remove());
-function openPanel(id){activePanel=id;shell.classList.toggle('panel-collapsed',!id);for(const key of Object.keys(panelNames)){$('panel-'+key).hidden=key!==id;rail.querySelector(`[data-panel="${key}"]`).setAttribute('aria-expanded',String(key===id));} }
-openPanel('profile');
-const themeButton=document.createElement('button');themeButton.id='theme-toggle';themeButton.textContent='☼';themeButton.title='Switch to light theme';themeButton.setAttribute('aria-label',themeButton.title);rail.append(themeButton);
+function openPanel(id){activePanel=id;shell.classList.toggle('panel-collapsed',!id);for(const key of Object.keys(panelNames)){$('panel-'+key).hidden=key!==id;rail.querySelector(`[data-panel="${key}"]`).setAttribute('aria-expanded',String(key===id));}syncRailTabStops();}
+const userMenu=$('user-menu'),userMenuButton=$('user-menu-button');
+userMenuButton.setAttribute('aria-expanded','false');
+userMenu.addEventListener('beforetoggle',e=>{if(e.newState!=='open')return;const box=userMenuButton.getBoundingClientRect();userMenu.style.top=(box.bottom+6)+'px';userMenu.style.right=(innerWidth-box.right)+'px';});
+userMenu.addEventListener('toggle',e=>userMenuButton.setAttribute('aria-expanded',String(e.newState==='open')));
+openPanel(null);
 const mapsList=document.createElement('div');mapsList.id='scenegraph-list';panelBodies.maps.prepend(mapsList);$('map-select').hidden=true;
 const spatialBrowser=document.createElement('section');spatialBrowser.id='spatial-browser';spatialBrowser.setAttribute('aria-label','Anchors and landmarks');
-spatialBrowser.innerHTML='<h3>Anchors & landmarks</h3><label class="spatial-search-label" for="spatial-search">Find by name or type</label><input id="spatial-search" type="search" placeholder="ID, type, or corner…"><p id="spatial-status" class="panel-hint" role="status"></p><details open><summary>Anchors <span id="anchor-count">0</span></summary><div id="anchor-list" class="spatial-list" aria-label="Anchors"></div></details><details open><summary>Landmarks <span id="landmark-count">0</span></summary><div id="landmark-list" class="spatial-list" aria-label="Landmarks"></div></details>';
+const spatialCounts=document.createElement('p');spatialCounts.className='panel-meta';spatialCounts.setAttribute('role','status');
+spatialCounts.innerHTML='<span id="anchor-count">0</span> anchors · <span id="landmark-count">0</span> landmarks';
+const spatialStatus=document.createElement('p');spatialStatus.id='spatial-status';spatialStatus.className='panel-hint';
+const spatialTree=document.createElement('div');spatialTree.id='anchor-list';spatialTree.className='spatial-tree';spatialTree.setAttribute('aria-label','Anchors');
+spatialBrowser.append(sectionHeader('Anchors'),searchField({id:'spatial-search',label:'Search anchors and landmarks',placeholder:'Search by ID or type',onInput:()=>renderSpatialLists()}),spatialCounts,spatialStatus,spatialTree);
 mapsList.after(spatialBrowser);
-$('spatial-search').oninput=()=>renderSpatialLists();
 const fleetList=document.createElement('div');fleetList.id='fleet-sensors';panelBodies.fleet.append(fleetList);$('sensor-select').hidden=true;
 const {createPoseInspector}=await import('/pose-inspector.js');
 const inspectPose=createPoseInspector(panelBodies.fleet);
@@ -86,7 +133,8 @@ const tagsBody=panelBodies.tags;
 let fleetNetwork=null,fleetSignature='';
 const componentControlResults=new Map();
 let componentControlPending=false;
-const scene=new THREE.Scene();scene.background=new THREE.Color('#0d0d0f');scene.fog=new THREE.Fog('#0d0d0f',10,26);
+const sceneBackground=document.documentElement.dataset.theme==='light'?'#e8e8f0':'#0d0d0f';
+const scene=new THREE.Scene();scene.background=new THREE.Color(sceneBackground);scene.fog=new THREE.Fog(sceneBackground,10,26);
 const camera=new THREE.PerspectiveCamera(42,1,.01,100);
 const renderer=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true});renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.1;
 $('canvas').append(renderer.domElement);renderer.domElement.setAttribute('aria-label','3D voxel map');
@@ -172,7 +220,7 @@ for(const id of ['map-select','fit','top','demo-view'])$(id).addEventListener(id
 $('demo-view').onclick=()=>{camera.position.set(-.5,4.5,5.5);controls.target.set(-3.7,.5,2.1);controls.update();};$('fit').onclick=()=>map2D.isActive()?map2D.fit():fit();$('top').onclick=()=>map2D.toggle();
 scene.add(new THREE.HemisphereLight(0xffffff,0x1a2438,1.7));
 const sun=new THREE.DirectionalLight(0xffffff,2.4);sun.position.set(-3,7,4);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);Object.assign(sun.shadow.camera,{left:-5,right:5,top:5,bottom:-5,near:.1,far:20});sun.shadow.bias=-.0005;scene.add(sun);
-const ground=new THREE.Mesh(new THREE.PlaneGeometry(200,200),new THREE.MeshStandardMaterial({color:'#101014',roughness:1}));ground.rotation.x=-Math.PI/2;ground.position.y=-.15;ground.receiveShadow=true;scene.add(ground);
+const ground=new THREE.Mesh(new THREE.PlaneGeometry(200,200),new THREE.MeshStandardMaterial({color:document.documentElement.dataset.theme==='light'?'#e0e3e8':'#101014',roughness:1}));ground.rotation.x=-Math.PI/2;ground.position.y=-.15;ground.receiveShadow=true;scene.add(ground);
 const grid=new THREE.GridHelper(6,30,0x4f8ef7,0x24242b);grid.position.y=-.14;grid.material.transparent=true;grid.material.opacity=.28;scene.add(grid);
 const groups=Object.fromEntries(['voxels','portals','objects','rays','notes'].map(k=>[k,new THREE.Group()]));Object.values(groups).forEach(g=>scene.add(g));
 crayon=createCrayon({button:$('crayon'),canvas:renderer.domElement,camera,controls,scene,voxels:groups.voxels,
@@ -210,7 +258,14 @@ async function refreshCompactTrail(){
   availability.hidden=false;availability.textContent=result.status+' · '+data.stream+' · '+product.manifest.product_id+(products.length>1?' · first pose Product':'');
  }catch(error){if(activeMap!==selected)return;compactTrail.reset();availability.hidden=false;availability.textContent='Pose trail unavailable · '+error.message;}
 }
-const semanticVolumes=createSemanticVolumes({scene,camera,renderer,controls,panel:panelBodies.volumes,api,label,clear,openPanel,priorityPickObjects:()=>[...selectable.filter(o=>o.userData.kind==='note'),...crayon.objects()]});
+// The volume module renders into the shared inspector card through this small interface.
+const volumeInspector={element:$('selection'),
+ open(nodes){if(noteCardMode!=='volume'){selectedPathId=null;crayon.select(null);selectedNoteId=null;selectedSpatialNode=null;updateSpatialSelection();renderNotes();}
+  const card=$('selection');for(const key of ['noteId','pathId','spatialId','spatialKind'])delete card.dataset[key];
+  const close=document.createElement('button');close.type='button';close.className='inspector-close';close.setAttribute('aria-label','Close inspector');close.append(icon(icons.close));close.onclick=clearSelection;
+  card.replaceChildren(close,...nodes);card.hidden=false;noteCardMode='volume';},
+ close(){if(noteCardMode==='volume'){noteCardMode='view';$('selection').hidden=true;}}};
+const semanticVolumes=createSemanticVolumes({scene,camera,renderer,controls,panel:panelBodies.volumes,api,label,clear,openPanel,inspector:volumeInspector,toast,priorityPickObjects:()=>[...selectable.filter(o=>o.userData.kind==='note'),...crayon.objects()]});
 $('map-select').addEventListener('change',()=>semanticVolumes.reset());
 let phonePresenceBusy=false;
 const homePoseStatus=document.createElement('p');homePoseStatus.className='panel-hint';panelBodies.maps.append(homePoseStatus);
@@ -233,7 +288,7 @@ async function refreshPhonePresence(){
      pose:{to_frame_id:frame,translation:p.translation,rotation_wxyz:[w,x,y,z]}});
    }catch(e){errors.push(name+': '+e.message);}
   }
-  if(activeMap===map&&current?.frame===frame){const fresh=poses.map(p=>({...p,received_age_ms:p.received_age_ms+performance.now()-p.receivedAt})).filter(p=>p.received_age_ms<2000);phoneTrails.ingest(frame,fresh);homePoseStatus.textContent=errors.length?errors.join(' · '):fresh.length+' phones aligned to this Home scene';$('canvas').dataset.phonePoseStatus=errors.join('\n');}
+  if(activeMap===map&&current?.frame===frame){const fresh=poses.map(p=>({...p,received_age_ms:p.received_age_ms+performance.now()-p.receivedAt})).filter(p=>p.received_age_ms<2000);phoneTrails.ingest(frame,fresh);homePoseStatus.textContent=errors.length?errors.join(' · '):fresh.length?plural(fresh.length,'phone')+' aligned to this Home scene':'';$('canvas').dataset.phonePoseStatus=errors.join('\n');}
  }catch{if(activeMap===map)phoneTrails.ingest(frame,[]);}finally{phonePresenceBusy=false;}
 }
 setInterval(refreshPhonePresence,200);
@@ -298,14 +353,31 @@ function build(data){
  for(const [peer,id] of [['iphone','phone-state'],['bracketbot','bot-state']]){const n=data.sources[peer];$(id).textContent=n?'Contributed':'Ready';$(id).classList.toggle('active',Boolean(n));}
  $('load').innerHTML=data.integrated_observations?'Reload test contributions <span>↗</span>':'Load two test peers <span>↗</span>';
  $('project').disabled=busy||!data.voxels.length;$('replay').disabled=busy||!data.sources.iphone;
- if(selectedSpatialNode){const {kind,id}=selectedSpatialNode;const node=data.landmarks?.[kind==='anchor'?'anchors':'landmarks']?.[id];if(node)showSpatialSelection(kind,node);else{selectedSpatialNode=null;$('selection').hidden=true;}}
- else if(selectedPathId){const path=data.paths?.items.find(p=>p.id===selectedPathId);if(path){if($('selection').dataset.pathId!==path.id)showPathSelection(path);}else{selectedPathId=null;crayon.select(null);$('selection').hidden=true;}}else if(selectedNoteId){const note=(data.notes||[]).find(n=>n.id===selectedNoteId);if(note){if($('selection').dataset.noteId!==note.id)showNoteSelection(note);}else{selectedNoteId=null;$('selection').hidden=true;}}else $('selection').hidden=true;if(!selectedNoteId&&!selectedPathId&&!selectedSpatialNode&&data.objects.length){const o=data.objects[0];showSelection(o.label,`[${o.position.map(v=>v.toFixed(2)).join(', ')}] m`,'Projected onto occupied voxel surface');}
+ if(noteCardMode!=='view'){}else if(selectedSpatialNode){const {kind,id}=selectedSpatialNode;const node=data.landmarks?.[kind==='anchor'?'anchors':'landmarks']?.[id];if(node)showSpatialSelection(kind,node);else{selectedSpatialNode=null;$('selection').hidden=true;}}
+ else if(selectedPathId){const path=data.paths?.items.find(p=>p.id===selectedPathId);if(path){if($('selection').dataset.pathId!==path.id)showPathSelection(path);}else{selectedPathId=null;crayon.select(null);$('selection').hidden=true;}}else if(selectedNoteId){const note=(data.notes||[]).find(n=>n.id===selectedNoteId);if(note){if($('selection').dataset.noteId!==note.id)showNoteSelection(note);}else{selectedNoteId=null;$('selection').hidden=true;}}else $('selection').hidden=true;
  updateMapUI();if(data.occupancy_tiles){$('empty').hidden=data.occupancy_tiles.length>0;$('voxel-count').textContent=data.occupancy_tiles.length.toLocaleString();}if(first)fit();
 }
+function pathLength(path){let total=0;for(const segment of path.segments)for(let i=1;i<segment.length;i++)total+=Math.hypot(...segment[i].map((v,k)=>v-segment[i-1][k]));return total;}
+function pathSwatch(path,size=12){const swatch=document.createElement('span');swatch.className='path-swatch';swatch.style.setProperty('--swatch',path.color||'#2563eb');swatch.style.width=swatch.style.height=size+'px';return swatch;}
 function showPathSelection(path){
- showSelection(path.title,'Crayon path · '+path.segments.reduce((n,s)=>n+s.length,0)+' points','Shared scene path');
- selectedPathId=path.id;crayon.select(path.id);$('selection').dataset.pathId=path.id;
- if(isLocalScene())$('selection').append(pathDeleteButton(path));
+ noteCardMode='view';
+ showSelection(path.title,`${pathLength(path).toFixed(1)} m · ${plural(path.segments.length,'stroke')}`,'',{kind:'Path'});
+ selectedPathId=path.id;crayon.select(path.id);const card=$('selection');card.dataset.pathId=path.id;
+ const line=card.querySelector('.inspector-position');line?.classList.add('is-text');line?.prepend(pathSwatch(path));
+ if(isLocalScene()){
+  const actions=cardActions(actionButton('Delete',{variant:'danger-ghost',onClick:()=>{
+   noteCardMode='confirm';
+   const box=document.createElement('div');box.className='card-confirm';box.setAttribute('role','group');box.setAttribute('aria-label','Confirm delete');
+   const question=document.createElement('p');question.textContent=`Delete “${path.title}”? This can’t be undone.`;
+   const cancel=actionButton('Cancel',{onClick:()=>showPathSelection(path)});
+   const remove=actionButton('Delete path',{variant:'danger',onClick:async()=>{remove.disabled=true;if(await deletePath(path,activeMap,current?.frame,remove)!==false){noteCardMode='view';toast(`Deleted “${path.title}”`);}}});
+   remove.dataset.deletePath=path.id;
+   box.append(question,cardActions(cancel,remove));actions.replaceWith(box);cancel.focus();
+   box.addEventListener('keydown',e=>{if(e.key==='Escape'){e.stopPropagation();showPathSelection(path);}});
+  }}));
+  card.append(actions);
+ }else{const lock=document.createElement('p');lock.className='card-readonly';lock.append(icon(icons.lock,14),document.createTextNode('Read-only · Paths can be changed in a local Home scene'));card.append(lock);}
+ renderNotes();
 }
 function focusPath(path){
  const box=new THREE.Box3().setFromPoints(path.segments.flat().map(p=>new THREE.Vector3(...p))),center=box.getCenter(new THREE.Vector3());
@@ -331,7 +403,7 @@ async function deletePath(path,map=activeMap,frame=current?.frame,button=null){
    if(stillSelected){
     const next=result.items[Math.min(Math.max(index,0),result.items.length-1)];
     if(next){showPathSelection(next);}
-    else{selectedPathId=null;crayon.select(null);$('selection').hidden=true;if(noteView==='path')noteView='list';}
+    else{selectedPathId=null;crayon.select(null);$('selection').hidden=true;}
    }
    renderNotes();lastScene=null;hideAr();return stillSelected;
   }catch(e){status.textContent=e.message;return false;}finally{
@@ -359,23 +431,80 @@ function closeUp(point){
  cameraPan.start(position,target);
 }
 function focusNote(note){closeUp(note.position);showNoteSelection(note);}
+// The inspector card is the one home for a note: view, edit, create and delete-confirm modes.
+let noteCardMode='view';
+function noteReadOnlyReason(note){
+ if(note.anchor_robot||note.robot_pose)return 'Attached to a robot';
+ if(note.phone_pose)return 'Placed by a phone';
+ if(isRunner()||activeMap==='domain')return 'This map is read-only';
+ return null;
+}
+function noteAnchorText(note){
+ if(note.robot_pose)return 'Live robot position';
+ if(note.phone_pose)return 'Live phone position';
+ if(note.anchor_surface)return 'On a surface';
+ if(note.anchor_robot)return `${note.height_m} m above ${note.text} base`;
+ return note.anchor_portal?`${note.height_m} m above portal ${note.anchor_portal}`:'Anchored in Home';
+}
+function cardActions(...buttons){const row=document.createElement('div');row.className='card-actions';row.append(...buttons);return row;}
 function showNoteSelection(note){
- showSelection(noteTitle(note),`[${note.position.map(v=>v.toFixed(2)).join(', ')}] m`,note.robot_pose?'Live robot position':note.phone_pose?'Live phone position':note.anchor_surface?'Placed in Home':`${note.height_m} m above ${note.anchor_robot?note.text+' base':note.anchor_portal} · Home up axis`);
- selectedNoteId=note.id;$('selection').dataset.noteId=note.id;
- if(note.details?.description){const description=document.createElement('p');description.textContent=note.details.description;$('selection').append(description);}
- if(note.details?.photo)$('selection').append(notePhoto(note));
- if(note.anchor_robot||note.phone_pose||note.robot_pose||isRunner()||activeMap==='domain')return;
- const button=document.createElement('button');button.className='delete-note';button.textContent='Delete annotation';button.disabled=deletingNoteId===note.id;
- const status=document.createElement('div');status.setAttribute('role','status');
- button.onclick=async()=>{
-  if(deletingNoteId)return;deletingNoteId=note.id;button.disabled=true;status.textContent='Deleting…';
-  try{await api(noteUrl(note.id),undefined,'DELETE');
-   if(selectedNoteId===note.id){selectedNoteId=null;$('selection').hidden=true;}
-   hideAr();lastScene=null;await refresh();
-  }catch(e){status.textContent=e.message;button.disabled=false;}
+ noteCardMode='view';
+ showSelection(noteTitle(note),'',noteAnchorText(note),{kind:'Note'});
+ selectedNoteId=note.id;const card=$('selection');card.dataset.noteId=note.id;
+ if(note.details?.description){const description=document.createElement('p');description.className='card-description';description.textContent=note.details.description;card.append(description);}
+ if(note.details?.photo)card.append(notePhoto(note));
+ const technical=document.createElement('details');technical.className='technical-details';technical.innerHTML='<summary>Technical details</summary>';
+ const fields=document.createElement('dl');fields.className='spatial-fields';technical.append(fields);
+ const field=(name,value,copy)=>{const term=document.createElement('dt'),description=document.createElement('dd'),text=document.createElement('span');term.textContent=name;text.className='mono-id';text.textContent=value;description.append(text);if(copy)description.append(copyButton(value,'Copy '+name.toLowerCase()));fields.append(term,description);};
+ field('Position',`[${note.position.map(v=>v.toFixed(2)).join(', ')}] m`,true);
+ if(note.anchor_portal)field('Anchor portal',note.anchor_portal,true);
+ field('Note ID',note.id,true);
+ card.append(technical);
+ const reason=noteReadOnlyReason(note);
+ if(reason){const lock=document.createElement('p');lock.className='card-readonly';lock.append(icon(icons.lock,14),document.createTextNode('Read-only · '+reason));card.append(lock);}
+ else card.append(cardActions(actionButton('Edit',{onClick:()=>editNoteCard(note)}),actionButton('Delete',{variant:'danger-ghost',onClick:()=>confirmNoteDelete(note)})));
+ renderNotes();
+}
+function confirmNoteDelete(note){
+ noteCardMode='confirm';
+ const card=$('selection'),old=card.querySelector('.card-actions');
+ const box=document.createElement('div');box.className='card-confirm';box.setAttribute('role','group');box.setAttribute('aria-label','Confirm delete');
+ const question=document.createElement('p');question.textContent=`Delete “${noteTitle(note)}”? This can’t be undone.`;
+ const status=document.createElement('p');status.className='form-status';status.setAttribute('role','status');
+ const cancel=actionButton('Cancel',{onClick:()=>showNoteSelection(note)});
+ const remove=actionButton('Delete note',{variant:'danger',onClick:async()=>{
+  if(deletingNoteId)return;deletingNoteId=note.id;remove.disabled=cancel.disabled=true;status.textContent='Deleting…';
+  try{await api(noteUrl(note.id),undefined,'DELETE');noteCardMode='view';clearSelection();hideAr();lastScene=null;await refresh();toast(`Deleted “${noteTitle(note)}”`);notesList.querySelector('.list-row')?.focus();}
+  catch(e){status.textContent=e.message;remove.disabled=cancel.disabled=false;}
   finally{deletingNoteId=null;}
- };
- $('selection').append(button,status);
+ }});
+ box.append(question,cardActions(cancel,remove),status);old.replaceWith(box);cancel.focus();
+ box.addEventListener('keydown',e=>{if(e.key==='Escape'){e.stopPropagation();showNoteSelection(note);}});
+}
+function noteForm({heading,note,id}){
+ const card=$('selection');card.replaceChildren();card.hidden=false;
+ const form=document.createElement('form');form.className='note-card-form';if(id)form.id=id;form.noValidate=true;
+ const chip=document.createElement('span');chip.className='inspector-kind';chip.textContent=heading;
+ const status=document.createElement('p');status.className='form-status';status.setAttribute('role','status');
+ const title=formField({label:'Title',id:id?'label-dialog-text':undefined,max:120,value:noteTitle(note),required:true,placeholder:'What should people know here?'});
+ form.append(chip,status,title.field);
+ const fields=noteFields(form,note);
+ status.hidden=!!id;
+ form.addEventListener('keydown',e=>{if(e.key==='Escape'){e.preventDefault();e.stopPropagation();form.querySelector('[data-cancel]')?.click();}});
+ card.append(form);
+ return {form,status,title:title.input,titleField:title.field,fields};
+}
+function editNoteCard(note){
+ noteCardMode='edit';const editingMap=activeMap;
+ const {form,status,title,fields}=noteForm({heading:'Edit note',note});
+ const cancel=actionButton('Cancel',{onClick:()=>showNoteSelection(note)});cancel.dataset.cancel='';
+ const save=actionButton('Save changes',{variant:'primary',type:'submit'});
+ form.append(cardActions(cancel,save));title.focus();
+ form.onsubmit=async e=>{e.preventDefault();if(!title.value.trim()){status.textContent='Add a title.';title.setAttribute('aria-invalid','true');title.focus();return;}
+  save.disabled=true;status.textContent='Saving…';
+  try{const details=await fields.read(title.value);const result=await api(noteUrl(note.id,editingMap),{text:title.value,details},'PATCH');
+   lastScene=null;await refresh();const updated=(current?.notes||[]).find(n=>n.id===(result.id||note.id))||note;showNoteSelection(updated);toast('Note saved');}
+  catch(err){status.textContent=err.message;save.disabled=false;}};
 }
 function focusPortal(p){const center=new THREE.Vector3(...p.pose_in_map.translation);camera.position.copy(center).add(new THREE.Vector3(.35,.65,.65));controls.target.copy(center);controls.update();showSelection(p.anchor_id,`[${p.pose_in_map.translation.map(v=>v.toFixed(4)).join(', ')}] m`,`${Math.round(p.side_length_m*100)} cm · ${p.anchor_id.startsWith('home:')?'Home reference aligned via measured portal':current?.local_map?'measured camera observation':'stored height, not mounting height'}`);}
 function spatialPosition(kind,node){
@@ -386,47 +515,81 @@ function spatialPosition(kind,node){
  const [w,x,y,z]=pose.rotation_wxyz;
  return new THREE.Vector3(...node.position).applyQuaternion(new THREE.Quaternion(x,y,z,w)).add(new THREE.Vector3(...pose.translation)).toArray();
 }
-function spatialCoordinates(position){return `[${position.map(v=>v.toFixed(4)).join(', ')}] m`;}
+function spatialCoordinates(position){return `[${position.map(v=>(Math.abs(v)<5e-5?0:v).toFixed(4)).join(', ')}] m`;}
 function spatialComponent(component){return component?`${component.peer_id} / ${component.component_id} (${component.manifest_hash})`:'Not recorded';}
 function showSpatialSelection(kind,node,focus=false){
  const position=spatialPosition(kind,node),registry=current.landmarks;
  if(focus&&position){const center=new THREE.Vector3(...position);controls.target.copy(center);camera.position.copy(center).add(new THREE.Vector3(.5,.65,1));controls.update();}
- showSelection(`${kind==='anchor'?'Anchor':'Landmark'} · ${node.id}`,position?spatialCoordinates(position):'Map position unavailable',kind==='anchor'?'Full pose':'Position only');
+ const parent=kind==='landmark'&&node.parent_anchor?registry.anchors?.[node.parent_anchor]:null;
+ showSelection(parent?landmarkTitle(node):node.id,position?spatialCoordinates(position):'Map position unavailable',kind==='anchor'?'Full pose':'Position only',
+  {kind:kind==='anchor'?'Anchor':'Landmark',monoTitle:!parent,subtitle:parent?`of anchor ${parent.id}`:undefined,onSubtitle:()=>showSpatialSelection('anchor',parent,true)});
  selectedSpatialNode={kind,id:node.id};const selection=$('selection');selection.dataset.spatialKind=kind;selection.dataset.spatialId=node.id;
+ // Everyday facts stay visible; frames, rotation and provenance sit behind "Technical details".
  const fields=document.createElement('dl');fields.className='spatial-fields';
- function field(name,value){const term=document.createElement('dt'),description=document.createElement('dd');term.textContent=name;description.textContent=value;fields.append(term,description);}
- field('Type',node.recognition.landmark_type);field('Identity',node.recognition.identity);
- field('Map frame',registry.frame);
- if(kind==='anchor'){field('Local frame',node.pose.from_frame_id);field('Rotation (w, x, y, z)',node.pose.rotation_wxyz.map(v=>v.toFixed(4)).join(', '));const portal=current.portals?.find(p=>p.anchor_id===node.id);if(portal)field('Portal size',`${(portal.side_length_m*1000).toLocaleString()} mm encoded square`);}
- else{field('Stored position',spatialCoordinates(node.position));field('Position frame',node.frame);}
+ const technical=document.createElement('details');technical.className='technical-details';technical.innerHTML='<summary>Technical details</summary>';
+ const technicalFields=document.createElement('dl');technicalFields.className='spatial-fields';technical.append(technicalFields);
+ function field(name,value,list=fields,{mono=false,copy=false}={}){const term=document.createElement('dt'),description=document.createElement('dd');term.textContent=name;const text=document.createElement('span');text.textContent=value;if(mono)text.className='mono-id';description.append(text);if(copy)description.append(copyButton(value,'Copy '+name.toLowerCase()));list.append(term,description);}
+ field('Type',node.recognition.landmark_type);field('Identity',node.recognition.identity,fields,{mono:true,copy:true});
+ if(kind==='anchor'){const portal=current.portals?.find(p=>p.anchor_id===node.id);if(portal)field('Portal size',`${(portal.side_length_m*1000).toLocaleString()} mm encoded square`);}
+ else field('Stored position',spatialCoordinates(node.position));
+ const tech={mono:true,copy:true};
+ field('Map frame',registry.frame,technicalFields,tech);
+ if(kind==='anchor'){field('Local frame',node.pose.from_frame_id,technicalFields,tech);field('Rotation (w, x, y, z)',node.pose.rotation_wxyz.map(v=>v.toFixed(4)).join(', '),technicalFields,tech);}
+ else field('Position frame',node.frame,technicalFields,tech);
  const provenance=node.provenance||{};
- field('Detected by',spatialComponent(provenance.detected_by));field('Mapped by',spatialComponent(provenance.mapped_by));
- if(provenance.source_observation){const source=provenance.source_observation;field('Source observation',`${source.output.output_id} · sequence ${source.sequence} · ${source.timestamp_ns} ns`);}
- selection.append(fields);updateSpatialSelection();
+ field('Detected by',spatialComponent(provenance.detected_by),technicalFields,{mono:true});field('Mapped by',spatialComponent(provenance.mapped_by),technicalFields,{mono:true});
+ if(provenance.source_observation){const source=provenance.source_observation;field('Source observation',`${source.output.output_id} · sequence ${source.sequence} · ${source.timestamp_ns} ns`,technicalFields,tech);}
+ selection.append(fields,technical);if(kind==='landmark'&&node.parent_anchor&&!expandedAnchors.has(node.parent_anchor)){expandedAnchors.add(node.parent_anchor);renderSpatialLists();}updateSpatialSelection();
  if(focus&&window.matchMedia('(max-width:720px)').matches)openPanel(null);
 }
 function updateSpatialSelection(){
- for(const button of spatialBrowser.querySelectorAll('[data-spatial-kind]'))button.setAttribute('aria-pressed',String(button.dataset.spatialKind===selectedSpatialNode?.kind&&button.dataset.spatialId===selectedSpatialNode?.id));
+ for(const row of spatialBrowser.querySelectorAll('[data-spatial-kind]')){const selected=row.dataset.spatialKind===selectedSpatialNode?.kind&&row.dataset.spatialId===selectedSpatialNode?.id;if(selected)row.setAttribute('aria-current','true');else row.removeAttribute('aria-current');}
+}
+const expandedAnchors=new Set();
+const landmarkTitle=node=>{const name=node.id.includes('/')?node.id.slice(node.id.lastIndexOf('/')+1):node.id;return name.replace(/[_-]+/g,' ').replace(/^./,c=>c.toUpperCase());};
+function spatialRow(kind,node,parent){
+ const row=kind==='anchor'
+  ?listRow({title:node.id,meta:node.recognition.landmark_type,tile:icons.anchor,accent:'emerald',mono:true,label:`Anchor ${node.id}`,onSelect:e=>{showSpatialSelection(kind,node,true);focusCard(e,()=>spatialTree.querySelector(`.list-row[data-spatial-id="${CSS.escape(node.id)}"]`));}})
+  :parent?listRow({title:landmarkTitle(node),label:`Landmark ${landmarkTitle(node)} of ${parent}`,onSelect:e=>{showSpatialSelection(kind,node,true);focusCard(e,()=>spatialTree.querySelector(`.list-row[data-spatial-id="${CSS.escape(node.id)}"]`));}})
+  :listRow({title:node.id,meta:node.recognition.landmark_type,tile:icons.landmark,mono:true,label:`Landmark ${node.id}`,onSelect:e=>{showSpatialSelection(kind,node,true);focusCard(e,()=>spatialTree.querySelector(`.list-row[data-spatial-id="${CSS.escape(node.id)}"]`));}});
+ row.dataset.spatialKind=kind;row.dataset.spatialId=node.id;
+ return row;
 }
 function renderSpatialLists(){
  const registry=current?.landmarks,query=$('spatial-search').value.trim().toLowerCase();
- const signature=JSON.stringify([activeMap,current?.frame,registry,query]);
+ const signature=JSON.stringify([activeMap,current?.frame,registry,query,[...expandedAnchors]]);
  if(signature===spatialSignature){updateSpatialSelection();return;}spatialSignature=signature;
- $('spatial-status').textContent=!current?'Waiting for the selected scenegraph…':!registry?'This scenegraph does not publish anchors and landmarks.':'Full-pose anchors · position-only landmarks';
- for(const [kind,plural] of [['anchor','anchors'],['landmark','landmarks']]){
-  const nodes=Object.values(registry?.[plural]||{}).sort((a,b)=>a.id.localeCompare(b.id));
-  const matching=nodes.filter(node=>[node.id,node.recognition.landmark_type,node.recognition.identity,node.parent_anchor].filter(Boolean).join(' ').toLowerCase().includes(query));
-  $(kind+'-count').textContent=query?`${matching.length} / ${nodes.length}`:String(nodes.length);
-  const list=$(kind+'-list'),scroll=list.scrollTop;list.replaceChildren();
-  for(const node of matching){
-   const button=uiButton('',()=>showSpatialSelection(kind,node,true),'panel-row spatial-row');button.dataset.spatialKind=kind;button.dataset.spatialId=node.id;
-   button.setAttribute('aria-label',`${kind==='anchor'?'Anchor':'Landmark'} ${node.id}`);
-   const name=document.createElement('strong'),detail=document.createElement('small');name.textContent=node.id;detail.textContent=node.recognition.landmark_type;
-   button.append(name,detail);list.append(button);
-  }
-  if(!matching.length){const empty=document.createElement('p');empty.className='panel-hint';empty.textContent=!registry?'Not available':query?'No matches':`No ${plural} in this scene`;list.append(empty);}
-  list.scrollTop=scroll;
+ spatialStatus.textContent=!current?'Waiting for the selected scenegraph…':!registry?'This scenegraph does not publish anchors and landmarks.':'';spatialStatus.hidden=!spatialStatus.textContent;
+ const matches=node=>[node.id,node.recognition.landmark_type,node.recognition.identity,node.parent_anchor].filter(Boolean).join(' ').toLowerCase().includes(query);
+ const anchors=Object.values(registry?.anchors||{}).sort((a,b)=>a.id.localeCompare(b.id));
+ const landmarks=Object.values(registry?.landmarks||{}).sort((a,b)=>a.id.localeCompare(b.id));
+ $('anchor-count').textContent=query?`${anchors.filter(matches).length} / ${anchors.length}`:String(anchors.length);
+ $('landmark-count').textContent=query?`${landmarks.filter(matches).length} / ${landmarks.length}`:String(landmarks.length);
+ const focusedId=spatialTree.contains(document.activeElement)?[document.activeElement.dataset.spatialId||document.activeElement.dataset.anchorToggle,document.activeElement.dataset.anchorToggle?'toggle':'row']:null;
+ const nothing=!anchors.length&&!landmarks.length;spatialBrowser.querySelector('.search-field').hidden=nothing&&!query;spatialCounts.hidden=nothing;
+ spatialTree.replaceChildren();
+ const anchorIds=new Set(anchors.map(a=>a.id));
+ for(const anchor of anchors){
+  const children=landmarks.filter(l=>l.parent_anchor===anchor.id),shownChildren=query?children.filter(matches):children;
+  if(query&&!matches(anchor)&&!shownChildren.length)continue;
+  const open=query?shownChildren.length>0:expandedAnchors.has(anchor.id);
+  const item=document.createElement('div');item.className='tree-item';
+  const line=document.createElement('div');line.className='tree-line';
+  if(children.length){
+   const toggle=document.createElement('button');toggle.type='button';toggle.className='tree-toggle';toggle.dataset.anchorToggle=anchor.id;
+   toggle.setAttribute('aria-expanded',String(open));toggle.setAttribute('aria-controls','landmarks-'+anchor.id);toggle.setAttribute('aria-label',`Landmarks of ${anchor.id}`);toggle.append(icon(icons.chevron));
+   toggle.onclick=()=>{if(expandedAnchors.has(anchor.id))expandedAnchors.delete(anchor.id);else expandedAnchors.add(anchor.id);renderSpatialLists();};
+   line.append(toggle);
+  }else line.append(Object.assign(document.createElement('span'),{className:'tree-toggle-space'}));
+  const row=spatialRow('anchor',anchor);const kindName=anchor.recognition.landmark_type.split('.').pop().replace(/^./,c=>c.toUpperCase());row.querySelector('.list-row-meta').textContent=children.length?`${kindName} · ${plural(children.length,'landmark')} · position only`:kindName;
+  line.append(row);item.append(line);
+  if(children.length){const group=document.createElement('div');group.className='tree-children';group.id='landmarks-'+anchor.id;group.hidden=!open;group.append(...shownChildren.map(child=>spatialRow('landmark',child,anchor.id)));item.append(group);}
+  spatialTree.append(item);
  }
+ const orphans=landmarks.filter(l=>!anchorIds.has(l.parent_anchor)&&(!query||matches(l)));
+ if(orphans.length){const group=document.createElement('div');group.className='tree-orphans';group.append(sectionHeader('Other landmarks',orphans.length),...orphans.map(node=>spatialRow('landmark',node)));spatialTree.append(group);}
+ if(!spatialTree.children.length)spatialTree.append(emptyState(!registry?'Not available':query?'No matches':'No anchors in this scene',query?{label:'Clear search',onClick:()=>{$('spatial-search').value='';$('spatial-search').dispatchEvent(new Event('input'));$('spatial-search').focus();}}:null));
+ if(focusedId)spatialTree.querySelector(focusedId[1]==='toggle'?`[data-anchor-toggle="${CSS.escape(focusedId[0])}"]`:`.list-row[data-spatial-id="${CSS.escape(focusedId[0])}"]`)?.focus();
  updateSpatialSelection();
 }
 function updateMapUI(){
@@ -509,18 +672,29 @@ function updateMapUI(){
  }
 }
 $('map-select').onchange=async()=>{activeMap=$('map-select').value;selectedPathId=null;crayon.select(null);selectedNoteId=null;selectedSpatialNode=null;lastScene=null;current=null;crayon.update();hideRobots();selectable=[];Object.values(groups).forEach(clear);$('selection').hidden=true;updateMapUI();$('scene-title').textContent='Loading selected scene…';$('voxel-count').textContent='—';$('observation-count').textContent='—';$('object-count').textContent='—';try{await refresh();}catch{$('scene-title').textContent=isRunner()?'Waiting for Galbot scenegraph':'Scene unavailable';}};
-function showSelection(title,body,note){selectedPathId=null;crayon?.select(null);delete $('selection').dataset.pathId;selectedNoteId=null;selectedSpatialNode=null;updateSpatialSelection();const el=$('selection');delete el.dataset.noteId;delete el.dataset.spatialId;delete el.dataset.spatialKind;el.replaceChildren();const strong=document.createElement('strong');strong.textContent=title;const line=document.createElement('div');line.textContent=body;const small=document.createElement('small');small.textContent=note;el.append(strong,line,small);el.hidden=false;}
+function clearSelection(){const volumeOpen=noteCardMode==='volume';noteCardMode='view';if(volumeOpen)semanticVolumes.closed();placementGeneration++;placement=null;selectedPathId=null;crayon.select(null);selectedNoteId=null;selectedSpatialNode=null;updateSpatialSelection();$('selection').hidden=true;if(scene.userData.placementPin)scene.userData.placementPin.visible=false;renderNotes();}
+let cardReturn=null;
+// Keyboard activation moves focus into the card; Escape brings it back to the row.
+function focusCard(event,back){cardReturn=back;if(event?.detail!==0)return;const heading=$('selection').querySelector(':scope>strong');if(heading){heading.tabIndex=-1;heading.focus();}}
+function showSelection(title,body,note,{kind,subtitle,onSubtitle,monoTitle=false}={}){if(noteCardMode==='volume'){noteCardMode='view';semanticVolumes.closed();}selectedPathId=null;crayon?.select(null);delete $('selection').dataset.pathId;selectedNoteId=null;selectedSpatialNode=null;updateSpatialSelection();const el=$('selection');delete el.dataset.noteId;delete el.dataset.spatialId;delete el.dataset.spatialKind;el.replaceChildren();
+ const close=document.createElement('button');close.type='button';close.className='inspector-close';close.setAttribute('aria-label','Close inspector');close.append(icon(icons.close));close.onclick=clearSelection;el.append(close);
+ if(kind){const chip=document.createElement('span');chip.className='inspector-kind';chip.textContent=kind;el.append(chip);}
+ const strong=document.createElement('strong');strong.textContent=title;if(monoTitle)strong.className='mono-id';el.append(strong);
+ if(subtitle){const parent=document.createElement('button');parent.type='button';parent.className='text-action inspector-parent';parent.textContent=subtitle;parent.onclick=onSubtitle;el.append(parent);}
+ const line=document.createElement('div');line.className='inspector-position';line.textContent=body;const small=document.createElement('small');small.textContent=note;if(body)el.append(line);if(note)el.append(small);el.hidden=false;}
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('selection').hidden&&!e.target.closest('input,textarea,select,dialog')){const back=cardReturn;clearSelection();back?.()?.focus();}});
 let pointerStart;
 renderer.domElement.addEventListener('pointerdown',e=>{pointerStart=[e.clientX,e.clientY];});
 renderer.domElement.addEventListener('pointerup',e=>{
  if(e.semanticVolume)return;
  if(e.button!==0)return;
  if(!current||!pointerStart||Math.hypot(e.clientX-pointerStart[0],e.clientY-pointerStart[1])>4)return;
+ if(placingNote){const target=placementTarget;stopNotePlacement();const box=renderer.domElement.getBoundingClientRect(),pick=new THREE.Raycaster();pick.setFromCamera(new THREE.Vector2((e.clientX-box.left)/box.width*2-1,1-(e.clientY-box.top)/box.height*2),camera);const request={source:'scene',frame:current.frame,origin:pick.ray.origin.toArray(),direction:pick.ray.direction.toArray()};if(target)target(request);else beginLabel(request);return;}
  const r=renderer.domElement.getBoundingClientRect(), ray=new THREE.Raycaster();ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),camera);
- const hits=ray.intersectObjects([...selectable,...crayon.objects()].filter(o=>{for(let p=o;p;p=p.parent){if(!p.visible)return false;}return true;}));if(!hits.length){selectedPathId=null;crayon.select(null);selectedNoteId=null;selectedSpatialNode=null;updateSpatialSelection();$('selection').hidden=true;return;}const h=hits.find(h=>h.object.userData.kind==='note')||hits.find(h=>h.object.userData.kind==='path')||hits.find(h=>h.object.userData.kind==='portal')||hits[0],d=h.object.userData;
+ const hits=ray.intersectObjects([...selectable,...crayon.objects()].filter(o=>{for(let p=o;p;p=p.parent){if(!p.visible)return false;}return true;}));if(!hits.length){clearSelection();return;}const h=hits.find(h=>h.object.userData.kind==='note')||hits.find(h=>h.object.userData.kind==='path')||hits.find(h=>h.object.userData.kind==='portal')||hits[0],d=h.object.userData;
  if(d.kind==='voxels'){const v=current.voxels[h.instanceId];showSelection('Occupied voxel',`[${v.center.map(n=>n.toFixed(2)).join(', ')}] m`,`Evidence ${v.evidence} · 10 cm cell`);}
  if(d.kind==='occupancy'){const t=current.occupancy_tiles[h.instanceId];showSelection('Occupancy · '+(t.value===100?'occupied':t.value===0?'free':'unknown'),`[${t.center.map(n=>n.toFixed(2)).join(', ')}] m`,`Value ${t.value} · 10 cm sample · retrieved in 2 m cells`);}
- if(d.kind==='path'){showPathSelection(d.path);noteView='path';openPanel('notes');renderNotes();return;}
+ if(d.kind==='path'){showPathSelection(d.path);return;}
  if(d.kind==='note')showNoteSelection(d.note);
  if(d.kind==='object'){const o=d.object;showSelection(o.label,`[${o.position.map(n=>n.toFixed(2)).join(', ')}] m`,`Source: ${o.source_peer}`);}
  if(d.kind==='portal'&&(d.portal.anchor_id.length===11||d.portal.anchor_id.startsWith('home:'))){showSelection(d.portal.anchor_id,'Portal','Double-click to approach');return;}
@@ -716,29 +890,97 @@ setInterval(()=>{if(!(isLocalScene()||isRunner()||isSimulation()||activeMap==='h
 async function refreshMapping(){if(isLocalScene()||activeMap.startsWith('phone:')||activeMap.startsWith('peer-scene:'))return;if(activeMap==='home-live'){try{const state=await api('/api/home-live-status');$('mapping-status').textContent='Home map · '+state.status;$('mapping-detail').textContent=state.detail||'';}catch{$('mapping-status').textContent='Home map · unavailable';}return;}if(activeMap==='demo'&&!current?.demo){$('mapping-status').textContent='Canonical reference';$('mapping-detail').textContent='13 supplied portal poses and physical sizes';return;}if(isRunner()){try{const sources=await api('/api/scene-sources');const remote=activeMap.startsWith('runner:')?(sources.runners||[]).find(r=>r.peer_id===activeMap.slice(7))||{status:'unavailable'}:sources;$('mapping-status').textContent='Galbot map · '+remote.status;$('mapping-detail').textContent=remote.detail||'';}catch{$('mapping-status').textContent='Galbot map · unavailable';}return;}try{const mapping=await api('/api/mapping');$('mapping-status').textContent='LiDAR · '+mapping.status+(mapping.rgbd?' / RGB-D · '+mapping.rgbd.status:'');$('mapping-detail').textContent=(mapping.detail||'')+(mapping.rgbd?' · '+(mapping.rgbd.detail||`${mapping.rgbd.colored_voxels} colored voxels`):'');$('mapping-card').dataset.status=mapping.status;}catch{$('mapping-status').textContent='LiDAR · unavailable';}}
 
 // Prefer live topography; canonical scenes can also use the reference floor.
-const labelDialog=$('label-dialog'),labelInput=$('label-dialog-text'),labelStatus=$('label-dialog-status'),labelSave=$('label-dialog-save');
-let placement=null,placementGeneration=0,displayedCamera=null,labelFields=null;
-function placementError(message){labelStatus.textContent=message;labelSave.disabled=true;}
+let placement=null,placementGeneration=0,displayedCamera=null,placingNote=false,placementTarget=null;
+// A static pin marks the picked point while the create card is open.
+{const blue=new THREE.MeshBasicMaterial({color:'#2563eb'}),pin=new THREE.Group();pin.visible=false;pin.renderOrder=10;
+ const head=new THREE.Mesh(new THREE.SphereGeometry(.07,24,16),blue);head.position.y=.45;
+ const stem=new THREE.Mesh(new THREE.CylinderGeometry(.012,.012,.45,8),blue);stem.position.y=.225;
+ const base=new THREE.Mesh(new THREE.RingGeometry(.06,.11,32),new THREE.MeshBasicMaterial({color:'#2563eb',side:THREE.DoubleSide,transparent:true,opacity:.55}));base.rotation.x=-Math.PI/2;base.position.y=.005;
+ pin.add(head,stem,base);scene.add(pin);scene.userData.placementPin=pin;}
+function showPlacementPin(position){const pin=scene.userData.placementPin;pin.visible=!!position;if(position)pin.position.set(...position);}
+// "New note" enters placement mode: click a surface, then finish the note in the inspector card.
+const placementBanner=document.createElement('div');placementBanner.className='placement-banner';placementBanner.setAttribute('role','status');placementBanner.hidden=true;
+placementBanner.innerHTML='<span>Click a surface to place your note</span><kbd>Esc</kbd>';
+placementBanner.append(actionButton('Use a portal instead',{variant:'on-dark',onClick:()=>{stopNotePlacement();createNoteCard({portal:true});}}),actionButton('Cancel',{variant:'on-dark',onClick:()=>{stopNotePlacement();newNoteButton.focus();}}));
+document.querySelector('.viewport').append(placementBanner);
+function startNotePlacement(target=null){if(!current)return;if(!target)clearSelection();placingNote=true;placementTarget=target;placementBanner.hidden=false;renderer.domElement.style.cursor='crosshair';newNoteButton.setAttribute('aria-pressed','true');}
+function stopNotePlacement(){placingNote=false;placementTarget=null;placementBanner.hidden=true;renderer.domElement.style.cursor='';newNoteButton.setAttribute('aria-pressed','false');}
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&placingNote){e.stopPropagation();stopNotePlacement();newNoteButton.focus();}},true);
 async function beginLabel(request,error){
  if(request?.source!=='camera'&&activeMap.startsWith('peer-scene:')) {availability.hidden=false;availability.textContent='Peer maps are read-only.';return;}
  if(request?.source!=='camera'&&activeMap.startsWith('phone:')) {availability.hidden=false;availability.textContent='Phone-local maps are unaligned and read-only.';return;}
- const generation=++placementGeneration;placement=null;labelInput.value='';labelInput.disabled=false;labelSave.disabled=true;
- $('label-note-fields').replaceChildren();labelFields=noteFields($('label-note-fields'),null);
- labelStatus.textContent='Finding a surface · 50 cm beam…';if(!labelDialog.open)labelDialog.showModal();
- labelInput.focus();
- if(error){placementError(error);return;}
- try{const result=await api('/api/label-pick',request);if(generation!==placementGeneration||!labelDialog.open)return;
-  if(!result.hit){placementError('No surface within 40 metres. Close and right-click nearer the floor.');return;}
-  placement=result.hit;labelStatus.textContent=`${placement.floor?'Reference floor (Y = 0; unmeasured)':'Voxel surface'} · [${placement.position.map(v=>v.toFixed(2)).join(', ')}] m`;
-  labelInput.disabled=false;labelSave.disabled=false;labelInput.focus();
- }catch(e){if(generation===placementGeneration)placementError(e.message);}
+ createNoteCard({request,error});
 }
-$('label-dialog-cancel').onclick=()=>labelDialog.close();
-labelDialog.addEventListener('close',()=>{placementGeneration++;placement=null;});
-$('label-dialog-form').onsubmit=async e=>{e.preventDefault();if(!placement||labelSave.disabled)return;labelSave.disabled=true;
- try{const details=await labelFields.read(labelInput.value);const note=await api('/api/notes/from-pick',{token:placement.token,text:labelInput.value,details});labelDialog.close();lastScene=null;await refresh();sidebarNoteId=note.id;noteView='detail';openPanel('notes');renderNotes();}
- catch(e){labelStatus.textContent=e.message;labelSave.disabled=false;}
-};
+const shortId=id=>id.length>14?`${id.slice(0,6)}…${id.slice(-4)}`:id;
+function createNoteCard({request,error,portal=false}={}){
+ clearSelection();noteCardMode='create';
+ let generation=++placementGeneration;const editingMap=activeMap;placement=null;let usePortal=portal;
+ const {form,title,titleField,fields}=noteForm({heading:'New note',note:null,id:'label-dialog'});
+ // Location row: where the note goes, in words, with a way to change it.
+ const location=document.createElement('div');location.className='location-row';
+ const tile=document.createElement('span');tile.className='list-row-tile';tile.dataset.accent='blue';tile.append(icon(icons.pin,16));
+ const text=document.createElement('div');text.className='location-text';
+ const caption=document.createElement('span');caption.className='form-label';caption.textContent='Location';
+ const where=document.createElement('strong');where.className='location-value';
+ const status=document.createElement('small');status.id='label-dialog-status';status.setAttribute('role','status');status.className='location-status';
+ text.append(caption,where,status);
+ const change=document.createElement('button');change.type='button';change.className='text-action';change.textContent='Change';change.setAttribute('aria-expanded','false');change.setAttribute('aria-controls','location-options');
+ location.append(tile,text,change);
+ const warning=document.createElement('p');warning.className='location-warning';warning.textContent='Not a measured surface — position is approximate.';warning.hidden=true;
+ const options=document.createElement('div');options.id='location-options';options.className='location-options';options.hidden=true;
+ const repick=actionButton('Pick another surface',{iconPath:icons.pin,onClick:()=>{options.hidden=true;change.setAttribute('aria-expanded','false');usePortal=false;startNotePlacement(pickSurface);}});
+ const portalRegion=document.createElement('div');portalRegion.id='portal-options';
+ const portalToggle=disclosure('Use a portal',{expanded:usePortal,controls:'portal-options',onToggle:()=>{}});
+ portalToggle.onclick=()=>{usePortal=!usePortal;portalToggle.setAttribute('aria-expanded',String(usePortal));portalRegion.hidden=!usePortal;if(usePortal)loadPortals();describe();};
+ const portalField=document.createElement('div');portalField.className='form-field';
+ const portalLabel=document.createElement('label');portalLabel.className='form-label';portalLabel.textContent='Portal';portalLabel.htmlFor='note-portal';
+ const portalSelect=document.createElement('select');portalSelect.id='note-portal';portalSelect.className='form-control mono-id';portalField.append(portalLabel,portalSelect);
+ const heightField=document.createElement('div');heightField.className='form-field';
+ const heightLabel=document.createElement('label');heightLabel.className='form-label';heightLabel.textContent='Height above portal';heightLabel.htmlFor='note-height';
+ const height=document.createElement('input');height.id='note-height';height.type='number';height.step='0.1';height.min='-100';height.max='100';height.value='1.0';height.className='form-control';
+ const step=(delta,label)=>{const button=actionButton(label);button.setAttribute('aria-label',(delta>0?'Raise':'Lower')+' by 10 cm');button.onclick=()=>{height.value=(Math.round((Number(height.value)+delta)*10)/10).toFixed(1);describe();};return button;};
+ const stepper=document.createElement('div');stepper.className='stepper';const unit=document.createElement('span');unit.textContent='m';unit.className='stepper-unit';
+ stepper.append(step(-.1,'−'),height,unit,step(.1,'+'));heightField.append(heightLabel,stepper);
+ portalRegion.append(portalField,heightField);portalRegion.hidden=!usePortal;
+ options.append(repick,portalToggle,portalRegion);
+ change.onclick=()=>{const open=options.hidden;options.hidden=!open;change.setAttribute('aria-expanded',String(open));};
+ titleField.after(location,warning,options);
+ const cancel=actionButton('Cancel',{id:'label-dialog-cancel',onClick:()=>{stopNotePlacement();clearSelection();newNoteButton.focus();}});cancel.dataset.cancel='';
+ const save=actionButton('Save note',{variant:'primary',type:'submit',id:'label-dialog-save'});save.disabled=true;
+ form.append(cardActions(cancel,save));
+ function describe(){
+  warning.hidden=usePortal||!placement?.floor;
+  if(usePortal){where.textContent=portalSelect.value?`${Number(height.value).toFixed(1)} m above portal ${shortId(portalSelect.value)}`:'Choose a portal';showPlacementPin(null);}
+  else if(placement){where.textContent=placement.floor?'On the reference floor':'On a measured surface';showPlacementPin(placement.position);}
+  else{where.textContent=error||request?'No location yet':'Choose a location';showPlacementPin(null);}
+  save.disabled=usePortal?!portalSelect.value:!placement;
+ }
+ let portalsLoaded=false;
+ async function loadPortals(){if(portalsLoaded)return;portalsLoaded=true;try{const canonical=await api(isLocalScene(editingMap)?localSceneUrl(editingMap):'/api/scene');for(const p of canonical.portals||[]){const option=new Option(shortId(p.anchor_id),p.anchor_id);option.title=p.anchor_id;portalSelect.add(option);}if(!portalSelect.options.length)status.textContent='No portals in this scene. Pick a surface instead.';}catch(e){status.textContent=e.message;}describe();}
+ portalSelect.onchange=describe;height.oninput=describe;
+ function pickSurface(next){
+  generation=++placementGeneration;placement=null;status.textContent='Finding a surface · 50 cm beam…';describe();where.textContent='Finding a surface…';
+  api('/api/label-pick',next).then(result=>{if(generation!==placementGeneration||noteCardMode!=='create')return;
+   if(!result.hit){status.textContent='No surface within 40 metres. Try nearer the floor.';describe();return;}
+   placement=result.hit;status.textContent='';describe();
+  }).catch(e=>{if(generation===placementGeneration){status.textContent=e.message;describe();}});
+ }
+ if(usePortal){options.hidden=false;change.setAttribute('aria-expanded','true');loadPortals();}
+ if(error){status.textContent=error;describe();}
+ else if(request)pickSurface(request);
+ else describe();
+ title.focus();
+ form.onsubmit=async e=>{e.preventDefault();if(save.disabled)return;
+  if(!title.value.trim()){status.textContent='Add a title.';title.setAttribute('aria-invalid','true');title.focus();return;}
+  save.disabled=true;
+  try{const details=await fields.read(title.value);
+   const note=usePortal
+    ?await api('/api/notes'+(isLocalScene(editingMap)?'?scene='+encodeURIComponent(editingMap.slice(6)):''),{text:title.value,details,portal:portalSelect.value,height_m:Number(height.value)})
+    :await api('/api/notes/from-pick',{token:placement.token,text:title.value,details});
+   noteCardMode='view';showPlacementPin(null);lastScene=null;await refresh();openPanel('notes');
+   const created=(current?.notes||[]).find(n=>n.id===note.id);if(created)showNoteSelection(created);else clearSelection();toast('Note saved');
+  }catch(err){status.textContent=err.message;save.disabled=false;}};
+}
 renderer.domElement.addEventListener('contextmenu',e=>{e.preventDefault();
  if(crayon.isActive())return;
  if(!current){beginLabel(null,'Wait for Home’s map to load.');return;}
@@ -794,7 +1036,7 @@ async function applyChatCamera(actions,map){
  }});
 }
 arToggle.addEventListener('change',restartSensor);
-setInterval(()=>{if(!labelDialog.open&&arToggle.checked&&arLastSuccess&&Date.now()-arLastSuccess>3000){hideAr();arStatus.hidden=false;arStatus.textContent='AR paused · camera frames are stale';}},500);
+setInterval(()=>{if(!noteCardMode==='create'&&arToggle.checked&&arLastSuccess&&Date.now()-arLastSuccess>3000){hideAr();arStatus.hidden=false;arStatus.textContent='AR paused · camera frames are stale';}},500);
 async function sensorCatalog(){
  try{
   const response=await fetch('/api/sensors');const data=await response.json();if(!response.ok)throw Error(data.error);
@@ -814,12 +1056,12 @@ async function watchSensor(generation){
  try{
   const response=await fetch('/api/sensors?sensor='+encodeURIComponent(sensorSelect.value)+(arToggle.checked?'&ar=true':'')+(arAvailable.get(sensorSelect.value)?'&pick=true':''));const f=await readCameraResponse(response);
   if(generation!==sensorGeneration)return;
-  if(f.sequence!==lastSensorSequence&&!labelDialog.open){
+  if(f.sequence!==lastSensorSequence&&!noteCardMode==='create'){
    const bytes=f.bytes;
    if(!Number.isInteger(f.width)||!Number.isInteger(f.height)||f.width<1||f.height<1||f.width>4096||f.height>4096)throw Error('Invalid image dimensions');
    const bitmap=(f.encoding==='jpeg'||f.encoding==='jpg')?await createImageBitmap(new Blob([bytes],{type:'image/jpeg'})):null;
    if(generation!==sensorGeneration){bitmap?.close();return;}
-   if(labelDialog.open){bitmap?.close();setTimeout(()=>watchSensor(generation),100);return;}
+   if(noteCardMode==='create'){bitmap?.close();setTimeout(()=>watchSensor(generation),100);return;}
    sensorCanvas.style.aspectRatio=`${f.width}/${f.height}`;sensorCanvas.width=f.width;sensorCanvas.height=f.height;const ctx=sensorCanvas.getContext('2d');
    if(bitmap){ctx.drawImage(bitmap,0,0,f.width,f.height);bitmap.close();}else{
     const channels=f.encoding==='rgb8'?3:f.encoding==='luma8'?1:0;
@@ -833,7 +1075,7 @@ async function watchSensor(generation){
    lastSensorSequence=f.sequence;lastSensorChange=Date.now();
   }
   status.textContent=Date.now()-lastSensorChange>3000?'Stale · no new frames':'Receiving · frame '+f.sequence;
- }catch(e){if(generation===sensorGeneration){displayedCamera=null;status.textContent=(lastSensorSequence!==null?'Stale image · ':'Waiting · ')+e.message;if(!labelDialog.open)hideAr();if(arToggle.checked){arStatus.hidden=false;arStatus.textContent='AR paused · '+e.message;}}}
+ }catch(e){if(generation===sensorGeneration){displayedCamera=null;status.textContent=(lastSensorSequence!==null?'Stale image · ':'Waiting · ')+e.message;if(!noteCardMode==='create')hideAr();if(arToggle.checked){arStatus.hidden=false;arStatus.textContent='AR paused · '+e.message;}}}
  if(generation===sensorGeneration)setTimeout(()=>watchSensor(generation),100);
 }
 sensorSelect.addEventListener('change',()=>{
@@ -905,21 +1147,37 @@ setInterval(()=>{for(const v of robotVolumes.values())if(performance.now()-v.at>
 function uiButton(text,action,className='panel-row'){
  const button=document.createElement('button');button.type='button';button.className=className;button.textContent=text;button.onclick=action;return button;
 }
+let mapRowsSignature='';
+const collapsedMapGroups=new Set((()=>{try{return JSON.parse(localStorage.getItem('maps-collapsed-groups'))||[];}catch{return [];}})());
 function renderMapRows(){
- mapsList.replaceChildren();
- for(const name of ['Local','Network']){
-  const section=document.createElement('section');section.setAttribute('aria-label',name+' scenegraphs');const heading=document.createElement('div');heading.className='section-label';heading.textContent=name;section.append(heading);
-  const options=Array.from($('map-select').options).filter(o=>(o.parentElement.label||'Local')===name);
-  section.append(...options.map(option=>{
-  const button=uiButton(option.textContent,()=>{$('map-select').value=option.value;$('map-select').dispatchEvent(new Event('change'));renderMapRows();});
-  button.title=option.title;button.disabled=homeOffline||option.disabled;if(homeOffline)button.textContent+=' · offline';button.dataset.map=option.value;button.setAttribute('aria-pressed',String(option.value===$('map-select').value));return button;
- }));
-  if(!options.length){const empty=document.createElement('p');empty.className='panel-hint';empty.textContent='No scenegraphs available';section.append(empty);}
-  mapsList.append(section);
+ // Polling calls this every refresh; rebuild only on change so focus and clicks survive.
+ const peers=fleetNetwork?.peers||[];
+ const signature=JSON.stringify([homeOffline,$('map-select').value,[...collapsedMapGroups],peers.map(p=>[p.peer_id,p.status]),Array.from($('map-select').options,o=>[o.value,o.textContent,o.title,o.disabled,o.parentElement.label||''])]);
+ if(signature===mapRowsSignature)return;mapRowsSignature=signature;
+ const focused=mapsList.contains(document.activeElement)?document.activeElement.dataset.map||document.activeElement.dataset.group:null;
+ mapsList.replaceChildren(sectionHeader('Scenes'));
+ for(const [name,title] of [['Local','On this server'],['Network','On the network']]){
+  const options=Array.from($('map-select').options).filter(o=>(o.parentElement.label||'Local')===name),expanded=!collapsedMapGroups.has(name),id='scene-group-'+name.toLowerCase();
+  const section=document.createElement('section');section.setAttribute('aria-label',name+' scenegraphs');
+  const toggle=disclosure(title,{count:options.length,expanded,controls:id,onToggle:open=>{if(open)collapsedMapGroups.delete(name);else collapsedMapGroups.add(name);try{localStorage.setItem('maps-collapsed-groups',JSON.stringify([...collapsedMapGroups]));}catch{}renderMapRows();}});toggle.dataset.group=name;
+  const list=document.createElement('div');list.id=id;list.className='list-group';list.hidden=!expanded;
+  for(const option of options){
+   const trail=option.value.startsWith('peer-pose:'),peer=trail?peers.find(p=>'peer-pose:'+p.peer_id===option.value):null;
+   const status=homeOffline?'offline':statusKind(peer?.status);
+   const row=listRow({title:trail?option.textContent.replace(/ · pose trail$/,''):option.textContent,meta:trail?(status?[statusBadge(status),' · Pose trail']:'Pose trail'):(status?statusBadge(status):undefined),tile:name==='Local'?icons.map:deviceIcon(option.textContent),accent:name==='Local'?'emerald':undefined,
+    onSelect:()=>{$('map-select').value=option.value;$('map-select').dispatchEvent(new Event('change'));renderMapRows();}});
+   row.title=option.title;row.disabled=homeOffline||option.disabled;row.dataset.map=option.value;
+   if(status==='offline')row.dataset.offline='true';
+   if(option.value===$('map-select').value)row.setAttribute('aria-current','true');
+   list.append(row);
+  }
+  if(!options.length)list.append(emptyState(name==='Local'?'No saved scenes on this server':'No scenegraphs available'));
+  section.append(toggle,list);mapsList.append(section);
  }
+ if(focused)mapsList.querySelector(`[data-map="${CSS.escape(focused)}"],[data-group="${CSS.escape(focused)}"]`)?.focus();
 }
 new MutationObserver(renderMapRows).observe($('map-select'),{childList:true,subtree:true,characterData:true});
-$('map-select').addEventListener('change',()=>{renderMapRows();noteView='list';renderNotes();});renderMapRows();
+$('map-select').addEventListener('change',()=>{renderMapRows();renderNotes();});renderMapRows();
 function catalogType(entry,kind,catalog){
  const producer=entry.manifest.producer;
  const component=kind==='component'?entry:(catalog.components||[]).find(c=>c.manifest.component_id===producer?.component_id&&(!producer.component_manifest_hash||c.manifest_hash===producer.component_manifest_hash));
@@ -934,67 +1192,177 @@ function catalogType(entry,kind,catalog){
  if(/lidar|depth|sensor|mapping.observation|mapping-input/i.test(signature))return 'Sensors & observations';
  return 'Other';
 }
+// Devices: a status-sorted list; choosing a device opens its detail view inside the panel.
+let deviceView=null,deviceOfflineOpen=false,deviceRenaming=false;
+const humanize=id=>String(id).replace(/[-_.]+/g,' ').replace(/^./,c=>c.toUpperCase());
+function deviceStatusSentence(peer){
+ if(peer.self)return fleetNetwork?.enabled?'This server · '+fleetNetwork.status:fleetNetwork?'This server · P2P disabled':'Network status unavailable';
+ const kind=statusKind(peer.status);
+ if(kind==='live')return peer.received_observations!==undefined?`Sending data · ${peer.received_observations.toLocaleString()} observations received over P2P`:'Connected';
+ if(kind==='stale')return 'Last data is out of date';
+ if(kind==='connecting')return 'Trying to reach this device · retrying';
+ if(kind==='offline')return 'Offline';
+ return peer.status||'Connected peer';
+}
+function deviceSummary(peer,feeds){return feeds?plural(feeds,'camera'):'';}
+function technicalDetails(rows){
+ const box=document.createElement('details');box.className='technical-details';box.innerHTML='<summary>Technical details</summary>';
+ const list=document.createElement('dl');list.className='spatial-fields technical-list';box.append(list);
+ for(const [name,value,copy] of rows){if(value===undefined||value===null||value==='')continue;const dt=document.createElement('dt'),dd=document.createElement('dd'),text=document.createElement('span');dt.textContent=name;text.className='mono-id';text.textContent=value;dd.append(text);if(copy)dd.append(copyButton(String(value),'Copy '+name.toLowerCase()));list.append(dt,dd);}
+ return box;
+}
 function renderFleetRows(){
  if(componentControlPending||(fleetList.contains(document.activeElement)&&document.activeElement.matches('input,textarea,select')))return;
  disconnectRobots.hidden=!fleetNetwork?.simulation;disconnectRobots.disabled=homeOffline||!(fleetNetwork?.peers||[]).some(p=>p.status==='connected');
  const selfId=fleetNetwork?.connection?.peer_id;
  const peers=[{peer_id:selfId||'self',name:'Home Server',self:true,catalog:fleetNetwork?.catalog},...Array.from(new Map((fleetNetwork?.peers||[]).filter(p=>p.peer_id&&p.peer_id!==selfId).map(p=>[p.peer_id,p])).values())];
  const sensors=Array.from($('sensor-select').options).filter(o=>o.value);
- const signature=JSON.stringify([peers,fleetNetwork?.enabled,fleetNetwork?.status,sensors.map(o=>[o.value,o.textContent,o.dataset.peer]),$('sensor-select').value]);
+ const signature=JSON.stringify([peers,fleetNetwork?.enabled,fleetNetwork?.status,fleetNetwork?.aliases,sensors.map(o=>[o.value,o.textContent,o.dataset.peer]),$('sensor-select').value,deviceView,deviceOfflineOpen]);
  if(signature===fleetSignature)return;fleetSignature=signature;
- const opened=new Set(Array.from(fleetList.querySelectorAll('details[open]'),d=>d.dataset.peer));
- const openedCatalog=new Set(Array.from(fleetList.querySelectorAll('details[open][data-product],details[open][data-component]'),d=>JSON.stringify([d.closest('[data-peer]').dataset.peer,d.dataset.product!==undefined?'product':'component',d.dataset.product??d.dataset.component])));fleetList.replaceChildren();
- for(const peer of peers){const options=sensors.filter(o=>o.dataset.peer===peer.peer_id);const group=document.createElement('details');group.dataset.peer=peer.peer_id;group.open=opened.has(peer.peer_id);const heading=document.createElement('summary');heading.textContent=peer.self?'Home Server':peer.name||peer.peer_id;group.append(heading);
-  const detail=document.createElement('p');detail.className='panel-hint';detail.textContent=peer.self?(fleetNetwork?.enabled?'This peer · '+fleetNetwork.status:fleetNetwork?'This peer · P2P disabled':'This peer · Network status unavailable'):peer.status||'Connected peer';group.append(detail);
-  if(!peer.self){const identity=document.createElement('p');identity.className='panel-hint';identity.textContent=peer.peer_id;group.append(identity);}
-  if(!peer.self){const form=document.createElement('form');const input=document.createElement('input');input.type='text';input.maxLength=64;input.placeholder='Peer alias';input.value=fleetNetwork?.aliases?.[peer.peer_id]||'';input.setAttribute('aria-label','Alias for '+(peer.name||peer.peer_id));const save=document.createElement('button');save.type='submit';save.textContent='Save alias';form.append(input,save);form.onsubmit=async e=>{e.preventDefault();save.disabled=true;try{await api('/api/peer-alias',{peer_id:peer.peer_id,alias:input.value});input.blur();fleetSignature='';lastScene=null;await refreshPeer();await runnerCatalog();await refresh();}catch(error){save.disabled=false;alert(error.message);}};group.append(form);}
-  if(peer.received_observations!==undefined){const count=document.createElement('p');count.className='panel-hint';count.dataset.observations=String(peer.received_observations);count.textContent=peer.received_observations+' observations received over P2P';group.append(count);}
-  if(!peer.self){const catalogStatus=document.createElement('p');catalogStatus.className='panel-hint';catalogStatus.dataset.catalogStatus=peer.catalog_status||'unknown';catalogStatus.textContent=peer.catalog_status==='ready'?((peer.catalog?.components?.length||0)+' components · '+(peer.catalog?.products?.length||0)+' products'):peer.catalog_status==='unavailable'?(peer.catalog_detail||'Component catalog unavailable'):peer.catalog?'':'Loading component catalog…';if(catalogStatus.textContent)group.append(catalogStatus);}
-  if(peer.catalog_cached){const hint=document.createElement('p');hint.className='panel-hint';hint.textContent='Catalog refresh delayed · using last known entries; stream freshness checked separately';group.append(hint);}
-  if(peer.registries){const hint=document.createElement('p');hint.className='panel-hint';hint.textContent='Registry: '+peer.registries.status+' · '+Object.keys(peer.registries.definitions||{}).length+' resolved definitions';hint.title=JSON.stringify(peer.registries.errors||peer.registries.detail||{},null,2);group.append(hint);}
-  const feeds=document.createElement('section');feeds.setAttribute('aria-label','Camera feeds');const feedsHeading=document.createElement('h3');feedsHeading.textContent=`Camera feeds (${options.length})`;feeds.append(feedsHeading);
-  for(const option of options.sort((a,b)=>a.textContent.localeCompare(b.textContent))){const button=uiButton(option.textContent+($('sensor-select').value===option.value?' · PiP ●':''),()=>{$('sensor-select').value=$('sensor-select').value===option.value?'':option.value;$('sensor-select').dispatchEvent(new Event('change'));});button.setAttribute('aria-pressed',String($('sensor-select').value===option.value));feeds.append(button);}
-  if(!options.length){const empty=document.createElement('p');empty.className='panel-hint';empty.textContent='No camera feeds available';feeds.append(empty);}group.append(feeds);
-  const catalog=peer.catalog||{},entries=[...(catalog.components||[]).map(entry=>({kind:'component',entry})),...(catalog.products||[]).map(entry=>({kind:'product',entry}))];
-  const poseLogs=document.createElement('section'),poseHeading=document.createElement('h3');poseLogs.setAttribute('aria-label','Pose logs');poseHeading.textContent='Pose logs';poseLogs.append(poseHeading);
-  const poses=(catalog.products||[]).filter(p=>p.metadata?.schema==='spatial-harness.compact-pose-contract/v1');
-  for(const product of poses)poseLogs.append(uiButton('Inspect '+product.manifest.product_id,()=>inspectPose(peer.peer_id,product,(peer.name||peer.peer_id)+' / '+product.manifest.product_id)));
-  if(!poses.length){const hint=document.createElement('p');hint.className='panel-hint';hint.textContent='No compact pose Product advertised';poseLogs.append(hint);}group.append(poseLogs);
-  for(const type of ['Cameras','Maps','Poses & odometry','Detections','Sensors & observations','Other']){
-   const matching=entries.filter(item=>catalogType(item.entry,item.kind,catalog)===type).sort((a,b)=>a.entry.manifest[a.kind+'_id'].localeCompare(b.entry.manifest[b.kind+'_id'])||a.kind.localeCompare(b.kind));
-   if(!matching.length)continue;
-   const section=document.createElement('section');section.dataset.catalogType=type;section.setAttribute('aria-label',type);const heading=document.createElement('h3');heading.textContent=`${type} (${matching.length})`;section.append(heading);
-   for(const {kind,entry} of matching){
-   const id=entry.manifest[kind+'_id'],details=document.createElement('details');details.dataset[kind]=id;details.open=openedCatalog.has(JSON.stringify([peer.peer_id,kind,id]));
-   const title=document.createElement('summary');title.textContent=(kind==='component'?'Component':'Product')+' · '+id;
-   if(kind==='component'&&!peer.self&&entry.manifest.operables?.some(o=>o.name==='set_enabled'&&o.instruction==='spatial-harness.set-enabled/v1'&&o.result==='spatial-harness.component-enabled-state/v1')){
-    const stateProduct=(catalog.products||[]).find(p=>p.manifest.producer?.component_id===id&&p.manifest.producer?.component_manifest_hash===entry.manifest_hash&&p.metadata?.schema==='spatial-harness.component-enabled-state/v1');
-    let enabled=stateProduct?.metadata?.value?.enabled;
-    const key=JSON.stringify([peer.peer_id,id,entry.manifest_hash,stateProduct?.manifest_hash]),ack=componentControlResults.get(key);
-    if(ack){if(enabled===ack.enabled||stateProduct?.metadata?.source_sequence>ack.sequence)componentControlResults.delete(key);else enabled=ack.enabled;}
-    const control=document.createElement('div'),status=document.createElement('span');status.setAttribute('role','status');
-    const button=uiButton(typeof enabled==='boolean'?(enabled?'Turn off':'Turn on'):'State unavailable',async()=>{
-     componentControlPending=true;button.disabled=true;status.textContent='Applying…';
-     try{const confirmed=await api('/api/component-enabled',{peer_id:peer.peer_id,component_id:id,manifest_hash:entry.manifest_hash,enabled:!enabled});
-      enabled=confirmed.enabled;componentControlResults.set(key,{enabled,sequence:stateProduct?.metadata?.source_sequence});button.textContent=enabled?'Turn off':'Turn on';status.textContent=enabled?'Enabled':'Disabled';
-     }catch(e){status.textContent=e.message;button.textContent='Refresh Devices to confirm';return;}
-     finally{componentControlPending=false;}
-     button.disabled=false;
-    });
-    button.disabled=typeof enabled!=='boolean'||peer.catalog_status!=='ready'||!!peer.catalog_cached;
-    status.textContent=typeof enabled==='boolean'?(enabled?'Enabled':'Disabled'):'Waiting for state';control.append(button,status);details.append(control);
-   }
-   if(kind==='product'&&entry.metadata?.schema==='spatial-harness.compact-pose-contract/v1')details.append(uiButton('Inspect live pose',()=>inspectPose(peer.peer_id,entry,(peer.name||peer.peer_id)+' / '+id)));
-   const pre=document.createElement('pre');pre.style.cssText='white-space:pre-wrap;overflow-wrap:anywhere;font-size:10px';pre.textContent=JSON.stringify(entry.manifest,null,2);details.append(title,pre);section.append(details);
-   }group.append(section);
-  }
-  if(peer.self&&selfId){const identity=document.createElement('p');identity.className='panel-hint';identity.textContent=selfId;group.append(identity);}
-  fleetList.append(group);
+ const focus=fleetList.contains(document.activeElement)?document.activeElement.dataset.focusKey:null;
+ const openedTechnical=new Set(Array.from(fleetList.querySelectorAll('details[open][data-technical]'),d=>d.dataset.technical));
+ fleetList.replaceChildren();
+ const peer=deviceView&&peers.find(p=>p.peer_id===deviceView);
+ if(deviceView&&!peer)deviceView=null;
+ if(peer)renderDeviceDetail(peer,sensors.filter(o=>o.dataset.peer===peer.peer_id),openedTechnical);
+ else renderDeviceList(peers,sensors);
+ if(focus)fleetList.querySelector(`[data-focus-key="${CSS.escape(focus)}"]`)?.focus();
+}
+function deviceName(peer){return peer.self?'Home Server':fleetNetwork?.aliases?.[peer.peer_id]||peer.name||peer.peer_id;}
+function deviceRow(peer,feeds){
+ const item=document.createElement('div');item.className='device-item';item.dataset.peer=peer.peer_id;
+ const kind=peer.self?(fleetNetwork?.enabled?'live':null):statusKind(peer.status);
+ const summary=deviceSummary(peer,feeds.length);
+ const row=listRow({title:deviceName(peer),meta:kind?[statusBadge(kind),summary?' · '+summary:'']:(summary||deviceStatusSentence(peer)),tile:peer.self?icons.server:deviceIcon(deviceName(peer)),onSelect:e=>{deviceView=peer.peer_id;fleetSignature='';renderFleetRows();fleetList.querySelector('#device-detail h3')?.focus();}});
+ row.dataset.focusKey='row:'+peer.peer_id;if(kind==='offline')row.dataset.offline='true';
+ item.append(row);
+ if(feeds.length){const first=feeds[0];const view=document.createElement('button');view.type='button';view.className='icon-toggle device-camera';view.setAttribute('aria-label','View '+first.textContent);view.title='View '+first.textContent;view.append(icon(icons.camera,16));view.dataset.focusKey='cam:'+peer.peer_id;
+  view.onclick=()=>{$('sensor-select').value=first.value;$('sensor-select').dispatchEvent(new Event('change'));};item.append(view);}
+ return item;
+}
+function renderDeviceList(peers,sensors){
+ const self=peers.find(p=>p.self),others=peers.filter(p=>!p.self);
+ const rank={live:0,stale:1,connecting:2};const order=p=>rank[statusKind(p.status)]??3;
+ fleetList.append(sectionHeader('This server'),deviceRow(self,sensors.filter(o=>o.dataset.peer===self.peer_id)));
+ const online=others.filter(p=>statusKind(p.status)!=='offline').sort((a,b)=>order(a)-order(b)||deviceName(a).localeCompare(deviceName(b)));
+ const offline=others.filter(p=>statusKind(p.status)==='offline');
+ fleetList.append(sectionHeader('Devices',others.length));
+ for(const p of online)fleetList.append(deviceRow(p,sensors.filter(o=>o.dataset.peer===p.peer_id)));
+ if(!others.length)fleetList.append(emptyState(fleetNetwork?.enabled?'No devices connected yet.':'Turn on P2P to discover devices.'));
+ if(offline.length){
+  const toggle=disclosure('Offline',{count:offline.length,expanded:deviceOfflineOpen,controls:'devices-offline',onToggle:()=>{}});toggle.dataset.focusKey='offline';
+  toggle.onclick=()=>{deviceOfflineOpen=!deviceOfflineOpen;fleetSignature='';renderFleetRows();};
+  const group=document.createElement('div');group.id='devices-offline';group.hidden=!deviceOfflineOpen;for(const p of offline)group.append(deviceRow(p,sensors.filter(o=>o.dataset.peer===p.peer_id)));
+  fleetList.append(toggle,group);
  }
+ fleetList.append(disconnectRobots);
+}
+function renderDeviceDetail(peer,feeds,openedTechnical){
+ const view=document.createElement('section');view.id='device-detail';view.dataset.peer=peer.peer_id;view.setAttribute('aria-label',deviceName(peer));
+ const back=actionButton('All devices',{variant:'ghost',iconPath:'M11 4.5 6.5 9 11 13.5'});back.dataset.focusKey='back';back.onclick=()=>{const id=peer.peer_id;deviceView=null;deviceRenaming=false;fleetSignature='';renderFleetRows();fleetList.querySelector(`[data-focus-key="row:${CSS.escape(id)}"]`)?.focus();};
+ view.addEventListener('keydown',e=>{if(e.key==='Escape'&&!e.target.closest('input,textarea,select')){e.stopPropagation();back.click();}});
+ // Identity and rename.
+ const identity=document.createElement('div');identity.className='device-identity';
+ const tile=document.createElement('span');tile.className='list-row-tile device-tile';tile.append(icon(peer.self?icons.server:deviceIcon(deviceName(peer)),20));
+ const name=document.createElement('h3');name.tabIndex=-1;name.textContent=deviceName(peer);
+ identity.append(tile,name);
+ if(!peer.self){const rename=document.createElement('button');rename.type='button';rename.className='icon-toggle';rename.setAttribute('aria-label','Rename '+deviceName(peer));rename.append(icon(icons.pen,16));rename.dataset.focusKey='rename';rename.onclick=()=>{deviceRenaming=true;showRename();};identity.append(rename);}
+ const idLine=document.createElement('div');idLine.className='device-id';const idText=document.createElement('span');idText.className='mono-id';idText.textContent=peer.peer_id;idLine.append(idText,copyButton(peer.peer_id,'Copy peer ID'));
+ view.append(back,identity,idLine);
+ function showRename(){
+  const form=document.createElement('form');form.className='device-rename';
+  const field=formField({label:'Display name',max:64,value:fleetNetwork?.aliases?.[peer.peer_id]||'',placeholder:peer.name||peer.peer_id});
+  const status=document.createElement('p');status.className='form-status';status.setAttribute('role','status');
+  const cancel=actionButton('Cancel',{onClick:()=>{deviceRenaming=false;fleetSignature='';renderFleetRows();}}),save=actionButton('Save',{variant:'primary',type:'submit'});
+  const row=document.createElement('div');row.className='card-actions';row.append(cancel,save);form.append(field.field,row,status);
+  form.addEventListener('keydown',e=>{if(e.key==='Escape'){e.stopPropagation();cancel.click();}});
+  form.onsubmit=async e=>{e.preventDefault();save.disabled=true;try{await api('/api/peer-alias',{peer_id:peer.peer_id,alias:field.input.value});deviceRenaming=false;await refreshPeer();fleetSignature='';renderFleetRows();toast('Name saved');}catch(err){status.textContent=err.message;save.disabled=false;}};
+  identity.after(form);idLine.hidden=true;field.input.focus();
+ }
+ // Status.
+ const statusBox=document.createElement('div');statusBox.className='device-status';
+ const kind=peer.self?(fleetNetwork?.enabled?'live':null):statusKind(peer.status);
+ if(kind)statusBox.append(statusBadge(kind));
+ const sentence=document.createElement('p');sentence.textContent=deviceStatusSentence(peer);if(peer.received_observations!==undefined)sentence.dataset.observations=String(peer.received_observations);statusBox.append(sentence);
+ if(!peer.self){
+  const catalogNote=document.createElement('p');catalogNote.className='device-note';catalogNote.dataset.catalogStatus=peer.catalog_status||'unknown';
+  if(peer.catalog_status==='unavailable'){catalogNote.classList.add('warning');catalogNote.textContent='Component catalog unavailable · capabilities can’t be shown';}
+  else if(peer.catalog_status&&peer.catalog_status!=='ready'){catalogNote.textContent='Loading component catalog…';}
+  else if(peer.catalog_cached){catalogNote.classList.add('warning');catalogNote.textContent='Catalog refresh delayed · using last known entries; stream freshness checked separately';}
+  if(catalogNote.textContent)statusBox.append(catalogNote);
+ }
+ view.append(statusBox);
+ // Cameras.
+ const cameras=document.createElement('section');cameras.setAttribute('aria-label','Camera feeds');cameras.append(sectionHeader('Cameras',feeds.length));
+ for(const option of feeds.sort((a,b)=>a.textContent.localeCompare(b.textContent))){
+  const active=$('sensor-select').value===option.value;
+  const row=listRow({title:option.textContent,meta:active?'Showing in picture-in-picture':'Open live view',tile:icons.camera,onSelect:()=>{$('sensor-select').value=active?'':option.value;$('sensor-select').dispatchEvent(new Event('change'));}});
+  row.setAttribute('aria-label',option.textContent);row.setAttribute('aria-pressed',String(active));row.dataset.focusKey='feed:'+option.value;cameras.append(row);
+ }
+ if(feeds.length)view.append(cameras);
+ // Location: pose logs only when the device publishes them.
+ const catalog=peer.catalog||{};
+ const poses=(catalog.products||[]).filter(p=>p.metadata?.schema==='spatial-harness.compact-pose-contract/v1');
+ if(poses.length){const location=document.createElement('section');location.setAttribute('aria-label','Pose logs');location.append(sectionHeader('Location'));
+  for(const product of poses){const button=actionButton('Pose log · '+humanize(product.manifest.product_id),{onClick:()=>inspectPose(peer.peer_id,product,deviceName(peer)+' / '+product.manifest.product_id)});location.append(button);}
+  view.append(location);}
+ // Capabilities: components with the products they make; raw manifests behind Technical details.
+ const components=catalog.components||[],products=catalog.products||[];
+ if(components.length||products.length){
+  const capabilities=document.createElement('section');capabilities.className='device-capabilities';capabilities.setAttribute('aria-label','Capabilities');capabilities.append(sectionHeader('Capabilities',components.length));
+  const entries=[...components.map(entry=>({kind:'component',entry})),...products.filter(p=>!components.some(c=>c.manifest.component_id===p.manifest.producer?.component_id)).map(entry=>({kind:'product',entry}))];
+  for(const type of ['Cameras','Maps','Poses & odometry','Detections','Sensors & observations','Other']){
+   const matching=entries.filter(item=>catalogType(item.entry,item.kind,catalog)===type).sort((a,b)=>a.entry.manifest[a.kind+'_id'].localeCompare(b.entry.manifest[b.kind+'_id']));
+   if(!matching.length)continue;
+   const group=document.createElement('section');group.dataset.catalogType=type;group.setAttribute('aria-label',type);const heading=document.createElement('h4');heading.className='capability-group';heading.textContent=type;group.append(heading);
+   for(const {kind,entry} of matching)group.append(capabilityRow(peer,kind,entry,catalog,openedTechnical));
+   capabilities.append(group);
+  }
+  view.append(capabilities);
+ }
+ view.append(technicalDetails([['Peer ID',peer.peer_id,true],['Status',peer.self?(fleetNetwork?.status||''):peer.status],['Catalog',peer.catalog_status],['Catalog detail',peer.catalog_detail],['Catalog cache',peer.catalog_cached?'Using last known entries':''],['Registry',peer.registries?`${peer.registries.status} · ${Object.keys(peer.registries.definitions||{}).length} resolved definitions`:'']]));
+ fleetList.append(view);
+ if(deviceRenaming&&!peer.self)showRename();
+}
+function capabilityRow(peer,kind,entry,catalog,openedTechnical){
+ const id=entry.manifest[kind+'_id'],row=document.createElement('div');row.className='capability';row.dataset[kind]=id;
+ const made=kind==='component'?(catalog.products||[]).filter(p=>p.manifest.producer?.component_id===id):[];
+ const outputs=made.filter(p=>p.metadata?.schema!=='spatial-harness.component-enabled-state/v1');
+ const text=document.createElement('div');text.className='list-row-text';const title=document.createElement('span');title.className='list-row-title';title.textContent=humanize(id);
+ const meta=document.createElement('span');meta.className='list-row-meta';meta.textContent={'Cameras':'Image frames','Maps':'Map data','Poses & odometry':'Poses','Detections':'Detections','Sensors & observations':'Sensor readings'}[catalogType(entry,kind,catalog)]||'';meta.hidden=!meta.textContent;text.append(title,meta);
+ const head=document.createElement('div');head.className='capability-head';head.append(text);row.append(head);
+ // Publication switch, only for components that declare the set_enabled operation.
+ if(kind==='component'&&!peer.self&&entry.manifest.operables?.some(o=>o.name==='set_enabled'&&o.instruction==='spatial-harness.set-enabled/v1'&&o.result==='spatial-harness.component-enabled-state/v1')){
+  const stateProduct=(catalog.products||[]).find(p=>p.manifest.producer?.component_id===id&&p.manifest.producer?.component_manifest_hash===entry.manifest_hash&&p.metadata?.schema==='spatial-harness.component-enabled-state/v1');
+  let enabled=stateProduct?.metadata?.value?.enabled;
+  const key=JSON.stringify([peer.peer_id,id,entry.manifest_hash,stateProduct?.manifest_hash]),ack=componentControlResults.get(key);
+  if(ack){if(enabled===ack.enabled||stateProduct?.metadata?.source_sequence>ack.sequence)componentControlResults.delete(key);else enabled=ack.enabled;}
+  const toggle=document.createElement('button');toggle.type='button';toggle.className='switch';toggle.setAttribute('role','switch');toggle.setAttribute('aria-label',humanize(id));toggle.dataset.focusKey='switch:'+peer.peer_id+':'+id;
+  const status=document.createElement('span');status.className='capability-status';status.setAttribute('role','status');
+  // The switch shows on/off; the status text is only shown for waiting and error states.
+  const paint=()=>{toggle.setAttribute('aria-checked',String(enabled===true));status.textContent=typeof enabled==='boolean'?(enabled?'Enabled':'Disabled'):'Waiting for state';status.classList.toggle('visually-hidden',typeof enabled==='boolean');};paint();
+  toggle.disabled=typeof enabled!=='boolean'||peer.catalog_status!=='ready'||!!peer.catalog_cached;
+  toggle.onclick=async()=>{
+   componentControlPending=true;toggle.disabled=true;status.textContent='Applying…';
+   try{const confirmed=await api('/api/component-enabled',{peer_id:peer.peer_id,component_id:id,manifest_hash:entry.manifest_hash,enabled:!enabled});enabled=confirmed.enabled;componentControlResults.set(key,{enabled,sequence:stateProduct?.metadata?.source_sequence});paint();toggle.disabled=false;}
+   // The device may or may not have applied it: keep the switch locked until a refresh confirms.
+   catch(e){status.textContent=e.message;status.classList.remove('visually-hidden');toggle.title='Refresh Devices to confirm the current state';}
+   finally{componentControlPending=false;}
+  };
+  head.append(status,toggle);
+ }
+ const raw=document.createElement('details');raw.className='technical-details capability-raw';raw.dataset.technical=peer.peer_id+':'+kind+':'+id;raw.open=openedTechnical.has(raw.dataset.technical);
+ const summary=document.createElement('summary');summary.className='visually-hidden';summary.textContent=(kind==='component'?'Component':'Product')+' · '+id;raw.append(summary);
+ const info=document.createElement('button');info.type='button';info.className='icon-toggle';info.setAttribute('aria-label','Technical details for '+humanize(id));info.setAttribute('aria-expanded',String(raw.open));info.append(icon(icons.info,16));info.dataset.focusKey='info:'+raw.dataset.technical;
+ info.onclick=()=>{raw.open=!raw.open;info.setAttribute('aria-expanded',String(raw.open));};head.append(info);
+ for(const product of made){const line=document.createElement('p');line.className='mono-id capability-product';line.textContent='Product · '+product.manifest.product_id;raw.append(line);
+  if(product.metadata?.schema==='spatial-harness.compact-pose-contract/v1')raw.append(actionButton('Inspect live pose',{onClick:()=>inspectPose(peer.peer_id,product,deviceName(peer)+' / '+product.manifest.product_id)}));}
+ const pre=document.createElement('pre');pre.className='capability-json';pre.textContent=JSON.stringify(entry.manifest,null,2);raw.append(pre,copyButton(pre.textContent,'Copy manifest'));
+ row.append(raw);
+ return row;
 }
 new MutationObserver(renderFleetRows).observe($('sensor-select'),{childList:true});$('sensor-select').addEventListener('change',renderFleetRows);renderFleetRows();
-let noteView='list',sidebarNoteId=null,noteSignature='';
-function noteMessage(text){const p=document.createElement('p');p.className='panel-hint';p.textContent=text;notesBody.append(p);return p;}
+let noteSignature='';
 function noteTitle(note){return note?.details?.title||note?.text||'';}
 function notePhoto(note){
  const button=uiButton('',()=>{
@@ -1007,107 +1375,209 @@ function notePhoto(note){
 }
 function noteFields(container,note){
  const details=note?.details||{};
- function field(caption,tag,value,max){const label=document.createElement('label');label.textContent=caption;const input=document.createElement(tag);input.value=value||'';input.maxLength=max;label.append(input);container.append(label);return input;}
- const description=field('Description','textarea',details.description,10000);
- const photoLabel=document.createElement('label');photoLabel.textContent='Upload photo';const upload=document.createElement('input');upload.type='file';upload.accept='image/*';photoLabel.append(upload);container.append(photoLabel);
- const preview=document.createElement('img');preview.className='note-photo';preview.alt='Attached note photo';container.append(preview);
- const status=document.createElement('p');status.className='panel-hint';status.setAttribute('role','status');container.append(status);
+ const description=formField({label:'Description',multiline:true,max:10000,value:details.description,placeholder:'Optional details'});container.append(description.field);
+ const picker=document.createElement('div');picker.className='photo-picker';
+ const caption=document.createElement('span');caption.className='form-label';caption.textContent='Photo';
+ const upload=document.createElement('input');upload.type='file';upload.accept='image/*';upload.hidden=true;upload.setAttribute('aria-label','Upload photo');
+ const drop=document.createElement('button');drop.type='button';drop.className='photo-drop';drop.append(icon(icons.image,20));
+ const dropText=document.createElement('span');dropText.innerHTML='<strong>Add photo</strong><small>Drop, paste or browse · JPEG or PNG</small>';drop.append(dropText);drop.onclick=()=>upload.click();
+ const preview=document.createElement('figure');preview.className='photo-preview';
+ const image=document.createElement('img');image.alt='Attached note photo';
+ const replace=actionButton('Replace',{onClick:()=>upload.click()}),remove=actionButton('Remove photo',{variant:'danger-ghost'});
+ const tools=document.createElement('div');tools.className='photo-preview-actions';tools.append(replace,remove);preview.append(image,tools);
+ const status=document.createElement('p');status.className='form-status';status.setAttribute('role','status');
+ picker.append(caption,drop,preview,upload,status);container.append(picker);
  let photo=details.photo||null,pending=Promise.resolve(),photoError=null,generation=0;
- const remove=uiButton('Remove photo',()=>{generation++;photo=null;photoError=null;upload.value='';status.textContent='';render();});container.append(remove);
- function render(){preview.hidden=!photo;remove.hidden=!photo;if(photo)preview.src=photo;else preview.removeAttribute('src');}render();
- upload.onchange=()=>{const file=upload.files[0];if(!file)return;const version=++generation;photoError=null;status.textContent='Preparing photo…';pending=(async()=>{let bitmap;try{
+ function render(){preview.hidden=!photo;drop.hidden=!!photo;if(photo)image.src=photo;else image.removeAttribute('src');}render();
+ remove.onclick=()=>{generation++;photo=null;photoError=null;upload.value='';status.textContent='';render();drop.focus();};
+ function accept(file){if(!file)return;const version=++generation;photoError=null;status.textContent='Preparing photo…';pending=(async()=>{let bitmap;try{
   if(file.size>20*1024*1024)throw Error('Choose an image smaller than 20 MB.');
-  bitmap=await createImageBitmap(file);const scale=Math.min(1,1280/Math.max(bitmap.width,bitmap.height));const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(bitmap.width*scale));canvas.height=Math.max(1,Math.round(bitmap.height*scale));const ctx=canvas.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.drawImage(bitmap,0,0,canvas.width,canvas.height);const encoded=canvas.toDataURL('image/jpeg',.8);if(encoded.length>1400000)throw Error('Photo is too large. Choose a smaller image.');if(version!==generation)return;photo=encoded;status.textContent='Photo attached';render();
- }catch(e){if(version===generation){photoError=e;status.textContent=e.message;}}finally{bitmap?.close();}})();};
- return {read:async title=>{await pending;if(photoError)throw photoError;return {title,description:description.value,photo};}};
+  bitmap=await createImageBitmap(file);const scale=Math.min(1,1280/Math.max(bitmap.width,bitmap.height));const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(bitmap.width*scale));canvas.height=Math.max(1,Math.round(bitmap.height*scale));const ctx=canvas.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.drawImage(bitmap,0,0,canvas.width,canvas.height);const encoded=canvas.toDataURL('image/jpeg',.8);if(encoded.length>1400000)throw Error('Photo is too large. Choose a smaller image.');if(version!==generation)return;photo=encoded;status.textContent='';render();
+ }catch(e){if(version===generation){photoError=e;status.textContent=e.message;}}finally{bitmap?.close();}})();}
+ upload.onchange=()=>accept(upload.files[0]);
+ drop.addEventListener('dragover',e=>{e.preventDefault();drop.classList.add('dragging');});
+ drop.addEventListener('dragleave',()=>drop.classList.remove('dragging'));
+ drop.addEventListener('drop',e=>{e.preventDefault();drop.classList.remove('dragging');accept([...e.dataTransfer.files].find(f=>f.type.startsWith('image/')));});
+ container.addEventListener('paste',e=>{const file=[...(e.clipboardData?.files||[])].find(f=>f.type.startsWith('image/'));if(file){e.preventDefault();accept(file);}});
+ return {read:async title=>{await pending;if(photoError)throw photoError;return {title,description:description.input.value,photo};}};
 }
+const notesActions=document.createElement('div');notesActions.className='panel-actions';
+const newNoteButton=actionButton('New note',{variant:'primary',iconPath:icons.plus,onClick:()=>startNotePlacement()});
+const drawPathButton=actionButton('Draw path',{iconPath:icons.pen,onClick:()=>$('crayon').click()});
+const notesReadOnly=document.createElement('p');notesReadOnly.className='panel-hint';
+notesActions.append(newNoteButton,drawPathButton);
+let notesQuery='';
+const notesSearch=searchField({id:'notes-search',label:'Search notes and paths',placeholder:'Search notes and paths',onInput:value=>{notesQuery=value.trim().toLowerCase();renderNotes();}});
+const notesList=document.createElement('div');notesList.className='notes-list';
+notesBody.append(notesActions,notesReadOnly,notesSearch,notesList);
+const drawPathHint=document.createElement('p');drawPathHint.className='panel-hint';notesActions.after(drawPathHint);
+const syncDrawPath=()=>{drawPathButton.setAttribute('aria-pressed',$('crayon').getAttribute('aria-pressed')||'false');drawPathButton.disabled=$('crayon').disabled;drawPathHint.textContent=$('crayon').disabled?'Drawing isn’t available here · '+($('crayon').title||'Choose a local Home scene'):'';drawPathHint.hidden=!drawPathHint.textContent;};
+new MutationObserver(syncDrawPath).observe($('crayon'),{attributes:true,attributeFilter:['aria-pressed','disabled','title']});syncDrawPath();
+function notesWritable(){return !activeMap.startsWith('peer-scene:')&&!activeMap.startsWith('phone:')&&!isRunner()&&activeMap!=='domain';}
+function noteRowTile(note){
+ if(!note.details?.thumbnail)return icons.note;
+ const image=document.createElement('img');image.src=note.details.thumbnail;image.alt='';image.className='list-row-photo';return image;
+}
+let notesSignature='';
 function renderNotes(){
- if(noteView==='edit')return;
- notesBody.replaceChildren();const notes=current?.notes||[];const selected=notes.find(n=>n.id===sidebarNoteId);
- const paths=current?.paths?.items||[],path=paths.find(p=>p.id===selectedPathId);
- if(noteView==='path'&&path){
-  notesBody.append(uiButton('‹ All notes',()=>{noteView='list';renderNotes();}));
-  const title=document.createElement('h3');title.textContent=path.title;notesBody.append(title);
-  noteMessage('Crayon path · '+path.segments.length+' segment(s)');
-  notesBody.append(uiButton('Focus in scene',()=>focusPath(path)));
-  if(isLocalScene())notesBody.append(pathDeleteButton(path));
-  return;
+ const notes=current?.notes||[],paths=current?.paths?.items||[];
+ const writable=notesWritable();
+ const signature=JSON.stringify([activeMap,writable,notesQuery,selectedNoteId,selectedPathId,notes.map(n=>[n.id,noteTitle(n),n.details?.description,Boolean(n.details?.thumbnail),noteReadOnlyReason(n)]),paths.map(p=>[p.id,p.title,p.color,p.segments.length])]);
+ newNoteButton.disabled=!writable||!current;notesReadOnly.hidden=writable;notesReadOnly.textContent=writable?'':'This map is read-only. Switch to a Home scene to add notes.';
+ if(signature===notesSignature)return;notesSignature=signature;
+ const focused=notesList.contains(document.activeElement)?document.activeElement.dataset.noteRow||document.activeElement.dataset.pathRow:null;
+ const matches=(...text)=>!notesQuery||text.filter(Boolean).join(' ').toLowerCase().includes(notesQuery);
+ const shownNotes=notes.filter(n=>matches(noteTitle(n),n.details?.description)),shownPaths=paths.filter(p=>matches(p.title));
+ notesSearch.hidden=!notes.length&&!paths.length&&!notesQuery;
+ notesList.replaceChildren();
+ notesList.append(sectionHeader('Notes',notesQuery?`${shownNotes.length} / ${notes.length}`:notes.length));
+ for(const note of shownNotes){
+  const reason=noteReadOnlyReason(note),lock=reason?document.createElement('span'):null;
+  if(lock){lock.className='row-flag';lock.append(icon(icons.lock,14));lock.setAttribute('aria-label','Read-only');lock.title=reason;}
+  const row=listRow({title:noteTitle(note),meta:(note.details?.description||'').split('\n')[0]||noteAnchorText(note),tile:noteRowTile(note),accent:'amber',trailing:lock,onSelect:e=>{focusNote(note);focusCard(e,()=>notesList.querySelector(`[data-note-row="${CSS.escape(note.id)}"]`));}});
+  row.dataset.noteRow=note.id;if(note.id===selectedNoteId)row.setAttribute('aria-current','true');notesList.append(row);
  }
- if(noteView==='detail'&&selected){
-  notesBody.append(uiButton('‹ All notes',()=>{noteView='list';renderNotes();}));
-  const title=document.createElement('h3');title.textContent=noteTitle(selected);notesBody.append(title);noteMessage('Pose · '+selected.position.map(v=>v.toFixed(2)).join(', ')+' m');
-  if(selected.details?.description)noteMessage(selected.details.description);
-  if(selected.details?.photo)notesBody.append(notePhoto(selected));
-  notesBody.append(uiButton('Focus in scene',()=>focusNote(selected)));
-  if(!selected.anchor_robot&&!selected.phone_pose&&!selected.robot_pose&&!isRunner()&&activeMap!=='domain'){
-   notesBody.append(uiButton('Edit',()=>editSidebarNote(selected)),uiButton('Delete',async()=>{const error=noteMessage('Deleting…');try{await api(noteUrl(selected.id),undefined,'DELETE');noteView='list';lastScene=null;await refresh();renderNotes();}catch(e){error.textContent=e.message;}}));
-  }
-  return;
+ if(!shownNotes.length)notesList.append(notesQuery?emptyState('No notes match',{label:'Clear search',onClick:()=>{notesSearch.querySelector('.search-clear').click();}}):emptyState(writable?'No notes here yet. Right-click any surface for a quick note.':'No notes in this map.'));
+ if(paths.length||notesQuery){
+  notesList.append(sectionHeader('Paths',notesQuery?`${shownPaths.length} / ${paths.length}`:paths.length));
+  for(const path of shownPaths){const row=listRow({title:path.title,meta:pathLength(path).toFixed(1)+' m',tile:pathSwatch(path,14),onSelect:e=>{focusPath(path);focusCard(e,()=>notesList.querySelector(`[data-path-row="${CSS.escape(path.id)}"]`));}});row.dataset.pathRow=path.id;row.dataset.pathId=path.id;if(path.id===selectedPathId)row.setAttribute('aria-current','true');notesList.append(row);}
+  if(!shownPaths.length)notesList.append(emptyState('No paths match'));
  }
- notesBody.append(uiButton('+ New note',()=>editSidebarNote(null),'primary'));
- if(!notes.length)noteMessage('No notes in this scenegraph.');
- if(paths.length){
-  const heading=document.createElement('h3');heading.textContent='Crayon paths';notesBody.append(heading);
-  paths.forEach((path,i)=>{const row=uiButton(`${path.title} · ${i+1}`,()=>{noteView='path';focusPath(path);renderNotes();});row.dataset.pathId=path.id;notesBody.append(row);});
- }
- for(const note of notes){const row=uiButton(noteTitle(note),()=>{sidebarNoteId=note.id;noteView='detail';showNoteSelection(note);renderNotes();});if(note.details?.thumbnail){const image=document.createElement('img');image.src=note.details.thumbnail;image.alt='';image.className='note-list-thumbnail';row.prepend(image);}notesBody.append(row);}
-}
-async function editSidebarNote(note){
- const editingMap=activeMap;
- noteView='edit';notesBody.replaceChildren();const form=document.createElement('form');form.className='note-form';
- const textLabel=document.createElement('label');textLabel.textContent='Title';const input=document.createElement('input');input.name='text';input.required=true;input.maxLength=120;input.value=noteTitle(note);textLabel.append(input);form.append(textLabel);
- const fields=noteFields(form,note);
- let portal,height;
- if(!note){
-  const hint=document.createElement('p');hint.className='panel-hint';hint.textContent='Anchor to a Home portal below, or right-click a surface in the scene to place a note there.';form.append(hint);
-  const portalLabel=document.createElement('label');portalLabel.textContent='Anchor portal';portal=document.createElement('select');portal.name='portal';portal.required=true;portalLabel.append(portal);form.append(portalLabel);
-  const heightLabel=document.createElement('label');heightLabel.textContent='Height above portal (m)';height=document.createElement('input');height.name='height';height.type='number';height.step='0.01';height.min='-100';height.max='100';height.value='1';height.required=true;heightLabel.append(height);form.append(heightLabel);
- }
- const actions=document.createElement('div');actions.className='note-actions';const save=document.createElement('button');save.type='submit';save.textContent='Save';actions.append(uiButton('Cancel',()=>{noteView=note?'detail':'list';renderNotes();}),save);form.append(actions);const error=document.createElement('p');error.className='panel-hint';error.setAttribute('role','status');form.append(error);notesBody.append(form);input.focus();
- if(!note){save.disabled=true;try{const canonical=await api(isLocalScene(editingMap)?localSceneUrl(editingMap):'/api/scene');for(const p of canonical.portals||[])portal.add(new Option(p.anchor_id,p.anchor_id));save.disabled=!portal.options.length;if(save.disabled)error.textContent='No portals in this scene. Right-click a surface to place a note.';}catch(e){error.textContent=e.message;}}
- form.onsubmit=async event=>{event.preventDefault();save.disabled=true;try{
-  const details=await fields.read(input.value);
-  const result=note?await api(noteUrl(note.id,editingMap),{text:input.value,details},'PATCH'):await api('/api/notes'+(isLocalScene(editingMap)?'?scene='+encodeURIComponent(editingMap.slice(6)):''),{text:input.value,details,portal:portal.value,height_m:Number(height.value)});
-  sidebarNoteId=result.id;noteView='detail';
-  if(isRunner()||activeMap==='domain'){$('map-select').value='demo';await $('map-select').onchange();}
-  lastScene=null;await refresh();renderNotes();
- }catch(e){error.textContent=e.message;save.disabled=false;}};
+ if(focused)notesList.querySelector(`[data-note-row="${CSS.escape(focused)}"],[data-path-row="${CSS.escape(focused)}"]`)?.focus();
 }
 setInterval(()=>{const signature=JSON.stringify([activeMap,current?.notes||[],current?.paths]);if(signature!==noteSignature){noteSignature=signature;renderNotes();}},500);renderNotes();
-function applyTheme(light){document.documentElement.dataset.theme=light?'light':'dark';scene.background.set(light?'#e8e8f0':'#0d0d0f');scene.fog?.color.copy(scene.background);ground.material.color.set(light?'#e0e3e8':'#101014');themeButton.textContent=light?'☾':'☼';themeButton.title=light?'Switch to dark theme':'Switch to light theme';themeButton.setAttribute('aria-label',themeButton.title);}
-themeButton.onclick=()=>{const light=document.documentElement.dataset.theme!=='light';applyTheme(light);try{localStorage.setItem('spatial-theme',light?'light':'dark');}catch{}};
+function applyTheme(light){document.documentElement.dataset.theme=light?'light':'dark';scene.background.set(light?'#e8e8f0':'#0d0d0f');scene.fog?.color.copy(scene.background);ground.material.color.set(light?'#e0e3e8':'#101014');for(const choice of document.querySelectorAll('[data-theme-choice]'))choice.setAttribute(choice.getAttribute('role')==='radio'?'aria-checked':'aria-pressed',String((choice.dataset.themeChoice==='light')===light));}
+for(const choice of document.querySelectorAll('[data-theme-choice]'))choice.onclick=()=>{const light=choice.dataset.themeChoice==='light';applyTheme(light);try{localStorage.setItem('spatial-theme',light?'light':'dark');}catch{}};
 try{applyTheme(localStorage.getItem('spatial-theme')==='light');}catch{}
 const opacityLabel=document.createElement('label');opacityLabel.className='layer';opacityLabel.textContent='Grid opacity';const opacityInput=document.createElement('input');opacityInput.type='range';opacityInput.min='0';opacityInput.max='1';opacityInput.step='.01';opacityInput.value=String(grid.material.opacity);opacityInput.oninput=()=>{grid.material.opacity=Number(opacityInput.value);};opacityLabel.append(opacityInput);panelBodies.settings.append(opacityLabel);
+// Settings: grouped layer switches, display options, and demo tools tucked into a disclosure.
+{
+ const body=panelBodies.settings,load=key=>{try{return JSON.parse(localStorage.getItem(key));}catch{return null;}},save=(key,value)=>{try{localStorage.setItem(key,JSON.stringify(value));}catch{}};
+ const layers=document.createElement('section');layers.setAttribute('aria-label','Layers');layers.append(sectionHeader('Layers'));
+ const renames={'Text notes':'Notes','Live Galbot poses':'Robot poses'},saved=load('settings-layers')||{};
+ for(const [name,selectors] of [['Annotations',['[data-layer="notes"]']],['Scene',['[data-layer="voxels"]','[data-layer="portals"]','[data-layer="objects"]']],['Live',['#runner-layer','#robot-volume-layer','[data-layer="rays"]']]]){
+  const heading=document.createElement('h4');heading.className='settings-group';heading.textContent=name;layers.append(heading);
+  for(const selector of selectors){
+   const input=body.querySelector(selector);if(!input)continue;const label=input.closest('label');label.className='setting-row';
+   input.setAttribute('role','switch');input.classList.add('switch-input');
+   for(const node of label.querySelector('span').childNodes)if(node.nodeType===3&&renames[node.textContent.trim()])node.textContent=renames[node.textContent.trim()];
+   const key=input.dataset.layer||input.id;
+   if(typeof saved[key]==='boolean'&&saved[key]!==input.checked){input.checked=saved[key];input.dispatchEvent(new Event('change'));}
+   input.addEventListener('change',()=>{saved[key]=input.checked;save('settings-layers',saved);});
+   layers.append(label);
+   if(input.id==='robot-volume-layer'){const status=$('robot-volume-status');status.classList.add('setting-meta');layers.append(status);}
+  }
+ }
+ // Display: grid opacity with a readable value, and the theme.
+ const display=document.createElement('section');display.setAttribute('aria-label','Display');display.append(sectionHeader('Display'));
+ opacityLabel.className='setting-row range-row';opacityLabel.firstChild.textContent='Grid opacity';
+ const value=document.createElement('output');value.className='range-value';
+ const syncOpacity=()=>{const percent=Math.round(Number(opacityInput.value)*100);value.textContent=percent+'%';opacityInput.setAttribute('aria-valuetext',percent+' percent');opacityInput.style.setProperty('--fill',percent+'%');};
+ const savedOpacity=load('settings-grid-opacity');if(typeof savedOpacity==='number'){opacityInput.value=String(savedOpacity);grid.material.opacity=savedOpacity;}
+ opacityInput.addEventListener('input',()=>{syncOpacity();save('settings-grid-opacity',Number(opacityInput.value));});syncOpacity();
+ opacityLabel.insertBefore(value,opacityInput);
+ const theme=document.createElement('div');theme.className='setting-row';
+ const themeLabel=document.createElement('span');themeLabel.id='settings-theme-label';themeLabel.textContent='Theme';
+ const choices=document.createElement('div');choices.className='theme-switch';choices.setAttribute('role','radiogroup');choices.setAttribute('aria-labelledby',themeLabel.id);
+ for(const [choice,text] of [['light','Light'],['dark','Dark']]){const button=document.createElement('button');button.type='button';button.setAttribute('role','radio');button.dataset.themeChoice=choice;button.textContent=text;button.onclick=()=>{const light=choice==='light';applyTheme(light);try{localStorage.setItem('spatial-theme',light?'light':'dark');}catch{}};choices.append(button);}
+ theme.append(themeLabel,choices);display.append(opacityLabel,theme);
+ // Demo tools: shown only in demo scenes (the app toggles #demo-controls), collapsed by default.
+ const demo=$('demo-controls');
+ for(const label of demo.querySelectorAll('.section-label'))label.remove();
+ const region=document.createElement('div');region.id='demo-tools';region.hidden=true;region.append(...demo.childNodes);
+ const peersHeading=document.createElement('h4');peersHeading.className='settings-group';peersHeading.textContent='Contributing peers';region.prepend(peersHeading);
+ for(const [id,hint] of [['load','Adds iPhone and Bracketbot scans to the map.'],['project','Places a book detection onto the nearest surface.'],['replay','Re-sends the iPhone scans to check nothing duplicates.']]){const button=region.querySelector('#'+id);button.className='btn btn-secondary demo-button';button.querySelector('span')?.remove();const small=document.createElement('small');small.className='form-helper';small.textContent=hint;button.after(small);}
+ const toggle=disclosure('Demo tools',{expanded:false,controls:'demo-tools',onToggle:()=>{}});
+ toggle.onclick=()=>{region.hidden=!region.hidden;toggle.setAttribute('aria-expanded',String(!region.hidden));};
+ demo.append(toggle,region);
+ body.replaceChildren(layers,display,demo);
+ applyTheme(document.documentElement.dataset.theme==='light');
+}
 
 let createdFiducialKey=null;
-function fiducialLink(text,href){const link=document.createElement('a');link.textContent=text;link.href=href;return link;}
-async function renderFiducials(){
- tagsBody.replaceChildren();
- const intro=document.createElement('p');intro.className='panel-hint';intro.textContent='Generate a standard visual tag and register the size of its outer black square. That measured size is the metric contract a pose estimator needs.';tagsBody.append(intro);
+// Tags: list first; "New tag" reveals the generate form; each row expands to print, download and measure.
+let fiducialCreateOpen=null;const expandedFiducials=new Set();
+const relativeTime=new Intl.RelativeTimeFormat(undefined,{numeric:'auto'});
+function ago(ms){const minutes=Math.round((Date.now()-ms)/60000);if(minutes<1)return 'just now';if(minutes<60)return minutes+' min ago';const hours=Math.round(minutes/60);if(hours<24)return hours+' h ago';return relativeTime.format(-Math.round(hours/24),'day');}
+let explainerCount=0;
+function measureExplainer(){
+ const figure=document.createElement('figure');figure.className='measure-explainer';const hatch='quiet-zone-'+(++explainerCount);
+ const caption='Edge to edge across the black square. Leave out the white border.';
+ figure.innerHTML=`<svg role="img" aria-label="${caption}" width="168" height="84" viewBox="0 0 168 84"><defs><pattern id="${hatch}" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="4" stroke="#d4d4d8" stroke-width="1.5"/></pattern></defs><rect x="4" y="4" width="56" height="56" fill="url(#${hatch})" stroke="#d4d4d8"/><rect x="12" y="12" width="40" height="40" fill="#18181b"/><rect x="20" y="20" width="8" height="8" fill="#fff"/><rect x="36" y="28" width="8" height="8" fill="#fff"/><rect x="24" y="36" width="8" height="8" fill="#fff"/><path d="M12 66h40M12 63v6M52 63v6M15 64l-3 2 3 2M49 64l3 2-3 2" stroke="#2563eb" stroke-width="1.2" fill="none"/><text x="32" y="80" font-size="9" fill="#1d4ed8" font-weight="600" text-anchor="middle">Measure this</text><text x="70" y="10" font-size="9" fill="#71717a">Not this</text><path d="M68 7h-6" stroke="#a1a1aa"/></svg><figcaption>${caption}</figcaption>`;
+ return figure;
+}
+function mmField(label,id,value,{min=10,max=2000,placeholder=''}={}){
+ const field=document.createElement('div');field.className='form-field';
+ const name=document.createElement('label');name.className='form-label';name.textContent=label;name.htmlFor=id;
+ const box=document.createElement('div');box.className='unit-field';
+ const input=document.createElement('input');input.id=id;input.className='form-control';input.type='number';input.min=String(min);input.max=String(max);input.step='.1';input.value=value;input.placeholder=placeholder;
+ const unit=document.createElement('span');unit.className='unit-suffix';unit.textContent='mm';unit.setAttribute('aria-hidden','true');
+ box.append(input,unit);field.append(name,box);return {field,input};
+}
+async function renderFiducials(focusKey=null){
  let catalog;
- try{catalog=await api('/api/fiducials');}catch(e){const status=document.createElement('p');status.className='panel-hint';status.setAttribute('role','status');status.textContent=e.message;tagsBody.append(status);return;}
- const form=document.createElement('form');form.className='note-form fiducial-form';
- const familyLabel=document.createElement('label');familyLabel.textContent='Tag family';const family=document.createElement('select');family.id='fiducial-family';familyLabel.htmlFor=family.id;for(const item of catalog.families)family.add(new Option(item.label,item.id));familyLabel.append(family);form.append(familyLabel);
- const idLabel=document.createElement('label');idLabel.textContent='Marker ID (optional)';const id=document.createElement('input');id.id='fiducial-id';id.type='number';id.min='0';id.step='1';id.placeholder='Next available';idLabel.htmlFor=id.id;idLabel.append(id);form.append(idLabel);
- const sizeLabel=document.createElement('label');sizeLabel.textContent='Printed marker size (mm)';const size=document.createElement('input');size.id='fiducial-size';size.type='number';size.min='10';size.max='2000';size.step='.1';size.value='150';size.required=true;sizeLabel.htmlFor=size.id;sizeLabel.append(size);form.append(sizeLabel);
- const basis=document.createElement('p');basis.className='panel-hint fiducial-basis';basis.textContent='Measure edge-to-edge across the black square. Do not include the white quiet zone.';form.append(basis);
- const create=document.createElement('button');create.type='submit';create.className='primary';create.textContent='Generate tag';form.append(create);
- const message=document.createElement('p');message.className='panel-hint';message.setAttribute('role','status');form.append(message);
- form.onsubmit=async event=>{event.preventDefault();create.disabled=true;message.textContent='Generating…';try{const marker=await api('/api/fiducials',{family:family.value,id:id.value===''?null:Number(id.value),side_length_m:Number(size.value)/1000});createdFiducialKey=marker.key;await renderFiducials();}catch(e){message.textContent=e.message;create.disabled=false;}};
+ try{catalog=await api('/api/fiducials');}catch(e){tagsBody.replaceChildren();const status=document.createElement('p');status.className='panel-hint';status.setAttribute('role','status');status.textContent=e.message;tagsBody.append(status);return;}
+ tagsBody.replaceChildren();
+ const createOpen=fiducialCreateOpen??!catalog.fiducials.length;
+ const newTag=actionButton('New tag',{variant:'primary',iconPath:icons.plus});newTag.setAttribute('aria-expanded',String(createOpen));newTag.setAttribute('aria-controls','fiducial-create');
+ newTag.onclick=()=>{fiducialCreateOpen=!createOpen;renderFiducials().then(()=>$('fiducial-family')?.focus());};
+ const actions=document.createElement('div');actions.className='panel-actions single';actions.append(newTag);
+ const intro=document.createElement('p');intro.className='panel-hint';intro.textContent='Print markers robots can see, then measure the printed black square so poses come out to scale.';
+ tagsBody.append(actions,intro);
+ // Generate form.
+ const form=document.createElement('form');form.id='fiducial-create';form.className='fiducial-create';form.hidden=!createOpen;
+ const familyField=document.createElement('div');familyField.className='form-field';const familyLabel=document.createElement('label');familyLabel.className='form-label';familyLabel.textContent='Tag family';
+ const family=document.createElement('select');family.id='fiducial-family';family.className='form-control';familyLabel.htmlFor=family.id;for(const item of catalog.families)family.add(new Option(item.label,item.id));familyField.append(familyLabel,family);
+ const idField=document.createElement('div');idField.className='form-field';const idLabel=document.createElement('label');idLabel.className='form-label';idLabel.textContent='Marker ID (optional)';
+ const id=document.createElement('input');id.id='fiducial-id';id.className='form-control';id.type='number';id.min='0';id.step='1';id.placeholder='Next available';idLabel.htmlFor=id.id;idField.append(idLabel,id);
+ const size=mmField('Printed marker size (mm)','fiducial-size','150');size.input.required=true;
+ const helper=document.createElement('small');helper.className='form-helper';helper.textContent='Size of the black square on paper';size.field.append(helper);
+ const message=document.createElement('p');message.className='form-status';message.setAttribute('role','status');
+ const generate=actionButton('Generate tag',{variant:'primary',type:'submit'}),cancel=actionButton('Cancel',{onClick:()=>{fiducialCreateOpen=false;renderFiducials().then(()=>tagsBody.querySelector('.panel-actions .btn')?.focus());}});
+ const formActions=document.createElement('div');formActions.className='card-actions';if(catalog.fiducials.length)formActions.append(cancel);formActions.append(generate);
+ form.append(familyField,idField,size.field,measureExplainer(),formActions,message);
+ form.addEventListener('keydown',e=>{if(e.key==='Escape'&&catalog.fiducials.length){e.stopPropagation();cancel.click();}});
+ form.onsubmit=async event=>{event.preventDefault();generate.disabled=true;message.textContent='Generating…';
+  try{const marker=await api('/api/fiducials',{family:family.value,id:id.value===''?null:Number(id.value),side_length_m:Number(size.input.value)/1000});
+   createdFiducialKey=marker.key;fiducialCreateOpen=false;expandedFiducials.add(marker.key);await renderFiducials(marker.key);toast(`${marker.family_label} · ${marker.id} created`);
+  }catch(e){message.textContent=e.message;generate.disabled=false;}};
  tagsBody.append(form);
- const heading=document.createElement('div');heading.className='section-label';heading.textContent='REGISTERED TAGS';tagsBody.append(heading);
- if(!catalog.fiducials.length){const empty=document.createElement('p');empty.className='panel-hint';empty.textContent='No generated tags yet.';tagsBody.append(empty);return;}
- for(const marker of catalog.fiducials){const card=document.createElement('article');card.className='fiducial-card';if(marker.key===createdFiducialKey)card.dataset.created='true';
-  const image=document.createElement('img');image.className='fiducial-preview';image.src=marker.download_url;image.alt=`${marker.family_label} marker ${marker.id}`;
-  const details=document.createElement('div');const name=document.createElement('strong');name.textContent=`${marker.family_label} · ${marker.id}`;const measurement=document.createElement('small');measurement.textContent=`${marker.side_length_mm.toLocaleString(undefined,{maximumFractionDigits:1})} mm black square`;details.append(name,measurement);
-  const actions=document.createElement('div');actions.className='fiducial-actions';const download=fiducialLink('Download SVG',marker.download_url);download.download=`${marker.key}.svg`;const print=fiducialLink('Print at size',marker.print_url);print.target='_blank';print.rel='noopener';actions.append(download,print);details.append(actions);
-  const edit=uiButton('Set measured size',()=>{
-   edit.hidden=true;const form=document.createElement('form');form.className='note-form fiducial-measurement';
-   const label=document.createElement('label');label.textContent='Measured black square (mm)';const input=document.createElement('input');input.type='number';input.min='10';input.max='2000';input.step='.1';input.required=true;input.value=String(marker.side_length_mm);label.append(input);form.append(label);
-   const buttons=document.createElement('div');buttons.className='note-actions';const save=document.createElement('button');save.type='submit';save.textContent='Save size';buttons.append(uiButton('Cancel',()=>{form.remove();edit.hidden=false;}),save);form.append(buttons);
-   const status=document.createElement('p');status.className='panel-hint';status.setAttribute('role','status');form.append(status);details.append(form);input.focus();
-   form.onsubmit=async event=>{event.preventDefault();save.disabled=true;try{await api(`/api/fiducials/${marker.family}/${marker.id}`,{side_length_m:Number(input.value)/1000},'PATCH');await renderFiducials();}catch(e){status.textContent=e.message;save.disabled=false;}};
-  });details.append(edit);card.append(image,details);tagsBody.append(card);
+ if(!catalog.fiducials.length){tagsBody.append(emptyState('No tags yet. Generate a marker, print it at 100%, then measure the black square.'));return;}
+ // Tags grouped by family, newest first.
+ for(const item of catalog.families){
+  const markers=catalog.fiducials.filter(m=>m.family===item.id).sort((a,b)=>(b.created_unix_ms||0)-(a.created_unix_ms||0));if(!markers.length)continue;
+  tagsBody.append(sectionHeader(item.label,markers.length));
+  for(const marker of markers){
+   const open=expandedFiducials.has(marker.key),bodyId='fiducial-'+marker.key.replace(/[^a-z0-9]/gi,'-');
+   const card=document.createElement('article');card.className='fiducial-card';if(marker.key===createdFiducialKey)card.dataset.created='true';
+   const row=document.createElement('button');row.type='button';row.className='fiducial-row';row.setAttribute('aria-expanded',String(open));row.setAttribute('aria-controls',bodyId);
+   const tile=document.createElement('span');tile.className='fiducial-tile';const image=document.createElement('img');image.className='fiducial-preview';image.src=marker.download_url;image.alt=`${marker.family_label} marker ${marker.id}`;tile.append(image);
+   const text=document.createElement('span');text.className='list-row-text';const title=document.createElement('span');title.className='list-row-title';title.textContent=`${marker.family_label} · ${marker.id}`;
+   const meta=document.createElement('span');meta.className='list-row-meta';meta.textContent=`${marker.side_length_mm.toLocaleString(undefined,{maximumFractionDigits:1})} mm black square`+(marker.created_unix_ms?` · ${ago(marker.created_unix_ms)}`:'');meta.title=meta.textContent;text.append(title,meta);
+   const chevron=icon(icons.chevron);chevron.classList.add('fiducial-chevron');
+   row.append(tile,text,chevron);
+   row.onclick=()=>{if(expandedFiducials.has(marker.key))expandedFiducials.delete(marker.key);else expandedFiducials.add(marker.key);renderFiducials().then(()=>tagsBody.querySelector(`[aria-controls="${bodyId}"]`)?.focus());};
+   const body=document.createElement('div');body.id=bodyId;body.className='fiducial-body';body.hidden=!open;
+   const sizeText=`${marker.side_length_mm.toLocaleString(undefined,{maximumFractionDigits:1})} mm`;
+   const print=document.createElement('a');print.className='btn btn-secondary btn-sm';print.href=marker.print_url;print.target='_blank';print.rel='noopener';print.textContent=`Print at ${sizeText} ↗`;print.setAttribute('aria-label',`Print at ${sizeText} (opens in a new tab)`);
+   const download=document.createElement('a');download.className='btn btn-secondary btn-sm';download.href=marker.download_url;download.download=`${marker.key}.svg`;download.textContent='Download SVG';
+   const linkRow=document.createElement('div');linkRow.className='fiducial-actions';linkRow.append(print,download);
+   const measured=document.createElement('div');measured.className='fiducial-measured';const measuredText=document.createElement('span');measuredText.textContent=`Measured black square: ${sizeText}`;
+   const edit=actionButton('Set measured size',{variant:'ghost'});measured.append(measuredText,edit);
+   body.append(linkRow,measured);
+   edit.onclick=()=>{
+    const measure=document.createElement('form');measure.className='fiducial-measurement';
+    const field=mmField('Measured black square (mm)',bodyId+'-measured',String(marker.side_length_mm));field.input.required=true;
+    const status=document.createElement('p');status.className='form-status';status.setAttribute('role','status');
+    const save=actionButton('Save size',{variant:'primary',type:'submit'}),back=actionButton('Cancel',{onClick:()=>{measure.replaceWith(measured);edit.focus();}});
+    const buttons=document.createElement('div');buttons.className='card-actions';buttons.append(back,save);
+    measure.append(field.field,measureExplainer(),buttons,status);measured.replaceWith(measure);field.input.focus();field.input.select();
+    measure.addEventListener('keydown',e=>{if(e.key==='Escape'){e.stopPropagation();back.click();}});
+    measure.onsubmit=async event=>{event.preventDefault();save.disabled=true;try{await api(`/api/fiducials/${marker.family}/${marker.id}`,{side_length_m:Number(field.input.value)/1000},'PATCH');await renderFiducials();toast('Measured size saved');}catch(e){status.textContent=e.message;save.disabled=false;}};
+   };
+   card.append(row,body);tagsBody.append(card);
+   if(marker.key===focusKey)requestAnimationFrame(()=>print.focus());
+  }
  }
  createdFiducialKey=null;
 }
