@@ -157,6 +157,10 @@ pub async fn resolve(
         }
         for p in &catalog.products {
             if let Some(m) = &p.metadata {
+                if m.schema == crate::registry_ar::CAMERA_METADATA {
+                    let r = m.value["sensor"].clone();
+                    refs.insert(format!("sensor:{}:{}:{}",r["peer_id"],r["id"],r["hash"]),("sensor",r));
+                }
                 if m.schema == crate::declared_depth::METADATA {
                     let r=m.value["frame"].clone();
                     refs.insert(format!("frame:{}:{}:{}",r["peer_id"],r["id"],r["hash"]),("frame",r));
@@ -219,6 +223,8 @@ pub async fn resolve(
                         .map_err(|_| anyhow::anyhow!("Local registry unavailable"))?;
                     let kind = if kind == "clock" {
                         RegistryKind::Clock
+                    } else if kind == "sensor" {
+                        RegistryKind::Sensor
                     } else {
                         RegistryKind::Frame
                     };
@@ -234,6 +240,12 @@ pub async fn resolve(
                         client.fetch_clock_exact(owner, route, name, hash).await?
                     } else {
                         client.fetch_clock(owner, name, hash).await?
+                    })?
+                } else if kind == "sensor" {
+                    serde_json::to_value(if let Some(route) = route {
+                        client.fetch_sensor_exact(owner, route, name, hash).await?
+                    } else {
+                        client.fetch_sensor(owner, name, hash).await?
                     })?
                 } else {
                     serde_json::to_value(if let Some(route) = route {

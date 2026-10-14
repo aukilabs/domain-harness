@@ -24,7 +24,7 @@ pub fn peer_position(presence:&Value,peer:&str,frame:&str)->Option<Value>{
 
 pub fn attach_tools() -> Vec<Value> {
     vec![
-        json!({"type":"function","function":{"name":"inspect_sensor_frames","description":"List a discovered peer's typed sensor pose frames and exact Product IDs. Resolve peer aliases through inspect_catalog first. Metadata is not proof of live tracking. No video streams are opened.","parameters":{"type":"object","properties":{"peer_id":{"type":"string"}},"required":["peer_id"],"additionalProperties":false}}}),
+        json!({"type":"function","function":{"name":"inspect_sensor_frames","description":"List a discovered peer's registry-backed camera and sampled pose frames and exact Product IDs. Resolve peer aliases through inspect_catalog first. Metadata is not proof of live tracking. Discovery does not open streams.","parameters":{"type":"object","properties":{"peer_id":{"type":"string"}},"required":["peer_id"],"additionalProperties":false}}}),
         json!({"type":"function","function":{"name":"attach_camera","description":"Continuously attach this browser's 3D map camera to a peer sensor frame (for example see the world from Dan's Phone). Resolve exact peer_id and frame_id with inspect_sensor_frames, choosing the best matching sensor. Include product_id if multiple pose products cover that frame. Requires a valid live transform into the selected Home scene; pauses on stale/lost tracking. This is a virtual viewpoint, NOT a video feed or hardware movement.","parameters":{"type":"object","properties":{"peer_id":{"type":"string"},"frame_id":{"type":"string"},"product_id":{"type":"string"}},"required":["peer_id","frame_id"],"additionalProperties":false}}}),
         json!({"type":"function","function":{"name":"detach_camera","description":"Stop following a peer sensor and restore manual control of this browser's map camera at its current location. No device or scene edits.","parameters":{"type":"object","properties":{},"additionalProperties":false}}})
     ]
@@ -32,11 +32,17 @@ pub fn attach_tools() -> Vec<Value> {
 
 fn frames(network:&Value)->Vec<Value> {
     let catalogs=network["peers"].as_array().into_iter().flatten().filter_map(|p|p["peer_id"].as_str().map(|id|(id.to_string(),p.clone()))).collect();
-    crate::sensor_preview::frame_sensors(&catalogs).iter().map(|s|json!({
-        "peer_id":s.reference.peer_id,"frame_id":s.metadata.as_ref().unwrap().value["from_frame"]["frame_id"],
+    let mut frames=crate::sensor_preview::frame_sensors(&catalogs).iter().map(|s|json!({
+        "peer_id":s.reference.peer_id,"frame_id":s.metadata.as_ref().unwrap().value["from_frame"]["id"],
         "pose_product":s.reference,"sensor_id":s.id,"source_frame":s.metadata.as_ref().unwrap().value["from_frame"],
         "to_frame":s.metadata.as_ref().unwrap().value["to_frame"],"alias":network["aliases"][&s.reference.peer_id]
-    })).collect()
+    })).collect::<Vec<_>>();
+    frames.extend(crate::sensor_preview::camera_sensors(&catalogs).iter().filter_map(|s|{
+        let metadata=s.metadata.as_ref()?;
+        (metadata.schema==crate::registry_ar::CAMERA_METADATA).then(||json!({"peer_id":s.reference.peer_id,
+            "frame_id":metadata.value["frame"]["id"],"source_frame":metadata.value["frame"],
+            "pose_product":s.reference,"sensor_id":s.id,"kind":"camera","alias":network["aliases"][&s.reference.peer_id]}))
+    }));frames
 }
 
 pub fn inspect_frames(network:&Value,args:Value)->Result<Value> {

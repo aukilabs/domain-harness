@@ -51,6 +51,7 @@ pub mod scene_contribution;
 
 pub mod ar_preview;
 pub mod discovered_ar;
+pub mod registry_ar;
 pub mod robot_occupancy;
 
 pub mod notes;
@@ -98,3 +99,5 @@ pub mod chatbot;
 pub mod view_camera; // Browser-local viewpoint controls; sensor attachments never move hardware.
 pub mod camera_vision;
 pub mod scene_tools;
+pub mod peer_locations;
+pub mod chat_camera;

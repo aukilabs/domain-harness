@@ -34,6 +34,11 @@ pub struct Request {
 // budget, including queueing, and starts again when a request finishes.
 const PREVIEW_IDLE: Duration = Duration::from_secs(30);
 const POSE_WAIT: Duration = Duration::from_secs(2);
+fn accept_sequence(last: &mut Option<u64>, sequence: u64) -> bool {
+    if last.is_some_and(|previous| sequence <= previous) { return false; }
+    *last = Some(sequence);
+    true
+}
 fn waiting_for_pose(error: &anyhow::Error) -> bool {
     matches!(error.downcast_ref::<auki_odometry::PoseError>(),
         Some(auki_odometry::PoseError::OutsideHistory))
@@ -96,7 +101,7 @@ pub fn scene_products(catalogs: &crate::device_catalogs::Catalogs) -> Vec<Sensor
                 },
                 route: row["catalog_route"].as_str().and_then(|r| r.parse().ok()),
                 metadata: p.metadata.clone(),
-                pose: None,
+                ar_supported: false,
             });
         }
     }
@@ -196,14 +201,13 @@ pub struct Sensor {
     pub(crate) route: Option<Multiaddr>,
     pub(crate) peer: PeerId,
     pub(crate) metadata: Option<auki_components::CatalogProductMetadata>,
-    pub(crate) pose: Option<ProductReference>,
+    pub(crate) ar_supported: bool,
 }
 
 /// Discover pose-bearing frames by SDK contracts, independent of camera streams.
 pub fn frame_sensors(catalogs: &crate::device_catalogs::Catalogs) -> Vec<Sensor> {
-    // Camera following is not yet migrated; never advertise legacy poses.
-    let _ = catalogs;
-    Vec::new()
+    all_frame_sensors(catalogs).into_iter().filter(|s|s.metadata.as_ref().is_some_and(|m|
+        m.value["lifetime"].as_str().unwrap_or("sampled")=="sampled")).collect()
 }
 fn all_frame_sensors(catalogs: &crate::device_catalogs::Catalogs) -> Vec<Sensor> {
     let mut found = Vec::new();
@@ -217,7 +221,7 @@ fn all_frame_sensors(catalogs: &crate::device_catalogs::Catalogs) -> Vec<Sensor>
                 if p.manifest.peer_id!=*owner || !catalog.components.iter().flat_map(|c|c.current_outputs.values())
                     .any(|o|o.manifest.reference()==p.manifest.producer && contract.validate_output(&o.manifest).is_ok()) {continue}
                 found.push(Sensor {datatype:crate::compact_pose::SCHEMA.into(),id:format!("{owner}/{}",p.manifest.product_id),peer,
-                    reference:p.manifest.reference(),route:row["catalog_route"].as_str().and_then(|r|r.parse().ok()),metadata:Some(metadata.clone()),pose:None});
+                    reference:p.manifest.reference(),route:row["catalog_route"].as_str().and_then(|r|r.parse().ok()),metadata:Some(metadata.clone()),ar_supported:false});
                 continue;
             }
         }
@@ -245,10 +249,7 @@ pub fn camera_sensors(catalogs: &crate::device_catalogs::Catalogs) -> Vec<Sensor
             if !snapshot.components.iter().flat_map(|c|c.current_outputs.values()).any(|o|
                 o.manifest.peer_id == *owner && o.manifest.reference()==p.manifest.producer &&
                 matches!(&o.manifest.payload, PayloadContract::Camera(c) if c.datatype==VideoFrame::DATATYPE)) { continue; }
-            let pose = snapshot.components.iter().flat_map(|c| c.current_outputs.values())
-                .find(|o| o.manifest.reference() == p.manifest.producer)
-                .and_then(|o| crate::compact_ar::candidate(&snapshot, &o.manifest).ok())
-                .map(|(reference, _)| reference);
+            let ar_supported = crate::registry_ar::supported(p, &snapshot, &row["registries"]);
             found.push(Sensor {
                 datatype: VideoFrame::DATATYPE.into(),
                 id: format!("{owner}/{}", p.manifest.product_id),
@@ -260,7 +261,7 @@ pub fn camera_sensors(catalogs: &crate::device_catalogs::Catalogs) -> Vec<Sensor
                 },
                 route: route.clone(),
                 metadata: p.metadata.clone(),
-                pose,
+                ar_supported,
             });
         }
     }
@@ -285,6 +286,7 @@ struct Preview<T = VideoFrame> {
     reference: ProductReference,
     used: Instant,
     frames: watch::Receiver<Option<Arc<Frame<T>>>>,
+    health: watch::Receiver<String>,
     task: tokio::task::JoinHandle<()>,
 }
 impl<T> Drop for Preview<T> {
@@ -295,6 +297,7 @@ impl<T> Drop for Preview<T> {
 fn start_preview<T: ContractType + serde::de::DeserializeOwned + Send + Sync + 'static>(client: ComponentProtocolClient, sensor: Sensor,
     start: ObservationStart, size: fn(&T)->usize) -> Preview<T> {
     let (send, frames) = watch::channel(None);
+    let (health_send, health) = watch::channel("Connecting camera subscription".to_string());
     let reference = sensor.reference.clone();
     let log_poses = sensor.datatype == crate::compact_pose::SCHEMA;
     let history = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
@@ -306,13 +309,17 @@ fn start_preview<T: ContractType + serde::de::DeserializeOwned + Send + Sync + '
             max_bytes: Some(8 * 1024 * 1024),
             target_duration: None,
         };
+        let mut retry_ms = 250u64;
+        let mut last_sequence = None;
+        let mut last_gap_log = None::<Instant>;
+        loop {
         let connect = async {
-            if let Some(route) = sensor.route {
+            if let Some(route) = sensor.route.clone() {
                 client
                     .subscribe_product_exact(
                         sensor.peer,
                         route,
-                        sensor.reference,
+                        sensor.reference.clone(),
                         start,
                         limits,
                         size,
@@ -322,7 +329,7 @@ fn start_preview<T: ContractType + serde::de::DeserializeOwned + Send + Sync + '
                 client
                     .subscribe_product(
                         sensor.peer,
-                        sensor.reference,
+                        sensor.reference.clone(),
                         start,
                         limits,
                         size,
@@ -330,16 +337,33 @@ fn start_preview<T: ContractType + serde::de::DeserializeOwned + Send + Sync + '
                     .await
             }
         };
-        let Ok(Ok(mut subscription)) = tokio::time::timeout(Duration::from_secs(5), connect).await
-        else {
-            return;
+        let mut subscription = match tokio::time::timeout(Duration::from_secs(5), connect).await {
+            Ok(Ok(subscription)) => subscription,
+            result => {
+                let reason = match result { Ok(Err(e)) => e.to_string(), _ => "subscribe timed out".into() };
+                health_send.send_replace(format!("Reconnecting camera: {reason}"));
+                eprintln!("preview subscribe failed peer={} product={:?}: {reason}; retry_ms={retry_ms}", expected.peer_id, expected);
+                if log_poses { return; }
+                tokio::time::sleep(Duration::from_millis(retry_ms)).await;
+                retry_ms = (retry_ms * 2).min(5000);
+                continue;
+            }
         };
         let producer = subscription.product().producer.clone();
         if subscription.product().reference() != expected || producer.peer_id != expected.peer_id { return; }
         let mut arrivals = std::collections::VecDeque::new();
         loop {
-            match subscription.next().await {
+            let event = if log_poses { Ok(subscription.next().await) }
+                else { tokio::time::timeout(Duration::from_secs(5), subscription.next()).await };
+            match event {
+                Err(_) => { health_send.send_replace("Reconnecting camera: no stream event for 5s".into()); eprintln!("preview stalled peer={} product={:?}: no stream event for 5s", expected.peer_id, expected); break; }
+                Ok(event) => match event {
                 Ok(Some(RemoteObservationEvent::Observation(observation))) => {
+                    // LatestExisting can replay the retained sample on reconnect.
+                    // Never give that sample a new arrival time or enable stale AR.
+                    if !accept_sequence(&mut last_sequence, observation.sequence) { continue; }
+                    retry_ms = 250;
+                    health_send.send_replace("Receiving camera frames".into());
                     let now = Instant::now();
                     arrivals.push_back(now);
                     while arrivals.len()>2000 || arrivals.front().is_some_and(|t| now.duration_since(*t)>Duration::from_secs(2)) { arrivals.pop_front(); }
@@ -358,9 +382,24 @@ fn start_preview<T: ContractType + serde::de::DeserializeOwned + Send + Sync + '
                     }
                     send.send_replace(Some(frame));
                 }
-                Ok(Some(RemoteObservationEvent::Gap(_))) => { send.send_replace(None); },
-                _ => break,
+                Ok(Some(RemoteObservationEvent::Gap(gap))) => {
+                    if last_gap_log.is_none_or(|t| t.elapsed() >= Duration::from_secs(5)) {
+                        eprintln!("preview retention gap peer={} product={:?}: {gap:?}", expected.peer_id, expected);
+                        last_gap_log = Some(Instant::now());
+                    }
+                    if log_poses { send.send_replace(None); received_history.lock().unwrap().clear(); }
+                },
+                Ok(Some(RemoteObservationEvent::Closed(end))) => { health_send.send_replace("Reconnecting camera: publisher closed stream".into()); eprintln!("preview closed peer={} product={:?}: {end:?}", expected.peer_id, expected); break; },
+                Ok(None) => { health_send.send_replace("Reconnecting camera: end of stream".into()); eprintln!("preview EOF peer={} product={:?}", expected.peer_id, expected); break; },
+                Err(error) => { health_send.send_replace(format!("Reconnecting camera: {error}")); eprintln!("preview stream failed peer={} product={:?}: {error}", expected.peer_id, expected); break; },
+                }
             }
+        }
+        // Dropping the exact subscription cancels its stream before reopening.
+        drop(subscription);
+        if log_poses { send.send_replace(None); received_history.lock().unwrap().clear(); return; }
+        tokio::time::sleep(Duration::from_millis(retry_ms)).await;
+        retry_ms = (retry_ms * 2).min(5000);
         }
     });
     Preview {
@@ -370,6 +409,7 @@ fn start_preview<T: ContractType + serde::de::DeserializeOwned + Send + Sync + '
         reference,
         used: Instant::now(),
         frames,
+        health,
         task,
     }
 }
@@ -426,12 +466,11 @@ pub async fn serve(
             continue;
         }
         let work = async {
-            if request.follow || request.debug_pose {
+            if request.debug_pose || (request.follow && !sensors.iter().any(|s|Some(&s.id)==request.sensor.as_ref())) {
                 let id=request.sensor.as_ref().ok_or_else(||anyhow!("Select a sensor frame"))?;
                 let sensor=frames.iter().find(|s|&s.id==id).ok_or_else(||anyhow!("Sensor frame unavailable; waiting for its peer"))?;
                 ensure!(request.expected_manifest.as_deref()==Some(sensor.reference.manifest_hash.as_str()),"Sensor Product changed; attach again");
                 if sensor.datatype==crate::compact_pose::SCHEMA {
-                    ensure!(request.debug_pose,"Compact poses currently support inspection, not camera following");
                     let contract:crate::compact_pose::Contract=serde_json::from_value(sensor.metadata.as_ref().unwrap().value.clone())?;
                     let start=if contract.lifetime==crate::compact_pose::Lifetime::Held {ObservationStart::LatestExisting}else{ObservationStart::NewOnly};
                     let preview=compact.entry(id.clone()).or_insert_with(||start_preview(client.clone(),sensor.clone(),start,|_:&crate::compact_pose::Update|256));
@@ -458,6 +497,19 @@ pub async fn serve(
                         Some(json!({"frame":target,"tracking":tracking,"alignment_timestamp_ns":after.to_string()}))
                     }else{None};
                     let age=sample.received.elapsed();
+                    if request.follow {
+                        ensure!(age<Duration::from_secs(2),"Sensor pose is stale");
+                        let home=home_pose.as_ref().ok_or_else(||anyhow!("Select a Home frame"))?;
+                        ensure!(home["tracking"]["status"]=="valid","Sensor tracking is not valid");
+                        let pose=serde_json::from_value(home["tracking"]["pose"].clone())?;
+                        let source=serde_json::from_value(preview.resolved_pose.as_ref().unwrap()["contract"]["from_frame"].clone())?;
+                        let mut view=crate::view_camera::frame_view(&pose,&source)?;
+                        view["frame"]=home["frame"].clone();view["sensor_id"]=json!(sensor.id);
+                        view["source_frame"]=json!(contract.from_frame);view["manifest_hash"]=json!(sensor.reference.manifest_hash);
+                        view["age_ms"]=json!(age.as_millis() as u64);view["clock"]=json!(contract.clock);
+                        view["sequence"]=json!(sample.observation.sequence.to_string());view["capture_timestamp_ns"]=json!(sample.observation.timestamp_ns.to_string());
+                        return Ok(view);
+                    }
                     let history=preview.history.lock().unwrap().iter().map(|frame| {
                         contract.validate_output(&frame.producer)?;
                         ensure!(frame.observation.output==frame.producer.reference(),"Pose producer mismatch");
@@ -490,7 +542,7 @@ pub async fn serve(
             }
             let Some(id) = &request.sensor else {
                 return Ok(
-                    json!({"sensors":sensors.iter().map(|s|json!({"id":s.id,"label":s.reference.product_id,"peer_id":s.reference.peer_id,"ar_available":s.pose.is_some()})).collect::<Vec<_>>()}),
+                    json!({"sensors":sensors.iter().map(|s|json!({"id":s.id,"label":s.reference.product_id,"peer_id":s.reference.peer_id,"ar_available":s.ar_supported})).collect::<Vec<_>>()}),
                 );
             };
             let sensor = sensors
@@ -499,8 +551,8 @@ pub async fn serve(
                 .ok_or_else(|| anyhow!("Sensor unavailable; waiting for its peer"))?;
             if request.ar {
                 ensure!(
-                    sensor.pose.is_some(),
-                    "Camera capture-time pose unavailable"
+                    sensor.ar_supported,
+                    "Camera registry calibration unresolved or unsupported"
                 );
             }
             let preview = previews
@@ -511,11 +563,11 @@ pub async fn serve(
                 .frames
                 .borrow()
                 .clone()
-                .ok_or_else(|| anyhow!("Waiting for camera frames"))?;
+                .ok_or_else(|| anyhow!("{}", &*preview.health.borrow()))?;
             let o = &observations.observation;
             ensure!(
                 observations.received.elapsed() < Duration::from_secs(2),
-                "Camera frames are stale"
+                "Camera frame is stale · {}", &*preview.health.borrow()
             );
             let f = &o.payload;
             ensure!(
@@ -537,13 +589,14 @@ pub async fn serve(
                 crate::video_presentation::resolve(&client,sensor,&row,&observations.producer,o.timestamp_ns).await
             }else{json!({"source":"unavailable","detail":"Peer catalog unavailable"})};
             preview.presentation=Some((o.sequence,presentation.clone()));
-            if request.ar || (request.pick && sensor.pose.is_some()) {
+            if request.ar || request.follow || (request.pick && sensor.ar_supported) {
+                if request.follow {ensure!(request.expected_manifest.as_deref()==Some(sensor.reference.manifest_hash.as_str()),"Camera Product changed; attach again");}
                 let deadline = tokio::time::Instant::now() + POSE_WAIT;
                 let calibrated = loop {
                 let attempt = async {
                     let row = catalogs.borrow().get(&sensor.reference.peer_id).cloned()
                         .ok_or_else(|| anyhow!("Camera peer no longer discovered"))?;
-                    crate::compact_ar::render(&client, held, sensor, &row, o, &observations.producer,
+                    crate::registry_ar::render(&client, sensor, &row, o, &observations.producer,
                         local_scenes, &peer.peer_id().to_string(), request.ar).await
                 }
                 ;
@@ -558,8 +611,19 @@ pub async fn serve(
                 }
                 };
                 match calibrated {
-                    Ok(mut frame) => {frame["presentation"]=presentation.clone();return Ok(frame);},
-                    Err(e) if request.ar => return Err(e),
+                    Ok(mut frame) => {
+                        ensure!(observations.received.elapsed()<Duration::from_secs(2),"Camera frame became stale while resolving its transforms");
+                        if request.follow {
+                            ensure!(Some(frame["picking"]["frame"].as_str().unwrap_or(""))==request.home_frame.as_deref(),"Camera is aligned to another Home scene");
+                            ensure!(observations.received.elapsed()<Duration::from_secs(2),"Camera pose is stale");
+                            let mut view=frame["viewpoint"].take();view["frame"]=frame["picking"]["frame"].clone();
+                            view["source_frame"]=frame["source_frame"].clone();view["sensor_id"]=json!(sensor.id);view["manifest_hash"]=json!(sensor.reference.manifest_hash);
+                            view["age_ms"]=json!(observations.received.elapsed().as_millis() as u64);view["clock"]=frame["clock"].clone();
+                            view["sequence"]=frame["sequence"].clone();view["capture_timestamp_ns"]=frame["capture_timestamp_ns"].clone();return Ok(view);
+                        }
+                        frame["presentation"]=presentation.clone();return Ok(frame);
+                    },
+                    Err(e) if request.ar || request.follow => return Err(e),
                     Err(e) => pick_error = Some(e.to_string()),
                 }
             }
@@ -578,6 +642,16 @@ pub async fn serve(
 #[cfg(test)]
 mod preview_timing_tests {
     use super::*;
+    #[test]
+    fn reconnect_replay_does_not_refresh_stale_frame() {
+        let mut last = None;
+        assert!(accept_sequence(&mut last, 0));
+        assert!(!accept_sequence(&mut last, 0));
+        assert!(accept_sequence(&mut last, 23)); // retention gap is allowed
+        assert!(!accept_sequence(&mut last, 22));
+        assert!(!accept_sequence(&mut last, 23));
+        assert!(accept_sequence(&mut last, 24));
+    }
     #[test]
     fn wait_only_for_missing_history_not_invalid_tracking() {
         assert!(waiting_for_pose(&anyhow::Error::new(auki_odometry::PoseError::OutsideHistory)));

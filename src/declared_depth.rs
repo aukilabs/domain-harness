@@ -154,7 +154,7 @@ async fn capture(
             route: row["catalog_route"].as_str().and_then(|s| s.parse().ok()),
             peer: owner.parse()?,
             metadata: Some(m.clone()),
-            pose: None,
+            ar_supported: false,
         };
         let r = read::<Points>(client, &sensor, ObservationSelection::LatestExisting).await?;
         ensure!(

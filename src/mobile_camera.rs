@@ -14,6 +14,14 @@ pub const DEPTH_IMAGE_PRODUCT: &str = "phone-depth-image";
 
 pub const METADATA_SCHEMA: &str = "spatial.phone-camera/v1";
 
+fn register_clock(entries: &Arc<Mutex<Vec<auki_protocols::registry::v3::RegistryEntryEnvelope>>>, clock: &auki_components::clock::ClockRegistryEntry) -> Result<()> {
+    use auki_protocols::registry::v3::{RegistryEntryEnvelope, RegistryKind};
+    let mut entries = entries.lock().map_err(|_| anyhow::anyhow!("Registry unavailable"))?;
+    let entry = RegistryEntryEnvelope {kind:RegistryKind::Clock,id:clock.clock_id.clone(),hash:clock.hash(),canonical_json:String::from_utf8(clock.canonical_bytes())?};
+    if !entries.iter().any(|e|e.kind==entry.kind && e.id==entry.id && e.hash==entry.hash) { entries.push(entry); }
+    Ok(())
+}
+
 /// What the phone knows about one frame beyond its pixels: which AR session
 /// took it and the pinhole intrinsics of the image as sent.
 #[derive(Clone, Debug, PartialEq)]
@@ -171,6 +179,8 @@ impl CalibrationPublisher {
 }
 
 pub struct Camera {
+    definitions: Arc<Mutex<Vec<auki_protocols::registry::v3::RegistryEntryEnvelope>>>,
+    contract_hash: Option<String>,
     endpoint: Arc<auki_component_protocol::ComponentProtocolEndpoint>,
     output: ConfiguredObservable<VideoFrame>,
     capture: Option<BufferProductCapture<VideoFrame>>,
@@ -198,6 +208,7 @@ impl Camera {
         let session = uuid::Uuid::new_v4().to_string();
         let owner = component.manifest().peer_id.clone();
         let clock = crate::model::clock_entry(&owner, &session);
+        register_clock(&products.definitions, &clock)?;
         let output = component.configured_observable(
             ConfiguredObservableSpec::new(
                 "frames",
@@ -216,6 +227,8 @@ impl Camera {
         let capture = capture(&products.runtime, &output, geometry.clone())?;
         products.endpoint.export_product(&capture.product())?;
         Ok(Self {
+            definitions: products.definitions.clone(),
+            contract_hash: None,
             endpoint: products.endpoint.clone(),
             output,
             capture: Some(capture),
@@ -241,7 +254,8 @@ impl Camera {
     ) -> Result<()> {
         let size = dimensions(&jpeg)?;
         ensure!(geometry.valid(size), "Invalid camera geometry");
-        self.place(&geometry.session, geometry.rotation_deg, size, geometry.frame_id(), timestamp)?;
+        ensure!(geometry.rotation_deg == 0, "Publish native camera pixels; presentation rotation belongs to the viewer");
+        self.place_calibrated(&geometry, size, timestamp)?;
         *self.geometry()? = Some((geometry, size));
         self.publish(timestamp, jpeg)
     }
@@ -249,6 +263,56 @@ impl Camera {
         self.geometry
             .lock()
             .map_err(|_| anyhow::anyhow!("Camera geometry unavailable"))
+    }
+    fn place_calibrated(&mut self, g: &Geometry, size: (u32, u32), timestamp: u64) -> Result<()> {
+        use auki_protocols::registry::v3::{RegistryEntryEnvelope, RegistryKind};
+        let owner = self.runtime.peer_id().to_string();
+        let frame = auki_registry::FrameRegistryEntry::opengl(&owner, g.frame_id());
+        let mut clock = crate::model::clock_entry(&owner, &g.session);
+        clock.clock_id = "arkit-capture".into();
+        let sensor: auki_registry::SensorRegistryEntry = serde_json::from_value(serde_json::json!({
+            "peer_id":owner,"sensor_id":format!("rgb:{}",g.session),"kind":"camera","type":"mono",
+            "width":size.0,"height":size.1,"frame_rate_hz":10,"image_encoding":"jpeg",
+            "pixel_format":"rgb8","row_stride_bytes":0,"color_space":"srgb",
+            "intrinsics_model":"pinhole","distortion_model":"plumb_bob",
+            "calibration":{"fx":g.fx,"fy":g.fy,"cx":g.cx,"cy":g.cy,"distortion_coefficients":[0.,0.,0.,0.,0.]},
+            "frame":{"peer_id":owner,"id":frame.frame_id,"hash":frame.hash()}
+        }))?;
+        let contract = crate::registry_ar::CameraContract {
+            sensor: auki_registry::RegistryRef {peer_id:owner,id:sensor.sensor_id.clone(),hash:sensor.hash()},
+            frame: (&frame).into(), clock: crate::model::clock_ref(&clock), session_id:g.session.clone(),
+        };
+        let hash = manifest_hash(&contract);
+        if self.contract_hash.as_ref() == Some(&hash) { return Ok(()); }
+        {
+            let mut entries = self.definitions.lock().map_err(|_| anyhow::anyhow!("Registry unavailable"))?;
+            for entry in [
+                RegistryEntryEnvelope {kind:RegistryKind::Sensor,id:sensor.sensor_id.clone(),hash:sensor.hash(),canonical_json:String::from_utf8(sensor.canonical_bytes())?},
+                RegistryEntryEnvelope {kind:RegistryKind::Frame,id:frame.frame_id.clone(),hash:frame.hash(),canonical_json:String::from_utf8(frame.canonical_bytes())?},
+                RegistryEntryEnvelope {kind:RegistryKind::Clock,id:clock.clock_id.clone(),hash:clock.hash(),canonical_json:String::from_utf8(clock.canonical_bytes())?},
+            ] {
+                if !entries.iter().any(|e|e.kind==entry.kind && e.id==entry.id && e.hash==entry.hash) { entries.push(entry); }
+            }
+        }
+        let replacement = self.component.replace_configured_observable(&self.output,
+            ConfiguredObservableSpec::new("frames",format!("camera-{hash}"),contract.clock.clone(),payload(size))
+                .in_registered_frame(frame), timestamp)?.replacement;
+        contract.validate(replacement.manifest())?;
+        if let Some(old) = self.capture.take() { self.endpoint.unexport_product(PRODUCT); old.delete()?; }
+        self.output = replacement;
+        let capture = self.runtime.capture_buffer_with_metadata(PRODUCT,&self.output,
+            BufferLimits {max_entries:Some(RETAINED_FRAMES),max_bytes:Some(8*1024*1024),target_duration:None},
+            |f:&VideoFrame|f.bytes.len(),move |o|Ok(Some(CatalogProductMetadata {
+                schema:crate::registry_ar::CAMERA_METADATA.into(),source_sequence:o.sequence,
+                value:serde_json::to_value(&contract).map_err(|e|e.to_string())?,
+            })))?;
+        self.endpoint.export_product(&capture.product())?;
+        self.capture = Some(capture);
+        self.contract_hash = Some(hash);
+        self.placed = Some((g.session.clone(),0,size));
+        self.size = size;
+        self.last_timestamp = 0;
+        Ok(())
     }
     /// Declare which AR session the camera is in as soon as it is known, so
     /// the Catalog relates it to depth and pose before any frame is asked for.
@@ -269,6 +333,7 @@ impl Camera {
         let owner = self.runtime.peer_id().to_string();
         let mut clock = crate::model::clock_entry(&owner, session);
         clock.clock_id = "arkit-capture".into();
+        register_clock(&self.definitions, &clock)?;
         let replacement = self
             .component
             .replace_configured_observable(
@@ -288,6 +353,7 @@ impl Camera {
             old.delete()?;
         }
         self.output = replacement;
+        self.contract_hash = None;
         self.placed = Some((session.into(), turn, size));
         self.size = size;
         self.last_timestamp = 0;
