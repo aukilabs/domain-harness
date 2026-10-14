@@ -24,7 +24,7 @@ const chatForm=$('scene-chat-form'),chatInput=$('scene-chat-input'),chatStatus=$
 chatForm.querySelector('button').disabled=true;
 const chatHistory=$('scene-chat-history'),chatConversations=new Map();let chatPending=false;
 let chatCompact=false;try{chatCompact=localStorage.getItem('home.chat.compact')==='true';}catch{}
-let agentBar=null;
+let agentBar=null,setPlanBar=()=>{};
 function syncChatCompact(){document.querySelector('.scene-chat').classList.toggle('compact',chatCompact);const toggle=$('scene-chat-toggle');toggle.dataset.tip=chatCompact?'Show conversation':'Hide conversation';toggle.setAttribute('aria-label',toggle.dataset.tip);toggle.setAttribute('aria-expanded',String(!chatCompact));agentBar?.syncSheet();}
 $('scene-chat-toggle').onclick=()=>{chatCompact=!chatCompact;try{localStorage.setItem('home.chat.compact',String(chatCompact));}catch{}syncChatCompact();};syncChatCompact();
 // Messages already shown keep still; only new ones animate in. The thinking row stands in for a pending reply.
@@ -297,7 +297,7 @@ function domainCenter(){return new THREE.Box3().setFromPoints((current?.portals|
 function fit(){if(current?.simulation){const d=Math.max(12,11/Math.max(camera.aspect,.2));camera.position.set(0,d,d*.4);controls.target.set(0,0,0);}else if(current?.portals.length){const c=domainCenter();const box=new THREE.Box3().setFromPoints(current.portals.map(p=>new THREE.Vector3(...p.pose_in_map.translation)));const size=box.getSize(new THREE.Vector3());const distance=Math.max(size.x/Math.max(camera.aspect,.2),size.z)*1.65+3;camera.position.copy(c).add(new THREE.Vector3(0,distance,distance*.25));controls.target.copy(c);}else{camera.position.set(3.6,3.5,4.6);controls.target.set(0,.5,0);}controls.update();}
 fit();
 // Entering 2D ends any 3D selection or creation, so volume handles and cards never linger over the plan.
-const map2D=createMap2D($('canvas'),active=>{agentBar?.lock(active?'switch to 3D to use':null);if(active){if(placingNote)stopNotePlacement();if($('volume-draw')?.getAttribute('aria-pressed')==='true')$('volume-draw').click();clearSelection();}controls.enabled=!active;$('top').setAttribute('aria-pressed',String(active));$('top').title=active?'Switch to 3D mode':'Switch to 2D mode';$('top').setAttribute('aria-label',$('top').title);$('canvas').dataset.viewMode=active?'2d':'3d';});
+const map2D=createMap2D($('canvas'),active=>{agentBar?.lock(active?'switch to 3D to use':null);setPlanBar(active);if(active){if(placingNote)stopNotePlacement();if($('volume-draw')?.getAttribute('aria-pressed')==='true')$('volume-draw').click();clearSelection();}controls.enabled=!active;$('top').setAttribute('aria-pressed',String(active));$('top').title=active?'Switch to 3D mode':'Switch to 2D mode';$('top').setAttribute('aria-label',$('top').title);$('canvas').dataset.viewMode=active?'2d':'3d';});
 const attachedCamera=createAttachedCamera({host:$('canvas'),camera,controls,map2D,context:()=>({scene:activeMap,frame:current?.frame}),request:async(action,signal)=>{
  const q=new URLSearchParams({follow:'true',home_frame:action.frame,sensor:action.sensor_id,expected_manifest:action.pose_product.manifest_hash});
  const response=await fetch('/api/sensors?'+q,{signal});const value=await response.json();if(!response.ok)throw Error(value.error||'Sensor unavailable');return value;
@@ -1627,6 +1627,17 @@ agentBar=createAgentBar({root:document.querySelector('.agent-bar'),hasConversati
  {label:'New volume',iconPath:'M9 1.5 15.5 5v8L9 16.5 2.5 13V5ZM2.5 5 9 8.5l6.5-3.5M9 8.5v8',accent:'violet',source:$('volume-draw'),onTrigger:()=>$('volume-draw').click(),disabledReason:()=>'select a local Home scene'},
 ]});syncChatCompact();
 // Only one creation tool at a time: starting one ends the others, whichever button started it.
+// In 2D the plan's floor, legend and scale take the tools' place in the bottom bar.
+{
+ const bar=document.querySelector('.agent-bar'),shell=bar.querySelector('.agent-shell');
+ shell.insertBefore(map2D.controlStrip,bar.querySelector('.agent-divider'));
+ setPlanBar=active=>{
+  const from=shell.getBoundingClientRect().width;bar.toggleAttribute('data-plan',active);
+  if(bar.dataset.mode==='agent'||matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+  const to=shell.getBoundingClientRect().width;shell.animate([{width:from+'px'},{width:to+'px'}],{duration:480,easing:'cubic-bezier(.3,1.3,.5,1)'});
+  (active?map2D.controlStrip:bar.querySelector('.agent-tools')).animate([{opacity:0,filter:'blur(4px)',transform:'translateY(4px)'},{opacity:1,filter:'none',transform:'none'}],{duration:320,delay:80,easing:'cubic-bezier(.2,.8,.2,1)',fill:'backwards'});
+ };
+}
 const creationTools=[{source:newNoteButton,stop:()=>stopNotePlacement()},{source:$('crayon'),stop:()=>$('crayon').click()},{source:$('volume-draw'),stop:()=>$('volume-draw').click()}];
 for(const tool of creationTools)new MutationObserver(()=>{
  if(tool.source.getAttribute('aria-pressed')!=='true')return;

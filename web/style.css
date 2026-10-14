@@ -1203,3 +1203,10 @@ select.form-control{appearance:none;-webkit-appearance:none;padding-right:30px;b
 .toast{top:auto;bottom:88px;z-index:96;animation:toast-in .3s cubic-bezier(.3,1.25,.5,1)}
 @keyframes toast-in{from{opacity:0;transform:translate(-50%,8px)}}
 @media(prefers-reduced-motion:reduce){.toast{animation:none}}
+/* 2D plan controls live in the bottom bar, in place of the 3D tools. The bar is already glass, so the strip
+   drops its own surface and sits flush with the tools' rhythm. */
+.agent-shell .map2d-strip{position:static;display:none;height:42px;padding:0 6px 0 2px;border:0;border-radius:0;background:none;-webkit-backdrop-filter:none;backdrop-filter:none;box-shadow:none}
+.agent-bar[data-plan]:not([data-mode="agent"]) .agent-shell .map2d-strip{display:flex}
+.agent-bar[data-plan] .agent-tools{display:none}
+.agent-shell .map2d-legend{padding-left:2px}
+@media(max-width:720px){.agent-shell .map2d-legend{display:none}}

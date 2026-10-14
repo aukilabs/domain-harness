@@ -24,7 +24,7 @@ const NICE_LENGTHS=[.1,.2,.5,1,2,5,10,20,50,100];
 export function createMap2D(host,onToggle){
  const panel=document.createElement('div');panel.className='map2d';panel.hidden=true;
  const canvas=document.createElement('canvas');canvas.className='map2d-canvas';canvas.setAttribute('aria-label','2D occupancy map');canvas.setAttribute('role','img');panel.append(canvas);
- // Floor height, legend and scale share one glass strip at the bottom left.
+ // Floor height, legend and scale share one strip; the app shows it in the bottom bar while the plan is open.
  const strip=document.createElement('div');strip.className='map2d-strip';
  strip.innerHTML=`<div class="map2d-floor" role="group" aria-label="Floor height">
   <span class="map2d-label">Floor</span>
@@ -100,5 +100,5 @@ export function createMap2D(host,onToggle){
   if(reduce()){panel.hidden=true;return;}
   panel.animate([{opacity:1},{opacity:0}],{duration:200,easing:'ease-in'}).finished.then(()=>{if(!active)panel.hidden=true;});
  }
- return {toggle(){active=!active;show(active);onToggle(active);if(active)fit();},update(value){const changed=data?.frame!==value.frame;data=value;if(changed&&active)fit();else request();},fit,isActive:()=>active};
+ return {toggle(){active=!active;show(active);onToggle(active);if(active)fit();},update(value){const changed=data?.frame!==value.frame;data=value;if(changed&&active)fit();else request();},fit,isActive:()=>active,controlStrip:strip};
 }
