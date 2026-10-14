@@ -743,13 +743,47 @@ $('map-select').onchange=async()=>{activeMap=$('map-select').value;selectedPathI
 function clearSelection(){const volumeOpen=noteCardMode==='volume';noteCardMode='view';if(volumeOpen)semanticVolumes.closed();placementGeneration++;placement=null;selectedPathId=null;crayon.select(null);selectedNoteId=null;selectedSpatialNode=null;updateSpatialSelection();$('selection').hidden=true;if(scene.userData.placementPin)scene.userData.placementPin.visible=false;renderNotes();}
 let cardReturn=null;
 // Keyboard activation moves focus into the card; Escape brings it back to the row.
-function focusCard(event,back){cardReturn=back;if(event?.detail!==0)return;const heading=$('selection').querySelector(':scope>strong');if(heading){heading.tabIndex=-1;heading.focus();}}
-function showSelection(title,body,note,{kind,subtitle,onSubtitle,monoTitle=false}={}){if(noteCardMode==='volume'){noteCardMode='view';semanticVolumes.closed();}selectedPathId=null;crayon?.select(null);delete $('selection').dataset.pathId;selectedNoteId=null;selectedSpatialNode=null;updateSpatialSelection();const el=$('selection');delete el.dataset.noteId;delete el.dataset.spatialId;delete el.dataset.spatialKind;el.replaceChildren();
+function focusCard(event,back){cardReturn=back;if(event?.detail!==0)return;const heading=$('selection').querySelector('.card-title,:scope>strong');if(heading){heading.tabIndex=-1;heading.focus();}}
+function showSelection(title,body,note,{kind,subtitle,onSubtitle,monoTitle=false,facts}={}){if(noteCardMode==='volume'){noteCardMode='view';semanticVolumes.closed();}selectedPathId=null;crayon?.select(null);delete $('selection').dataset.pathId;selectedNoteId=null;selectedSpatialNode=null;updateSpatialSelection();const el=$('selection');delete el.dataset.noteId;delete el.dataset.spatialId;delete el.dataset.spatialKind;el.replaceChildren();
  const close=document.createElement('button');close.type='button';close.className='inspector-close';close.setAttribute('aria-label','Close inspector');close.append(icon(icons.close));close.onclick=clearSelection;el.append(close);
  if(kind){const chip=document.createElement('span');chip.className='inspector-kind';chip.textContent=kind;el.append(chip);}
  const strong=document.createElement('strong');strong.textContent=title;if(monoTitle)strong.className='mono-id';el.append(strong);
  if(subtitle){const parent=document.createElement('button');parent.type='button';parent.className='text-action inspector-parent';parent.textContent=subtitle;parent.onclick=onSubtitle;el.append(parent);}
- const line=document.createElement('div');line.className='inspector-position';line.textContent=body;const small=document.createElement('small');small.textContent=note;if(body)el.append(line);if(note)el.append(small);el.hidden=false;}
+ const line=document.createElement('div');line.className='inspector-position';line.textContent=body;const small=document.createElement('small');small.textContent=note;if(body)el.append(line);if(note)el.append(small);
+ if(facts?.length)el.append(factsList(facts));el.hidden=false;}
+// Label/value rows for a card body; [label, value, copyable].
+function factsList(facts){const list=document.createElement('dl');list.className='spatial-fields card-facts';
+ for(const [name,value,copy] of facts){const term=document.createElement('dt'),description=document.createElement('dd'),text=document.createElement('span');term.textContent=name;text.textContent=value;if(copy)text.className='mono-id';description.append(text);if(copy)description.append(copyButton(String(value),'Copy '+name.toLowerCase()));list.append(term,description);}
+ return list;}
+const xyz=(values,digits=2)=>['x','y','z'].map((axis,i)=>`${axis} ${values[i].toFixed(digits)}`).join('  ')+' m';
+// Every card variant shares one anatomy: a header (a tile in the section colour, the kind and the title), the
+// close button in the corner, then the body. Builders keep emitting a kind chip and title; this turns them
+// into the header, so notes, paths, anchors, volumes and scene picks all match. It also runs the card motion.
+const CUBE_ICON='M9 1.5 15.5 5v8L9 16.5 2.5 13V5ZM2.5 5 9 8.5l6.5-3.5M9 8.5v8';
+const CARD_KINDS=[[/note/i,'amber',icons.note],[/path/i,'amber',icons.pen],[/volume/i,'violet',CUBE_ICON],[/anchor/i,'emerald',icons.anchor],[/landmark/i,'emerald',icons.landmark],[/portal/i,'emerald',icons.pin],[/robot/i,'cyan',icons.device],[/.*/,'zinc',CUBE_ICON]];
+function decorateCard(card){
+ if(!card.querySelector(':scope>.inspector-close')){const close=document.createElement('button');close.type='button';close.className='inspector-close';close.setAttribute('aria-label','Close inspector');close.append(icon(icons.close));close.onclick=clearSelection;card.prepend(close);}
+ const chip=card.querySelector('.inspector-kind');if(!chip||chip.closest('.card-head'))return;
+ const [,accent,path]=CARD_KINDS.find(([pattern])=>pattern.test(chip.textContent));
+ const head=document.createElement('div');head.className='card-head';const tile=document.createElement('span');tile.className='card-tile';tile.dataset.accent=accent;tile.append(icon(path,16));
+ const text=document.createElement('div');text.className='card-head-text';const title=chip.nextElementSibling?.matches('strong')?chip.nextElementSibling:null;
+ chip.replaceWith(head);chip.className='card-kind';text.append(chip);
+ if(title){title.classList.add('card-title');title.id='card-title';text.append(title);}
+ head.append(tile,text);card.setAttribute('aria-labelledby',title?'card-title':'');
+}
+{
+ const card=$('selection');card.setAttribute('role','region');let shownAs=null;
+ const signature=()=>card.querySelector('.card-kind,.inspector-kind')?.textContent+'|'+(card.querySelector('.card-title,:scope>strong')?.textContent||'');
+ const observer=new MutationObserver(()=>{
+  if(card.hidden){shownAs=null;return;}
+  decorateCard(card);observer.takeRecords();
+  const now=signature();if(now===shownAs)return;const entering=shownAs===null;shownAs=now;
+  if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+  if(entering)card.animate([{opacity:0,transform:'translateX(14px) scale(.97)'},{opacity:1,transform:'none'}],{duration:440,easing:'cubic-bezier(.3,1.25,.5,1)'});
+  else for(const [i,node] of [...card.children].filter(n=>!n.matches('.inspector-close')).slice(0,4).entries())node.animate([{opacity:0,transform:'translateY(6px)'},{opacity:1,transform:'none'}],{duration:280,delay:i*40,easing:'cubic-bezier(.2,.8,.2,1)',fill:'backwards'});
+ });
+ observer.observe(card,{childList:true,attributes:true,attributeFilter:['hidden']});
+}
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('selection').hidden&&!e.target.closest('input,textarea,select,dialog')){const back=cardReturn;clearSelection();back?.()?.focus();}});
 let pointerStart;
 renderer.domElement.addEventListener('pointerdown',e=>{pointerStart=[e.clientX,e.clientY];});
@@ -760,13 +794,13 @@ renderer.domElement.addEventListener('pointerup',e=>{
  if(placingNote){const target=placementTarget;stopNotePlacement();const box=renderer.domElement.getBoundingClientRect(),pick=new THREE.Raycaster();pick.setFromCamera(new THREE.Vector2((e.clientX-box.left)/box.width*2-1,1-(e.clientY-box.top)/box.height*2),camera);const request={source:'scene',frame:current.frame,origin:pick.ray.origin.toArray(),direction:pick.ray.direction.toArray()};if(target)target(request);else beginLabel(request);return;}
  const r=renderer.domElement.getBoundingClientRect(), ray=new THREE.Raycaster();ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),camera);
  const hits=ray.intersectObjects([...selectable,...crayon.objects()].filter(o=>{for(let p=o;p;p=p.parent){if(!p.visible)return false;}return true;}));if(!hits.length){clearSelection();return;}const h=hits.find(h=>h.object.userData.kind==='note')||hits.find(h=>h.object.userData.kind==='path')||hits.find(h=>h.object.userData.kind==='portal')||hits[0],d=h.object.userData;
- if(d.kind==='voxels'){const v=current.voxels[h.instanceId];showSelection('Occupied voxel',`[${v.center.map(n=>n.toFixed(2)).join(', ')}] m`,`Evidence ${v.evidence} · 10 cm cell`);}
- if(d.kind==='occupancy'){const t=current.occupancy_tiles[h.instanceId];showSelection('Occupancy · '+(t.value===100?'occupied':t.value===0?'free':'unknown'),`[${t.center.map(n=>n.toFixed(2)).join(', ')}] m`,`Value ${t.value} · 10 cm sample · retrieved in 2 m cells`);}
+ if(d.kind==='voxels'){const v=current.voxels[h.instanceId];showSelection('Occupied voxel','','',{kind:'Voxel',facts:[['Position',xyz(v.center),true],['Evidence',String(v.evidence)],['Cell size','10 cm']]});}
+ if(d.kind==='occupancy'){const t=current.occupancy_tiles[h.instanceId],state=t.value===100?'Occupied':t.value===0?'Free':'Unknown';showSelection(state+' cell','','',{kind:'Occupancy',facts:[['State',state],['Position',xyz(t.center),true],['Value',String(t.value)],['Sample','10 cm · retrieved in 2 m cells']]});}
  if(d.kind==='path'){showPathSelection(d.path);return;}
  if(d.kind==='note')showNoteSelection(d.note);
- if(d.kind==='object'){const o=d.object;showSelection(o.label,`[${o.position.map(n=>n.toFixed(2)).join(', ')}] m`,`Source: ${o.source_peer}`);}
- if(d.kind==='portal'&&(d.portal.anchor_id.length===11||d.portal.anchor_id.startsWith('home:'))){showSelection(d.portal.anchor_id,'Portal','Double-click to approach');return;}
- if(d.kind==='portal')showSelection(`Portal ${d.portal.payload.split(':').at(-1)}`,`${d.portal.side_length_m.toFixed(2)} m encoded size`,'Manually supplied · no backend lookup');
+ if(d.kind==='object'){const o=d.object;showSelection(o.label,'','',{kind:'Object',facts:[['Position',xyz(o.position),true],['Source',o.source_peer,true]]});}
+ if(d.kind==='portal'&&(d.portal.anchor_id.length===11||d.portal.anchor_id.startsWith('home:'))){showSelection(d.portal.anchor_id,'','Double-click to approach',{kind:'Portal',monoTitle:true});return;}
+ if(d.kind==='portal')showSelection(`Portal ${d.portal.payload.split(':').at(-1)}`,'','',{kind:'Portal',facts:[['Encoded size',`${d.portal.side_length_m.toFixed(2)} m`],['Source','Manually supplied · no backend lookup']]});
 });
 renderer.domElement.addEventListener('dblclick',e=>{
  if(e.button!==0||!current||crayon.isActive()||map2D.isActive())return;
@@ -905,7 +939,7 @@ function glyphFor(key,name){
 function focusPose(name,state){
  if(!state.pose)return;
  const target=new THREE.Vector3(...state.pose.translation).add(new THREE.Vector3(0,.3,0));cameraPan.start(target.clone().add(new THREE.Vector3(2,2.4,2.7)),target);
- showSelection(name+' · '+state.status,`[${state.pose.translation.map(n=>n.toFixed(3)).join(', ')}] m`,'Calibrated robot base · arrow points forward · illustrative pose glyph');
+ showSelection(name,'',state.status,{kind:'Robot',facts:[['Position',xyz(state.pose.translation,3),true],['Pose','Calibrated robot base · arrow points forward · illustrative glyph']]});
 }
 function renderRunners(entries){
  const keys=new Set(entries.map(e=>e.key));
