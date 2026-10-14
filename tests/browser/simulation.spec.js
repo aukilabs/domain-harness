@@ -1,4 +1,6 @@
 import { test, expect } from '@playwright/test';
+// Devices is a list; choosing a device opens its detail view in the panel.
+async function openDevice(page,id){if(await page.locator('#device-detail').count())await page.getByRole('button',{name:'All devices',exact:true}).click();await page.locator(`#fleet-sensors .device-item[data-peer="${id}"] .list-row`).click();return page.locator(`#device-detail[data-peer="${id}"]`);}
 
 test('retained occupancy remains usable while nonexistent voxel scenes are removed',async({page,request})=>{
  const base=await(await request.get('/api/scene')).json();
@@ -21,8 +23,7 @@ test('Devices exposes real-inventory fields, component catalogs and observation 
  const peer={peer_id:'robot-peer-1',name:'Robot 1',status:'connected',received_observations:4,catalog:{components:[{manifest:{component_id:'fake-voxel-source'}}],products:[{manifest:{peer_id:'robot-peer-1',product_id:'fake-voxels-scene',producer:{component_id:'fake-voxel-source'}}}]}};
  await page.route('**/api/peer',r=>r.fulfill({json:{enabled:true,status:'Simulation · running',connection:{peer_id:'home-peer'},peers:[peer]}}));
  await page.goto('/');await page.getByRole('button',{name:'Devices',exact:true}).click();
- const robot=page.locator('#fleet-sensors > details[data-peer="robot-peer-1"]');
- await robot.locator('summary').first().click();
+ const robot=await openDevice(page,'robot-peer-1');
  await expect(robot).toContainText('robot-peer-1');
  await expect(robot).toContainText('Component · fake-voxel-source');
  await expect(robot).toContainText('Product · fake-voxels-scene');

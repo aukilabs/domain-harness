@@ -3,11 +3,22 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Spatial Harness · Home</title>
+<script>try{if(localStorage.getItem('spatial-theme')==='light')document.documentElement.dataset.theme='light';}catch{}</script>
 <link rel="stylesheet" href="/style.css">
 <script type="importmap">{"imports":{"three":"/vendor/three.module.js","three/addons/controls/OrbitControls.js":"/vendor/OrbitControls.js","three/addons/loaders/GLTFLoader.js":"/vendor/GLTFLoader.js","three/addons/loaders/DRACOLoader.js":"/vendor/DRACOLoader.js","/utils/BufferGeometryUtils.js":"/vendor/BufferGeometryUtils.js"}}</script>
 </head>
 <body>
-<header><a class="brand" href="/" aria-label="Spatial Harness home"><span class="brand-mark">⌘</span> spatial<span class="brand-light">harness</span></a><div class="breadcrumb">Workspace <span>/</span> Home Server</div><div class="connection"><i></i><span id="connection">Connecting</span></div></header>
+<header class="app-header">
+<a class="app-logo" href="/" aria-label="McKenna home"><span class="app-logo-mark" aria-hidden="true"></span></a>
+<div class="connection" role="status"><i></i><span id="connection">Connecting</span></div>
+<button id="user-menu-button" class="user-menu-button" type="button" popovertarget="user-menu" aria-haspopup="dialog"><img src="/brand/nils-pihl.jpg" alt="" width="28" height="28"><span>Nils Pihl</span><svg class="user-menu-chevron" aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 6.5 8 10l3.5-3.5"/></svg></button>
+<div id="user-menu" class="user-menu" popover aria-label="Account">
+<div class="user-menu-identity"><img src="/brand/nils-pihl.jpg" alt="" width="40" height="40"><div><strong>Nils Pihl</strong><small>CEO, Auki Labs</small></div></div>
+<section class="user-menu-section" id="user-menu-server" aria-labelledby="user-menu-server-title"><h3 id="user-menu-server-title">Home server</h3></section>
+<div class="user-menu-section" role="group" aria-labelledby="user-menu-theme-title"><h3 id="user-menu-theme-title">Appearance</h3><div class="theme-switch"><button type="button" data-theme-choice="light" aria-pressed="false">Light</button><button type="button" data-theme-choice="dark" aria-pressed="false">Dark</button></div></div>
+<div class="user-menu-section user-menu-links"><a href="/api/snapshots" target="_blank" rel="noopener">Inspect SDK snapshots <span aria-hidden="true">↗</span></a><a href="/api/snapshots" download="scenegraph.json">Export snapshot <span aria-hidden="true">↓</span></a></div>
+</div>
+</header>
 <div class="shell">
 <aside>
 <h1>Home Server<span class="title-dot">.</span></h1>
@@ -59,16 +70,10 @@
 </form>
 <p id="scene-chat-status" role="status">Local Qwen · inspect scene and edit volume descriptions</p>
 </section>
-<div class="viewport-footer"><span>Drag to orbit <b>·</b> Scroll to zoom <b>·</b> Click to inspect</span><span><i class="axis x">X</i><i class="axis y">Y</i><i class="axis z">Z</i></span></div>
 </section>
 <div class="stats"><div><span>OCCUPIED VOXELS</span><strong id="voxel-count">0</strong><small>10 cm resolution</small></div><div><span>OBSERVATIONS</span><strong id="observation-count">0</strong><small>Integrated across peers</small></div><div><span>SEMANTIC OBJECTS</span><strong id="object-count">0</strong><small>Positioned by raycast</small></div><div><span>MAP AUTHORITY</span><strong class="authority"><span id="map-authority">Home Server</span> <i>●</i></strong><small>Persisted by map owner</small></div></div>
 <section class="flow"><div class="flow-heading"><span class="eyebrow">FROM PIXELS TO PLACE</span><span class="subtle">First working slice</span></div><div class="flow-steps"><div><span class="step">01</span><div><strong>Observe</strong><p>Shared measured observations</p></div></div><span class="arrow">→</span><div><span class="step">02</span><div><strong>Build</strong><p>Independent Home and runner maps</p></div></div><span class="arrow">→</span><div><span class="step">03</span><div><strong>Understand</strong><p>A screen detection gets a 3D position</p></div></div></div></section>
 </main>
 </div>
-<dialog id="label-dialog" aria-labelledby="label-dialog-title">
-<form id="label-dialog-form" class="note-form"><h3 id="label-dialog-title">New note</h3><p id="label-dialog-status" role="status"></p>
-<label for="label-dialog-text">Title</label><input id="label-dialog-text" maxlength="120" autocomplete="off" required placeholder="Note title">
-<div id="label-note-fields"></div>
-<div class="label-actions"><button id="label-dialog-cancel" type="button">Cancel</button><button id="label-dialog-save" type="submit">Save label</button></div></form></dialog>
 <script type="module" src="/app.js"></script>
 </body></html>

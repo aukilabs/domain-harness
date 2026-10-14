@@ -7,7 +7,7 @@ test('draw, save, reload, edit, isolate and delete a semantic volume',async({pag
  await page.locator('[data-map="local:humanoid-hub-conference"]').click();
  await expect(page.locator('#scene-title')).toHaveText('Humanoid Hub Conference');
  await page.getByRole('button',{name:'Volumes',exact:true}).click();
- await page.getByRole('button',{name:'Draw box',exact:true}).click();
+ await page.getByRole('button',{name:'New volume',exact:true}).click();
  const canvas=page.locator('#canvas canvas'),rect=await canvas.boundingBox();
  await page.mouse.move(rect.x+rect.width*.42,rect.y+rect.height*.42);
  await page.mouse.down();await page.mouse.move(rect.x+rect.width*.62,rect.y+rect.height*.62,{steps:10});await page.mouse.up();
@@ -29,7 +29,7 @@ test('draw, save, reload, edit, isolate and delete a semantic volume',async({pag
  await page.locator('[data-map="local:humanoid-hub-conference"]').click();
  await expect(page.locator('#scene-title')).toHaveText('Humanoid Hub Conference');
  await page.getByRole('button',{name:'Volumes',exact:true}).click();
- await page.locator(`[data-volume-id="${v.id}"]`).click();
+ await page.locator(`[data-volume-id="${v.id}"]`).click();await page.getByRole('button',{name:'Edit',exact:true}).click();
  await expect(form.getByLabel('Description',{exact:true})).toHaveValue('Space for the team to gather.');
  await form.getByLabel('Title',{exact:true}).fill('Team zone');await form.getByLabel('Rotation (degrees)',{exact:true}).fill('45');
  await page.getByRole('button',{name:'Save volume',exact:true}).click();
@@ -42,7 +42,7 @@ test('draw, save, reload, edit, isolate and delete a semantic volume',async({pag
  await expect(page.locator('#scene-title')).toHaveText('Humanoid Hub Conference');await page.getByRole('button',{name:'Volumes',exact:true}).click();
  await page.locator(`[data-volume-id="${v.id}"]`).click();
  await page.screenshot({path:'test-results/semantic-volumes.png'});
- page.once('dialog',dialog=>dialog.accept());await page.getByRole('button',{name:'Delete',exact:true}).click();
+ await page.getByRole('button',{name:'Delete',exact:true}).click();await page.getByRole('button',{name:'Delete volume',exact:true}).click();
  await expect(page.locator('#volume-status')).toHaveText('Volume deleted.');
  expect((await (await request.get(url)).json()).items).toHaveLength(0);
  expect(errors).toEqual([]);
@@ -64,8 +64,8 @@ test('Peyote-style move and corner rotation commit on release with a fixed hinge
   const rotated=(await (await request.get(url)).json()).items.find(i=>i.id===v.id),afterPivot=point(rotated,1);
   expect(rotated.yaw).not.toBeCloseTo(moved.yaw,3);expect(rotated.size).toEqual(moved.size);expect(afterPivot[0]).toBeCloseTo(pivot[0],3);expect(afterPivot[1]).toBeCloseTo(pivot[1],3);
   await page.screenshot({path:'test-results/peyote-volume-editor.png'});
-  await page.getByRole('button',{name:'Create volume',exact:true}).click();await expect(page.getByRole('button',{name:'Create volume',exact:true})).toHaveAttribute('aria-pressed','true');await page.keyboard.press('Escape');await expect(page.locator('#volume-form')).toBeHidden();await expect(page.getByRole('button',{name:'Select',exact:true})).toHaveAttribute('aria-pressed','true');
-  await page.getByRole('button',{name:'Create volume',exact:true}).click();const canvas=await page.locator('#canvas canvas').boundingBox();await page.keyboard.down('Shift');await page.mouse.move(canvas.x+canvas.width*.35,canvas.y+canvas.height*.4);await page.mouse.down();await page.mouse.move(canvas.x+canvas.width*.6,canvas.y+canvas.height*.55,{steps:10});await page.mouse.up();await page.keyboard.up('Shift');
+  await page.getByRole('button',{name:'New volume',exact:true}).click();await expect(page.getByRole('button',{name:'New volume',exact:true})).toHaveAttribute('aria-pressed','true');await page.keyboard.press('Escape');await expect(page.locator('#volume-form')).toBeHidden();await expect(page.getByRole('button',{name:'New volume',exact:true})).toHaveAttribute('aria-pressed','false');
+  await page.getByRole('button',{name:'New volume',exact:true}).click();const canvas=await page.locator('#canvas canvas').boundingBox();await page.keyboard.down('Shift');await page.mouse.move(canvas.x+canvas.width*.35,canvas.y+canvas.height*.4);await page.mouse.down();await page.mouse.move(canvas.x+canvas.width*.6,canvas.y+canvas.height*.55,{steps:10});await page.mouse.up();await page.keyboard.up('Shift');
   await expect(page.locator('#volume-status')).toContainText('Front edge ready');const degrees=Number(await page.locator('#volume-form').getByLabel('Rotation (degrees)',{exact:true}).inputValue());expect(degrees/90).toBeCloseTo(Math.round(degrees/90),3);await page.getByRole('button',{name:'Cancel',exact:true}).click();
   expect(errors).toEqual([]);
  }finally{await request.delete('/api/semantic-volumes/'+v.id+'?scene=local:nacs',{data:{frame:local.frame}});}
@@ -109,8 +109,8 @@ test('face handles resize rotated boxes directly in the scene and keep opposite 
   expect(Number(await form.getByLabel('Base elevation',{exact:true}).inputValue())).toBeCloseTo(0,3);
   const before=await width.inputValue(),r2=await handle.boundingBox();await page.mouse.move(r2.x+r2.width/2,r2.y+r2.height/2);await page.mouse.down();await page.mouse.move(r2.x+r2.width/2+40,r2.y+r2.height/2,{steps:5});await page.keyboard.press('Escape');await page.mouse.up();await expect(width).toHaveValue(before);
   await page.screenshot({path:'test-results/semantic-volume-handles.png'});
-  await page.getByRole('button',{name:'Save volume',exact:true}).click();await expect(page.locator('#volume-status')).toHaveText('Volume saved in this scene.');
+  await page.getByRole('button',{name:'Edit',exact:true}).click();await page.getByRole('button',{name:'Save volume',exact:true}).click();await expect(page.locator('#volume-status')).toHaveText('Volume saved in this scene.');
   const saved=(await (await request.get(url)).json()).items.find(item=>item.id===v.id);expect(saved.size[0]).toBeCloseTo(newWidth,3);expect(saved.size[1]).toBeGreaterThan(2);expect(saved.yaw).toBeCloseTo(v.yaw,3);
-  await expect(handle).toBeHidden();expect(errors).toEqual([]);
+  await expect(page.locator('#volume-form')).toBeHidden();expect(errors).toEqual([]);
  }finally{await request.delete('/api/semantic-volumes/'+v.id+'?scene=local:humanoid-hub-conference',{data:{frame:local.frame}});}
 });
