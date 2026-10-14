@@ -132,14 +132,14 @@ let panelMotion=null;
 function spring(frames,stiffness,damping){const out=[];let x=0,v=0;for(let i=0;i<frames;i++){for(let k=0;k<4;k++){const a=stiffness*(1-x)-damping*v;v+=a/240;x+=v/240;}out.push(x);}out[frames-1]=1;return out;}
 const fast=spring(40,260,22),soft=spring(40,150,13.5);
 function panelOrigin(id){const tab=railTabs.querySelector(`[data-panel="${id}"]`);if(!tab)return '0px 40px';return `0px ${tab.getBoundingClientRect().top+tab.offsetHeight/2-sidebar.getBoundingClientRect().top}px`;}
-function liquidFrame(p,q){return {transform:`perspective(1200px) translateX(${(-22*(1-p)).toFixed(2)}px) rotateY(${(-26*(1-p)).toFixed(2)}deg) skewY(${(7*(1-q)).toFixed(2)}deg) scale(${(.5+.5*p).toFixed(4)},${(.3+.7*q).toFixed(4)})`,opacity:Math.min(1,p*2.4),borderRadius:`${(16+26*Math.max(0,1-q)).toFixed(1)}px`};}
+function liquidFrame(p,q){return {transform:`translateX(${(-10*(1-p)).toFixed(2)}px) scale(${(.94+.06*p).toFixed(4)},${(.7+.3*q).toFixed(4)})`,opacity:Math.min(1,p*3)};}
 function switchPanel(id){
  panelMotion?.cancel();
  if(!railMotion){openPanel(id);return;}
  const from=activePanel;
  if(!id){ // Pour back into the tab, then collapse.
-  const origin=panelOrigin(from),frames=[];for(let i=0;i<=16;i++){const t=i/16,p=1-t*t;frames.push({...liquidFrame(p,p),transformOrigin:origin});}
-  panelMotion=sidebar.animate(frames,{duration:260,easing:'linear'});panelMotion.onfinish=()=>{panelMotion=null;openPanel(null);};return;
+  const origin=panelOrigin(from);
+  panelMotion=sidebar.animate([{transform:'translateX(0) scale(1,1)',opacity:1,transformOrigin:origin},{transform:'translateX(-8px) scale(.97,.9)',opacity:0,transformOrigin:origin}],{duration:190,easing:'cubic-bezier(.4,0,1,1)'});panelMotion.onfinish=()=>{panelMotion=null;openPanel(null);};return;
  }
  openPanel(id);enterPanel(id);
  const origin=panelOrigin(id);
