@@ -145,3 +145,30 @@ and three-edge cloud integration; `tests/test_diagnostic_depth.py` checks the
 BBOS adapter without a robot. Deployment and live sensor verification are separate.
 See [compact point-cloud contract](../../docs/point-cloud-binary.md) for the
 wire layout and coordinated producer/consumer rollout requirements.
+
+# Robot body state
+
+Any pose mode (`--poses`, `--portals`, `--points`) also starts
+`scripts/diagnostic-robot-state.py`, which reads BBOS arm states and
+`drive.status` from shared memory (no motor commands) and writes local stdout IPC.
+It feeds two Products, both declaring the body they belong to in
+`spatial-harness.robot-body/v1` metadata (`src/robot_state.rs` in Home):
+
+- `bbos-joints`: URDF joint positions from each arm's own `q2urdf`, 5 Hz.
+- `bbos-health`: per-joint motor temperature and current, and the battery, 1 Hz.
+
+The declaration names the body model (`bracketbot`) and pins its root to the
+exact `bbos-base` frame reference and `bbos-capture` clock of `bbos-pose`, so a
+reader draws the model wherever that pose places the base. Output IDs bind the
+declaration. A missing arm or battery leaves the rest running; if the helper
+fails, poses, camera and alignment continue without body state.
+
+Home follows these Products from discovered Catalogs (`src/robot_states.rs`,
+`GET /api/robot-states`), reporting its own receipt age instead of comparing
+clocks. The viewer draws a peer as its URDF model, with live joints and health
+badges, when its registry pose's `from_frame` equals a declared base frame; the
+turn from the URDF's ROS body axes into the base frame is read from that frame's
+declared Registry axes.
+
+`tests/diagnostic_body.rs` runs this module against Home's follower over
+authenticated loopback peers.
