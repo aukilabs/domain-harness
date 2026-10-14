@@ -18,13 +18,14 @@ import { moveMapCamera, applyChatActions, chatResultPresentation } from './view-
 import { createAttachedCamera } from './attached-camera.js';
 import { createRobotModel } from './robot-model.js';
 import { applyRobotHealth } from './robot-health.js';
-import { createAgentBar, orb as agentOrb } from './agent-bar.js';
+import { createAgentBar, orb as agentOrb, setAgentStill } from './agent-bar.js';
+import { createInco } from './inco.js';
 const $=id=>document.getElementById(id);
 const chatForm=$('scene-chat-form'),chatInput=$('scene-chat-input'),chatStatus=$('scene-chat-status');
 chatForm.querySelector('button').disabled=true;
 const chatHistory=$('scene-chat-history'),chatConversations=new Map();let chatPending=false;
 let chatCompact=false;try{chatCompact=localStorage.getItem('home.chat.compact')==='true';}catch{}
-let agentBar=null;
+let agentBar=null,inco=null;
 function syncChatCompact(){document.querySelector('.scene-chat').classList.toggle('compact',chatCompact);const toggle=$('scene-chat-toggle');toggle.dataset.tip=chatCompact?'Show conversation':'Hide conversation';toggle.setAttribute('aria-label',toggle.dataset.tip);toggle.setAttribute('aria-expanded',String(!chatCompact));agentBar?.syncSheet();}
 $('scene-chat-toggle').onclick=()=>{chatCompact=!chatCompact;try{localStorage.setItem('home.chat.compact',String(chatCompact));}catch{}syncChatCompact();};syncChatCompact();
 // Messages already shown keep still; only new ones animate in. The thinking row stands in for a pending reply.
@@ -38,7 +39,7 @@ function renderChat(){
   const text=document.createElement('div');text.className='scene-chat-text';text.textContent=m.display_content||m.content;
   if(m.role!=='user')row.append(agentOrb('small'));row.append(who,text);chatHistory.append(row);});
  if(pending){const row=document.createElement('div');row.className='scene-chat-message assistant thinking enter';const text=document.createElement('div');text.className='scene-chat-text';text.textContent='Thinking';row.append(agentOrb('small'),text);chatHistory.append(row);}
- document.querySelector('.scene-chat').classList.toggle('pending',pending);
+ document.querySelector('.scene-chat').classList.toggle('pending',pending);inco?.think(pending);
  chatInput.placeholder=pending?'Qwen is thinking…':'Ask about this scene…';
  chatHistory.scrollTop=chatHistory.scrollHeight;
 }
@@ -1531,7 +1532,8 @@ const drawPathHint=document.createElement('p');drawPathHint.className='panel-hin
 const syncDrawPath=()=>{drawPathButton.setAttribute('aria-pressed',$('crayon').getAttribute('aria-pressed')||'false');drawPathButton.disabled=$('crayon').disabled;drawPathHint.textContent=$('crayon').disabled?'Drawing isn’t available here · '+($('crayon').title||'Choose a local Home scene'):'';drawPathHint.hidden=!drawPathHint.textContent;};
 new MutationObserver(syncDrawPath).observe($('crayon'),{attributes:true,attributeFilter:['aria-pressed','disabled','title']});syncDrawPath();
 // Bottom bar: the creation tools mirror their panel buttons; Ask morphs the bar into the assistant.
-agentBar=createAgentBar({root:document.querySelector('.agent-bar'),tools:[
+inco=createInco(document.querySelector('.agent-avatar'),{onStill:setAgentStill});
+agentBar=createAgentBar({root:document.querySelector('.agent-bar'),onAvatarClick:()=>{inco.click();chatInput.focus();},tools:[
  {label:'New note',iconPath:icons.note,accent:'amber',source:newNoteButton,onTrigger:()=>placingNote?stopNotePlacement():startNotePlacement(),disabledReason:()=>'switch to a Home scene'},
  {label:'Draw path',iconPath:icons.pen,accent:'amber',source:$('crayon'),onTrigger:()=>$('crayon').click(),disabledReason:()=>'switch to a Home scene'},
  {label:'New volume',iconPath:'M9 1.5 15.5 5v8L9 16.5 2.5 13V5ZM2.5 5 9 8.5l6.5-3.5M9 8.5v8',accent:'violet',source:$('volume-draw'),onTrigger:()=>$('volume-draw').click(),disabledReason:()=>'select a local Home scene'},
