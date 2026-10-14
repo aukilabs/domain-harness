@@ -18,7 +18,7 @@ import { moveMapCamera, applyChatActions, chatResultPresentation } from './view-
 import { createAttachedCamera } from './attached-camera.js';
 import { createRobotModel } from './robot-model.js';
 import { applyRobotHealth } from './robot-health.js';
-import { createAgentBar, orb as agentOrb } from './agent-bar.js';
+import { createAgentBar } from './agent-bar.js';
 const $=id=>document.getElementById(id);
 const chatForm=$('scene-chat-form'),chatInput=$('scene-chat-input'),chatStatus=$('scene-chat-status');
 chatForm.querySelector('button').disabled=true;
@@ -35,11 +35,13 @@ function renderChat(){
  chatHistory.replaceChildren();chatHistory.hidden=!messages.length&&!pending;
  messages.forEach((m,i)=>{const row=document.createElement('div');row.className='scene-chat-message '+m.role+(i>=fresh?' enter':'');
   const who=document.createElement('strong');who.className='visually-hidden';who.textContent=m.role==='user'?'You':'Qwen';
-  const text=document.createElement('div');text.className='scene-chat-text';text.textContent=m.display_content||m.content;
-  if(m.role!=='user')row.append(agentOrb('small'));row.append(who,text);chatHistory.append(row);});
- if(pending){const row=document.createElement('div');row.className='scene-chat-message assistant thinking enter';const text=document.createElement('div');text.className='scene-chat-text';text.textContent='Thinking';row.append(agentOrb('small'),text);chatHistory.append(row);}
+  // The "nothing was saved" receipt stays with the reply, as a quiet note rather than body text.
+  const shown=m.display_content||m.content,receipt=m.role==='user'?null:shown.match(/\n\nNo scene changes were saved\.$/);
+  const text=document.createElement('div');text.className='scene-chat-text';text.textContent=receipt?shown.slice(0,receipt.index):shown;row.append(who,text);
+  if(receipt){const note=document.createElement('div');note.className='scene-chat-receipt';note.textContent='No scene changes were saved.';row.append(note);}
+  chatHistory.append(row);});
+ if(pending){const row=document.createElement('div');row.className='scene-chat-message assistant thinking enter';const text=document.createElement('div');text.className='scene-chat-text';text.textContent='Thinking…';row.append(text);chatHistory.append(row);}
  document.querySelector('.scene-chat').classList.toggle('pending',pending);
- chatInput.placeholder=pending?'Qwen is thinking…':'Ask about this scene…';
  chatHistory.scrollTop=chatHistory.scrollHeight;
  document.querySelector('.agent-bar').classList.toggle('has-conversation',!!messages.length||pending);agentBar?.syncSheet();
 }
@@ -52,8 +54,8 @@ chatForm.onsubmit=async e=>{
  if(chatCompact){chatCompact=false;try{localStorage.setItem('home.chat.compact','false');}catch{}syncChatCompact();}
  const map=activeMap,message=chatInput.value.trim(),history=(chatConversations.get(map)||[]).slice(-18);
  history.push({role:'user',content:message});
- if(history.reduce((n,m)=>n+m.content.length,0)>32000){chatStatus.textContent='Conversation is too long. Start a shorter conversation.';return;}
- chatConversations.set(map,history);chatPending=true;chatPendingMap=map;renderChat();chatInput.value='';chatForm.querySelector('button').disabled=true;chatStatus.textContent='Qwen is replying locally…';
+ if(history.reduce((n,m)=>n+m.content.length,0)>32000){chatStatus.textContent='Conversation is too long. Start a shorter conversation.';toast(chatStatus.textContent);return;}
+ chatConversations.set(map,history);chatPending=true;chatPendingMap=map;renderChat();chatInput.value='';chatForm.querySelector('button').disabled=true;chatStatus.textContent='Qwen is thinking…';
  try{
   const result=await api('/api/chat',{messages:history.map(({role,content})=>({role,content})),scene:map});
   const browser=result.ui_actions===undefined?null:await applyChatCamera(result.ui_actions,map);
@@ -64,7 +66,7 @@ chatForm.onsubmit=async e=>{
    // A failed refresh cannot undo saved receipts or offer the whole edit again.
    lastScene=null;try{await refresh();}catch(error){chatStatus.textContent+=' · View refresh failed: '+error.message;}
   }
- }catch(error){history.pop();if(activeMap===map&&!chatInput.value)chatInput.value=message;chatStatus.textContent=error.message;}
+ }catch(error){history.pop();if(activeMap===map&&!chatInput.value)chatInput.value=message;chatStatus.textContent=error.message;toast(error.message);}
  finally{chatPending=false;chatPendingMap=null;renderChat();if(document.activeElement===document.body||document.activeElement?.closest?.('.agent-bar'))chatInput.focus({preventScroll:true});chatForm.querySelector('button').disabled=!chatInput.value.trim();}
 };
 $('map-select').addEventListener('change',()=>{renderChat();chatStatus.textContent=chatPending?'A local reply is pending for the previous scene…':'Local Qwen · inspect scene and edit volume descriptions';});
