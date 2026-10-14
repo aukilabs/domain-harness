@@ -131,7 +131,7 @@ def optical_points(points_base, camera_to_base):
     return (np.asarray(points_base, dtype=float)-transform[:, 3]) @ transform[:, :3]
 
 
-def sampled_points(points, colors, capture_ns):
+def sampled_points(points, colors, capture_ns, max_points=MAX_POINTS):
     points = np.asarray(points, dtype=float).reshape(-1, 3)
     colors = np.asarray(colors)
     if colors.shape != points.shape or colors.dtype != np.uint8:
@@ -139,10 +139,12 @@ def sampled_points(points, colors, capture_ns):
     keep = (np.isfinite(points).all(axis=1) & (points[:, 2] >= .2)
             & (points[:, 2] <= 5.) & (np.sum(points*points, axis=1) <= 25.))
     points, colors = points[keep], colors[keep]
-    if len(points) > MAX_POINTS:
-        stride = math.ceil(len(points)/MAX_POINTS)
+    if not 1 <= max_points <= 2048:
+        raise ValueError('invalid point limit')
+    if len(points) > max_points:
+        stride = math.ceil(len(points)/max_points)
         offset = (capture_ns//1_000_000) % stride
-        points, colors = points[offset::stride][:MAX_POINTS], colors[offset::stride][:MAX_POINTS]
+        points, colors = points[offset::stride][:max_points], colors[offset::stride][:max_points]
     return points.tolist(), colors.tolist()
 
 

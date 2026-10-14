@@ -51,6 +51,8 @@ pub mod scene_contribution;
 pub mod ar_preview;
 pub mod discovered_ar;
 pub mod registry_ar;
+pub mod transform_chain;
+pub mod depth_points;
 pub mod robot_occupancy;
 
 pub mod notes;

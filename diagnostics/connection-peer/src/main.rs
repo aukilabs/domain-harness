@@ -1,6 +1,9 @@
 //! Connection-only diagnostic; --poses adds exactly one typed BBOS pose Product.
 mod alignment;
 mod camera;
+mod depth;
+#[path = "../../../src/depth_points.rs"]
+mod depth_points;
 #[path = "../../../src/compact_pose.rs"]
 mod compact_pose;
 #[path = "../../../src/fisheye.rs"]
@@ -54,12 +57,13 @@ async fn main() -> Result<()> {
     ensure!(
         args.len() == 4
             || (args.len() == 5
-                && matches!(args[4].as_str(), "--poses" | "--portals" | "--check-home")),
-        "usage: auki-connection-diagnostic PEER_CONFIG HOME_CONNECTION DIAGNOSTIC_IDENTITY [--poses|--portals|--check-home]"
+                && matches!(args[4].as_str(), "--poses" | "--portals" | "--points" | "--check-home")),
+        "usage: auki-connection-diagnostic PEER_CONFIG HOME_CONNECTION DIAGNOSTIC_IDENTITY [--poses|--portals|--points|--check-home]"
     );
     let check_home = args.get(4).is_some_and(|v| v == "--check-home");
     let publish_poses = args.len() == 5 && !check_home;
-    let portals = args.get(4).is_some_and(|v| v == "--portals");
+    let points = args.get(4).is_some_and(|v| v == "--points");
+    let portals = points || args.get(4).is_some_and(|v| v == "--portals");
     let config: Config = read(&args[1])?;
     let home: Home = read(&args[2])?;
     ensure!(
@@ -203,6 +207,11 @@ async fn main() -> Result<()> {
     });
     let mut camera_publisher: Option<camera::Camera> = None;
     let mut camera_open = portals;
+    let (depth_task, mut depth_rx) = if points {
+        let (task,rx)=depth::start(); (Some(task),rx)
+    } else { (None,tokio::sync::watch::channel(None).1) };
+    let mut depth_open=points;
+    let mut depth_publisher:Option<depth::Depth>=None;
     let (home_tx, home_rx) = tokio::sync::watch::channel(None::<home::Verified>);
     let home_task = if portals {
         let client = ComponentProtocolClient::new(peer.protocols());
@@ -276,6 +285,22 @@ async fn main() -> Result<()> {
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     loop {
         tokio::select! {
+            changed=depth_rx.changed(),if depth_open => {
+                if changed.is_err() {
+                    depth_open=false;
+                    if let Some(d)=depth_publisher.take(){d.close(publisher.as_ref().unwrap())?;}
+                    eprintln!("Depth unavailable; pose and camera diagnostic continue");
+                    continue;
+                }
+                let sample=depth_rx.borrow_and_update().clone();
+                if let Some((config,sample))=sample {
+                    let result=(|| {
+                        if depth_publisher.is_none(){depth_publisher=Some(depth::Depth::mount(publisher.as_ref().unwrap(),config)?);}
+                        depth_publisher.as_mut().unwrap().publish(sample)
+                    })();
+                    if let Err(e)=result {eprintln!("Depth publish failed: {e}");}
+                }
+            },
             changed=camera_rx.changed(),if camera_open => {
                 if changed.is_err(){camera_open=false;alignment=None;camera_publisher=None;eprintln!("Camera unavailable; pose diagnostic continues");continue;}
                 let sample=camera_rx.borrow_and_update().clone();
@@ -331,6 +356,8 @@ async fn main() -> Result<()> {
         let _ = task.await;
     }
     drop(camera_publisher);
+    if let Some(task)=depth_task { task.abort(); let _=task.await; }
+    if let Some(d)=depth_publisher {d.close(publisher.as_ref().unwrap())?;}
     let _ = requests.await;
     if let Some(publisher) = publisher {
         publisher.endpoint.close().await?;

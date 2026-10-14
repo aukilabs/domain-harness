@@ -67,7 +67,8 @@ command=['python3',str(root/'scripts/bracketbot-python.py'),str(root/'scripts/br
 if request.get('poses'): command+=['--publish-poses']
 command+=['--peer-command',str(root/'bin/auki-connection-diagnostic'),str(root/'peer.json'),
     str(root/'home-connection.json'),str(root/'diagnostic.identity')]
-if request.get('portals'): command+=['--portals']
+if request.get('points'): command+=['--points']
+elif request.get('portals'): command+=['--portals']
 elif request.get('poses'): command+=['--poses']
 with (root/'diagnostic.log').open('ab',buffering=0) as log:
     child=subprocess.Popen(command,cwd=root,env=env,stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True)
@@ -85,8 +86,10 @@ def main():
     parser.add_argument('--binary', type=Path, required=True)
     parser.add_argument('--poses', action='store_true', help='Expose only the typed BBOS pose Product')
     parser.add_argument('--portals', action='store_true', help='Add one head camera and Arshak QR detector; implies poses')
+    parser.add_argument('--points', action='store_true', help='Add measured depth points; implies portals and poses')
     parser.add_argument('--start-staged', action='store_true', help='Resume after a completed transfer; verifies the staged binary hash before stopping anything')
     args = parser.parse_args()
+    args.portals = args.portals or args.points
     args.poses = args.poses or args.portals
     repo = Path(__file__).resolve().parents[1]
     credentials = {key: os.environ[key] for key in ('AUKI_ACCESS_KEY', 'AUKI_APP_SECRET')}
@@ -106,13 +109,13 @@ def main():
             entry = tarfile.TarInfo('peer.json')
             entry.size = len(config)
             archive.addfile(entry, io.BytesIO(config))
-            for name in ('bracketbot-python.py', 'bracketbot_slam_led_diagnostic.py', 'diagnostic-camera.py', 'bracketbot_capture.py'):
+            for name in ('bracketbot-python.py', 'bracketbot_slam_led_diagnostic.py', 'diagnostic-camera.py', 'diagnostic-depth.py', 'bracketbot_capture.py'):
                 archive.add(repo/'scripts'/name, arcname='scripts/'+name)
         payload.seek(0)
         if not args.start_staged:
             subprocess.run(ssh+[f'mkdir -p {ROOT} && tar -xzf - -C {ROOT}'], stdin=payload, check=True)
     subprocess.run(ssh+[shlex.join(['python3', '-c', START])],
-                   input=json.dumps({'home':home,'credentials':credentials,'poses':args.poses,'portals':args.portals,'robot':args.robot,'sha256':hashlib.sha256(args.binary.read_bytes()).hexdigest()}).encode(), check=True)
+                   input=json.dumps({'home':home,'credentials':credentials,'poses':args.poses,'portals':args.portals,'points':args.points,'robot':args.robot,'sha256':hashlib.sha256(args.binary.read_bytes()).hexdigest()}).encode(), check=True)
 
 
 if __name__ == '__main__':

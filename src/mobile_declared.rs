@@ -14,19 +14,18 @@
 //! → the transform out of the camera frame at the capture time → the transform
 //! out of the AR session frame. It finds each by its contract's `from_frame`,
 //! never by a Product's name.
-use crate::compact_pose::{Contract as TransformContract, FrameRef, Update as Transform};
+use crate::compact_pose::{Contract as TransformContract, Update as Transform};
+#[cfg(test)]
+use crate::compact_pose::FrameRef;
 use anyhow::{Result, anyhow, ensure};
 use auki_components::*;
 use auki_odometry::{Pose, Tracking};
 use auki_protocols::registry::v3::{RegistryEntryEnvelope, RegistryKind};
 use auki_registry::FrameRegistryEntry;
 use auki_scenegraph::RigidTransform;
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-pub const POINTS_SCHEMA: &str = "spatial-harness.depth-points/v1";
-pub const POINTS_METADATA: &str = "spatial-harness.depth-points-contract/v1";
-pub const MAX_POINTS: usize = 2048;
+pub use crate::depth_points::{Points, PointsContract, POINTS_SCHEMA, POINTS_METADATA, MAX_POINTS};
 
 /// Named after the frame it starts from, which is unique to the AR session.
 pub fn transform_product_id(session: &str) -> String {
@@ -34,40 +33,6 @@ pub fn transform_product_id(session: &str) -> String {
 }
 pub fn points_product_id(session: &str) -> String {
     format!("depth-points:{session}")
-}
-
-/// Which frame the points are in. A reader places them by the transforms out of that frame.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PointsContract {
-    pub frame: FrameRef,
-    pub clock: ClockReference,
-    pub session_id: String,
-}
-impl PointsContract {
-    pub fn output_id(&self) -> String {
-        format!("points-{}", manifest_hash(self))
-    }
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Points {
-    /// Metres in the camera frame the contract names.
-    pub points: Vec<[f64; 3]>,
-    /// sRGB per point, when the camera gave one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub colors: Option<Vec<[u8; 3]>>,
-}
-impl ContractType for Points {
-    const DATATYPE: &'static str = POINTS_SCHEMA;
-}
-impl Points {
-    pub fn validate(&self) -> Result<()> {
-        ensure!(!self.points.is_empty() && self.points.len() <= MAX_POINTS, "Depth capture needs 1–{MAX_POINTS} points");
-        ensure!(self.points.iter().flatten().all(|v| v.is_finite() && v.abs() <= 100.), "Invalid depth point");
-        ensure!(self.colors.as_ref().is_none_or(|c| c.len() == self.points.len()), "Depth color/point count differs");
-        Ok(())
-    }
 }
 
 /// The transform as a pose: translation, and an XYZW quaternion of unit length.

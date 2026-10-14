@@ -1,5 +1,5 @@
 //! Home-only reader for PR40 camera-space depth and declared transform chains.
-use crate::compact_pose::{Contract, FrameRef, Lifetime, Update};
+use crate::compact_pose::{FrameRef, Update};
 use anyhow::{Result, anyhow, ensure};
 use auki_component_protocol::{ComponentProtocolClient, ObservationRequest, ObservationSelection};
 use auki_components::*;
@@ -178,122 +178,27 @@ async fn capture(
         if done.get(&key).is_some_and(|seq| *seq >= o.sequence) {
             continue;
         }
-        let candidates = catalog
-            .products
-            .iter()
-            .filter_map(|p| {
-                let m = p
-                    .metadata
-                    .as_ref()
-                    .filter(|m| m.schema == crate::compact_pose::METADATA)?;
-                let pc: Contract = serde_json::from_value(m.value.clone()).ok()?;
-                if p.manifest.peer_id != owner
-                    || pc.lifetime != Lifetime::Sampled
-                    || pc.from_frame != c.frame
-                    || pc.clock != c.clock
-                    || pc.session_id != c.session_id
-                {
-                    return None;
-                }
-                let out = catalog
-                    .components
-                    .iter()
-                    .flat_map(|c| c.current_outputs.values())
-                    .find(|out| out.manifest.reference() == p.manifest.producer)?;
-                pc.validate_output(&out.manifest).ok()?;
-                Some((p, pc))
-            })
-            .collect::<Vec<_>>();
-        ensure!(
-            candidates.len() == 1,
-            "No unambiguous sampled pose for depth frame"
-        );
-        let (pp, pc) = &candidates[0];
-        let (resolved, _) = crate::product_registry::resolved_contract(&row["registries"], pc)?;
-        let ps = crate::sensor_preview::Sensor {
-            reference: pp.manifest.reference(),
-            ..sensor.clone()
-        };
         let t = o.timestamp_ns;
-        let poses = read::<Update>(
-            client,
-            &ps,
-            ObservationSelection::TimeRange {
-                request: TimeRangeRequest {
-                    clock: c.clock.clone(),
-                    start_ns: t.saturating_sub(MAX_GAP_NS),
-                    end_ns: t.saturating_add(MAX_GAP_NS),
-                },
-            },
-        )
-        .await?;
-        ensure!(
-            poses.product.reference() == ps.reference
-                && poses.product.producer == poses.producer.reference()
-                && poses.gap.is_none()
-                && poses.end.is_none(),
-            "Pose history unavailable"
-        );
-        pc.validate_output(&poses.producer)?;
-        let samples = poses
-            .observations
-            .iter()
-            .map(|s| {
-                ensure!(
-                    s.output == poses.producer.reference(),
-                    "Pose provenance mismatch"
-                );
-                Ok((s.sequence, s.timestamp_ns, (*s.payload).clone()))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let native = sampled_at(&samples, t)?;
-        let editors = scenes
-            .note_editors
-            .lock()
-            .map_err(|_| anyhow!("Scenes unavailable"))?
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        let mut matched = Vec::new();
-        for editor in editors {
+        let editors = scenes.note_editors.lock().map_err(|_|anyhow!("Scenes unavailable"))?
+            .values().cloned().collect::<Vec<_>>();
+        let targets = editors.iter().map(|editor| {
             let reference = editor.reference()?;
-            let target = &reference.scenegraph.map.frame.id;
-            if !catalog.products.iter().any(|p| {
-                p.metadata.as_ref().is_some_and(|m| {
-                    m.schema == crate::compact_pose::METADATA
-                        && serde_json::from_value::<Contract>(m.value.clone()).is_ok_and(|held| {
-                            crate::frame_alignment::validate_chain(&held, pc, owner, home, target)
-                                .is_ok()
-                        })
-                })
-            }) {
-                continue;
-            }
-            let (held, _) = crate::frame_alignment::resolve(
-                held_cache,
-                &ps,
-                row,
-                pc,
-                home,
-                &serde_json::json!({"frame":target}),
-                t,
-            )?;
-            matched.push((
-                editor,
-                target.clone(),
-                crate::local_mapper::compose(&held, &native)?,
-            ));
-        }
-        ensure!(
-            !matched.is_empty(),
-            "No declared transform into a Home scene"
-        );
+            crate::conventions::registry(home, &reference.scenegraph.map.frame.id)
+                .map(|f| FrameRef::from(&f))
+        }).collect::<Result<Vec<_>>>()?;
+        let (target, pose) = crate::transform_chain::resolve(client, &sensor, row,
+            &c.frame, &c.clock, &c.session_id, t, &targets, Some(held_cache)).await?;
+        let source_frame = r.producer.spatial_frame.as_ref()
+            .ok_or_else(||anyhow!("Depth frame missing"))?.definition.clone();
+        let editor = editors.into_iter().find(|editor| editor.reference().is_ok_and(|r|
+            r.scenegraph.map.frame.id == target.id)).ok_or_else(||anyhow!("Home scene unavailable"))?;
+        let matched = [(editor, target.id, pose)];
         for (editor, target, pose) in matched {
             editor.integrate_declared(Localized {
                 target,
                 binding: auki_voxel_map::SensorBinding {
                     sensor_product: sensor.reference.clone(),
-                    sensor_frame: resolved.from_frame.clone(),
+                    sensor_frame: source_frame.clone(),
                     observation_clock: c.clock.clone(),
                 },
                 sequence: o.sequence,

@@ -73,3 +73,32 @@ rotated camera mount, and Home authority/frame/clock mismatches. Hardware
 acceptance additionally requires the robot observing a shared portal and Home
 consuming the resulting transform and camera. Camera AR is a separate consumer:
 do not re-enable an unmigrated legacy pose path to make that checkbox appear.
+# Measured point clouds
+
+`--points` extends `--portals` (and therefore pose publication) with the existing
+BBOS `camera.points` measurements. The launcher accepts the same `--points` flag.
+It does not start SLAM, enable driving, or create a robot-side voxel map.
+
+- `bbos-depth-points` uses the same declared point-cloud wire profile as Annotator:
+  `spatial-harness.depth-points/v1`, with optional per-point sRGB colors.
+- `bbos-depth-extrinsic` is a held compact transform from the registered rectified
+  depth optical frame into BBOS base. This is distinct from the raw QR camera.
+- Capture timestamps retain BBOS's capture clock; no receipt-time substitution.
+- The local helper undoes BBOS's calibrated optical-to-base conversion, preserving
+  the depth sensor origin for Home's free-space rays. It reads shared memory and
+  writes local stdout IPC only. All peer data uses the existing SDK endpoint/libp2p.
+- At most 2,048 measured returns per capture, 5 captures/second, four retained
+  captures (1 MiB cap), and a latest-only IPC mailbox. Sampling rotates through
+  measured points; it never fills holes with invented measurements.
+- Invalid/dynamic mounts, writer changes, clock jumps and timestamp regressions
+  stop depth capture. Missing/lost/ambiguous transforms prevent Home integration.
+
+Home resolves depth optical → base → odometry → Home using the same generic
+capture-time transform-chain resolver as registry-backed AR. It preserves held
+transform subscriptions, validates every frame/clock/session, and never
+extrapolates sampled poses. Home owns voxelization and accumulation.
+
+Validation is local: `tests/diagnostic_depth.rs` exercises the actual publisher
+through authenticated SDK discovery/read; `tests/declared_depth.rs` covers phone
+and three-edge cloud integration; `tests/test_diagnostic_depth.py` checks the
+BBOS adapter without a robot. Deployment and live sensor verification are separate.

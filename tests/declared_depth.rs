@@ -9,13 +9,17 @@ use spatial_home::{
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn home_integrates_declared_camera_points_over_authenticated_sdk() -> Result<()> {
-    run(false).await
+    run(false, false).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn home_consumes_the_actual_mobile_declared_publisher() -> Result<()> {
-    run(true).await
+    run(true, false).await
 }
-async fn run(actual_publisher: bool) -> Result<()> {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn home_voxelizes_points_through_sensor_mount_odometry_and_home_alignment() -> Result<()> {
+    run(false, true).await
+}
+async fn run(actual_publisher: bool, extra_mount: bool) -> Result<()> {
     let pair = support::LocalPair::start().await?;
     let result = async {
         let dir = tempfile::tempdir()?;
@@ -64,6 +68,26 @@ async fn run(actual_publisher: bool) -> Result<()> {
         let catalog = products.runtime.catalog().snapshot();
         let pc: Contract =
             serde_json::from_value(catalog.products[0].metadata.as_ref().unwrap().value.clone())?;
+        let point_frame = auki_registry::FrameRegistryEntry::opengl(&phone,
+            if extra_mount {"arbitrary-depth-lens"} else {&pc.from_frame.id});
+        let _mount = if extra_mount {
+            use auki_protocols::registry::v3::{RegistryEntryEnvelope,RegistryKind};
+            products.definitions.lock().unwrap().push(RegistryEntryEnvelope {kind:RegistryKind::Frame,
+                id:point_frame.frame_id.clone(),hash:point_frame.hash(),canonical_json:String::from_utf8(point_frame.canonical_bytes())?});
+            let c=Contract {from_frame:(&point_frame).into(),to_frame:pc.from_frame.clone(),lifetime:Lifetime::Held,..pc.clone()};
+            let component=products.runtime.component(ComponentSpec::new("arbitrary-mount").observable(ObservableContract {
+                name:"mount".into(),datatype:Update::DATATYPE.into(),schema:Update::DATATYPE.into(),access:vec![ObservationAccess::FollowNew],exposure:Exposure::Cluster}))?;
+            let output=component.configured_observable(ConfiguredObservableSpec::new("mount",c.output_id(),c.clock.clone(),
+                PayloadContract::Structured(StructuredPayloadContract {datatype:Update::DATATYPE.into(),schema:Update::DATATYPE.into(),modality:"pose".into(),observes:"mount".into(),unit:None}))
+                .in_registered_frame(auki_registry::FrameRegistryEntry::opengl(&phone,&pc.from_frame.id)))?;
+            component.expose()?;
+            let retained=products.runtime.capture_buffer_with_metadata("arbitrary-mount-history",&output,
+                BufferLimits {max_entries:Some(4),max_bytes:None,target_duration:None},|_:&Update|256,
+                move |o|Ok(Some(CatalogProductMetadata {schema:spatial_home::compact_pose::METADATA.into(),source_sequence:o.sequence,value:serde_json::to_value(&c).unwrap()})))?;
+            products.endpoint.export_product(&retained.product())?;
+            output.publish(0,std::sync::Arc::new(Update {tracking:auki_odometry::Tracking::Valid {pose:auki_odometry::Pose {translation:[1.,0.,0.],rotation_xyzw:[0.,0.,0.,1.]}}}))?;
+            Some((component,output,retained))
+        } else {None};
         let _retained: Box<dyn std::any::Any> = if actual_publisher {
             let mut publisher = spatial_home::mobile_declared::Publisher::new(&products, &session, &home, &frame)?;
             publisher.align(1, &auki_scenegraph::RigidTransform {
@@ -136,7 +160,7 @@ async fn run(actual_publisher: bool) -> Result<()> {
             .into(),
         )?;
         let dc = PointsContract {
-            frame: pc.from_frame.clone(),
+            frame: (&point_frame).into(),
             clock: pc.clock.clone(),
             session_id: session.clone(),
         };
@@ -162,10 +186,7 @@ async fn run(actual_publisher: bool) -> Result<()> {
                     unit: Some("meters".into()),
                 }),
             )
-            .in_registered_frame(auki_registry::FrameRegistryEntry::opengl(
-                &phone,
-                &pc.from_frame.id,
-            )),
+            .in_registered_frame(point_frame.clone()),
         )?;
         component.expose()?;
         let retained = products.runtime.capture_buffer_with_metadata(
@@ -250,6 +271,12 @@ async fn run(actual_publisher: bool) -> Result<()> {
                     let view = scenes.view("humanoid-hub-conference")?;
                     if view["integrated_observations"].as_u64().unwrap_or(0) > 0 {
                         assert!(!view["voxels"].as_array().unwrap().is_empty());
+                        if extra_mount {
+                            let (_,pose)=spatial_home::transform_chain::resolve(&client,&sensors[0],&row,
+                                &(&point_frame).into(),&pc.clock,&pc.session_id,100,
+                                &[(&spatial_home::conventions::registry(&home,&frame)?).into()],Some(&held)).await?;
+                            assert_eq!(pose.translation,[3.,1.,0.]);
+                        }
                         let ar=spatial_home::compact_ar::render(&client,&held,&sensors[0],&row,&frames.observations[0],&frames.producer,&scenes,&home,true).await?;
                         assert_eq!(ar["picking"]["frame"],frame);
                         assert_eq!(ar["ar"]["voxel_count"],0);
