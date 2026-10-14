@@ -11,7 +11,7 @@ import { createNoteBubble } from './note-bubble.js';
 import { createPipWindow } from './pip-window.js';
 import { createVideoPresentation } from './video-presentation.js';
 import { readCameraResponse } from './camera-frame.js';
-import { icons, icon, deviceIcon, sectionHeader, disclosure, statusKind, statusBadge, listRow, searchField, copyButton, emptyState, actionButton, formField, toast, reveal, conceal, animateDetails, markSelected } from './panel-ui.js';
+import { icons, icon, deviceIcon, sectionHeader, disclosure, statusKind, statusBadge, listRow, searchField, copyButton, emptyState, actionButton, formField, toast, reveal, conceal, animateDetails, markSelected, tactile } from './panel-ui.js';
 animateDetails(document);
 const plural=(count,word)=>`${count} ${word}${count===1?'':'s'}`;
 import { moveMapCamera, applyChatActions, chatResultPresentation } from './view-camera.js';
@@ -80,13 +80,9 @@ function pulseRailTab(button){if(!railMotion)return;button.classList.remove('pul
 const railIndicator=document.createElement('span');railIndicator.className='rail-indicator';railIndicator.setAttribute('aria-hidden','true');railIndicator.hidden=true;railTabs.prepend(railIndicator);
 function moveRailIndicator(){const tab=railTabs.querySelector('[aria-expanded="true"]');railIndicator.hidden=!tab;if(!tab)return;railIndicator.style.setProperty('--tab',getComputedStyle(tab).getPropertyValue('--tab'));railIndicator.style.setProperty('--indicator-y',(tab.offsetTop+tab.offsetHeight+2)+'px');}
 railTabs.addEventListener('animationend',e=>{if(e.animationName==='rail-wash')e.target.closest('.rail-tab')?.classList.remove('pulse');});
-railTabs.addEventListener('pointermove',e=>{
- const tab=e.target.closest('.rail-tab');if(!tab||!railMotion)return;
- const box=tab.getBoundingClientRect(),dx=(e.clientX-box.left)/box.width*2-1,dy=(e.clientY-box.top)/box.height*2-1;
- tab.classList.add('tilting');tab.style.setProperty('--tilt-x',(-dy*7).toFixed(2)+'deg');tab.style.setProperty('--tilt-y',(dx*7).toFixed(2)+'deg');
- tab.style.setProperty('--light-x',((1-dx)*50).toFixed(1)+'%');tab.style.setProperty('--light-y',((1-dy)*50).toFixed(1)+'%');tab.style.setProperty('--spot-x',((dx+1)*50).toFixed(1)+'%');tab.style.setProperty('--spot-y',((dy+1)*50).toFixed(1)+'%');
-});
-railTabs.addEventListener('pointerout',e=>{const tab=e.target.closest('.rail-tab');if(tab&&!tab.contains(e.relatedTarget)){tab.classList.remove('tilting');for(const name of ['--tilt-x','--tilt-y','--light-x','--light-y','--spot-x','--spot-y'])tab.style.removeProperty(name);}});
+// The tab bar's tilt, spotlight and press feel, shared with every other control.
+const ICON_BUTTONS='.panel-close,.inspector-close,.icon-toggle,.tree-toggle,.copy-button,.search-clear';
+tactile(document,[{selector:'.rail-tab',tilt:7},{selector:ICON_BUTTONS,tilt:12,pulse:true},{selector:'.btn,.user-menu-button',tilt:3,pulse:true},{selector:'.list-row,.fiducial-row,.disclosure',tilt:8}]);
 // One shared tooltip shows each rail button's name on hover and keyboard focus (WCAG 1.4.13: dismissible, hoverable, persistent).
 // It repeats the button's aria-label, so it is hidden from assistive technology.
 const railTip=document.createElement('div');railTip.className='rail-tooltip';railTip.setAttribute('aria-hidden','true');railTip.hidden=true;document.body.append(railTip);
