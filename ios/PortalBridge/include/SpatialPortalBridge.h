@@ -10,6 +10,7 @@ int32_t spatial_mobile_local_map(const char *sample);
 void spatial_mobile_pose(const char *sample);
 void spatial_mobile_depth(const char *sample);
 int32_t spatial_mobile_annotate(const char *request);
+int32_t spatial_mobile_survey(const char *sample);
 void spatial_mobile_string_free(char *value);
 #ifdef __cplusplus
 }

@@ -309,6 +309,9 @@ impl Store {
         if self.built.registries.get("fiducials").is_some() {
             built.registries["fiducials"] = self.built.registries["fiducials"].clone();
         }
+        if self.built.registries.get("connectivity_survey").is_some() {
+            built.registries["connectivity_survey"] = self.built.registries["connectivity_survey"].clone();
+        }
 
         // Validate and build before persisting; publish only after an atomic replacement.
         persist(&self.path, &journal)?;

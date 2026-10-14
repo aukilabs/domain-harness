@@ -12,7 +12,7 @@ use spatial_home::{
     raycast::raycast,
 };
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
@@ -31,6 +31,7 @@ struct AppState {
     ar_frames: spatial_home::ar_preview::Frames,
     previews: tokio::sync::mpsc::Sender<spatial_home::sensor_preview::Request>,
     store: Arc<Mutex<Store>>,
+    survey: Arc<Mutex<spatial_home::mobile_survey::Log>>,
     changes: tokio::sync::watch::Sender<()>,
     peer: tokio::sync::watch::Receiver<Value>,
     runner: tokio::sync::watch::Receiver<spatial_home::runner_pose::RunnerState>,
@@ -56,6 +57,50 @@ impl IntoResponse for ApiError {
     }
 }
 type ApiResult = Result<Json<Value>, ApiError>;
+fn web_file(name: &str) -> std::io::Result<String> {
+    std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("web").join(name))
+}
+async fn index_page() -> Response {
+    let body = web_file("index.html").unwrap_or_else(|_| include_str!("../web/index.html").into());
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        Html(body),
+    )
+        .into_response()
+}
+async fn web_script() -> Response {
+    let body = web_file("app.js").unwrap_or_else(|_| include_str!("../web/app.js").into());
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        body,
+    )
+        .into_response()
+}
+async fn web_ar() -> Response {
+    let body = web_file("ar.js").unwrap_or_else(|_| include_str!("../web/ar.js").into());
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        body,
+    )
+        .into_response()
+}
+async fn web_style() -> Response {
+    let body = web_file("style.css").unwrap_or_else(|_| include_str!("../web/style.css").into());
+    (
+        [
+            (header::CONTENT_TYPE, "text/css"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        body,
+    )
+        .into_response()
+}
 fn lock(state: &Shared) -> Result<std::sync::MutexGuard<'_, Store>, ApiError> {
     state
         .store
@@ -209,6 +254,10 @@ async fn home_live_scene(State(s): State<Shared>) -> ApiResult {
             &mut view,
             &store.built.registries["mobile_presence"],
         );
+        spatial_home::mobile_survey::append_samples(
+            &mut view,
+            &store.built.registries["connectivity_survey"],
+        );
         view["mode"] = json!("Home · waiting for runner geometry");
         view["remote_status"] = live.status_view();
         return Ok(Json(view));
@@ -219,6 +268,10 @@ async fn home_live_scene(State(s): State<Shared>) -> ApiResult {
         spatial_home::mobile_pose::append_labels(
             &mut view,
             &store.built.registries["mobile_presence"],
+        );
+        spatial_home::mobile_survey::append_samples(
+            &mut view,
+            &store.built.registries["connectivity_survey"],
         );
     }
     view["authority"] = json!("Home mapper");
@@ -341,6 +394,7 @@ async fn scene(State(s): State<Shared>) -> ApiResult {
             .items
     );
     spatial_home::mobile_pose::append_labels(&mut view, &store.built.registries["mobile_presence"]);
+    spatial_home::mobile_survey::append_samples(&mut view, &store.built.registries["connectivity_survey"]);
     Ok(Json(view))
 }
 async fn delete_note(
@@ -575,6 +629,31 @@ async fn home_connection(State(s): State<Shared>) -> ApiResult {
         .ok_or_else(|| ApiError(anyhow::anyhow!("Home P2P peer is not ready")))?;
     Ok(Json(profile.clone()))
 }
+async fn survey_import(
+    State(s): State<Shared>,
+    headers: HeaderMap,
+    body: String,
+) -> ApiResult {
+    local_write(&headers)?;
+    let samples = spatial_home::mobile_survey::import_text(&body)?;
+    let total = samples.len();
+    let mut accepted = 0usize;
+    {
+        let mut log = s
+            .survey
+            .lock()
+            .map_err(|_| ApiError(anyhow::anyhow!("survey log unavailable")))?;
+        for sample in samples {
+            log.accept(sample)?;
+            accepted += 1;
+        }
+        let mut store = lock(&s)?;
+        spatial_home::mobile_survey::sync(&mut store, &log);
+    }
+    s.changes.send_replace(());
+    Ok(Json(json!({"imported": accepted, "total": total})))
+}
+
 async fn snapshots(State(s): State<Shared>) -> ApiResult {
     let s = lock(&s)?;
     Ok(Json(
@@ -719,7 +798,7 @@ async fn vendor(axum::extract::Path(name): axum::extract::Path<String>) -> Respo
         "OrbitControls.js" => "node_modules/three/examples/jsm/controls/OrbitControls.js",
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
-    match std::fs::read(path) {
+    match std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(path)) {
         Ok(bytes) => ([(header::CONTENT_TYPE, "text/javascript")], bytes).into_response(),
         Err(_) => (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -778,6 +857,7 @@ async fn main() -> anyhow::Result<()> {
         spatial_home::fiducials::registry_view(&fiducials)
     };
     let store = Arc::new(Mutex::new(store));
+    let survey = Arc::new(Mutex::new(spatial_home::mobile_survey::Log::default()));
     let (changes, change_rx) = tokio::sync::watch::channel(());
     let (peer_tx, peer_rx) =
         tokio::sync::watch::channel(json!({"enabled":false,"status":"Disabled"}));
@@ -876,6 +956,7 @@ async fn main() -> anyhow::Result<()> {
             occupancy.clone(),
             ar_frames.clone(),
             shutdown.clone(),
+            survey.clone(),
         )))
     } else {
         None
@@ -889,6 +970,7 @@ async fn main() -> anyhow::Result<()> {
         ar_frames,
         previews: preview_tx,
         store,
+        survey,
         changes,
         peer: peer_rx,
         runner: runner_rx,
@@ -903,37 +985,10 @@ async fn main() -> anyhow::Result<()> {
             post(disconnect_simulated_robots),
         )
         .route("/api/simulation/{layer}", get(simulation_scene))
-        .route(
-            "/",
-            get(|| async { Html(include_str!("../web/index.html")) }),
-        )
-        .route(
-            "/app.js",
-            get(|| async {
-                (
-                    [(header::CONTENT_TYPE, "text/javascript")],
-                    include_str!("../web/app.js"),
-                )
-            }),
-        )
-        .route(
-            "/ar.js",
-            get(|| async {
-                (
-                    [(header::CONTENT_TYPE, "text/javascript")],
-                    include_str!("../web/ar.js"),
-                )
-            }),
-        )
-        .route(
-            "/style.css",
-            get(|| async {
-                (
-                    [(header::CONTENT_TYPE, "text/css")],
-                    include_str!("../web/style.css"),
-                )
-            }),
-        )
+        .route("/", get(index_page))
+        .route("/app.js", get(web_script))
+        .route("/ar.js", get(web_ar))
+        .route("/style.css", get(web_style))
         .route("/vendor/{name}", get(vendor))
         .route("/api/sensors", get(sensor_preview))
         .route("/api/robot-occupancy", get(robot_occupancy))
@@ -970,6 +1025,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/mapping", get(mapping_status))
         .route("/api/home-connection", get(home_connection))
         .route("/api/snapshots", get(snapshots))
+        .route("/api/survey-import", post(survey_import))
         .route("/api/contributions", post(contribute))
         .route("/api/detections", post(detect))
         .route("/api/raycast", post(cast))

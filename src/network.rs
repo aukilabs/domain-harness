@@ -358,6 +358,46 @@ impl ScenePublisher {
         self.endpoint.export_operable(&operation)?;
         Ok(presence)
     }
+    pub fn enable_connectivity_survey(
+        &self,
+        store: Arc<std::sync::Mutex<crate::model::Store>>,
+        changed: Arc<tokio::sync::Notify>,
+        log: Arc<std::sync::Mutex<crate::mobile_survey::Log>>,
+    ) -> Result<Arc<std::sync::Mutex<crate::mobile_survey::Log>>> {
+        use auki_components::{ContractType, InvocationError, OperableContract};
+        let cache = log.clone();
+        let component =
+            self.runtime
+                .component(ComponentSpec::new(crate::mobile_survey::COMPONENT).operable(
+                    OperableContract {
+                        name: "ingest".into(),
+                        instruction: crate::mobile_survey::Sample::DATATYPE.into(),
+                        result: "bool".into(),
+                        exposure: Exposure::Cluster,
+                    },
+                ))?;
+        let operation = component.operable(
+            "ingest",
+            |context| !context.caller_peer_id.is_empty(),
+            move |_, sample: crate::mobile_survey::Sample| {
+                let mut cache = cache
+                    .lock()
+                    .map_err(|_| InvocationError::TargetUnavailable)?;
+                cache
+                    .accept(sample)
+                    .map_err(|e| InvocationError::Rejected(e.to_string()))?;
+                let mut store = store
+                    .lock()
+                    .map_err(|_| InvocationError::TargetUnavailable)?;
+                crate::mobile_survey::sync(&mut store, &cache);
+                changed.notify_one();
+                Ok(true)
+            },
+        )?;
+        component.expose()?;
+        self.endpoint.export_operable(&operation)?;
+        Ok(log)
+    }
     pub fn enable_home_live(&mut self) -> Result<()> {
         let component =
             self.runtime
@@ -506,6 +546,7 @@ pub async fn serve_scene(
     occupancy: crate::robot_occupancy::Cache,
     ar_frames: crate::ar_preview::Frames,
     shutdown: tokio_util::sync::CancellationToken,
+    survey: Arc<std::sync::Mutex<crate::mobile_survey::Log>>,
 ) -> Result<()> {
     let monitor_stop = shutdown.child_token();
     mapping.status.send_replace(serde_json::json!({"status":"reference","detail":"Canonical portal record; live geometry has its own scenegraph"}));
@@ -579,6 +620,7 @@ pub async fn serve_scene(
                 let annotation_changes = Arc::new(tokio::sync::Notify::new());
                 publisher.enable_annotations_with_live(store.clone(), annotation_changes.clone(), Some(home_live.subscribe()))?;
                 let phone_presence = publisher.enable_phone_presence(store.clone(), annotation_changes.clone())?;
+                let connectivity_survey = publisher.enable_connectivity_survey(store.clone(), annotation_changes.clone(), survey.clone())?;
                 let mut presence_tick = tokio::time::interval(std::time::Duration::from_millis(500));
                 let mut live_updates=home_live.subscribe();
                 let mut last_live=None;
@@ -586,8 +628,10 @@ pub async fn serve_scene(
                 let mut routes = running.peer.protocol_context().routes().subscribe();
                 loop {
                     { let presence = phone_presence.lock().map_err(|_|anyhow!("presence unavailable"))?;
+                        let survey = connectivity_survey.lock().map_err(|_|anyhow!("survey unavailable"))?;
                         let mut store=store.lock().map_err(|_|anyhow!("store unavailable"))?;
                         crate::mobile_pose::sync(&mut store, &presence, Instant::now());
+                        crate::mobile_survey::sync(&mut store, &survey);
                         publisher.publish_inputs(store.mapping_inputs())?;
                         publisher.publish(&store.built)?;
                     }

@@ -40,6 +40,8 @@ pub mod mobile_notes;
 
 pub mod mobile_pose;
 
+pub mod mobile_survey;
+
 pub mod mobile_geometry;
 
 pub mod mobile_depth;

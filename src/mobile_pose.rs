@@ -71,7 +71,7 @@ impl Presence {
         let poses: Vec<_> = self.entries.iter().filter(|(_, (_,received,active))| *active && now.duration_since(*received) < Duration::from_secs(3)).map(|(peer,(s,_,_))| {
             let mut clock = crate::model::clock_entry(peer, &s.session);
             clock.clock_id = "arkit-capture".into();
-            json!({"peer_id":peer,"name":"nils","pose":s.pose,"capture_timestamp_ns":s.timestamp_ns,"clock":clock})
+            json!({"peer_id":peer,"name":"Phone","pose":s.pose,"capture_timestamp_ns":s.timestamp_ns,"clock":clock})
         }).collect();
         json!({"frame":FRAME,"poses":poses})
     }
@@ -95,7 +95,7 @@ pub fn append_labels(view: &mut Value, registry: &Value) {
     for pose in poses {
         view["notes"].as_array_mut().unwrap().push(json!({
             "id":format!("phone-name:{}",pose["peer_id"].as_str().unwrap_or("")),
-            "text":"nils", "position":pose["pose"]["translation"], "height_m":0,
+            "text":"Phone", "position":pose["pose"]["translation"], "height_m":0,
             "phone_pose":pose
         }));
     }

@@ -15,11 +15,13 @@ use std::{
     path::Path,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
 use tokio_util::sync::CancellationToken;
+
+pub const SURVEY_QUEUE_CAPACITY: usize = 512;
 
 // AuthError's Display contract excludes credentials, tokens and response bodies.
 // Do not print source chains: identity/transport sources may contain local data.
@@ -98,6 +100,8 @@ pub struct MobileState {
     #[serde(skip)]
     geometry: Option<serde_json::Value>,
     pub annotation: Option<serde_json::Value>,
+    pub survey: Option<serde_json::Value>,
+    pub survey_pending: usize,
     pub version: u64,
     pub state: &'static str,
     pub detail: String,
@@ -115,16 +119,23 @@ pub struct MobileClient {
     finished: AtomicBool,
     commands: tokio::sync::mpsc::Sender<crate::mobile_notes::PlaceNote>,
     receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::mobile_notes::PlaceNote>>>,
+    survey: tokio::sync::mpsc::Sender<crate::mobile_survey::Sample>,
+    survey_receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::mobile_survey::Sample>>>,
+    survey_inflight: AtomicUsize,
 }
 impl Default for MobileClient {
     fn default() -> Self {
         let (commands, receiver) = tokio::sync::mpsc::channel(1);
+        let (survey, survey_receiver) = tokio::sync::mpsc::channel(SURVEY_QUEUE_CAPACITY);
         Self {
             local_map: tokio::sync::watch::channel(None).0,
             pose: tokio::sync::watch::channel(None).0,
             depth: tokio::sync::watch::channel(None).0,
             commands,
             receiver: Mutex::new(Some(receiver)),
+            survey,
+            survey_receiver: Mutex::new(Some(survey_receiver)),
+            survey_inflight: AtomicUsize::new(0),
             stop: CancellationToken::new(),
             state: Mutex::new(MobileState {
                 version: 1,
@@ -132,6 +143,8 @@ impl Default for MobileClient {
                 reference: None,
                 geometry: None,
                 annotation: None,
+                survey: None,
+                survey_pending: 0,
                 state: "connecting",
                 detail: "Signing in to Auki development services".into(),
 
@@ -165,14 +178,48 @@ impl MobileClient {
         }
         self.commands.try_send(request).is_ok()
     }
+    pub fn survey(&self, sample: crate::mobile_survey::Sample) -> bool {
+        if self.snapshot().state != "live" {
+            return false;
+        }
+        self.survey.try_send(sample).is_ok()
+    }
     pub fn stop(&self) {
         self.stop.cancel();
     }
     pub fn finished(&self) -> bool {
         self.finished.load(Ordering::Acquire)
     }
+    async fn publish_survey(
+        &self,
+        peer: &AukiPeer,
+        home: &HomeConnection,
+        sample: &crate::mobile_survey::Sample,
+        cache: &mut Option<crate::mobile_survey::SurveyTarget>,
+    ) {
+        self.survey_inflight.store(1, Ordering::Relaxed);
+        let result = crate::mobile_survey::send(peer, home, sample, cache).await;
+        self.survey_inflight.store(0, Ordering::Relaxed);
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.version += 1;
+        state.survey = Some(match result {
+            Ok(()) => serde_json::json!({"id":sample.id,"saved":true}),
+            Err(error) => serde_json::json!({
+                "id":sample.id,
+                "saved":false,
+                "detail":error.to_string()
+            }),
+        });
+    }
+
     pub fn snapshot(&self) -> MobileState {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let queued = self
+            .survey
+            .max_capacity()
+            .saturating_sub(self.survey.capacity());
+        state.survey_pending = queued + self.survey_inflight.load(Ordering::Relaxed);
+        state
     }
     fn status(&self, state: &'static str, detail: impl Into<String>) {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -191,7 +238,7 @@ impl MobileClient {
         password: String,
         identity: String,
     ) {
-        let result = self
+        let result = Arc::clone(&self)
             .connect(profile, email, password, Path::new(&identity))
             .await;
         if let Err(error) = result {
@@ -203,7 +250,7 @@ impl MobileClient {
     }
 
     async fn connect(
-        &self,
+        self: Arc<Self>,
         profile: String,
         email: String,
         password: String,
@@ -263,6 +310,7 @@ impl MobileClient {
             .await;
         let result = match peer {
             Ok(peer) => {
+                let peer = Arc::new(peer);
                 let mut receiver = self
                     .receiver
                     .lock()
@@ -271,7 +319,7 @@ impl MobileClient {
                     .unwrap();
                 let commands = async {
                     while let Some(request) = receiver.recv().await {
-                        let result = crate::mobile_notes::send(&peer, &home, &request).await;
+                        let result = crate::mobile_notes::send(peer.as_ref(), &home, &request).await;
                         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
                         state.version += 1;
                         state.annotation = Some(match result {
@@ -284,6 +332,33 @@ impl MobileClient {
                         });
                     }
                 };
+                let mut survey_receiver = self
+                    .survey_receiver
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                    .unwrap();
+                let survey_peer = Arc::clone(&peer);
+                let survey_home = home.clone();
+                let survey_client = Arc::clone(&self);
+                let mut survey_handle = tokio::spawn(async move {
+                    let mut survey_target = None;
+                    loop {
+                        let sample = tokio::select! {
+                            sample = survey_receiver.recv() => sample,
+                            _ = survey_client.stop.cancelled() => {
+                                while let Ok(sample) = survey_receiver.try_recv() {
+                                    survey_client.publish_survey(survey_peer.as_ref(), &survey_home, &sample, &mut survey_target).await;
+                                }
+                                break;
+                            }
+                        };
+                        let Some(sample) = sample else {
+                            break;
+                        };
+                        survey_client.publish_survey(survey_peer.as_ref(), &survey_home, &sample, &mut survey_target).await;
+                    }
+                });
                 let mut poses = self.pose.subscribe();
                 let pose_work = async {
                     let mut tick = tokio::time::interval(Duration::from_millis(500));
@@ -296,7 +371,7 @@ impl MobileClient {
                         let _ = tokio::time::timeout(
                             Duration::from_secs(2),
                             crate::mobile_pose::send(
-                                &peer,
+                                peer.as_ref(),
                                 &home,
                                 &crate::mobile_pose::Update { sample },
                             ),
@@ -332,14 +407,14 @@ impl MobileClient {
                             }
                             if depth_publisher.is_none() {
                                 depth_publisher = Some(crate::mobile_depth::Publisher::new(
-                                    &peer,
+                                    peer.as_ref(),
                                     &sample.session,
                                 )?);
                             }
                             let envelope = depth_publisher.as_ref().unwrap().publish(sample)?;
                             tokio::time::timeout(
                                 Duration::from_secs(2),
-                                crate::mobile_depth::send(&peer, &home, &envelope),
+                                crate::mobile_depth::send(peer.as_ref(), &home, &envelope),
                             )
                             .await??;
                             Ok::<_, anyhow::Error>(())
@@ -360,9 +435,9 @@ impl MobileClient {
                         let Some((sample, received)) = latest else { continue };
                         if received.elapsed() > Duration::from_secs(3) { continue; }
                         let result = async {
-                            if local_publisher.is_none() { local_publisher = Some(crate::mobile_local::Publisher::new(&peer)?); }
+                            if local_publisher.is_none() { local_publisher = Some(crate::mobile_local::Publisher::new(peer.as_ref())?); }
                             let envelope = local_publisher.as_ref().unwrap().publish(sample)?;
-                            crate::mobile_local::send(&peer, &home, &envelope).await
+                            crate::mobile_local::send(peer.as_ref(), &home, &envelope).await
                         }.await;
                         self.depth_status(match result { Ok(()) => "Local voxel map shared with Home (unaligned)".into(), Err(e) => format!("Local map: {e}") });
                     }
@@ -372,10 +447,18 @@ impl MobileClient {
                     result = local_work => result,
                     _ = pose_work => Ok(()),
                     _ = depth_work => Ok(()),
-                    _ = self.follow_geometry(&peer, &home) => Ok(()),
-                    result = self.follow(&peer, &home) => result,
+                    _ = self.follow_geometry(peer.as_ref(), &home) => Ok(()),
+                    result = self.follow(peer.as_ref(), &home) => result,
                     _ = commands => Ok(()),
                 };
+                self.stop.cancel();
+                tokio::select! {
+                    _ = &mut survey_handle => {}
+                    _ = tokio::time::sleep(Duration::from_secs(30)) => {
+                        survey_handle.abort();
+                        let _ = survey_handle.await;
+                    }
+                }
                 if let Some(publisher) = local_publisher { let _ = publisher.close().await; }
                 if let Some(publisher) = depth_publisher {
                     let _ = publisher.close().await;
@@ -383,14 +466,17 @@ impl MobileClient {
                 let _ = tokio::time::timeout(
                     Duration::from_secs(2),
                     crate::mobile_pose::send(
-                        &peer,
+                        peer.as_ref(),
                         &home,
                         &crate::mobile_pose::Update { sample: None },
                     ),
                 )
                 .await;
                 self.status("stopping", "Closing P2P connection");
-                let cleanup = peer.shutdown().await.map_err(anyhow::Error::from);
+                let cleanup = match Arc::try_unwrap(peer) {
+                    Ok(peer) => peer.shutdown().await.map_err(anyhow::Error::from),
+                    Err(_) => Ok(()),
+                };
                 work.and(cleanup)
             }
             Err(error) => Err(anyhow::anyhow!(startup_error(&error))),

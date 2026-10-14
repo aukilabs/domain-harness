@@ -183,18 +183,18 @@ test('live runner pose is independent of scene updates and becomes stale or lost
  let telemetry={status:'live',pose:{translation:[-4.071,.025,3.943],rotation_xyzw:[-.70710678,0,0,.70710678]},detail:'13 reference portals verified'};
  await page.route('**/api/runner-pose',route=>route.fulfill({json:telemetry}));
  await page.goto('/');
- await expect(page.locator('#runner-status')).toHaveText('Galbot · live');
+ await expect(page.locator('#runner-status')).toHaveText('Robot · live');
  await expect(page.locator('#runner-card')).toHaveAttribute('data-position','[-4.071,0.025,3.943]');
  await expect(page.locator('#runner-card')).toHaveAttribute('data-rotation','[-0.70710678,0,0,0.70710678]');
  const observations=await page.locator('#observation-count').textContent();
- await page.getByRole('button',{name:'Focus Galbot'}).click();
+ await page.getByRole('button',{name:'Focus Robot'}).click();
  await expect(page.locator('#selection')).toContainText('Calibrated robot base');
  await page.screenshot({path:'test-results/runner-pose.png'});
  telemetry={...telemetry,pose:{...telemetry.pose,translation:[-3,.1,4]}};
  await expect(page.locator('#runner-card')).toHaveAttribute('data-position','[-3,0.1,4]');
  await expect(page.locator('#observation-count')).toHaveText(observations);
  telemetry={...telemetry,status:'stale'};
- await expect(page.locator('#runner-status')).toHaveText('Galbot · stale');
+ await expect(page.locator('#runner-status')).toHaveText('Robot · stale');
  await expect(page.locator('#runner-position')).toContainText('last known');
  await page.locator('#map-select').selectOption('domain');
  await expect(page.locator('#runner-card')).toHaveAttribute('data-position','[-3,0.1,4]');
@@ -229,8 +229,8 @@ test('scene selector switches owner, geometry and export without merging maps',a
  await page.route('**/api/scene-sources',r=>r.fulfill({json:{status:'connected',detail:'Scenegraph built on Galbot'}}));
  await page.goto('/');await expect(page.locator('#observation-count')).toHaveText('20');
  await page.locator('#map-select').selectOption('runner');
- await expect(page.locator('#scene-title')).toHaveText('Galbot scenegraph');
- await expect(page.locator('#map-authority')).toHaveText('Galbot mapper');
+ await expect(page.locator('#scene-title')).toHaveText('Robot scenegraph');
+ await expect(page.locator('#map-authority')).toHaveText('Robot mapper');
  await expect(page.locator('#voxel-count')).toHaveText('1');
  await expect(page.locator('#observation-count')).toHaveText('3');
  await expect(page.locator('.portal-row')).toHaveCount(13);
@@ -242,9 +242,9 @@ test('scene selector switches owner, geometry and export without merging maps',a
  await expect(page.locator('#observation-count')).toHaveText('20');
  await page.route('**/api/runner-scene',r=>r.fulfill({status:422,json:{error:'not available'}}));
  await page.locator('#map-select').selectOption('runner');
- await expect(page.locator('#scene-title')).toHaveText('Waiting for Galbot scenegraph');
+ await expect(page.locator('#scene-title')).toHaveText('Waiting for robot scenegraph');
  await expect(page.locator('#voxel-count')).toHaveText('—');
- await expect(page.locator('#map-authority')).toHaveText('Galbot mapper');
+ await expect(page.locator('#map-authority')).toHaveText('Robot mapper');
 });
 
 test('sensor preview selects, renders, survives map changes, and closes',async({page})=>{

@@ -188,6 +188,28 @@ pub unsafe extern "C" fn spatial_mobile_annotate(request: *const c_char) -> i32 
     .unwrap_or(0)
 }
 
+/// Queue a compact connectivity sample for Home's survey overlay.
+/// # Safety
+/// `sample` must point to a NUL-terminated UTF-8 string for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spatial_mobile_survey(sample: *const c_char) -> i32 {
+    std::panic::catch_unwind(|| {
+        if sample.is_null() {
+            return 0;
+        }
+        let bytes = unsafe { CStr::from_ptr(sample) }.to_bytes();
+        if bytes.len() > 32768 {
+            return 0;
+        }
+        let Ok(sample) = serde_json::from_slice(bytes) else {
+            return 0;
+        };
+        let slot = CLIENT.lock().unwrap_or_else(|e| e.into_inner());
+        i32::from(slot.as_ref().is_some_and(|client| client.survey(sample)))
+    })
+    .unwrap_or(0)
+}
+
 /// Update the latest pose; null withdraws phone presence.
 /// # Safety
 /// A non-null pointer must be a NUL-terminated UTF-8 string for this call.
