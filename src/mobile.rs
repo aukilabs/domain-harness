@@ -165,6 +165,9 @@ pub struct MobileState {
     pub annotation: Option<serde_json::Value>,
     /// Home's answer to the last route asked for: its `id` with a `route`, `cleared` or an `error`.
     pub route: Option<serde_json::Value>,
+    /// Home's answers to the last few path changes: `id`, `done` and, when not done, `error`.
+    /// A list, so an answer is not lost to the next status before the app reads it.
+    pub paths: std::collections::VecDeque<serde_json::Value>,
     pub version: u64,
     pub state: &'static str,
     pub detail: String,
@@ -257,6 +260,7 @@ impl Default for MobileClient {
                 geometry: None,
                 annotation: None,
                 route: None,
+                paths: Default::default(),
                 state: "connecting",
                 detail: "Signing in to Auki development services".into(),
 
@@ -584,13 +588,21 @@ impl MobileClient {
                             }
                         })
                         .await;
-                        // The app matches these on the path's ID.
-                        self.local_status(match result {
-                            Ok(Ok(true)) => format!("Path {id} {done}"),
-                            Ok(Ok(false)) => format!("Path {id} not {doing}: Home refused it"),
-                            Ok(Err(error)) => format!("Path {id} not {doing}: {error}"),
-                            Err(_) => format!("Path {id} not {doing}: Home did not answer"),
+                        let error = match result {
+                            Ok(Ok(true)) => None,
+                            Ok(Ok(false)) => Some("Home refused it".to_string()),
+                            Ok(Err(error)) => Some(error.to_string()),
+                            Err(_) => Some("Home did not answer".to_string()),
+                        };
+                        self.local_status(match &error {
+                            None => format!("Path {id} {done}"),
+                            Some(error) => format!("Path {id} not {doing}: {error}"),
                         });
+                        // The app matches these on the path's ID.
+                        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                        state.version += 1;
+                        if state.paths.len() == 16 { state.paths.pop_front(); }
+                        state.paths.push_back(serde_json::json!({"id": id, "done": error.is_none(), "error": error}));
                     }
                 };
                 let mut route_asks = self.route_receiver.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap();

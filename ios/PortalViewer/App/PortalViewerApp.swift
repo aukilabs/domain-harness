@@ -2554,11 +2554,16 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     /// Add the point under the finger to the line being drawn, and redraw the piece it changed.
+    private var crayonMissLogged = false
     private func sampleCrayon() {
         guard let touch = crayonTouch, let node = crayonNode, crayonTool != .erase else { return }
         let ray = sceneRay(at: touch)
         let point = crayonTool == .spray ? ray.map { $0.origin + $0.direction * 0.5 }
                                          : ray.flatMap { SceneRay.hit(origin: $0.origin, direction: $0.direction, scene: map?.render) }
+        if point == nil, crayonTool == .surface, !crayonMissLogged {
+            crayonMissLogged = true
+            print("[crayon] Nothing under the finger: ray \(ray.map { "from \($0.origin) along \($0.direction)" } ?? "none (not aligned or tracking limited)"), \(map?.render?.voxels.count ?? -1) voxels")
+        }
         guard crayonDraft.add(point) != nil else { return }
         let index = crayonDraft.segments.count - 1
         let material = node.childNodes.first?.geometry?.firstMaterial ?? Self.crayonMaterial(UIColor(crayonColor))
@@ -2603,6 +2608,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         switch gesture.state {
         case .began where crayonTool != .erase:
             abandonStroke()
+            crayonMissLogged = false
             let node = SCNNode(); node.name = UUID().uuidString.lowercased()
             crayonRoot.addChildNode(node); crayonNode = node
             crayonTouch = point
