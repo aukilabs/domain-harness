@@ -219,6 +219,9 @@ check(tube.vertices.count == 9 * 8 + 2 && tube.indices.count == 8 * 8 * 6 + 2 * 
       "a tube is one closed skin of rings with two ends")
 check(tube.vertices.prefix(72).enumerated().allSatisfy { abs(simd_distance($1, curve[$0 / 8]) - 0.02) < 0.0001 },
       "every ring sits one radius from the line")
+check(tube.along.count == tube.vertices.count && tube.along.first?.x == 0
+      && zip(tube.along.prefix(64), tube.along.dropFirst(8).prefix(64)).allSatisfy { $0.x < $1.x },
+      "the texture runs along the line, from where it was started")
 check(CrayonTube.mesh([bend[0]], radius: 0.02) == nil && CrayonTube.mesh([bend[0], bend[0]], radius: 0.02) == nil, "a point is not a line")
 print("Crayon stroke checks passed")
 

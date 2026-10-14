@@ -251,6 +251,11 @@ struct ViewerScreen: View {
             }
         }
         .animation(.easeInOut(duration: 0.3), value: controller.snoozed)
+        .onChange(of: peer.annotationResult) { _, result in
+            guard let result, let id = peer.takeDeletedNote(result.id), !result.saved else { return }
+            controller.messages.keep(id)
+            controller.showMessageResult("Home did not delete that message: \(result.detail)")
+        }
         .onAppear {
             screen.start()
             peer.onMap = { controller.load($0) }
@@ -263,6 +268,10 @@ struct ViewerScreen: View {
             controller.onGeo = { peer.setGeo($0) }
             controller.onStroke = { peer.saveStroke($0, frame: $1, done: $2) }
             controller.onErase = { peer.eraseStroke($0, frame: $1, done: $2) }
+            controller.messages.onDelete = { [weak controller] message in
+                guard let frame = controller?.map?.scenegraph.map.frame.id else { return false }
+                return peer.deleteNote(message.id, frame: frame)
+            }
             peer.onPortalResult = { controller.showPortalResult($0) }
             // A Portal seen before Home's map has arrived offers sign-in once.
             controller.onPortalSeen = { _ in
@@ -1532,8 +1541,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         let id = UUID().uuidString.lowercased()
         guard let path = MessageRoute.path(route, id: id, to: target.text) else { return }
         let color = UInt32(path.color.dropFirst(), radix: 16) ?? 0xff5fa8
-        let material = Self.crayonMaterial(UIColor(red: CGFloat((color >> 16) & 255) / 255, green: CGFloat((color >> 8) & 255) / 255,
-                                                   blue: CGFloat(color & 255) / 255, alpha: 1))
+        let material = Self.flowingMaterial(UIColor(red: CGFloat((color >> 16) & 255) / 255, green: CGFloat((color >> 8) & 255) / 255,
+                                                    blue: CGFloat(color & 255) / 255, alpha: 1))
         if let node = Self.pathNode(path.segments[0].map { SIMD3($0[0], $0[1], $0[2]) }, width: path.width_m, material: material) {
             node.name = id
             guideRoot.addChildNode(node)
@@ -1957,7 +1966,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         if let paths = map.render?.paths, paths.frame == map.scenegraph.map.frame.id {
             for stroke in paths.items where CrayonStroke.widths.contains(stroke.width_m) && !erasing.contains(stroke.id) {
                 let color = UInt32(stroke.color.dropFirst(), radix: 16) ?? 0xffca55
-                let material = Self.crayonMaterial(UIColor(red: CGFloat((color >> 16) & 255)/255,
+                let material = Self.flowingMaterial(UIColor(red: CGFloat((color >> 16) & 255)/255,
                     green: CGFloat((color >> 8) & 255)/255, blue: CGFloat(color & 255)/255, alpha: 1))
                 for segment in stroke.segments {
                     let points = segment.filter { $0.count == 3 }.map { SIMD3<Float>($0[0], $0[1], $0[2]) }
@@ -2457,10 +2466,40 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         return material
     }
 
+    /// A saved path's colour with lighter chevrons that run the way it was drawn.
+    private static func flowingMaterial(_ color: UIColor) -> SCNMaterial {
+        let material = crayonMaterial(color)
+        material.diffuse.contents = chevrons(color)
+        material.diffuse.wrapS = .repeat; material.diffuse.wrapT = .repeat
+        // One chevron every 12 cm along the path, two round it so every side shows one.
+        let tile = SCNMatrix4MakeScale(1 / 0.12, 2, 1)
+        material.diffuse.contentsTransform = tile
+        let flow = CABasicAnimation(keyPath: "contentsTransform")
+        flow.fromValue = NSValue(scnMatrix4: tile)
+        flow.toValue = NSValue(scnMatrix4: SCNMatrix4Mult(tile, SCNMatrix4MakeTranslation(-1, 0, 0)))
+        flow.duration = 0.5; flow.repeatCount = .infinity
+        material.diffuse.addAnimation(flow, forKey: "flow")
+        return material
+    }
+    private static var chevronTiles = [UIColor: UIImage]()
+    private static func chevrons(_ color: UIColor) -> UIImage {
+        if let tile = chevronTiles[color] { return tile }
+        let tile = UIGraphicsImageRenderer(size: CGSize(width: 64, height: 64)).image { drawn in
+            color.setFill(); drawn.fill(CGRect(x: 0, y: 0, width: 64, height: 64))
+            let mark = UIBezierPath()
+            mark.move(to: CGPoint(x: 18, y: 10)); mark.addLine(to: CGPoint(x: 44, y: 32)); mark.addLine(to: CGPoint(x: 18, y: 54))
+            mark.lineWidth = 11; mark.lineCapStyle = .round; mark.lineJoinStyle = .round
+            UIColor.white.withAlphaComponent(0.7).setStroke(); mark.stroke()
+        }
+        chevronTiles[color] = tile
+        return tile
+    }
+
     /// One smooth tube through a segment's points.
     private static func pathNode(_ points: [SIMD3<Float>], width: Float, material: SCNMaterial) -> SCNNode? {
         guard let mesh = CrayonTube.mesh(points, radius: width / 2) else { return nil }
-        let geometry = SCNGeometry(sources: [SCNGeometrySource(vertices: mesh.vertices.map { SCNVector3($0.x, $0.y, $0.z) })],
+        let geometry = SCNGeometry(sources: [SCNGeometrySource(vertices: mesh.vertices.map { SCNVector3($0.x, $0.y, $0.z) }),
+                                             SCNGeometrySource(textureCoordinates: mesh.along.map { CGPoint(x: CGFloat($0.x), y: CGFloat($0.y)) })],
                                    elements: [SCNGeometryElement(indices: mesh.indices, primitiveType: .triangles)])
         material.isDoubleSided = true
         geometry.materials = [material]
@@ -2691,6 +2730,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     /// Report an unknown Portal once two measurements a moment apart agree, so
     /// one noisy read cannot place it. Needs an alignment from a known Portal,
     /// unless the scene has no Portals: then this one is offered as its origin.
+    func showMessageResult(_ text: String) { showToast(text, good: false) }
     func showPortalResult(_ text: String) {
         let good = text.contains("added to Home") || text.contains("moved in Home")
         UINotificationFeedbackGenerator().notificationOccurred(good ? .success : .error)
@@ -3140,8 +3180,24 @@ final class MessageCenter: ObservableObject {
         return reached
     }
     private var shown = 0
+    /// Asks Home to delete a message, and says whether the request went out.
+    var onDelete: ((MessageInbox.Message) -> Bool)?
+    /// Deleted on this phone and still in Home's last scene, so kept out of the list.
+    @Published private(set) var deleting = Set<String>()
+    var listed: [MessageInbox.Message] { inbox.messages.filter { !deleting.contains($0.id) } }
+    func delete(_ message: MessageInbox.Message) {
+        guard onDelete?(message) == true else { return }
+        deleting.insert(message.id)
+        if target?.id == message.id { target = nil; aim = nil; way = nil }
+        banner.removeAll { $0.id == message.id }
+    }
+    /// Home did not delete it, so it comes back.
+    func keep(_ id: String) { deleting.remove(id) }
 
     func record(_ notes: [RenderScene.Note], frame: String, mine: Set<String>) {
+        // Once Home's scene drops a deleted message there is nothing left to hide.
+        let present = Set(notes.map(\.id))
+        if !deleting.isSubset(of: present) { deleting.formIntersection(present) }
         var next = inbox
         let arrived = next.record(notes, frame: frame, mine: mine)
         if next != inbox { inbox = next }
@@ -3285,7 +3341,7 @@ struct MessageList: View {
     }
     private var rows: some View {
         VStack(alignment: .leading, spacing: 2) {
-            ForEach(Array(center.inbox.messages.enumerated()), id: \.element.id) { index, message in
+            ForEach(Array(center.listed.enumerated()), id: \.element.id) { index, message in
                 Button { center.find(message); close() } label: {
                     HStack(spacing: 8) {
                         Text("\(index + 1)").themeLabel(10, .semibold).foregroundStyle(Theme.dim).frame(width: 22, alignment: .trailing)
@@ -3297,7 +3353,12 @@ struct MessageList: View {
                     .themeRow(selected: message.id == center.target?.id)
                 }
                 .buttonStyle(.plain)
+                // Hold a message to delete it, for everyone.
+                .contextMenu {
+                    Button(role: .destructive) { center.delete(message) } label: { Label("Delete message", systemImage: "trash") }
+                }
                 .accessibilityLabel("Message \(index + 1)\(message.unread ? ", new" : ""): \(message.text)")
+                .accessibilityAction(named: "Delete") { center.delete(message) }
             }
         }
     }

@@ -57,6 +57,18 @@ final class HomePeer: ObservableObject {
         annotationResult = nil
         return json.withCString { spatial_mobile_annotate($0) == 1 }
     }
+    /// Ask Home to delete a note. Home answers in `annotationResult` under the returned id.
+    private var deletingNotes = [String: String]()
+    /// The note a delete request was for, once, when its answer comes.
+    func takeDeletedNote(_ request: String) -> String? { deletingNotes.removeValue(forKey: request) }
+    func deleteNote(_ id: String, frame: String) -> Bool {
+        let request = UUID().uuidString.lowercased()
+        let body: [String: Any] = ["request_id": request, "frame": frame, "action": ["kind": "delete", "id": id]]
+        guard let data = try? JSONSerialization.data(withJSONObject: body),
+              let json = String(data: data, encoding: .utf8), changeAnnotation(json) else { return false }
+        deletingNotes[request] = id
+        return true
+    }
     func changeAnnotation(_ json: String) -> Bool {
         guard state == "live" else { return false }
         annotationResult = nil
