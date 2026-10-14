@@ -3553,7 +3553,8 @@ struct MessageList: View {
                 rows
                 ScrollView { rows }
             }
-            .frame(maxHeight: 150)
+            // A short list starts at the top of its space, not in the middle of it.
+            .frame(maxHeight: 150, alignment: .top)
             Text(!center.pairing ? "Tap a message to be shown where it is."
                  : center.picked == nil ? "Tap the message the way starts at." : "Now tap the message it leads to.")
                 .themeText(10).foregroundStyle(center.pairing ? Theme.accent : Theme.dim)
