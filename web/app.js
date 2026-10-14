@@ -2,14 +2,18 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createArOverlay } from './ar.js';
 import { createPhoneTrails, cameraShape } from './phone-trails.js';
+import { createCompactPoseTrail } from './compact-pose-trail.js';
 import { createSemanticVolumes, legacyVolumesForView } from './semantic-volumes.js';
 import { createMap2D } from './map-2d.js';
 import { createCrayon } from './crayon.js';
 import { createGhostCamera, createCameraPan, isEditing } from './ghost-camera.js';
 import { createNoteBubble } from './note-bubble.js';
 import { createPipWindow } from './pip-window.js';
+import { createVideoPresentation } from './video-presentation.js';
 import { moveMapCamera } from './view-camera.js';
 import { createAttachedCamera } from './attached-camera.js';
+import { createRobotModel } from './robot-model.js';
+import { applyRobotHealth } from './robot-health.js';
 const $=id=>document.getElementById(id);
 const chatForm=$('scene-chat-form'),chatInput=$('scene-chat-input'),chatStatus=$('scene-chat-status');
 chatForm.querySelector('button').disabled=true;
@@ -71,6 +75,8 @@ spatialBrowser.innerHTML='<h3>Anchors & landmarks</h3><label class="spatial-sear
 mapsList.after(spatialBrowser);
 $('spatial-search').oninput=()=>renderSpatialLists();
 const fleetList=document.createElement('div');fleetList.id='fleet-sensors';panelBodies.fleet.append(fleetList);$('sensor-select').hidden=true;
+const {createPoseInspector}=await import('/pose-inspector.js');
+const inspectPose=createPoseInspector(panelBodies.fleet);
 const disconnectRobots=document.createElement('button');disconnectRobots.id='disconnect-robots';disconnectRobots.className='panel-row';disconnectRobots.textContent='Disconnect simulated robots';disconnectRobots.hidden=true;panelBodies.fleet.append(disconnectRobots);
 disconnectRobots.onclick=async()=>{disconnectRobots.disabled=true;try{await api('/api/simulation/disconnect',{});}catch(e){disconnectRobots.disabled=false;availability.hidden=false;availability.textContent=e.message;}};
 const notesBody=panelBodies.notes;
@@ -140,6 +146,7 @@ async function runnerCatalog(){
    network.append(new Option(data.peer_id||'Network scenegraph','runner'));
   }
   const select=$('map-select');select.replaceChildren(local,network);
+  for(const peer of fleetNetwork?.peers||[])network.append(new Option((peer.name||peer.peer_id)+' · pose trail','peer-pose:'+peer.peer_id));
   if(!catalogInitialized&&data.preferred&&Array.from(select.options).some(o=>o.value===data.preferred)){select.value=data.preferred;select.dispatchEvent(new Event('change'));}
   else if(Array.from(select.options).some(o=>o.value===activeMap))select.value=activeMap;
   else if(select.options.length){select.value=select.options[0].value;select.dispatchEvent(new Event('change'));}
@@ -176,14 +183,53 @@ function label(text,color='#36594a'){
  const c=document.createElement('canvas');c.width=384;c.height=96;const ctx=c.getContext('2d');ctx.fillStyle='#fcfdf6';ctx.beginPath();ctx.roundRect(4,8,376,76,18);ctx.fill();ctx.font='500 30px system-ui';ctx.textAlign='center';ctx.fillStyle=color;ctx.fillText(text,192,56,356);const tex=new THREE.CanvasTexture(c);tex.colorSpace=THREE.SRGBColorSpace;const sprite=new THREE.Sprite(new THREE.SpriteMaterial({map:tex,depthTest:false}));sprite.scale.set(.65,.1625,1);return sprite;
 }
 const phoneTrails=createPhoneTrails(scene,text=>createNoteBubble(text,{peer:true}),peer=>cameraShape(fleetNetwork?.peers?.find(p=>p.peer_id===peer)?.catalog));
+const compactTrail=createCompactPoseTrail(scene);
+$('map-select').addEventListener('change',()=>compactTrail.reset());
+async function refreshCompactTrail(){
+ refreshPeer();
+ grid.position.set(0,0,0);
+ const selected=activeMap,peer=fleetNetwork?.peers?.find(p=>'peer-pose:'+p.peer_id===selected);
+ const products=(peer?.catalog?.products||[]).filter(p=>p.metadata?.schema==='spatial-harness.compact-pose-contract/v1'&&(p.metadata.value?.lifetime??'sampled')==='sampled');
+ $('scene-title').textContent=(peer?.name||peer?.peer_id||'Peer')+' · pose trail';
+ $('frame-info').textContent='Native peer space · no Home alignment';
+ $('portal-info').textContent='Last 300 received poses since opening · older ghosts are fainter';
+ if(!products.length){compactTrail.reset();availability.hidden=false;availability.textContent='No compact pose Product advertised by this peer';return;}
+ if(products.length!==1){compactTrail.reset();availability.hidden=false;availability.textContent='Multiple sampled pose Products; inspect the desired Product in Devices';return;}
+ // Each Product has its own declared frame/session; do not mix unrelated outputs.
+ const product=products[0];
+ const query=new URLSearchParams({debug_pose:'true',sensor:peer.peer_id+'/'+product.manifest.product_id,expected_manifest:product.manifest_hash});
+ try{
+  const data=await api('/api/sensors?'+query);if(activeMap!==selected)return;
+  const result=compactTrail.update(data);
+  $('frame-info').textContent=result.frame+' · native coordinates (registry-oriented display)';
+  $('observation-count').textContent=String(result.count);
+  availability.hidden=false;availability.textContent=result.status+' · '+data.stream+' · '+product.manifest.product_id+(products.length>1?' · first pose Product':'');
+ }catch(error){if(activeMap!==selected)return;compactTrail.reset();availability.hidden=false;availability.textContent='Pose trail unavailable · '+error.message;}
+}
 const semanticVolumes=createSemanticVolumes({scene,camera,renderer,controls,panel:panelBodies.volumes,api,label,clear,openPanel,priorityPickObjects:()=>[...selectable.filter(o=>o.userData.kind==='note'),...crayon.objects()]});
 $('map-select').addEventListener('change',()=>semanticVolumes.reset());
 let phonePresenceBusy=false;
+const homePoseStatus=document.createElement('p');homePoseStatus.className='panel-hint';panelBodies.maps.append(homePoseStatus);
+$('map-select').addEventListener('change',()=>{homePoseStatus.textContent='';phoneTrails.reset(null);});
 async function refreshPhonePresence(){
  if(phonePresenceBusy||!isLocalScene()||!current)return;
  const map=activeMap,frame=current.frame;phonePresenceBusy=true;
- try{const value=await api(localSceneUrl(map)+'/presence');
-  if(activeMap===map&&current?.frame===frame&&value.frame===frame)phoneTrails.ingest(frame,value.poses||[]);
+ try{const poses=[],errors=[];
+  for(const peer of fleetNetwork?.peers||[]){
+   if(activeMap!==map||current?.frame!==frame)return;
+   const products=(peer.catalog?.products||[]).filter(p=>p.metadata?.schema==='spatial-harness.compact-pose-contract/v1'&&(p.metadata.value?.lifetime??'sampled')==='sampled');
+   if(!products.length)continue;
+   const name=fleetNetwork?.aliases?.[peer.peer_id]||peer.name||peer.peer_id;
+   if(products.length!==1){errors.push(name+': ambiguous pose Products');continue;}
+   const product=products[0],q=new URLSearchParams({debug_pose:'true',sensor:peer.peer_id+'/'+product.manifest.product_id,expected_manifest:product.manifest_hash,home_frame:frame});
+   try{const value=await api('/api/sensors?'+q),home=value.home_pose;
+    if(home?.frame!==frame||home.tracking?.status!=='valid'||value.stream!=='live')continue;
+    const p=home.tracking.pose,[x,y,z,w]=p.rotation_xyzw;
+    poses.push({receivedAt:performance.now(),peer_id:peer.peer_id,name,clock:{session_id:value.resolved.contract.session_id+':'+home.alignment_timestamp_ns},capture_timestamp_ns:value.timestamp_ns,received_age_ms:value.age_ms,
+     pose:{to_frame_id:frame,translation:p.translation,rotation_wxyz:[w,x,y,z]}});
+   }catch(e){errors.push(name+': '+e.message);}
+  }
+  if(activeMap===map&&current?.frame===frame){const fresh=poses.map(p=>({...p,received_age_ms:p.received_age_ms+performance.now()-p.receivedAt})).filter(p=>p.received_age_ms<2000);phoneTrails.ingest(frame,fresh);homePoseStatus.textContent=errors.length?errors.join(' · '):fresh.length+' phones aligned to this Home scene';$('canvas').dataset.phonePoseStatus=errors.join('\n');}
  }catch{if(activeMap===map)phoneTrails.ingest(frame,[]);}finally{phonePresenceBusy=false;}
 }
 setInterval(refreshPhonePresence,200);
@@ -212,7 +258,6 @@ function build(data){
   groups.portals.add(g);
  }
  if(first)phoneTrails.reset(data.frame);
- if(!isLocalScene())phoneTrails.ingest(data.frame,(data.notes||[]).filter(n=>n.phone_pose).map(n=>n.phone_pose));
  for(const volume of legacyVolumesForView(data)){
   const [w,h,d]=volume.dimensions;
   const group=new THREE.Group();group.position.fromArray(volume.position);group.rotation.y=volume.yaw;
@@ -489,7 +534,7 @@ renderer.domElement.addEventListener('dblclick',e=>{
 });
 async function api(path,body,method){if(path==='/api/chat'&&body){camera.updateMatrixWorld();const right=map2D.isActive()?[1,0,0]:new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld,0).toArray();body={...body,viewer:{frame:current?.frame||'',mode:map2D.isActive()?'2d':'3d',screen_right:right,camera_position:camera.position.toArray(),camera_target:controls.target.toArray()}};}const r=await fetch(path,body?{method:method||'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:method?{method}:undefined);const text=await r.text();let result;try{result=JSON.parse(text);}catch{throw new Error(text);}if(!r.ok){const error=new Error(result.error||text);error.status=r.status;throw error;}return result;}
 function peerSceneUrl(map){return '/api/sensors?scene=true&sensor='+encodeURIComponent(map.slice(11));}
-async function refresh(){if(refreshing)return;refreshing=true;refreshPeer();if(!isSimulation())refreshMapping();try{const selected=activeMap;const data=await api(isLocalScene(selected)?localSceneUrl(selected):selected.startsWith('peer-scene:')?peerSceneUrl(selected):selected.startsWith('phone:')?'/api/phone-local-scene?peer='+encodeURIComponent(selected.slice(6)):isSimulation(selected)?'/api/simulation/'+selected.slice(4):selected==='home-live'?'/api/home-live-scene':isRunner(selected)?runnerUrl('/api/runner-scene',selected):selected==='domain'?'/api/domain-scene':'/api/scene');if(selected!==activeMap)return;const content=JSON.stringify({...data,remote_status:undefined});if(content!==lastScene){lastScene=content;build(data);}else {data.receivedAt=performance.now();current=data;}homeOffline=false;renderMapRows();availability.hidden=!(selected==='sim-occupancy'&&data.simulation_status!=='running');if(!availability.hidden)availability.textContent='Retained on Home · robot publishers offline · no new observations';$('connection').textContent='Home Server online';}catch(e){if(!e.status){markOffline();}else{availability.hidden=false;availability.textContent='Scene unavailable · '+e.message;if(activeMap==='sim-voxels'||activeMap.startsWith('peer-scene:')){Object.values(groups).forEach(clear);hideRobots();current=null;lastScene=null;}}$('connection').textContent=e.status?'Home online · scene unavailable':'Home offline';throw e;}finally{refreshing=false;}}
+async function refresh(){if(activeMap.startsWith('peer-pose:')){if(refreshing)return;refreshing=true;try{await refreshCompactTrail();}finally{refreshing=false;}return;}if(refreshing)return;refreshing=true;refreshPeer();if(!isSimulation())refreshMapping();try{const selected=activeMap;const data=await api(isLocalScene(selected)?localSceneUrl(selected):selected.startsWith('peer-scene:')?peerSceneUrl(selected):selected.startsWith('phone:')?'/api/phone-local-scene?peer='+encodeURIComponent(selected.slice(6)):isSimulation(selected)?'/api/simulation/'+selected.slice(4):selected==='home-live'?'/api/home-live-scene':isRunner(selected)?runnerUrl('/api/runner-scene',selected):selected==='domain'?'/api/domain-scene':'/api/scene');if(selected!==activeMap)return;const content=JSON.stringify({...data,remote_status:undefined});if(content!==lastScene){lastScene=content;build(data);}else {data.receivedAt=performance.now();current=data;}homeOffline=false;renderMapRows();availability.hidden=!(selected==='sim-occupancy'&&data.simulation_status!=='running');if(!availability.hidden)availability.textContent='Retained on Home · robot publishers offline · no new observations';$('connection').textContent='Home Server online';}catch(e){if(!e.status){markOffline();}else{availability.hidden=false;availability.textContent='Scene unavailable · '+e.message;if(activeMap==='sim-voxels'||activeMap.startsWith('peer-scene:')){Object.values(groups).forEach(clear);hideRobots();current=null;lastScene=null;}}$('connection').textContent=e.status?'Home online · scene unavailable':'Home offline';throw e;}finally{refreshing=false;}}
 async function action(fn){if(busy)return;busy=true;document.querySelectorAll('#load,#project,#replay').forEach(b=>b.disabled=true);$('notice').classList.remove('error');$('notice').textContent='Integrating…';try{await fn();await refresh();}catch(e){$('notice').textContent=e.message;$('notice').classList.add('error');}finally{busy=false;$('load').disabled=false;$('project').disabled=!current?.voxels.length;$('replay').disabled=!current?.sources.iphone;}}
 $('load').onclick=()=>action(async()=>{const f=await api('/api/fixtures');for(const c of f.contributions)await api('/api/contributions',c);$('notice').textContent='Two scans aligned through Portal A. Ready to project a detection.';});
 $('project').onclick=()=>action(async()=>{const f=await api('/api/fixtures');const result=await api('/api/detections',f.detection);$('notice').textContent=result.applied?'Book placed at the first occupied voxel hit.':'This detection is already placed. No duplicate object created.';});
@@ -510,6 +555,37 @@ function usesBodyVolume(key){
 const poseColors=['#e49b32','#985cdb','#219b96'];
 let runner=null,runnerBusy=false,lastRunnerReply=0;
 function hideRobots(){for(const glyph of robots.values())glyph.group.visible=false;}
+// Robot models drawn instead of the pose box, by the robot's native map family.
+function robotModel(frame){return frame?.startsWith('bracketbot-local:')?'bracketbot':null;}
+// Swap the box glyph for the robot's URDF model. The model's root is in ROS body
+// axes like the glyph; the box stays as the fallback while loading, on failure,
+// and for robots without a model.
+function setGlyphModel(glyph,model){
+ if(glyph.model===model)return;
+ glyph.model=model;
+ if(glyph.robot){glyph.group.remove(glyph.robot.root);glyph.robot=null;}
+ glyph.body.visible=true;
+ if(model!=='bracketbot')return;
+ createRobotModel().then(robot=>{
+  if(glyph.model!=='bracketbot'||glyph.robot)return;
+  glyph.robot=robot;glyph.group.add(robot.root);glyph.body.visible=false;applyJoints(glyph);applyRobotHealth(glyph,glyph.health);
+ }).catch(e=>console.warn('Robot model unavailable; keeping pose glyph',e));
+}
+// URDF joint positions published next to the pose; joints left out keep their last value.
+function applyJoints(glyph){
+ if(!glyph.robot||!glyph.joints)return;
+ for(const [name,value] of Object.entries(glyph.joints))glyph.robot.setJoint(name,value);
+}
+// A Home robot presence entry (robot.base pose in the scene) as a glyph pose in
+// ROS body axes. Bracketbot declares robot.base Z-up/X-right/Y-forward, so its
+// ROS body (URDF root, X forward) is robot.base turned +90 degrees about Z.
+const BRACKETBOT_BASE_FROM_ROS=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1),Math.PI/2);
+function presenceGlyphPose(robot){
+ const p=robot?.pose;if(!p?.translation||!p?.rotation_wxyz)return null;
+ const [w,x,y,z]=p.rotation_wxyz,q=new THREE.Quaternion(x,y,z,w);
+ if(robotModel(robot.native_pose?.to_frame_id)==='bracketbot')q.multiply(BRACKETBOT_BASE_FROM_ROS);
+ return {translation:p.translation,rotation_xyzw:[q.x,q.y,q.z,q.w]};
+}
 function glyphFor(key,name){
  let glyph=robots.get(key);
  if(!glyph){
@@ -519,7 +595,7 @@ function glyphFor(key,name){
   // Robot-local ROS body axes: +X forward, +Y left, +Z up; illustrative pose glyph.
   const body=new THREE.Mesh(new THREE.BoxGeometry(.42,.32,.18),material);body.position.z=.11;body.renderOrder=5;group.add(body);
   const arrow=new THREE.ArrowHelper(new THREE.Vector3(1,0,0),new THREE.Vector3(0,0,.25),.8,color,.2,.12);arrow.traverse(o=>{if(o.material){o.material.depthTest=false;o.renderOrder=6;}});group.add(arrow);
-  glyph={group,material,arrow,color};robots.set(key,glyph);
+  glyph={group,material,arrow,color,body};robots.set(key,glyph);
  }
  if(glyph.name!==name){
   if(glyph.tag){glyph.group.remove(glyph.tag);glyph.tag.material.map.dispose();glyph.tag.material.dispose();}
@@ -544,9 +620,12 @@ function renderRunners(entries){
  }
  entries.forEach((entry,i)=>{
   const glyph=glyphFor(entry.key,entry.name),state=entry.state;
-  glyph.tag.visible=activeMap!=='home-live';
+  glyph.tag.visible=activeMap!=='home-live'&&!isLocalScene();  // local scenes name robots with a note bubble
   glyph.state=state;glyph.group.visible=Boolean(state.pose)&&$('runner-layer').checked&&!usesBodyVolume(entry.key);
   if(state.pose){glyph.group.position.fromArray(state.pose.translation);glyph.group.quaternion.fromArray(state.pose.rotation_xyzw);}
+  setGlyphModel(glyph,state.model||null);
+  if(state.joints&&state.joints!==glyph.joints){glyph.joints=state.joints;applyJoints(glyph);}
+  glyph.health=state.health||null;applyRobotHealth(glyph,glyph.health);
   glyph.material.color.set(state.status==='live'?glyph.color:'#84908f');glyph.material.opacity=state.status==='live'?.82:.35;glyph.arrow.setColor(state.status==='live'?glyph.color:'#84908f');
   const row=list.children[i];row.dataset.status=state.status;row.dataset.visible=String(glyph.group.visible);
   row.dataset.position=state.pose?JSON.stringify(glyph.group.position.toArray()):'';row.dataset.rotation=state.pose?JSON.stringify(glyph.group.quaternion.toArray()):'';
@@ -597,10 +676,18 @@ function showHomeRunners(local,fresh){
 }
 $('runner-layer').onchange=()=>{refreshRunner();};
 async function refreshRunner(){
- if(isLocalScene()){hideRobots();$('runner-status').textContent='No robot aligned to this scene';return;}
+ if(isLocalScene()){
+  // Robots aligned to this scene, from Home's authenticated robot presence.
+  const present=(current?.notes||[]).map(n=>n.robot_pose).filter(r=>r?.pose&&r.peer_id);
+  if(!present.length){hideRobots();$('runner-status').textContent='No robot aligned to this scene';return;}
+  renderRunners(present.map(r=>({key:'presence:'+r.peer_id,name:r.name||'Robot '+r.peer_id.slice(-6),
+   state:{status:(r.received_age_ms??0)<3000?'live':'stale',pose:presenceGlyphPose(r),model:robotModel(r.native_pose?.to_frame_id),joints:r.joints?.positions,health:r.health}})));
+  $('runner-status').textContent=present.length+' robot(s) aligned to this scene';
+  return;
+ }
  if(activeMap.startsWith('peer-scene:')){
   const pose=robotGlyphPose(current?.local_mapping?.robot_pose);
-  showRunner({status:pose&&performance.now()-(current?.receivedAt||0)<5000?'live':'stale',pose:pose||null,detail:'Pose in the publishing robot’s map frame'});return;
+  showRunner({status:pose&&performance.now()-(current?.receivedAt||0)<5000?'live':'stale',pose:pose||null,model:robotModel(current?.frame),joints:current?.local_mapping?.robot_joints?.positions,health:current?.local_mapping?.robot_health,detail:'Pose in the publishing robot’s map frame'});return;
  }
  if(isSimulation()){
   const local=current?.local_mapping;
@@ -616,7 +703,7 @@ async function refreshRunner(){
   const local=current?.local_mapping, remote=current?.remote_status;
   const fresh=remote?.status==='connected' && remote.age_ms<10000 && performance.now()-(current?.receivedAt||0)<5000;
   if(activeMap==='home-live'&&local?.runners){showHomeRunners(local,fresh);return;}
-  showRunner({status:fresh&&local?.robot_pose?'live':'stale',pose:robotGlyphPose(local?.robot_pose),detail:local?(activeMap==='home-live'?'Pose in Home’s observed portal frame':current?.display_alignment?'Display pose uses the Catalog transform; robot pose remains native':'Pose in the robot boot frame'):'Waiting for independent robot pose'});return;
+  showRunner({status:fresh&&local?.robot_pose?'live':'stale',pose:robotGlyphPose(local?.robot_pose),model:robotModel(current?.frame),joints:local?.robot_joints?.positions,health:local?.robot_health,detail:local?(activeMap==='home-live'?'Pose in Home’s observed portal frame':current?.display_alignment?'Display pose uses the Catalog transform; robot pose remains native':'Pose in the robot boot frame'):'Waiting for independent robot pose'});return;
  }
  if(runnerBusy)return;runnerBusy=true;try{const state=await api('/api/runner-pose');lastRunnerReply=performance.now();if(!(isLocalScene()||isRunner()||isSimulation()||activeMap==='home-live'||activeMap.startsWith('peer-scene:')))showRunner(state);}catch{if(!(isLocalScene()||isRunner()||isSimulation()||activeMap==='home-live'||activeMap.startsWith('peer-scene:')))showRunner({...runner,status:'unavailable',pose:null,detail:'Home telemetry connection lost'});}finally{runnerBusy=false;}}
 runnerCatalog();refreshRunner();setInterval(refreshRunner,250);
@@ -658,13 +745,13 @@ renderer.domElement.addEventListener('contextmenu',e=>{e.preventDefault();
 $('sensor-stage').addEventListener('contextmenu',e=>{e.preventDefault();e.stopPropagation();
  const f=displayedCamera;
  if(!f?.token||Date.now()-f.receivedAt>10000){beginLabel(null,f?.error||'Waiting for a fresh capture-matched camera pose. Try again when calibrated video arrives.');return;}
- const rect=$('sensor-image').getBoundingClientRect();
- beginLabel({source:'camera',camera_token:f.token,pixel:[(e.clientX-rect.left)/rect.width*f.width,(e.clientY-rect.top)/rect.height*f.height]});
+ beginLabel({source:'camera',camera_token:f.token,pixel:videoPresentation.pixel(e.clientX,e.clientY)});
 });
 
 // Camera previews are independent of the selected map and never control the robot.
 const sensorSelect=document.querySelector('#sensor-select'),pip=document.querySelector('#sensor-pip'),sensorCanvas=document.querySelector('#sensor-image');
-createPipWindow(pip);
+const pipWindow=createPipWindow(pip);
+const videoPresentation=createVideoPresentation($('sensor-stage'),pip.querySelector('.sensor-pip-heading'),()=>{pipWindow.fit();arOverlay?.setRotation(Number($('sensor-stage').dataset.rotation)||0);});
 let sensorGeneration=0,lastSensorSequence=null,lastSensorChange=0;
 const arToggle=$('sensor-ar'),arStatus=$('sensor-ar-status');
 let arOverlay=null,arLastSuccess=0;
@@ -738,7 +825,8 @@ async function watchSensor(generation){
     for(let i=0;i<f.width*f.height;i++){image.data[i*4]=bytes[i*channels];image.data[i*4+1]=bytes[i*channels+(channels===3?1:0)];image.data[i*4+2]=bytes[i*channels+(channels===3?2:0)];image.data[i*4+3]=255;}ctx.putImageData(image,0,0);
    }
    displayedCamera={token:f.camera_token,error:f.pick_error,width:f.width,height:f.height,receivedAt:Date.now()};
-   if(arToggle.checked){arOverlay??=createArOverlay($('sensor-ar-overlay'));arOverlay.show(f);arLastSuccess=Date.now();arStatus.textContent=['sdk-camera','sdk-fisheye'].includes(f.ar?.projection)?'AR · Home scene voxels + notes · capture-matched camera':'AR · Home live voxels + notes · synchronized mapping camera';}
+   videoPresentation.update(f);
+   if(arToggle.checked){arOverlay??=createArOverlay($('sensor-ar-overlay'));arOverlay.show(f,Number($('sensor-stage').dataset.rotation)||0);arLastSuccess=Date.now();arStatus.textContent=['sdk-camera','sdk-fisheye'].includes(f.ar?.projection)?'AR · Home scene voxels + notes · capture-matched camera':'AR · Home live voxels + notes · synchronized mapping camera';}
    lastSensorSequence=f.sequence;lastSensorChange=Date.now();
   }
   status.textContent=Date.now()-lastSensorChange>3000?'Stale · no new frames':'Receiving · frame '+f.sequence;
@@ -746,6 +834,7 @@ async function watchSensor(generation){
  if(generation===sensorGeneration)setTimeout(()=>watchSensor(generation),100);
 }
 sensorSelect.addEventListener('change',()=>{
+ videoPresentation.select(sensorSelect.value);
  pip.hidden=!sensorSelect.value;arToggle.checked=false;updateArAvailability();
  sensorCanvas.getContext('2d').clearRect(0,0,sensorCanvas.width,sensorCanvas.height);
  document.querySelector('#sensor-title').textContent=sensorSelect.selectedOptions[0].textContent;
@@ -859,11 +948,16 @@ function renderFleetRows(){
   if(peer.received_observations!==undefined){const count=document.createElement('p');count.className='panel-hint';count.dataset.observations=String(peer.received_observations);count.textContent=peer.received_observations+' observations received over P2P';group.append(count);}
   if(!peer.self){const catalogStatus=document.createElement('p');catalogStatus.className='panel-hint';catalogStatus.dataset.catalogStatus=peer.catalog_status||'unknown';catalogStatus.textContent=peer.catalog_status==='ready'?((peer.catalog?.components?.length||0)+' components · '+(peer.catalog?.products?.length||0)+' products'):peer.catalog_status==='unavailable'?(peer.catalog_detail||'Component catalog unavailable'):peer.catalog?'':'Loading component catalog…';if(catalogStatus.textContent)group.append(catalogStatus);}
   if(peer.catalog_cached){const hint=document.createElement('p');hint.className='panel-hint';hint.textContent='Catalog refresh delayed · using last known entries; stream freshness checked separately';group.append(hint);}
+  if(peer.registries){const hint=document.createElement('p');hint.className='panel-hint';hint.textContent='Registry: '+peer.registries.status+' · '+Object.keys(peer.registries.definitions||{}).length+' resolved definitions';hint.title=JSON.stringify(peer.registries.errors||peer.registries.detail||{},null,2);group.append(hint);}
   const feeds=document.createElement('section');feeds.setAttribute('aria-label','Camera feeds');const feedsHeading=document.createElement('h3');feedsHeading.textContent=`Camera feeds (${options.length})`;feeds.append(feedsHeading);
   for(const option of options.sort((a,b)=>a.textContent.localeCompare(b.textContent))){const button=uiButton(option.textContent+($('sensor-select').value===option.value?' · PiP ●':''),()=>{$('sensor-select').value=$('sensor-select').value===option.value?'':option.value;$('sensor-select').dispatchEvent(new Event('change'));});button.setAttribute('aria-pressed',String($('sensor-select').value===option.value));feeds.append(button);}
   if(!options.length){const empty=document.createElement('p');empty.className='panel-hint';empty.textContent='No camera feeds available';feeds.append(empty);}group.append(feeds);
   if(!peer.self)group.append(operationsSection(peer));
   const catalog=peer.catalog||{},entries=[...(catalog.components||[]).map(entry=>({kind:'component',entry})),...(catalog.products||[]).map(entry=>({kind:'product',entry}))];
+  const poseLogs=document.createElement('section'),poseHeading=document.createElement('h3');poseLogs.setAttribute('aria-label','Pose logs');poseHeading.textContent='Pose logs';poseLogs.append(poseHeading);
+  const poses=(catalog.products||[]).filter(p=>p.metadata?.schema==='spatial-harness.compact-pose-contract/v1');
+  for(const product of poses)poseLogs.append(uiButton('Inspect '+product.manifest.product_id,()=>inspectPose(peer.peer_id,product,(peer.name||peer.peer_id)+' / '+product.manifest.product_id)));
+  if(!poses.length){const hint=document.createElement('p');hint.className='panel-hint';hint.textContent='No compact pose Product advertised';poseLogs.append(hint);}group.append(poseLogs);
   for(const type of ['Cameras','Maps','Poses & odometry','Detections','Sensors & observations','Other']){
    const matching=entries.filter(item=>catalogType(item.entry,item.kind,catalog)===type).sort((a,b)=>a.entry.manifest[a.kind+'_id'].localeCompare(b.entry.manifest[b.kind+'_id'])||a.kind.localeCompare(b.kind));
    if(!matching.length)continue;
@@ -871,6 +965,7 @@ function renderFleetRows(){
    for(const {kind,entry} of matching){
    const id=entry.manifest[kind+'_id'],details=document.createElement('details');details.dataset[kind]=id;details.open=openedCatalog.has(JSON.stringify([peer.peer_id,kind,id]));
    const title=document.createElement('summary');title.textContent=(kind==='component'?'Component':'Product')+' · '+id;
+   if(kind==='product'&&entry.metadata?.schema==='spatial-harness.compact-pose-contract/v1')details.append(uiButton('Inspect live pose',()=>inspectPose(peer.peer_id,entry,(peer.name||peer.peer_id)+' / '+id)));
    const pre=document.createElement('pre');pre.style.cssText='white-space:pre-wrap;overflow-wrap:anywhere;font-size:10px';pre.textContent=JSON.stringify(entry.manifest,null,2);details.append(title,pre);section.append(details);
    }group.append(section);
   }

@@ -545,3 +545,241 @@ struct DeviceTrails {
         return seen.values.sorted { $0.id < $1.id }
     }
 }
+
+/// People's notes as messages, in Home's order from first to last, and which have not been opened on this phone.
+struct MessageInbox: Equatable {
+    struct Message: Identifiable, Equatable {
+        let id: String
+        var text: String
+        var position: SIMD3<Float>
+        var unread = false
+    }
+    private(set) var messages = [Message]()
+    private var frame: String?
+    var unread: Int { messages.filter(\.unread).count }
+
+    /// Take Home's latest notes and return the ones that are news. What a scene already holds
+    /// when it is first seen is not news, and neither is a note this phone wrote.
+    mutating func record(_ notes: [RenderScene.Note], frame: String, mine: Set<String> = []) -> [Message] {
+        let first = self.frame != frame
+        let before = first ? [:] : Dictionary(messages.map { ($0.id, $0.unread) }, uniquingKeysWith: { a, _ in a })
+        self.frame = frame
+        var arrived = [Message](), listed = Set<String>()
+        messages = notes.compactMap { note in
+            // Home's own labels for phones and robots are not messages.
+            guard note.phone_pose == nil, note.robot_pose == nil, note.position.count == 3,
+                  note.position.allSatisfy(\.isFinite), listed.insert(note.id).inserted else { return nil }
+            let message = Message(id: note.id, text: note.text,
+                                  position: SIMD3(note.position[0], note.position[1], note.position[2]),
+                                  unread: before[note.id] ?? (!first && !mine.contains(note.id)))
+            if before[note.id] == nil && message.unread { arrived.append(message) }
+            return message
+        }
+        return arrived
+    }
+    mutating func open(_ id: String) {
+        if let index = messages.firstIndex(where: { $0.id == id }) { messages[index].unread = false }
+    }
+}
+
+/// A way across the floor to a spot, round what the map shows is in the way.
+enum MessageRoute {
+    /// The floor is Y = 0 in Home's frame. Voxels in this band above it are in a walker's way.
+    static let body: ClosedRange<Float> = 0.25...1.9
+    /// Farthest a route is planned across, in cells each way.
+    static let reach = 320
+    static let lift: Float = 0.06
+
+    /// Corners of a walkable way from `from` to `to`, both ends included, just above the floor.
+    /// It goes round voxels at body height, keeps a step clear of them where it can, and
+    /// prefers floor the map has actually seen to floor it has not. With nothing known in
+    /// the way, or no way round, it is the straight line.
+    static func plan(from: SIMD3<Float>, to: SIMD3<Float>, voxels: [SIMD3<Float>], size: Float) -> [SIMD3<Float>] {
+        let start = SIMD3(from.x, lift, from.z), goal = SIMD3(to.x, lift, to.z)
+        guard size > 0.01, [start, goal].allSatisfy({ $0.x.isFinite && $0.z.isFinite }) else { return [start, goal] }
+        func cell(_ p: SIMD3<Float>) -> SIMD2<Int> { SIMD2(Int((p.x / size).rounded(.down)), Int((p.z / size).rounded(.down))) }
+        let a = cell(start), b = cell(goal)
+        let margin = Int((3 / size).rounded(.up))
+        let low = SIMD2(min(a.x, b.x) - margin, min(a.y, b.y) - margin)
+        let width = abs(a.x - b.x) + 2 * margin + 1, height = abs(a.y - b.y) + 2 * margin + 1
+        guard width <= reach, height <= reach else { return [start, goal] }
+        func index(_ c: SIMD2<Int>) -> Int? {
+            let x = c.x - low.x, y = c.y - low.y
+            return x >= 0 && y >= 0 && x < width && y < height ? y * width + x : nil
+        }
+        // 0 unseen, 1 seen floor, 2 near something, 3 something in the way.
+        var grid = [UInt8](repeating: 0, count: width * height)
+        var blocked = [SIMD2<Int>]()
+        for voxel in voxels {
+            guard let i = index(cell(voxel)) else { continue }
+            if body.contains(voxel.y) { if grid[i] != 3 { grid[i] = 3; blocked.append(cell(voxel)) } }
+            else if voxel.y < body.lowerBound, grid[i] == 0 { grid[i] = 1 }
+        }
+        guard !blocked.isEmpty else { return [start, goal] }
+        let clearance = max(1, Int((0.25 / size).rounded()))
+        for c in blocked {
+            for dy in -clearance...clearance { for dx in -clearance...clearance {
+                if let i = index(SIMD2(c.x + dx, c.y + dy)), grid[i] < 2 { grid[i] = 2 }
+            } }
+        }
+        // Standing in, or heading into, something on the map: those ends stay reachable.
+        for end in [a, b] {
+            for dy in -clearance...clearance { for dx in -clearance...clearance {
+                if let i = index(SIMD2(end.x + dx, end.y + dy)), grid[i] == 3 { grid[i] = 2 }
+            } }
+        }
+        guard let first = index(a), let last = index(b) else { return [start, goal] }
+        func price(_ i: Int) -> Float { grid[i] == 1 ? 1 : grid[i] == 0 ? 2.5 : 6 }
+        var cost = [Float](repeating: .infinity, count: grid.count), parent = [Int32](repeating: -1, count: grid.count)
+        var heap = [(Float, Int)]()
+        func push(_ item: (Float, Int)) {
+            heap.append(item)
+            var child = heap.count - 1
+            while child > 0, heap[(child - 1) / 2].0 > heap[child].0 { heap.swapAt(child, (child - 1) / 2); child = (child - 1) / 2 }
+        }
+        func pop() -> (Float, Int) {
+            let top = heap[0], end = heap.removeLast()
+            if !heap.isEmpty {
+                heap[0] = end
+                var node = 0
+                while true {
+                    var least = node
+                    for child in [2 * node + 1, 2 * node + 2] where child < heap.count && heap[child].0 < heap[least].0 { least = child }
+                    if least == node { break }
+                    heap.swapAt(node, least); node = least
+                }
+            }
+            return top
+        }
+        func ahead(_ i: Int) -> Float {
+            let dx = Float(abs(i % width - last % width)), dy = Float(abs(i / width - last / width))
+            return max(dx, dy) + 0.4142 * min(dx, dy)
+        }
+        cost[first] = 0; push((ahead(first), first))
+        while !heap.isEmpty {
+            let (rank, here) = pop()
+            if here == last { break }
+            if rank > cost[here] + ahead(here) + 0.001 { continue }
+            let x = here % width, y = here / width
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
+                let nx = x + dx, ny = y + dy
+                guard nx >= 0, ny >= 0, nx < width, ny < height else { continue }
+                let next = ny * width + nx
+                guard grid[next] != 3 else { continue }
+                // No squeezing diagonally between two things.
+                if dx != 0, dy != 0, grid[y * width + nx] == 3 || grid[ny * width + x] == 3 { continue }
+                let reached = cost[here] + (dx != 0 && dy != 0 ? 1.4142 : 1) * price(next)
+                if reached < cost[next] { cost[next] = reached; parent[next] = Int32(here); push((reached + ahead(next), next)) }
+            }
+        }
+        guard cost[last].isFinite else { return [start, goal] }
+        var cells = [Int](), at = last
+        while at != first { cells.append(at); at = Int(parent[at]) }
+        cells.append(first); cells.reverse()
+        func middle(_ i: Int) -> SIMD3<Float> {
+            SIMD3((Float(i % width + low.x) + 0.5) * size, lift, (Float(i / width + low.y) + 0.5) * size)
+        }
+        var points = [start] + cells.dropFirst().dropLast().map(middle) + [goal]
+        // A straight stretch is clear when nothing along it is near a voxel.
+        func clear(_ p: SIMD3<Float>, _ q: SIMD3<Float>) -> Bool {
+            let steps = max(1, Int((simd_distance(p, q) / (size / 2)).rounded(.up)))
+            for step in 1..<max(2, steps) {
+                guard let i = index(cell(p + (q - p) * (Float(step) / Float(steps)))), grid[i] < 2 else { return false }
+            }
+            return true
+        }
+        var corners = [points[0]], from = 0
+        while from < points.count - 1 {
+            var next = from + 1
+            for far in stride(from: points.count - 1, to: from + 1, by: -1) where clear(points[from], points[far]) { next = far; break }
+            corners.append(points[next]); from = next
+        }
+        points = corners
+        return points
+    }
+
+    /// Evenly spaced spots along a route, for a trail of crumbs. The last is the route's end.
+    static func crumbs(_ route: [SIMD3<Float>], every gap: Float = 0.4) -> [SIMD3<Float>] {
+        guard route.count > 1, gap > 0 else { return route }
+        var crumbs = [SIMD3<Float>](), owed = gap
+        for (a, b) in zip(route, route.dropFirst()) {
+            let length = simd_distance(a, b)
+            guard length > 0.0001 else { continue }
+            var along = owed
+            while along <= length { crumbs.append(a + (b - a) * (along / length)); along += gap }
+            owed = along - length
+        }
+        if let end = route.last, crumbs.last.map({ simd_distance($0, end) > gap / 2 }) ?? true { crumbs.append(end) }
+        else if let end = route.last { crumbs[crumbs.count - 1] = end }
+        return crumbs
+    }
+
+    /// How far a spot is from the route, across the floor.
+    static func stray(_ spot: SIMD3<Float>, from route: [SIMD3<Float>]) -> Float {
+        let p = SIMD2(spot.x, spot.z)
+        var nearest = Float.infinity
+        for (a3, b3) in zip(route, route.dropFirst()) {
+            let a = SIMD2(a3.x, a3.z), b = SIMD2(b3.x, b3.z), along = b - a
+            let t = simd_length_squared(along) > 0.000001 ? max(0, min(1, simd_dot(p - a, along) / simd_length_squared(along))) : 0
+            nearest = min(nearest, simd_distance(p, a + along * t))
+        }
+        if route.count == 1, let only = route.first { nearest = simd_distance(p, SIMD2(only.x, only.z)) }
+        return nearest
+    }
+
+    /// The route as a path for everyone in the scene to see: a line drawn without a crayon.
+    static func path(_ route: [SIMD3<Float>], id: String, to name: String) -> CrayonStroke? {
+        guard let start = route.first else { return nil }
+        // Closely spaced points keep the smooth line on the route round corners.
+        let points = [start] + crumbs(route, every: 0.3)
+        guard points.count >= 2, simd_distance(start, points[points.count - 1]) > 0.05 else { return nil }
+        let title = String(("Way to " + name.trimmingCharacters(in: .whitespacesAndNewlines)).prefix(120))
+        return CrayonStroke(id: id, title: title, color: color, width_m: width, segments: [points.map { [$0.x, $0.y, $0.z] }])
+    }
+    static let color = "#ff5fa8"
+    static let width: Float = 0.05
+
+    /// The spot `distance` along the route from its start: where to head next.
+    static func ahead(_ route: [SIMD3<Float>], by distance: Float) -> SIMD3<Float>? {
+        guard var spot = route.first else { return nil }
+        var left = distance
+        for next in route.dropFirst() {
+            let length = simd_distance(spot, next)
+            if length >= left, length > 0.0001 { return spot + (next - spot) * (left / length) }
+            left -= length; spot = next
+        }
+        return spot
+    }
+}
+
+/// Where a spot in the room is from the phone: on the screen, or which way to turn to bring it there.
+struct MessageAim: Equatable {
+    /// Across and down the screen from its top left corner, each 0 to 1. Nil when the spot is out of view.
+    let screen: SIMD2<Float>?
+    /// The way to the spot, clockwise from the top of the screen, in radians.
+    let turn: Float
+    let hint: String
+    let distance: Float
+
+    /// `spot` is in the camera's axes as the screen is held: +X right, +Y up, looking along -Z.
+    /// `lens` is the projection for that same view.
+    init(spot: SIMD3<Float>, lens: simd_float4x4) {
+        distance = simd_length(spot)
+        let clip = lens * SIMD4(spot.x, spot.y, spot.z, 1)
+        let across = clip.x / clip.w, up = clip.y / clip.w
+        // A little in from the edges, so the marker is never half off the screen.
+        if clip.w > 0, abs(across) < 0.8, abs(up) < 0.8 {
+            screen = SIMD2((across + 1) / 2, (1 - up) / 2)
+            turn = 0
+            hint = "Here"
+            return
+        }
+        screen = nil
+        let side = atan2(spot.x, -spot.z), rise = atan2(spot.y, hypot(spot.x, spot.z))
+        // Straight behind has no nearer side; turning right gets there.
+        turn = hypot(spot.x, spot.y) > 0.0001 ? atan2(spot.x, spot.y) : .pi / 2
+        if abs(side) > 2 * .pi / 3 && abs(rise) < .pi / 4 { hint = "Turn around" }
+        else if abs(side) >= abs(rise) { hint = side > 0 ? "Turn right" : "Turn left" }
+        else { hint = rise > 0 ? "Tilt up" : "Tilt down" }
+    }
+}

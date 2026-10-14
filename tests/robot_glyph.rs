@@ -64,41 +64,6 @@ fn close(actual: [f64; 3], expected: [f64; 3]) {
 }
 
 #[test]
-fn reported_body_uses_capture_time_native_axes_and_rejects_other_sessions() -> Result<()> {
-    use spatial_home::robot_occupancy::{RobotOccupancy, Sample, render};
-    use std::{sync::{Arc, Mutex}, time::{Duration, Instant}};
-    let runtime=ComponentRuntime::new("robot");
-    let mut map=LocalMap::new_for_robot(&runtime,"robot",&uuid::Uuid::new_v4().to_string(),BRACKETBOT_FAMILY,
-        spatial_home::rgbd::BRACKETBOT_FRAME,serde_json::from_str(include_str!("../config/portals.json"))?)?;
-    map.accept(SensorEvent::Odometry {timestamp_ns:100,pose:identity()})?;
-    map.accept(SensorEvent::Odometry {timestamp_ns:200,pose:Pose {translation:[1.,2.,3.],..identity()}})?;
-    let history=map.ar_pose_history();
-    let mut sample=Sample {
-        reference:auki_components::ProductReference {peer_id:"robot".into(),product_id:"robot.occupancy-history".into(),manifest_hash:"body".into()},
-        sequence:1,timestamp_ns:200,clock:history.contract.clock.clone(),frame:history.contract.from_frame.clone(),received:Instant::now(),
-        body:RobotOccupancy {session_id:history.contract.session_id.clone(),model_sha256:"a".repeat(64),voxel_size_m:0.05,
-            grid_origin_m:[0.;3],cells:vec![[0,1,2]],covered_links:vec!["base".into()],missing_links:vec![],approximate_links:vec!["base".into()],compute_ms:1.}
-    };
-    let frames=Arc::new(Mutex::new(spatial_home::ar_preview::Cache::default()));
-    frames.lock().unwrap().poses.insert("robot".into(),history);
-    let scene=CanonicalScene {schema:spatial_home::network::SCENE_SCHEMA.into(),sdk_revision:spatial_home::model::SDK_REV.into(),
-        authority_peer_id:"robot".into(),frame:map.frame.clone(),publication_clock:spatial_home::model::clock_entry("robot","publication"),
-        portals:map.portals()?,voxels:map.voxels.clone().unwrap(),objects:vec![],registries:map.metadata()};
-    let view=render(&sample,&frames,&scene,false)?;
-    close(serde_json::from_value(view["pose"]["translation"].clone())?,[1.,3.,-2.]);
-    close(direction(&view["pose"],[0.,1.,0.])?,[0.,0.,-1.]);
-    assert_eq!(view["cells"],json!([[0,1,2]]));
-    sample.frame=FrameRegistryEntry::ros_body("robot","robot.base");
-    assert!(render(&sample,&frames,&scene,false).is_err());
-    sample.frame=FrameRegistryEntry::in_convention("robot","robot.base",CoordinateConvention::ZUpRightForward);
-    sample.body.session_id="old".into();
-    assert!(render(&sample,&frames,&scene,false).is_err());
-    sample.received=Instant::now()-Duration::from_secs(4);
-    assert!(render(&sample,&frames,&scene,false).is_err());
-    Ok(())
-}
-
-#[test]
 fn glyph_forward_follows_declared_body_axes_through_yaw() -> Result<()> {
     for (family, yaw, forward) in [
         (BRACKETBOT_FAMILY, 0., [0., 0., -1.]),

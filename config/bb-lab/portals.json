@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "measurement_basis": "encoded_square",
+  "portals": [
+    { "code": "280UO1U1RPC", "side_length_m": 0.15 },
+    { "code": "AOBR4F8Y33S", "side_length_m": 0.15 }
+  ]
+}

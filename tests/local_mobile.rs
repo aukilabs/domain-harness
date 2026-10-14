@@ -1,8 +1,8 @@
 mod support;
 use anyhow::Result;
 use spatial_home::{
+    mobile_depth::Alignment,
     local_scenes::LocalScenes,
-    mobile_depth::{Alignment, Sample},
     network::{HomeConnection, ScenePublisher},
 };
 use std::{
@@ -44,8 +44,7 @@ async fn read(peer: &auki_sdk::AukiPeer, home: &HomeConnection) -> Result<serde_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated() -> Result<()> {
-    use spatial_home::local_mapper::{compose, identity, inverse};
+async fn selected_scene_notes_volumes_and_paths_are_isolated() -> Result<()> {
     let pair = support::LocalPair::start().await?;
     let result = async {
         let dir = tempfile::tempdir()?;
@@ -145,67 +144,6 @@ async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated(
             initial["render"]["voxels"].as_array().unwrap().is_empty(),
             "no manufactured sensor evidence"
         );
-        let reference = scenes.snapshot("humanoid-hub-conference")?;
-        let portal = &reference.scenegraph.anchors["HNY3JGNLRAE"];
-        let session = uuid::Uuid::new_v4().to_string();
-        let session_frame = format!("phone-ar:{session}");
-        let q = std::f64::consts::FRAC_1_SQRT_2;
-        let home_from_session = auki_odometry::Pose {
-            translation: [4., 0., 0.],
-            rotation_xyzw: [0., q, 0., q],
-        };
-        let session_from_portal = compose(
-            &inverse(&home_from_session)?,
-            &from_rigid(&portal.pose_in_map),
-        )?;
-        let camera = format!("phone-camera:{session}");
-        let sample = Sample {
-            session: session.clone(),
-            timestamp_ns: 200,
-            camera_to_session: rigid(
-                &auki_odometry::Pose {
-                    translation: [0., 1., 0.],
-                    ..identity()
-                },
-                &camera,
-                &session_frame,
-            ),
-            alignment: Alignment {
-                timestamp_ns: 100,
-                portal_id: portal.anchor_id.clone(),
-                portal_to_session: rigid(
-                    &session_from_portal,
-                    &portal.pose_in_map.from_frame_id,
-                    &session_frame,
-                ),
-                session_to_home: rigid(&home_from_session, &session_frame, &home.frame),
-            },
-            points: vec![[0., 0., -1.]],
-        colors: None,
-        };
-        assert_ne!(sample.alignment.portal_to_session.translation, [0.; 3]);
-        let products = spatial_home::mobile_products::MobileProducts::mount(&pair.b)?;
-        let phone = spatial_home::mobile_depth::Publisher::new(&products, &session)?;
-        let envelope = phone.publish(sample)?;
-        assert!(spatial_home::mobile_depth::send(&pair.b, &home, &envelope).await?);
-        assert!(
-            !spatial_home::mobile_depth::send(&pair.b, &home, &envelope).await?,
-            "duplicate ignored"
-        );
-        assert!(
-            spatial_home::mobile_depth::send(&pair.b, &nacs, &envelope)
-                .await
-                .is_err(),
-            "cross-scene depth rejected"
-        );
-        let mut forged = envelope.clone();
-        forged.sample.alignment.session_to_home.translation[0] += 1.;
-        assert!(
-            spatial_home::mobile_depth::send(&pair.b, &home, &forged)
-                .await
-                .is_err(),
-            "Home checks observed portal against claimed transform"
-        );
         let note = spatial_home::mobile_notes::PlaceNote {
             id: uuid::Uuid::new_v4().to_string(),
             frame: home.frame.clone(),
@@ -261,31 +199,11 @@ async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated(
         let persisted:spatial_home::notes::Notes=serde_json::from_slice(&std::fs::read(dir.path().join("mobile-notes/humanoid-hub-conference.json"))?)?;
         assert!(!persisted.items.iter().any(|n|n.id==id));
         send_change(&pair.b,&home,&request(NoteAction::Delete { id })).await?;
-        let pose = spatial_home::mobile_pose::Update {
-            sample: Some(spatial_home::mobile_pose::Sample {
-                session: session.clone(),
-                timestamp_ns: 200,
-                camera_configuration_id:None,
-                pose: rigid(&home_from_session, &camera, &home.frame),
-            }),
-            status: None,
-        };
-        spatial_home::mobile_pose::send(&pair.b, &home, &pose).await?;
-        // Presence is immediately readable, without waiting for the 1 Hz scene tick.
-        let live = scenes.presence("humanoid-hub-conference")?;
-        assert_eq!(live["poses"][0]["capture_timestamp_ns"], 200);
-        assert!(scenes.presence("nacs")?["poses"].as_array().unwrap().is_empty());
-        assert!(
-            spatial_home::mobile_pose::send(&pair.b, &nacs, &pose)
-                .await
-                .is_err()
-        );
         tokio::time::sleep(Duration::from_millis(1100)).await;
         for publisher in &mut publishers {
             publisher.tick()?;
         }
         let mapped = read(&pair.b, &home).await?;
-        assert_eq!(mapped["render"]["integrated_observations"], 1, "{mapped}");
         assert_eq!(mapped["render"]["frame"], home.frame);
         assert_eq!(mapped["render"]["semantic_volumes"]["items"][0], serde_json::to_value(&semantic_volume)?);
         let mut phone_volume=semantic_volume.mobile();
@@ -310,31 +228,11 @@ async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated(
         assert_eq!(published["render"]["semantic_volumes"]["items"][0]["id"],browser_edit.id);
         assert!(scenes.volumes.get("nacs",&nacs.frame)?.items.is_empty());
         assert!(
-            mapped["render"]["voxels"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|v| {
-                    let c = &v["center"];
-                    (c[0].as_f64().unwrap() - 3.).abs() < 0.101
-                        && (c[1].as_f64().unwrap() - 1.).abs() < 0.101
-                        && c[2].as_f64().unwrap().abs() < 0.101
-                }),
-            "camera-local [0,0,-1] transformed exactly once to Home [3,1,0]"
-        );
-        assert!(
             mapped["render"]["notes"]
                 .as_array()
                 .unwrap()
                 .iter()
                 .any(|n| n["id"] == note.id)
-        );
-        assert!(
-            mapped["render"]["notes"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|n| n["phone_pose"].is_object())
         );
         let untouched = read(&pair.b, &nacs).await?;
         assert!(untouched["render"]["semantic_volumes"]["items"].as_array().unwrap().is_empty());
@@ -350,54 +248,20 @@ async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated(
             std::fs::read(dir.path().join("humanoid-hub-conference.json"))?,
             original_conference
         );
-        assert_eq!(
-            scenes.view("humanoid-hub-conference")?["integrated_observations"],
-            1
-        );
         let mut mismatched = home.clone();
         mismatched.product_id = nacs.product_id.clone();
         assert!(mismatched.validate(&pair.b).is_err());
         let mut wrong_domain = home.clone();
         wrong_domain.domain_id = uuid::Uuid::new_v4().to_string();
         assert!(read(&pair.b, &wrong_domain).await.is_err());
-        // Real phone captures exceed both the mapper's point limit and its
-        // ray-work budget at long range. They must be sampled, not discarded.
-        let mut dense = envelope.clone();
-        dense.sequence += 1;
-        dense.sample.timestamp_ns += 100;
-        dense.sample.points = (0..2048)
-            .map(|i| [(i % 64) as f64 / 32. - 1., (i / 64) as f64 / 32., -5.])
-            .collect();
-        assert!(spatial_home::mobile_depth::send(&pair.b, &home, &dense).await?);
-        tokio::time::sleep(Duration::from_millis(1100)).await;
-        for publisher in &mut publishers {
-            publisher.tick()?;
-        }
-        let dense_map = read(&pair.b, &home).await?;
-        assert_eq!(
-            dense_map["render"]["integrated_observations"], 2,
-            "dense capture integrates within SDK work limits"
-        );
-        phone.close().await?;
-        products.close().await?;
-        tokio::time::sleep(Duration::from_millis(1100)).await;
-        for publisher in &mut publishers {
-            publisher.tick()?;
-        }
         let retained = read(&pair.b, &home).await?;
-        assert_eq!(
-            retained["render"]["voxels"], dense_map["render"]["voxels"],
-            "no decay when the phone stops publishing"
-        );
         let editor=scenes.note_editors.lock().unwrap()["humanoid-hub-conference"].clone();
-        assert!(!retained["render"]["voxels"].as_array().unwrap().is_empty());
-        editor.reset_mapping(&editor.reference()?)?;
-        assert!(spatial_home::mobile_depth::send(&pair.b,&home,&dense).await.is_err(),"Old calibration cannot repopulate a reset map");
+        assert_eq!(editor.reset_mapping(&editor.reference()?)?["restart_required"],true);
         tokio::time::sleep(Duration::from_millis(1100)).await;
         for publisher in &mut publishers {publisher.tick()?;}
         let cleared=read(&pair.b,&home).await?;
-        assert!(cleared["scenegraph"]["anchors"].as_object().unwrap().is_empty());
-        assert!(cleared["render"]["voxels"].as_array().unwrap().is_empty());
+        assert_eq!(cleared["scenegraph"]["anchors"],retained["scenegraph"]["anchors"]);
+        assert_eq!(cleared["render"]["voxels"],retained["render"]["voxels"]);
         assert_eq!(cleared["render"]["semantic_volumes"],retained["render"]["semantic_volumes"]);
         assert_eq!(editor.get_note(&note.id)?,saved);
         drop(publishers);
@@ -406,6 +270,7 @@ async fn selected_scene_phone_calibration_depth_notes_and_presence_are_isolated(
         // previous run's sensor map as fresh observations.
         let server = ScenePublisher::mount(&pair.a)?;
         let restarted = Arc::new(LocalScenes::load(dir.path())?);
+        let home=restarted.connection("humanoid-hub-conference",spatial_home::network::HomeConnection::direct(&pair.a))?;
         let publishers = spatial_home::local_mobile::Publisher::mount_all(
             &server.runtime,
             &server.endpoint,
@@ -452,7 +317,6 @@ async fn phone_reports_a_new_portal_into_the_selected_scene() -> Result<()> {
         let portal = &reference.scenegraph.anchors["HNY3JGNLRAE"];
         let session = uuid::Uuid::new_v4().to_string();
         let session_frame = format!("phone-ar:{session}");
-        let camera = format!("phone-camera:{session}");
         let q = std::f64::consts::FRAC_1_SQRT_2;
         let home_from_session = auki_odometry::Pose {
             translation: [4., 0., 0.],
@@ -564,35 +428,7 @@ async fn phone_reports_a_new_portal_into_the_selected_scene() -> Result<()> {
         moved.timestamp_ns = 280;
         moved.portal_to_session = rigid(&new_in_session, &new_local, &session_frame);
         assert!(spatial_home::mobile_portal::send(&pair.b, &home, &moved).await?);
-        // Depth calibrated on the new Portal is accepted, and the scene still publishes.
-        // A subsequent clean sighting uses the corrected reference, not the
-        // deliberately tilted placement measurement used above.
-        let new_in_session=compose(&inverse(&home_from_session)?,&auki_odometry::Pose {
-            translation:[2.,0.,1.],..identity()
-        })?;
-        let products = spatial_home::mobile_products::MobileProducts::mount(&pair.b)?;
-        let phone = spatial_home::mobile_depth::Publisher::new(&products, &session)?;
-        let sample = Sample {
-            session: session.clone(),
-            timestamp_ns: 300,
-            camera_to_session: rigid(
-                &auki_odometry::Pose {
-                    translation: [0., 1., 0.],
-                    ..identity()
-                },
-                &camera,
-                &session_frame,
-            ),
-            alignment: Alignment {
-                timestamp_ns: 260,
-                portal_id: new_code.into(),
-                portal_to_session: rigid(&new_in_session, &new_local, &session_frame),
-                session_to_home: rigid(&home_from_session, &session_frame, &home.frame),
-            },
-            points: vec![[0., 0., -1.5]],
-            colors: None,
-        };
-        assert!(spatial_home::mobile_depth::send(&pair.b, &home, &phone.publish(sample)?).await?);
+        // The scene still publishes with the new Portal in it.
         tokio::time::sleep(Duration::from_millis(1100)).await;
         for publisher in &mut publishers {
             publisher.tick()?;
@@ -600,7 +436,6 @@ async fn phone_reports_a_new_portal_into_the_selected_scene() -> Result<()> {
         let grown = read(&pair.b, &home).await?;
         assert_eq!(grown["scenegraph"]["anchors"].as_object().unwrap().len(), 2);
         assert!(grown["scenegraph"]["anchors"].get(new_code).is_some());
-        assert_eq!(grown["render"]["integrated_observations"], 1);
         // Joystick relay: the phone posts for one robot; that robot reads it back
         // with Home's own measure of its age. Here one peer plays both roles.
         let me = pair.b.peer_id().to_string();

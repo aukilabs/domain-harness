@@ -67,6 +67,9 @@ fn lock(state: &Shared) -> Result<std::sync::MutexGuard<'_, Store>, ApiError> {
 
 #[derive(Deserialize)]
 struct PreviewQuery {
+    home_frame: Option<String>,
+    #[serde(default)]
+    debug_pose: bool,
     #[serde(default)]
     follow: bool,
     expected_manifest: Option<String>,
@@ -83,8 +86,15 @@ async fn sensor_preview(
     axum::extract::Query(q): axum::extract::Query<PreviewQuery>,
 ) -> ApiResult {
     let (reply, receive) = tokio::sync::oneshot::channel();
+    // AR and picking validate compact contracts in compact_ar. Following has
+    // not been migrated and must remain disabled independently.
+    if q.follow {
+        spatial_home::home_pose_policy::unsupported("Home camera following")?;
+    }
     s.previews
         .try_send(spatial_home::sensor_preview::Request {
+            home_frame: q.home_frame,
+            debug_pose: q.debug_pose,
             sensor: q.sensor,
             scene: q.scene,
             ar: q.ar,
@@ -281,7 +291,7 @@ async fn scene_sources(State(s): State<Shared>) -> ApiResult {
     // Catalog listing opens no scene subscriptions or sensor streams.
     status["scenes"] = json!([]);
     let (reply, receive) = tokio::sync::oneshot::channel();
-    if s.previews.try_send(spatial_home::sensor_preview::Request {sensor:None, scene:true, ar:false, pick:false, follow:false, capture:false, expected_manifest:None, reply}).is_ok() {
+    if s.previews.try_send(spatial_home::sensor_preview::Request {home_frame:None,debug_pose:false,sensor:None, scene:true, ar:false, pick:false, follow:false, capture:false, expected_manifest:None, reply}).is_ok() {
         if let Ok(Ok(Ok(value))) = tokio::time::timeout(std::time::Duration::from_secs(2), receive).await {
             status["scenes"] = value["scenes"].clone();
         }
@@ -966,15 +976,45 @@ async fn vendor(axum::extract::Path(name): axum::extract::Path<String>) -> Respo
         "three.module.js" => "node_modules/three/build/three.module.js",
         "three.core.js" => "node_modules/three/build/three.core.js",
         "OrbitControls.js" => "node_modules/three/examples/jsm/controls/OrbitControls.js",
+        "GLTFLoader.js" => "node_modules/three/examples/jsm/loaders/GLTFLoader.js",
+        "DRACOLoader.js" => "node_modules/three/examples/jsm/loaders/DRACOLoader.js",
+        "BufferGeometryUtils.js" => "node_modules/three/examples/jsm/utils/BufferGeometryUtils.js",
+        "draco_wasm_wrapper.js" => "node_modules/three/examples/jsm/libs/draco/draco_wasm_wrapper.js",
+        "draco_decoder.js" => "node_modules/three/examples/jsm/libs/draco/draco_decoder.js",
+        "draco_decoder.wasm" => "node_modules/three/examples/jsm/libs/draco/draco_decoder.wasm",
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
+    let content_type = if name.ends_with(".wasm") {
+        "application/wasm"
+    } else {
+        "text/javascript"
+    };
     match std::fs::read(path) {
-        Ok(bytes) => ([(header::CONTENT_TYPE, "text/javascript")], bytes).into_response(),
+        Ok(bytes) => ([(header::CONTENT_TYPE, content_type)], bytes).into_response(),
         Err(_) => (
             StatusCode::SERVICE_UNAVAILABLE,
             "Run npm ci to install local viewer assets",
         )
             .into_response(),
+    }
+}
+/// Bracketbot URDF and its Draco GLBs, read from web/robot/ like the vendor files.
+async fn robot_asset(axum::extract::Path(path): axum::extract::Path<String>) -> Response {
+    let content_type = match path.rsplit_once('.').map(|(_, ext)| ext) {
+        Some("urdf") => "application/xml",
+        Some("json") => "application/json",
+        Some("glb") => "model/gltf-binary",
+        _ => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let safe = path
+        .split('/')
+        .all(|part| !part.is_empty() && part != ".." && !part.starts_with('.'));
+    if !safe {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    match std::fs::read(std::path::Path::new("web/robot").join(&path)) {
+        Ok(bytes) => ([(header::CONTENT_TYPE, content_type)], bytes).into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
 }
 async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Json<spatial_home::chatbot::Request>)->ApiResult {
@@ -996,6 +1036,7 @@ async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Jso
         #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Edit {id:String,expected_description:String,description:String}
         match name {
             "raycast_peer_camera"=>{
+                spatial_home::home_pose_policy::unsupported("Home peer-camera raycasting")?;
                 let a:spatial_home::scene_geometry::CameraRay=serde_json::from_value(args)?;
                 let view=if scene.starts_with("local:"){s.local_scenes.view(&key)?}else{serde_json::to_value(&lock(&s).map_err(|e|e.0)?.built.view)?};
                 let id=format!("phone-name:{}",a.peer_id);
@@ -1396,8 +1437,14 @@ async fn main() -> anyhow::Result<()> {
             }),
         )
         .route("/vendor/{name}", get(vendor))
+        .route("/robot-model.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/robot-model.js")) }))
+        .route("/robot-health.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/robot-health.js")) }))
+        .route("/robot/{*path}", get(robot_asset))
         .route("/api/sensors", get(sensor_preview))
         .route("/api/robots/point-at", post(robot_point_at))
+        .route("/pose-inspector.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/pose-inspector.js")) }))
+        .route("/video-presentation.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/video-presentation.js")) }))
+        .route("/compact-pose-trail.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/compact-pose-trail.js")) }))
         .route("/api/robot-occupancy", get(robot_occupancy))
         .route("/api/scene", get(scene))
         .route("/api/semantic-volumes", get(get_volumes).post(create_volume))

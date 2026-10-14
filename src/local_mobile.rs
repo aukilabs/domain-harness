@@ -164,28 +164,17 @@ pub struct NoteEditor {
     path: std::path::PathBuf,
     reference: Arc<std::sync::RwLock<MapSnapshot>>,
     scene_path: std::path::PathBuf,
-    inbox: crate::mobile_depth::SharedInbox,
-    contributions: Arc<Mutex<crate::scene_contribution::Inbox>>,
-    owner: String,
-    session: String,
 }
 impl NoteEditor {
-    pub fn reset_mapping(&self, expected: &MapSnapshot) -> Result<Value> {
+    pub(crate) fn integrate_declared(&self, scan: crate::declared_depth::Localized) -> Result<bool> {
         let mut state=self.state.lock().map_err(|_|anyhow!("Scene unavailable"))?;
-        let mut inbox=self.inbox.lock().map_err(|_|anyhow!("Depth inbox unavailable"))?;
-        let mut contributions=self.contributions.lock().map_err(|_|anyhow!("Contribution inbox unavailable"))?;
-        let mut reference=self.reference.write().map_err(|_|anyhow!("Scene reference unavailable"))?;
+        state.map.integrate_declared(scan)
+    }
+    pub fn reset_mapping(&self, expected: &MapSnapshot) -> Result<Value> {
+        let _state=self.state.lock().map_err(|_|anyhow!("Scene unavailable"))?;
+        let reference=self.reference.read().map_err(|_|anyhow!("Scene reference unavailable"))?;
         ensure!(&*reference==expected,"Scene Portals changed; inspect again before resetting");
-        let snapshot=crate::scene_origin::reset(&reference)?;
-        let map=crate::collaborative_mapper::CollaborativeMap::for_scene(&self.owner,&self.session,&snapshot)?;
-        // Save before touching any live state; notes/volumes are never rewritten.
-        save_scene(&self.scene_path,&snapshot)?;
-        let removed=reference.scenegraph.anchors.keys().cloned().collect::<Vec<_>>();
-        *reference=snapshot;state.map=map;state.voxels_cleared=true;
-        *inbox=Default::default();*contributions=Default::default();
-        *state.presence.lock().map_err(|_|anyhow!("Presence unavailable"))?=Default::default();
-        *state.robot_presence.lock().map_err(|_|anyhow!("Robot presence unavailable"))?=Default::default();
-        Ok(json!({"removed_portals":removed,"voxels_cleared":true,"notes_preserved":true,"volumes_preserved":true,"origin":"waiting_for_first_portal"}))
+        crate::origin_reset::stage(self.scene_path.parent().ok_or_else(||anyhow!("Scene directory missing"))?, expected)
     }
     pub fn reference(&self)->Result<MapSnapshot>{Ok(self.reference.read().map_err(|_|anyhow!("Scene reference unavailable"))?.clone())}
     pub fn clear_voxels(&self) -> Result<Value> {
@@ -382,9 +371,10 @@ impl Publisher {
         scenes.note_editors.lock().map_err(|_|anyhow!("Scene annotations unavailable"))?
             .insert(id.into(),NoteEditor{state:state.clone(),frame:frame.clone(),path:notes_path.clone(),
                 reference:reference.clone(),scene_path:scenes.directory.join(format!("{id}.json")),
-                inbox:inbox.clone(),contributions:contributions.clone(),owner:owner.clone(),session:clock.session_id.clone()});
+                });
         let queue=contributions.clone();let reference_copy=reference.clone();
         let operation=receiver.operable("ingest",|ctx|!ctx.caller_peer_id.is_empty(),move |ctx,c:crate::scene_contribution::Contribution|{
+            crate::home_pose_policy::unsupported("Home posed scene contributions").map_err(rejected)?;
             queue.lock().map_err(|_|InvocationError::TargetUnavailable)?.accept(&ctx.caller_peer_id,c,&*reference_copy.read().map_err(|_|InvocationError::TargetUnavailable)?).map_err(rejected)
         })?;
         receiver.expose()?;endpoint.export_operable(&operation)?;components.push(receiver);
@@ -405,6 +395,7 @@ impl Publisher {
             "ingest",
             |ctx| !ctx.caller_peer_id.is_empty(),
             move |ctx, e: crate::mobile_depth::Envelope| {
+                crate::home_pose_policy::unsupported("Home depth fusion").map_err(rejected)?;
                 depth_inbox
                     .lock()
                     .map_err(|_| InvocationError::TargetUnavailable)?
@@ -473,6 +464,7 @@ impl Publisher {
         let robot_frame = frame.clone();
         let robot_op = robot_component.operable("update", |ctx| !ctx.caller_peer_id.is_empty(),
             move |ctx, update:crate::robot_presence::Update| {
+                crate::home_pose_policy::unsupported("Home robot presence").map_err(rejected)?;
                 robot_presence.lock().map_err(|_|InvocationError::TargetUnavailable)?
                     .accept(&ctx.caller_peer_id,&robot_home,&robot_frame,update,Instant::now()).map_err(rejected)?;
                 Ok(true)
@@ -655,6 +647,7 @@ impl Publisher {
             "update",
             |ctx| !ctx.caller_peer_id.is_empty(),
             move |ctx, update: crate::mobile_pose::Update| {
+                crate::home_pose_policy::unsupported("Home phone presence").map_err(rejected)?;
                 presence_state
                     .lock()
                     .map_err(|_| InvocationError::TargetUnavailable)?
