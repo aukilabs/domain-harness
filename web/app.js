@@ -222,7 +222,9 @@ async function refreshPhonePresence(){
  if(phonePresenceBusy||!isLocalScene()||!current)return;
  const map=activeMap,frame=current.frame;phonePresenceBusy=true;
  try{const poses=[],errors=[],bodies=[];
-  const declared=(await api('/api/robot-states').catch(()=>({robots:[]}))).robots||[];
+  // Only peers with a sampled pose can be drawn as a body; skip the lookup without any.
+  const posed=(fleetNetwork?.peers||[]).some(peer=>(peer.catalog?.products||[]).some(p=>p.metadata?.schema==='spatial-harness.compact-pose-contract/v1'));
+  const declared=posed?(await api('/api/robot-states').catch(()=>({robots:[]}))).robots||[]:[];
   for(const peer of fleetNetwork?.peers||[]){
    if(activeMap!==map||current?.frame!==frame)return;
    const products=(peer.catalog?.products||[]).filter(p=>p.metadata?.schema==='spatial-harness.compact-pose-contract/v1'&&(p.metadata.value?.lifetime??'sampled')==='sampled');
