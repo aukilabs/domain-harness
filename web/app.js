@@ -215,10 +215,14 @@ $('map-select').addEventListener('change',()=>semanticVolumes.reset());
 let phonePresenceBusy=false;
 const homePoseStatus=document.createElement('p');homePoseStatus.className='panel-hint';panelBodies.maps.append(homePoseStatus);
 $('map-select').addEventListener('change',()=>{homePoseStatus.textContent='';phoneTrails.reset(null);});
+// Robots that declare a body on their pose's base frame, aligned to this scene.
+let declaredBodies={frame:null,entries:[]};
+const sameFrame=(a,b)=>Boolean(a&&b)&&a.peer_id===b.peer_id&&a.id===b.id&&a.hash===b.hash;
 async function refreshPhonePresence(){
  if(phonePresenceBusy||!isLocalScene()||!current)return;
  const map=activeMap,frame=current.frame;phonePresenceBusy=true;
- try{const poses=[],errors=[];
+ try{const poses=[],errors=[],bodies=[];
+  const declared=(await api('/api/robot-states').catch(()=>({robots:[]}))).robots||[];
   for(const peer of fleetNetwork?.peers||[]){
    if(activeMap!==map||current?.frame!==frame)return;
    const products=(peer.catalog?.products||[]).filter(p=>p.metadata?.schema==='spatial-harness.compact-pose-contract/v1'&&(p.metadata.value?.lifetime??'sampled')==='sampled');
@@ -229,10 +233,14 @@ async function refreshPhonePresence(){
    try{const value=await api('/api/sensors?'+q),home=value.home_pose;
     if(home?.frame!==frame||home.tracking?.status!=='valid'||value.stream!=='live')continue;
     const p=home.tracking.pose,[x,y,z,w]=p.rotation_xyzw;
+    const body=declared.find(r=>r.peer_id===peer.peer_id&&sameFrame(r.base_frame,product.metadata.value.from_frame));
+    if(body){bodies.push({peer_id:peer.peer_id,name,received_age_ms:value.age_ms,receivedAt:performance.now(),body,
+     base_frame:value.resolved?.contract?.from_frame,pose:{translation:p.translation,rotation_xyzw:p.rotation_xyzw}});continue;}
     poses.push({receivedAt:performance.now(),peer_id:peer.peer_id,name,clock:{session_id:value.resolved.contract.session_id+':'+home.alignment_timestamp_ns},capture_timestamp_ns:value.timestamp_ns,received_age_ms:value.age_ms,
      pose:{to_frame_id:frame,translation:p.translation,rotation_wxyz:[w,x,y,z]}});
    }catch(e){errors.push(name+': '+e.message);}
   }
+  if(activeMap===map&&current?.frame===frame){declaredBodies={frame,entries:bodies};refreshRunner();}
   if(activeMap===map&&current?.frame===frame){const fresh=poses.map(p=>({...p,received_age_ms:p.received_age_ms+performance.now()-p.receivedAt})).filter(p=>p.received_age_ms<2000);phoneTrails.ingest(frame,fresh);homePoseStatus.textContent=errors.length?errors.join(' · '):fresh.length+' phones aligned to this Home scene';$('canvas').dataset.phonePoseStatus=errors.join('\n');}
  }catch{if(activeMap===map)phoneTrails.ingest(frame,[]);}finally{phonePresenceBusy=false;}
 }
@@ -580,16 +588,23 @@ function applyJoints(glyph){
  if(!glyph.robot||!glyph.joints)return;
  for(const [name,value] of Object.entries(glyph.joints))glyph.robot.setJoint(name,value);
 }
-// A Home robot presence entry (robot.base pose in the scene) as a glyph pose in
-// ROS body axes. Bracketbot declares robot.base Z-up/X-right/Y-forward, so its
-// ROS body (URDF root, X forward) is robot.base turned +90 degrees about Z.
-const BRACKETBOT_BASE_FROM_ROS=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1),Math.PI/2);
-function presenceGlyphPose(robot){
- const p=robot?.pose;if(!p?.translation||!p?.rotation_wxyz)return null;
- const [w,x,y,z]=p.rotation_wxyz,q=new THREE.Quaternion(x,y,z,w);
- if(robotModel(robot.native_pose?.to_frame_id)==='bracketbot')q.multiply(BRACKETBOT_BASE_FROM_ROS);
- return {translation:p.translation,rotation_xyzw:[q.x,q.y,q.z,q.w]};
+// The glyph and URDF root use ROS body axes (+X forward, +Y left, +Z up). The base
+// frame's Registry entry declares its own axes, so the turn between them is read
+// from that declaration, never assumed from the robot kind.
+const OPPOSITE={forward:'backward',backward:'forward',left:'right',right:'left',up:'down',down:'up'};
+function rosBodyInFrame(axes){
+ const along=direction=>{const v=['x','y','z'].map(a=>axes?.[a]===direction?1:axes?.[a]===OPPOSITE[direction]?-1:0);
+  if(Math.abs(v[0])+Math.abs(v[1])+Math.abs(v[2])!==1)throw Error('Base frame axes undeclared');return new THREE.Vector3(...v);};
+ const m=new THREE.Matrix4().makeBasis(along('forward'),along('left'),along('up'));
+ if(m.determinant()<0)throw Error('Base frame is left-handed');
+ return new THREE.Quaternion().setFromRotationMatrix(m);
 }
+function declaredGlyphPose(entry){
+ const [x,y,z,w]=entry.pose.rotation_xyzw,q=new THREE.Quaternion(x,y,z,w).multiply(rosBodyInFrame(entry.base_frame?.axes));
+ return {translation:entry.pose.translation,rotation_xyzw:[q.x,q.y,q.z,q.w]};
+}
+// Body state is shown only while fresh; Home reports its own receipt age.
+const freshState=(value,ms)=>value&&value.age_ms<ms?value.state:null;
 function glyphFor(key,name){
  let glyph=robots.get(key);
  if(!glyph){
@@ -681,12 +696,18 @@ function showHomeRunners(local,fresh){
 $('runner-layer').onchange=()=>{refreshRunner();};
 async function refreshRunner(){
  if(isLocalScene()){
-  // Robots aligned to this scene, from Home's authenticated robot presence.
-  const present=(current?.notes||[]).map(n=>n.robot_pose).filter(r=>r?.pose&&r.peer_id);
-  if(!present.length){hideRobots();$('runner-status').textContent='No robot aligned to this scene';return;}
-  renderRunners(present.map(r=>({key:'presence:'+r.peer_id,name:r.name||'Robot '+r.peer_id.slice(-6),
-   state:{status:(r.received_age_ms??0)<3000?'live':'stale',pose:presenceGlyphPose(r),model:robotModel(r.native_pose?.to_frame_id),joints:r.joints?.positions,health:r.health}})));
-  $('runner-status').textContent=present.length+' robot(s) aligned to this scene';
+  // Robots aligned to this scene: registry poses of peers that declare a body.
+  const present=declaredBodies.frame===current?.frame?declaredBodies.entries:[];
+  const entries=[];
+  for(const r of present){
+   let pose;try{pose=declaredGlyphPose(r);}catch(e){console.warn('Robot body not drawn:',e.message);continue;}
+   const age=r.received_age_ms+performance.now()-r.receivedAt;
+   entries.push({key:'body:'+r.peer_id,name:r.name,state:{status:age<2000?'live':'stale',pose,model:r.body.model,
+    joints:freshState(r.body.joints,3000)?.positions,health:freshState(r.body.health,5000)}});
+  }
+  if(!entries.length){hideRobots();$('runner-status').textContent='No robot aligned to this scene';return;}
+  renderRunners(entries);
+  $('runner-status').textContent=entries.length+' robot(s) aligned to this scene';
   return;
  }
  if(activeMap.startsWith('peer-scene:')){

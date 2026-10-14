@@ -2,6 +2,7 @@
 //! and a `point_at` Operable over the frames this peer relates.
 mod alignment;
 mod arm;
+mod body;
 mod camera;
 mod diagnostic_log;
 #[path = "../../../src/camera_frame.rs"]
@@ -20,6 +21,8 @@ mod home;
 mod point_at;
 mod pointer;
 mod poses;
+#[path = "../../../src/robot_state.rs"]
+mod robot_state;
 #[path = "../../../src/qr_decode.rs"]
 mod qr_decode;
 use anyhow::{Context, Result, ensure};
@@ -235,6 +238,12 @@ async fn main() -> Result<()> {
     } else { (None,tokio::sync::watch::channel(None).1,tokio::sync::watch::channel(false).0) };
     let mut depth_open=points;
     let mut depth_publisher:Option<depth::Depth>=None;
+    // Arm and battery state need only poses: the body sits on the pose base frame.
+    let (body_task, mut body_rx) = if publish_poses {
+        let (task,rx)=body::start(); (Some(task),rx)
+    } else { (None,tokio::sync::mpsc::channel(1).1) };
+    let mut body_open=publish_poses;
+    let mut body_publisher:Option<body::Body>=None;
     let (home_tx, home_rx) = tokio::sync::watch::channel(None::<home::Verified>);
     let home_task = if portals {
         let client = ComponentProtocolClient::new(peer.protocols());
@@ -332,6 +341,19 @@ async fn main() -> Result<()> {
                     if let Err(e)=result {crate::diagnostic_log!("Depth publish failed: {e}");}
                 }
             },
+            sample=body_rx.recv(),if body_open => {
+                let Some(sample)=sample else {
+                    body_open=false;
+                    if let Some(b)=body_publisher.take(){b.close(publisher.as_ref().unwrap())?;}
+                    eprintln!("Robot state unavailable; pose diagnostic continues");
+                    continue;
+                };
+                let result=(|| {
+                    if body_publisher.is_none(){body_publisher=Some(body::Body::mount(publisher.as_ref().unwrap())?);}
+                    body_publisher.as_mut().unwrap().publish(sample)
+                })();
+                if let Err(e)=result {eprintln!("Robot state publish failed: {e}");}
+            },
             changed=camera_rx.changed(),if camera_open => {
                 if changed.is_err(){camera_open=false;alignment=None;camera_publisher=None;crate::diagnostic_log!("Camera unavailable; pose diagnostic continues");continue;}
                 let sample=camera_rx.borrow_and_update().clone();
@@ -392,6 +414,8 @@ async fn main() -> Result<()> {
     drop(camera_publisher);
     if let Some(task)=depth_task { task.abort(); let _=task.await; }
     if let Some(d)=depth_publisher {d.close(publisher.as_ref().unwrap())?;}
+    if let Some(task)=body_task { task.abort(); let _=task.await; }
+    if let Some(b)=body_publisher {b.close(publisher.as_ref().unwrap())?;}
     let _ = requests.await;
     if let Some(publisher) = publisher {
         publisher.endpoint.close().await?;

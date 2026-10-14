@@ -3,6 +3,7 @@ from collections import OrderedDict
 import hashlib
 import json
 import math
+import sys
 import threading
 from pathlib import Path
 import numpy as np
@@ -12,6 +13,10 @@ RIGHT_CAMERA_FRAME = 'bracketbot_head_right_rectified_optical'
 CALIBRATION_PREFIX = 'BBOS calibrated stereo RGB-D; sha256:'
 MAX_POINTS = 384
 MAX_AGE_NS = 800_000_000
+MAX_JOINT_AGE_NS = 1_000_000_000
+# drive.status updates slowly.
+MAX_BATTERY_AGE_NS = 30_000_000_000
+ARMS = ('arm_left', 'arm_right')
 
 
 def head_camera_specs(context, width, height, eyes):
@@ -371,3 +376,69 @@ class CaptureMailbox:
                         **self.counts, last_pose=self.last_pose,
                         max_pose_gap_ms=self.max_pose_gap_ns/1e6,
                         last_emitted_scan=self.last_emitted_scan)
+
+
+def arm_joint_sources(Config, Reader):
+    """Optional read-only arm states for the viewer's URDF model. A missing or
+    uncalibrated arm must not stop camera capture or mapping."""
+    arms = {}
+    for name in ARMS:
+        try:
+            arms[name] = (Config(name), Reader(name+'.state', keeptime=False))
+        except Exception as e:
+            print(f'{name} joints unavailable: {e}', file=sys.stderr, flush=True)
+    return arms
+
+
+def arm_joint_positions(arms, latest, now_ns):
+    """URDF joint positions from fresh arm states, using BBOS's own q2urdf."""
+    positions, stamps = {}, []
+    for name, (cfg, reader) in arms.items():
+        if reader.ready():
+            latest[name] = reader.data.copy()
+        d = latest.get(name)
+        if d is None or not 0 <= now_ns-timestamp(d) <= MAX_JOINT_AGE_NS:
+            continue
+        angles = cfg.q2urdf(np.array(d['pos'], np.float64))
+        positions.update(zip(cfg.joint_names, (float(a) for a in angles)))
+        stamps.append(timestamp(d))
+    return (max(stamps), positions) if positions else None
+
+
+def arm_joint_health(arms, latest, now_ns):
+    """Per-joint motor temperature (C) and current (A), keyed like the joint
+    positions, from the arm states arm_joint_positions last read."""
+    joints = {}
+    for name, (cfg, _) in arms.items():
+        d = latest.get(name)
+        if d is None or not 0 <= now_ns-timestamp(d) <= MAX_JOINT_AGE_NS:
+            continue
+        for joint, temp, current in zip(cfg.joint_names, d['temp'], d['current']):
+            if np.isfinite(temp) and np.isfinite(current):
+                joints[joint] = dict(temperature_c=round(float(temp), 1), current_a=round(float(current), 3))
+    return joints
+
+
+def battery_source(Reader):
+    """Optional drive.status reader for the battery; capture runs without it."""
+    try:
+        return Reader('drive.status', keeptime=False)
+    except Exception as e:
+        print(f'battery unavailable: {e}', file=sys.stderr, flush=True)
+        return None
+
+
+def battery_reading(reader, latest, now_ns):
+    """BBOS's battery voltage and percentage (its smoothed estimate between the
+    low and full voltages); drive.status updates slowly, so up to 30 s old."""
+    if reader is None:
+        return None
+    if reader.ready():
+        latest['battery'] = reader.data.copy()
+    d = latest.get('battery')
+    if d is None or not 0 <= now_ns-timestamp(d) <= MAX_BATTERY_AGE_NS:
+        return None
+    voltage, percent = float(d['voltage']), float(d['battery_percentage'])
+    if not (np.isfinite(voltage) and np.isfinite(percent)):
+        return None
+    return dict(voltage=round(voltage, 2), percent=round(min(max(percent, 0.), 100.), 1))
