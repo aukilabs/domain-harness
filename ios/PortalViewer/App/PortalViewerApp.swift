@@ -31,11 +31,11 @@ struct ViewerScreen: View {
     @Environment(\.scenePhase) private var phase
     /// Whether voxels are reaching Home right now: ink sending, orange failing, grey idle.
     private var sending: Bool {
-        // Sent to Home, or published for a Home that reads the phone's depth itself.
-        peer.state == "live" && (peer.depthDetail.hasPrefix("Depth sent") || peer.depthDetail.hasPrefix("Depth published"))
+        // Published for any peer to read; nothing is pushed.
+        peer.state == "live" && peer.depthDetail.hasPrefix("Depth published")
     }
     private var sendFailed: Bool {
-        peer.state == "live" && (peer.depthDetail.hasPrefix("Depth not") || peer.depthDetail.hasPrefix("Color paused"))
+        peer.state == "live" && peer.depthDetail.hasPrefix("Depth not published")
     }
     private var sendColor: Color { sending ? Theme.ink : sendFailed ? Theme.accent : Theme.dim }
     private var sendTag: String { sending ? "Sending" : sendFailed ? "Not sending" : "Idle" }
