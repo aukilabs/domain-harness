@@ -14,16 +14,34 @@ also exposes BBOS poses. `--portals` implies poses and adds:
 - `bbos-home-alignment-<target-hash>`: a separate compact held transform from
   this boot's native Bracket world into the selected Home scene frame.
 
-`--poses` and `--portals` also expose `arm-pointer/point_at`
+`--poses`, `--portals` and `--points` also expose `arm-pointer/point_at`
 (`spatial-harness.point-at/v1`, contract in `src/point_at.rs`). A target names
 its frame by full Registry reference and resolves into `bbos-base` only through
 this peer's own compact pose Products: the sampled base pose (at most 800 ms
 old), the held head extrinsic and, once aligned, the held Home alignment. All
-must share one clock and pose session; a lost or stale link refuses the request. Milestone 1
-accepts or rejects (one request at a time, held 3 s) and reports the base-frame
-point and the observations it used; it does not command the arms.
+must share one clock and pose session; a lost or stale link refuses the
+request. One request at a time; the result reports the base-frame point and the
+observations it used.
 
-Frame, clock and numeric sensor calibration definitions are served through the
+By default `point_at` does not touch the arms (`executes: false`). A sixth
+argument opts in to the local arm adapter, `scripts/diagnostic-arm.py`:
+
+- `--arm-plan`: the adapter plans each request against the live arm (measured
+  joint limits, current pose, feedback health) and refuses what it cannot
+  reach. It opens no arm writer and never moves anything.
+- `--arm-motion`: a planned request then moves. The arm eases to sides HOME,
+  swings straight forward, aims its finger axis at the target, holds 3 s and
+  returns, then releases its writers to BBOS. It refuses to take an arm another
+  writer holds, and yields on stale feedback, tilt, low battery, temperature or
+  current margins, or a following error. Clear the space in front of the robot.
+
+The adapter declares where the arm IK frame (`arm_base`: X forward, Y left,
+Z up, on the drive axle) sits in `bbos-base`; this peer publishes it as the
+held `bbos-arm-mount` transform, so a target reaches the arm only through it.
+That declaration assumes BBOS base's origin is on the floor under the axle;
+verify it on each robot before trusting the aim.
+
+Frame, clock and numeric sensor calibration definitionsFrame, clock and numeric sensor calibration definitions are served through the
 SDK Registry endpoint. Catalog metadata binds their exact references and static
 interpretation to hashed output IDs. Images and detections do not carry repeated
 calibration. The detector consumes the exact observation published on the camera
@@ -34,7 +52,8 @@ independent of decoding.
 All peer data uses authenticated SDK libp2p component/registry protocols. The
 Python adapter uses local BBOS shared memory and stdout IPC only. SDK account
 authentication/discovery uses SDK infrastructure as before. This does not modify
-BBOS, start SLAM, command motors or load maps. Dynamic camera mounts are rejected;
+BBOS, start SLAM or load maps, and commands no motors unless `--arm-motion` is
+given (see `point_at` above). Dynamic camera mounts are rejected;
 they require timestamped extrinsics rather than a held calibration.
 
 ## Validation and operation
