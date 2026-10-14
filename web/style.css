@@ -1194,3 +1194,8 @@ select.form-control{appearance:none;-webkit-appearance:none;padding-right:30px;b
 :root:not([data-theme="light"]) .btn-danger-ghost{color:#f87171}
 /* Mode banners and the scene notice share the top centre: the notice steps below a visible banner. */
 body:has(.placement-banner:not([hidden])) .scene-notice{top:68px}
+
+/* Right-click spot menu: the bottom bar's tools, opened where the scene was clicked. */
+.spot-menu{position:fixed;z-index:60;display:flex;align-items:center;gap:4px;height:56px;padding:7px;border:1px solid rgba(255,255,255,.6);border-radius:20px;background:color-mix(in srgb,var(--nav-panel) 92%,transparent);-webkit-backdrop-filter:blur(24px) saturate(1.3);backdrop-filter:blur(24px) saturate(1.3);box-shadow:0 18px 40px -14px rgba(24,24,27,.32),0 2px 6px rgba(24,24,27,.06)}
+.spot-menu[hidden]{display:none}
+:root:not([data-theme="light"]) .spot-menu{border-color:rgba(255,255,255,.08);box-shadow:0 18px 40px -14px rgba(0,0,0,.6)}
