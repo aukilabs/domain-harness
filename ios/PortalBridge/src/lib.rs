@@ -95,6 +95,25 @@ pub extern "C" fn spatial_mobile_camera_demand(active: i32) -> i32 {
         .map_or(0, |client| i32::from(client.camera_demanded(active != 0)))
 }
 
+/// Offer the app's screen at `width` x `height` pixels as sent and return 1
+/// while someone is subscribed to it. Capture only then.
+#[unsafe(no_mangle)]
+pub extern "C" fn spatial_mobile_screen_demand(width: u32, height: u32) -> i32 {
+    CLIENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+        .map_or(0, |client| i32::from(client.screen_demanded((width, height))))
+}
+
+/// One JPEG picture of the app's screen, at the size last offered.
+/// # Safety
+/// `jpeg` must point to `length` readable bytes for the duration of this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spatial_mobile_screen(timestamp: u64, jpeg: *const u8, length: usize) {
+    if jpeg.is_null() || length == 0 || length > spatial_home::mobile_screen::MAX_JPEG || timestamp == 0 { return; }
+    if let Some(client) = CLIENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        client.update_screen(timestamp, unsafe { std::slice::from_raw_parts(jpeg, length) }.to_vec());
+    }
+}
+
 /// # Safety
 /// `jpeg` must point to `length` readable bytes for the duration of this call.
 #[unsafe(no_mangle)]

@@ -176,6 +176,11 @@ pub struct MobileClient {
     camera_configuration:tokio::sync::watch::Sender<Option<crate::mobile_camera::RegisteredConfiguration>>,
     camera_active: AtomicBool,
     camera_demand: AtomicBool,
+    /// The app's screen: the size the app sends it at, its latest picture,
+    /// and whether anyone is subscribed to it.
+    screen_size: tokio::sync::watch::Sender<Option<(u32, u32)>>,
+    screen: tokio::sync::watch::Sender<Option<(u64, Vec<u8>, Instant)>>,
+    screen_demand: AtomicBool,
     local_map: tokio::sync::watch::Sender<Option<(crate::mobile_local::Snapshot, Instant)>>,
     depth: tokio::sync::watch::Sender<Option<(crate::mobile_depth::Sample, std::time::Instant)>>,
     pose: tokio::sync::watch::Sender<Option<crate::mobile_pose::Sample>>,
@@ -229,6 +234,9 @@ impl Default for MobileClient {
             camera_configuration:tokio::sync::watch::channel(None).0,
             camera_active: AtomicBool::new(false),
             camera_demand: AtomicBool::new(false),
+            screen_size: tokio::sync::watch::channel(None).0,
+            screen: tokio::sync::watch::channel(None).0,
+            screen_demand: AtomicBool::new(false),
             local_map: tokio::sync::watch::channel(None).0,
             pose: tokio::sync::watch::channel(None).0,
             asleep: AtomicBool::new(false),
@@ -260,6 +268,18 @@ impl MobileClient {
         self.camera_active.store(active, Ordering::Release);
         if !active { self.camera.send_replace(None); }
         active && self.camera_demand.load(Ordering::Acquire) && !self.stop.is_cancelled()
+    }
+    /// Offer the app's screen at `size` and say whether anyone wants it.
+    pub fn screen_demanded(&self, size: (u32, u32)) -> bool {
+        if crate::mobile_screen::size_allowed(size) {
+            self.screen_size.send_if_modified(|current| current.replace(size) != Some(size));
+        }
+        self.screen_demand.load(Ordering::Acquire) && !self.stop.is_cancelled()
+    }
+    pub fn update_screen(&self, timestamp: u64, jpeg: Vec<u8>) {
+        if self.screen_demand.load(Ordering::Acquire) {
+            self.screen.send_replace(Some((timestamp, jpeg, Instant::now())));
+        }
     }
     pub fn update_camera(&self, timestamp: u64, jpeg: Vec<u8>) {
         self.send_camera(timestamp, jpeg, None);
@@ -512,6 +532,34 @@ impl MobileClient {
                                     Some(geometry) => camera.publish_calibrated(timestamp, jpeg, geometry),
                                     None => camera.publish(timestamp, jpeg),
                                 };
+                            }
+                        }
+                    }
+                    #[allow(unreachable_code)]
+                    Ok::<(), anyhow::Error>(())
+                };
+                let mut screen_sizes = self.screen_size.subscribe();
+                let mut screen_frames = self.screen.subscribe();
+                let mut screen = None::<crate::mobile_screen::Screen>;
+                let screen_work = async {
+                    let mut tick = tokio::time::interval(Duration::from_millis(50));
+                    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    loop {
+                        tick.tick().await;
+                        let size = *screen_sizes.borrow_and_update();
+                        if let Some(size) = size.filter(|s| screen.as_ref().is_none_or(|old| old.size() != *s)) {
+                            if let Some(old) = screen.take() { let _ = old.close(); }
+                            screen = Some(crate::mobile_screen::Screen::new(&products, size)?);
+                        }
+                        let demand = screen.as_ref().is_some_and(|s| s.demanded());
+                        self.screen_demand.store(demand, Ordering::Release);
+                        if screen_frames.has_changed().unwrap_or(false) {
+                            let latest = screen_frames.borrow_and_update().clone();
+                            if demand && let Some((timestamp, jpeg, received)) = latest
+                                && received.elapsed() < Duration::from_millis(500)
+                                && let Some(screen) = screen.as_mut() {
+                                // A bad frame must not tear down the connection.
+                                let _ = screen.publish(timestamp, jpeg);
                             }
                         }
                     }
@@ -875,6 +923,7 @@ impl MobileClient {
                 };
                 let work = tokio::select! {
                     result = camera_work => result,
+                    result = screen_work => result,
                     _ = change_work => Ok(()),
                     _ = portal_work => Ok(()),
                     _ = path_work => Ok(()),
@@ -891,6 +940,8 @@ impl MobileClient {
                     _ = commands => Ok(()),
                 };
                 self.camera_demand.store(false, Ordering::Release);
+                self.screen_demand.store(false, Ordering::Release);
+                if let Some(screen) = screen.take() { let _ = screen.close(); }
                 let Declared { camera, depth_image, pose: pose_publisher, placed } = std::mem::replace(
                     &mut *declared(), Declared { camera: None, depth_image: None, pose: None, placed: None });
                 if let Some(publisher) = placed { let _ = publisher.close(); }

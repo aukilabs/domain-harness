@@ -16,6 +16,7 @@ pub mod local_mapper;
 pub mod mobile;
 pub mod mobile_home;
 pub mod mobile_camera;
+pub mod mobile_screen;
 pub mod model;
 pub mod network;
 pub mod peer;
