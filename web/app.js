@@ -120,11 +120,12 @@ function showRailTip(button,immediate){
  if(immediate||!railTip.hidden)show();else railTipTimer=setTimeout(show,300);
 }
 function hideRailTip(delay=0){clearTimeout(railTipTimer);railTipTimer=setTimeout(()=>{railTip.hidden=true;railTipTarget=null;},delay);}
-rail.addEventListener('pointerover',e=>{const button=e.target.closest('button,a');if(button)showRailTip(button);});
+// The logo carries no tooltip; its own animation is the hover response.
+rail.addEventListener('pointerover',e=>{const button=e.target.closest('button,a');if(button&&!button.matches('.rail-logo'))showRailTip(button);});
 rail.addEventListener('pointerout',e=>{if(!rail.contains(e.relatedTarget)&&!railTip.contains(e.relatedTarget))hideRailTip(120);});
 railTip.addEventListener('pointerenter',()=>clearTimeout(railTipTimer));
 railTip.addEventListener('pointerleave',e=>{if(!rail.contains(e.relatedTarget))hideRailTip(120);});
-rail.addEventListener('focusin',e=>{if(e.target.matches(':focus-visible'))showRailTip(e.target,true);});
+rail.addEventListener('focusin',e=>{if(e.target.matches(':focus-visible')&&!e.target.matches('.rail-logo'))showRailTip(e.target,true);});
 rail.addEventListener('focusout',()=>hideRailTip());
 rail.addEventListener('click',()=>hideRailTip());
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!railTip.hidden){hideRailTip();e.stopPropagation();}},true);
