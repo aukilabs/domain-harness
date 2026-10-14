@@ -1522,6 +1522,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private var guideShared: (id: String, route: [SIMD3<Float>], goal: SIMD3<Float>, frame: String)?
     /// When Home said it had saved that way. Nil while waiting to hear.
     private var guideSaved: Date?
+    /// Every way this phone has put on the map. Only the current one may stay there.
+    private var guideMine = Set<String>()
     /// When a way was last offered to Home, so a Home that cannot take one is not asked constantly.
     private var guideOffered = Date.distantPast
     private func endGuide() {
@@ -1557,13 +1559,15 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         let id = UUID().uuidString.lowercased()
         guard let path = MessageRoute.path(route, id: id, to: target.text) else { return }
         let color = UInt32(path.color.dropFirst(), radix: 16) ?? 0xff5fa8
-        let material = Self.flowingMaterial(UIColor(red: CGFloat((color >> 16) & 255) / 255, green: CGFloat((color >> 8) & 255) / 255,
-                                                    blue: CGFloat(color & 255) / 255, alpha: 1))
-        if let node = Self.pathNode(path.segments[0].map { SIMD3($0[0], $0[1], $0[2]) }, width: path.width_m, material: material) {
+        let shade = UIColor(red: CGFloat((color >> 16) & 255) / 255, green: CGFloat((color >> 8) & 255) / 255,
+                            blue: CGFloat(color & 255) / 255, alpha: 1)
+        let material = Self.flowingMaterial(shade)
+        if let node = Self.pathNode(path.segments[0].map { SIMD3($0[0], $0[1], $0[2]) }, width: path.width_m, material: material, cap: shade) {
             node.name = id
             guideRoot.addChildNode(node)
         }
         guideShared = (id, route, target.position, frame)
+        guideMine.insert(id)
         // If Home cannot take it, the phone still shows its own copy, and offers it again:
         // a way nobody else can see is not yet shared.
         onStroke?(path, frame) { [weak self] saved in
@@ -1946,6 +1950,12 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         let saved = Set(map.render?.paths?.items.map(\.id) ?? [])
         crayonRoot.childNodes.filter { $0.isHidden }.forEach { $0.removeFromParentNode() }
         erasing.formIntersection(saved)
+        // One way at a time: an older way of this phone's that Home still lists, because its
+        // answer was lost or came late, is hidden here and erased.
+        let frame = map.scenegraph.map.frame.id
+        for id in saved where guideMine.contains(id) && id != guideShared?.id && !erasing.contains(id) {
+            retire(id, frame: frame)
+        }
         crayonRoot.childNodes.filter { saved.contains($0.name ?? "") }.forEach { $0.removeFromParentNode() }
         if crayonRoot.parent == nil { root.addChildNode(crayonRoot) }
         for portal in map.scenegraph.anchors.values.sorted(by: { $0.anchor_id < $1.anchor_id }) {
@@ -1982,11 +1992,13 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         if let paths = map.render?.paths, paths.frame == map.scenegraph.map.frame.id {
             for stroke in paths.items where CrayonStroke.widths.contains(stroke.width_m) && !erasing.contains(stroke.id) {
                 let color = UInt32(stroke.color.dropFirst(), radix: 16) ?? 0xffca55
-                let material = Self.flowingMaterial(UIColor(red: CGFloat((color >> 16) & 255)/255,
-                    green: CGFloat((color >> 8) & 255)/255, blue: CGFloat(color & 255)/255, alpha: 1))
-                for segment in stroke.segments {
+                let shade = UIColor(red: CGFloat((color >> 16) & 255)/255,
+                    green: CGFloat((color >> 8) & 255)/255, blue: CGFloat(color & 255)/255, alpha: 1)
+                let material = Self.flowingMaterial(shade)
+                for (index, segment) in stroke.segments.enumerated() {
                     let points = segment.filter { $0.count == 3 }.map { SIMD3<Float>($0[0], $0[1], $0[2]) }
-                    guard let node = Self.pathNode(points, width: stroke.width_m, material: material) else { continue }
+                    guard let node = Self.pathNode(points, width: stroke.width_m, material: material,
+                                                   cap: index == stroke.segments.count - 1 ? shade : nil) else { continue }
                     node.name = "scene-path:" + stroke.id
                     root.addChildNode(node)
                 }
@@ -2521,14 +2533,24 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     /// One smooth tube through a segment's points.
-    private static func pathNode(_ points: [SIMD3<Float>], width: Float, material: SCNMaterial) -> SCNNode? {
+    /// With `cap`, a small ball of that colour marks where the line ends.
+    private static func pathNode(_ points: [SIMD3<Float>], width: Float, material: SCNMaterial, cap: UIColor? = nil) -> SCNNode? {
         guard let mesh = CrayonTube.mesh(points, radius: width / 2) else { return nil }
         let geometry = SCNGeometry(sources: [SCNGeometrySource(vertices: mesh.vertices.map { SCNVector3($0.x, $0.y, $0.z) }),
                                              SCNGeometrySource(textureCoordinates: mesh.along.map { CGPoint(x: CGFloat($0.x), y: CGFloat($0.y)) })],
                                    elements: [SCNGeometryElement(indices: mesh.indices, primitiveType: .triangles)])
         material.isDoubleSided = true
         geometry.materials = [material]
-        return SCNNode(geometry: geometry)
+        let node = SCNNode(geometry: geometry)
+        if let cap, let end = points.last {
+            let ball = SCNSphere(radius: CGFloat(width) * 1.1)
+            ball.segmentCount = 16
+            ball.materials = [crayonMaterial(cap)]
+            let capNode = SCNNode(geometry: ball)
+            capNode.simdPosition = end
+            node.addChildNode(capNode)
+        }
+        return node
     }
 
     private func abandonStroke() {
