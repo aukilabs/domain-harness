@@ -476,7 +476,7 @@ impl MobileClient {
         let config =
             AukiPeerConfig::dev().with_listen_addresses(["/ip4/0.0.0.0/tcp/0".parse()?])?;
         let auth = AukiPeerBootstrap::authenticate(
-            AuthClient::new(AuthEnvironment::dev())?,
+            AuthClient::new(phone_auth_environment().await?)?,
             credentials,
             config,
         );
@@ -1221,4 +1221,29 @@ pub async fn receive_portals(
     .await;
     let cleanup = subscription.close().await.map_err(anyhow::Error::from);
     work.and(cleanup)
+}
+
+/// `AUKI_DDS_FORWARD=host:port` signs the phone in through a DDS stand-in on
+/// the LAN (scripts/local-dds.py). The SDK accepts plain HTTP only on loopback,
+/// so the phone relays a loopback port to it. Unset, the phone uses Auki's DDS.
+async fn phone_auth_environment() -> Result<AuthEnvironment> {
+    let Ok(target) = std::env::var("AUKI_DDS_FORWARD") else {
+        return Ok(AuthEnvironment::dev());
+    };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let port = listener.local_addr()?.port();
+    tokio::spawn(async move {
+        while let Ok((mut inbound, _)) = listener.accept().await {
+            let target = target.clone();
+            tokio::spawn(async move {
+                if let Ok(mut outbound) = tokio::net::TcpStream::connect(&target).await {
+                    let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+                }
+            });
+        }
+    });
+    Ok(AuthEnvironment::new(
+        "https://api.dev.aukiverse.com/",
+        format!("http://127.0.0.1:{port}/"),
+    )?)
 }
