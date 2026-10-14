@@ -1,6 +1,5 @@
 pub mod conventions;
 pub mod qr_decode;
-pub mod fisheye;
 pub mod compact_pose;
 pub mod product_registry;
 pub mod frame_alignment;

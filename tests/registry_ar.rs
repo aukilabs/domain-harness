@@ -88,7 +88,7 @@ async fn exercise(extra_mount: bool) -> Result<()> {
         let owner = pair.b.peer_id().to_string();
         let home_owner = pair.a.peer_id().to_string();
         let temp = tempfile::tempdir()?;
-        let homes = spatial_home::local_scenes::LocalScenes::load(temp.path())?;
+        let homes = support::seeded_local_scenes(temp.path())?;
         let home_frame = spatial_home::conventions::registry(&home_owner,
             &homes.snapshot("humanoid-hub-conference")?.scenegraph.map.frame.id)?;
         let frame = if extra_mount {Frame::ros_optical(&owner,"lens")} else {Frame::opengl(&owner,"lens")};

@@ -212,7 +212,7 @@ impl HeldTransforms {
                     let fingerprint = serde_json::to_string(&(&c, &row["catalog_route"])).unwrap();
                     let sensor = crate::sensor_preview::Sensor {id:key.clone(), reference, peer,
                         route:row["catalog_route"].as_str().and_then(|s|s.parse().ok()),
-                        datatype:crate::compact_pose::SCHEMA.into(), metadata:Some(m.clone()), pose:None};
+                        datatype:crate::compact_pose::SCHEMA.into(), metadata:Some(m.clone()), ar_supported:false};
                     desired.insert(key, (fingerprint, sensor, c));
                 }
             }
