@@ -549,7 +549,8 @@ impl MobileClient {
                         let size = *screen_sizes.borrow_and_update();
                         if let Some(size) = size.filter(|s| screen.as_ref().is_none_or(|old| old.size() != *s)) {
                             if let Some(old) = screen.take() { let _ = old.close(); }
-                            screen = Some(crate::mobile_screen::Screen::new(&products, size)?);
+                            // The screen is optional: failing to offer it must not drop the connection.
+                            screen = crate::mobile_screen::Screen::new(&products, size).ok();
                         }
                         let demand = screen.as_ref().is_some_and(|s| s.demanded());
                         self.screen_demand.store(demand, Ordering::Release);
