@@ -112,6 +112,15 @@ final class HomePeer: ObservableObject {
               let json = String(data: data, encoding: .utf8) else { return }
         json.withCString { spatial_mobile_depth($0) }
     }
+    /// Publish where the AR session sits in the scene; nil says the phone no longer knows.
+    /// Kept so that a peer started later publishes it too.
+    func publishPlacement(_ placement: PhonePlacement?) {
+        self.placement = placement
+        guard let placement else { spatial_mobile_placement(nil); return }
+        guard let data = try? JSONEncoder().encode(placement), let json = String(data: data, encoding: .utf8) else { return }
+        json.withCString { spatial_mobile_placement($0) }
+    }
+    private var placement: PhonePlacement?
     /// Share the phone's own map with Home; nil stops sharing it.
     func publishLocalMap(_ map: PhoneLocalMap?) {
         guard let map else { _ = spatial_mobile_local_map(nil); return }
@@ -138,6 +147,26 @@ final class HomePeer: ObservableObject {
             guard let done = self?.pathAnswers.removeValue(forKey: id) else { return }
             print("[crayon] Path \(id): no answer from Home in 6 s"); done(false)
         }
+    }
+    /// Ask Home to plan a route in the scene. With `share` it replaces this phone's route on
+    /// everyone's map. `done` hears nil when Home cannot plan routes or does not answer.
+    func planRoute(frame: String, from: RoutePlace, to: RoutePlace, share: Bool, done: @escaping (HomeRoute?) -> Void) {
+        struct Plan: Encodable { let frame: String; let from: RoutePlace; let to: RoutePlace; let share: Bool }
+        askRoute(Plan(frame: frame, from: from, to: to, share: share), done: done)
+    }
+    /// Take this phone's route off everyone's map.
+    func clearRoute(frame: String) {
+        struct Clear: Encodable { let frame: String }
+        askRoute(Clear(frame: frame)) { _ in }
+    }
+    private var routeAnswers = [String: (HomeRoute?) -> Void]()
+    private struct Asked<Ask: Encodable>: Encodable { let id: String; let ask: Ask }
+    private func askRoute<Ask: Encodable>(_ ask: Ask, done: @escaping (HomeRoute?) -> Void) {
+        let id = UUID().uuidString.lowercased()
+        guard state == "live", let data = try? JSONEncoder().encode(Asked(id: id, ask: ask)), let json = String(data: data, encoding: .utf8),
+              json.withCString({ spatial_mobile_ask_route($0) == 1 }) else { done(nil); return }
+        routeAnswers[id] = done
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in self?.routeAnswers.removeValue(forKey: id)?(nil) }
     }
     var onMap: ((PortalMap) -> Void)?
     /// Home's answer to a new-Portal report, for the user to see.
@@ -252,11 +281,17 @@ final class HomePeer: ObservableObject {
         let annotation: AnnotationResult?
         let depth_detail: String
         let local_detail: String?
+        let route: RouteAnswer?
         let paths: [PathAnswer]?
     }
     private struct PathAnswer: Decodable {
         let id: String
         let done: Bool
+        let error: String?
+    }
+    private struct RouteAnswer: Decodable {
+        let id: String
+        let route: HomeRoute?
         let error: String?
     }
     private func poll() {
@@ -278,7 +313,13 @@ final class HomePeer: ObservableObject {
                         portalDetail = note
                         onPortalResult?(note)
                     }
+                    if let answer = response.update.route, let done = routeAnswers.removeValue(forKey: answer.id) {
+                        if let error = answer.error { print("[route] \(error)") }
+                        done(answer.route)
+                    }
                     annotationResult = response.update.annotation
+                    // A peer started after the phone aligned has not been told where it is.
+                    if response.update.state == "live", state != "live", let placement { publishPlacement(placement) }
                     state = response.update.state
                     detail = response.update.detail
                     if let portals = response.update.portals { onMap?(portals) }

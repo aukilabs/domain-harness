@@ -248,6 +248,34 @@ let shared = MessageRoute.path(corner, id: "a", to: " the printer ")!
 check(shared.title == "Way to the printer" && shared.segments.count == 1 && shared.segments[0].first == [0, 0, 0] && shared.segments[0].last == [2, 0, 2]
       && CrayonStroke.widths.contains(shared.width_m), "a way is a path like any drawn one, from its start to its end")
 check(MessageRoute.path([SIMD3(0, 0, 0), SIMD3(0.01, 0, 0)], id: "a", to: "x") == nil, "already there: nothing to draw")
+let between = MessageRoute.path(corner, id: "b", to: "the printer", from: " the door ")!
+check(between.title == "Way from the door to the printer" && between.segments == shared.segments, "a way between two messages says where it starts")
+check(abs(MessageRoute.length(corner) - 4) < 0.0001 && MessageRoute.length([SIMD3(1, 0, 1)]) == 0, "a way is as long as its stretches together")
+check(MessageRoute.apart(corner, corner) < 0.0001 && abs(MessageRoute.apart(corner, [SIMD3(0, 0, 0), SIMD3(2, 0, 2)]) - 1.4142) < 0.05
+      && MessageRoute.apart([SIMD3(0, 0, 0), SIMD3(2, 0, 2)], corner) == MessageRoute.apart(corner, [SIMD3(0, 0, 0), SIMD3(2, 0, 2)]),
+      "two ways are as far apart as the farthest either gets from the other")
+var pairBox = MessageInbox()
+func pairNote(_ id: String, _ text: String, _ x: Float) -> RenderScene.Note {
+    try! JSONDecoder().decode(RenderScene.Note.self, from: JSONSerialization.data(withJSONObject: ["id": id, "text": text, "position": [x, 1, 0]]))
+}
+_ = pairBox.record([pairNote("d", "door", 0), pairNote("p", "printer", 3)], frame: "f")
+let picked = MessageInbox.Pair(from: pairBox.messages[0], to: pairBox.messages[1])
+_ = pairBox.record([pairNote("d", "door", 0), pairNote("p", "printer", 5)], frame: "f")
+check(pairBox.current(picked)?.to.position.x == 5 && pairBox.current(picked)?.from == picked.from, "the two being joined follow Home's edits")
+_ = pairBox.record([pairNote("d", "door", 0)], frame: "f")
+check(pairBox.current(picked) == nil, "with either gone there is no way between them")
+struct RouteAsk: Encodable { let from: RoutePlace; let to: RoutePlace }
+let askJSON = try! JSONSerialization.jsonObject(with: JSONEncoder().encode(RouteAsk(from: .point(SIMD3(1, 2, 3)), to: .note("n")))) as! [String: [String: Any]]
+check(askJSON["from"]?["point"] as? [Double] == [1, 2, 3] && askJSON["to"]?["note"] as? String == "n" && askJSON["to"]?.count == 1,
+      "an end of a route is a point or a note, as Home reads it")
+let homeRoute = try! JSONDecoder().decode(HomeRoute.self, from: Data("""
+{"frame":"f","status":"found","length_m":3.5,"map_timestamp_ns":7,"clock":{"peer_id":"p","id":"c","hash":"h"},
+ "path":{"id":"a","title":"Way to x","color":"#ff5fa8","width_m":0.05,"segments":[[[0,0.06,0],[1,0.06,0],[1,0.06,2.5]]]}}
+""".utf8))
+check(homeRoute.points == [SIMD3(0, 0.06, 0), SIMD3(1, 0.06, 0), SIMD3(1, 0.06, 2.5)] && homeRoute.path?.id == "a" && homeRoute.length_m == 3.5,
+      "Home's route is read as the points of its path")
+let noRoute = try! JSONDecoder().decode(HomeRoute.self, from: Data(#"{"frame":"f","status":"unreachable","length_m":0,"map_timestamp_ns":7,"clock":{}}"#.utf8))
+check(noRoute.points.isEmpty && noRoute.status == "unreachable", "no way through is a route without a path")
 print("Message route checks passed")
 
 let firstPortal = try JSONSerialization.jsonObject(with: JSONEncoder().encode(PortalReport(
