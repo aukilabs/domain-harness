@@ -1536,6 +1536,12 @@ agentBar=createAgentBar({root:document.querySelector('.agent-bar'),hasConversati
  {label:'Draw path',iconPath:icons.pen,accent:'amber',source:$('crayon'),onTrigger:()=>$('crayon').click(),disabledReason:()=>'switch to a Home scene'},
  {label:'New volume',iconPath:'M9 1.5 15.5 5v8L9 16.5 2.5 13V5ZM2.5 5 9 8.5l6.5-3.5M9 8.5v8',accent:'violet',source:$('volume-draw'),onTrigger:()=>$('volume-draw').click(),disabledReason:()=>'select a local Home scene'},
 ]});syncChatCompact();
+// Only one creation tool at a time: starting one ends the others, whichever button started it.
+const creationTools=[{source:newNoteButton,stop:()=>stopNotePlacement()},{source:$('crayon'),stop:()=>$('crayon').click()},{source:$('volume-draw'),stop:()=>$('volume-draw').click()}];
+for(const tool of creationTools)new MutationObserver(()=>{
+ if(tool.source.getAttribute('aria-pressed')!=='true')return;
+ for(const other of creationTools)if(other!==tool&&other.source.getAttribute('aria-pressed')==='true')other.stop();
+}).observe(tool.source,{attributes:true,attributeFilter:['aria-pressed']});
 function notesWritable(){return !activeMap.startsWith('peer-scene:')&&!activeMap.startsWith('phone:')&&!isRunner()&&activeMap!=='domain';}
 function noteRowTile(note){
  if(!note.details?.thumbnail)return icons.note;
