@@ -1550,6 +1550,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/detections", post(detect))
         .route("/api/raycast", post(cast))
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
+        .layer(axum::middleware::from_fn(dev_web_files))
         .with_state(state);
     println!(
         "Spatial Home: http://127.0.0.1:{port} (listening on {bind}:{port}) — SDK PR #425; P2P {}",
@@ -1619,4 +1620,35 @@ mod ui_access_tests {
             assert!(ui_write(&request(host, None), "").is_err());
         }
     }
+}
+
+/// Development: with `SPATIAL_WEB_DIR` set, the viewer's files are read from that folder on each
+/// request, so editing the web UI needs a reload rather than a rebuild and restart (which would
+/// lose Home's in-memory map). Unset, the files built into Home are served as usual.
+async fn dev_web_files(request: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if let Ok(dir) = std::env::var("SPATIAL_WEB_DIR") {
+        let path = request.uri().path();
+        let relative = if path == "/" { "index.html" } else { path.trim_start_matches('/') };
+        let served = request.method() == axum::http::Method::GET
+            && !relative.starts_with("api/")
+            && relative.split('/').all(|part| !part.is_empty() && part != ".." && !part.starts_with('.'));
+        let file = std::path::Path::new(&dir).join(relative);
+        if served && file.is_file() {
+            if let Ok(bytes) = tokio::fs::read(&file).await {
+                let kind = match file.extension().and_then(|e| e.to_str()) {
+                    Some("html") => "text/html; charset=utf-8",
+                    Some("js" | "mjs") => "text/javascript",
+                    Some("css") => "text/css",
+                    Some("svg") => "image/svg+xml",
+                    Some("png") => "image/png",
+                    Some("jpg" | "jpeg") => "image/jpeg",
+                    Some("json") => "application/json",
+                    _ => "application/octet-stream",
+                };
+                return ([(header::CONTENT_TYPE, kind), (header::CACHE_CONTROL, "no-store")], bytes).into_response();
+            }
+        }
+    }
+    next.run(request).await
 }
