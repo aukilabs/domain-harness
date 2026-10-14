@@ -1122,3 +1122,5 @@ select.form-control{appearance:none;-webkit-appearance:none;padding-right:30px;b
 :root:not([data-theme="light"]) .volume-resize-handle.active{color:#fff}
 .volume-leader{stroke:#7c3aed;stroke-width:1.25;stroke-dasharray:3 3;opacity:.55}
 @media(prefers-reduced-motion:reduce){.volume-resize-handle::before,.volume-resize-handle svg{transition:none}}
+/* Devices: the list follows hidden legacy controls, so its first header needs the same top reset as other panels. */
+#fleet-sensors>.section-header:first-child,#fleet-sensors>:first-child>.section-header:first-child{margin-top:0}
