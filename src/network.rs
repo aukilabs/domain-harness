@@ -567,6 +567,7 @@ pub async fn serve_scene(
     mapping: crate::runner_voxels::MappingTarget,
     previews: tokio::sync::mpsc::Receiver<crate::sensor_preview::Request>,
     controls: tokio::sync::mpsc::Receiver<crate::component_control::Request>,
+    pointing: tokio::sync::mpsc::Receiver<crate::robot_pointing::Invoke>,
     occupancy: crate::robot_occupancy::Cache,
     ar_frames: crate::ar_preview::Frames,
     shutdown: tokio_util::sync::CancellationToken,
@@ -723,7 +724,8 @@ pub async fn serve_scene(
         &held,
         &monitor_stop,
     );
-    let (result, _, _, _, _, _, _, _, _, _) = tokio::join!(
+    let pointing = crate::robot_pointing::serve(&running.peer, pointing, &monitor_stop);
+    let (result, _, _, _, _, _, _, _, _, _, _) = tokio::join!(
         publish,
         remote,
         previews,
@@ -733,7 +735,8 @@ pub async fn serve_scene(
         catalogs,
         declared_depth,
         held_subscriptions,
-        controls
+        controls,
+        pointing
     );
     shutdown.cancel();
     status.send_replace(serde_json::json!({"enabled":true,"status":"Stopped"}));

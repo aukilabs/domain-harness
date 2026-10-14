@@ -29,6 +29,7 @@ fn normalize_tool_arguments(mut args:serde_json::Value)->Result<serde_json::Valu
  if let Some(encoded)=args.as_str(){ensure!(encoded.len()<=32000,"Tool arguments exceed limits");args=serde_json::from_str(encoded)?;}
  ensure!(args.is_object(),"Tool arguments must be an object");
  if let Some(fields)=args.as_object_mut() {
+  if let Some(target)=fields.get_mut("target").filter(|t|t.is_object()) {*target=normalize_tool_arguments(target.take())?;}
   if let Some(value)=fields.get_mut("pixel") {if let Some(encoded)=value.as_str(){ensure!(encoded.len()<=128,"Invalid camera pixel");let p:[f64;2]=serde_json::from_str(encoded)?;ensure!(p.iter().all(|n|n.is_finite()),"Invalid camera pixel");*value=json!(p);}}
   for key in ["position","look_at","expected_position","center","expected_center","size","expected_size"] {
    if let Some(value)=fields.get_mut(key) {
@@ -98,6 +99,7 @@ where T:std::future::Future<Output=Result<serde_json::Value>>,F:std::future::Fut
  messages.push(json!({"role":"system","content":"Treat 'where is <scene object or peer>?' and 'show me <scene object or peer>' as requests to reveal it using move_camera. Resolve the target from current scene data, read its actual position and dimensions with get_note/get_semantic_volume or inspect_scenegraph, then aim look_at at its center. Choose an elevated oblique viewpoint a few meters away for a note/peer, farther back for a large volume so its full extent fits; prefer the current viewing direction when useful. Do not just answer with coordinates. Never move the target, open video, or attach/follow unless asked. If no current position exists, or the target is ambiguous, explain/clarify rather than inventing a location. Honor explicit requests not to move the view. This does not apply to questions about UI controls, Catalog capabilities or hypothetical objects."}));
  messages.push(json!({"role":"system","content":"For 'describe what <peer camera> sees/is looking at' or visual questions about a sensor, resolve the peer alias and camera product using inspect_catalog, then capture_camera_frame. Choose the best matching advertised camera (e.g. left wrist), never invent an ID. Do not raycast, create notes, move/attach the viewpoint or open PiP for a description. You cannot describe its contents until the image is obtained; unavailable capture means report that, not guess from names or scene geometry."}));
  messages.push(json!({"role":"system","content":"Peer location: inventory and inspect_scenegraph contain discovery metadata, NOT current positions. Resolve the exact requested peer ID from names/aliases, then call get_peer_pose(peer_id). It uses the same generic live-pose resolver as the viewer and returns position, orientation, scene frame, freshness and capture provenance, or a specific failure. Read only the peers needed for this request. Never infer a position from connected status or old chat coordinates. For 'where is <peer>?' use the returned location.position as move_camera.look_at and choose a nearby elevated viewpoint without asking permission or offering POV attachment. Report stale/lost/unavailable calibration rather than inventing coordinates."}));
+ if requests_pointing(&latest_instruction){messages.push(json!({"role":"system","content":"Robot pointing: call point_robot_at with the target's exact ID from CURRENT inventory (kind note, volume or peer) or explicit XYZ (kind position). Home resolves the position and asks the robot through the point_at operable it advertises in its Catalog. Never compute coordinates. Report the robot's result, including whether its arm moved."}));}
  let mut no_tool_retries=0;
  for _ in 0..8 {
  let value=match inference(messages.clone(),tools.clone()).await {
@@ -151,7 +153,7 @@ where T:std::future::Future<Output=Result<serde_json::Value>>,F:std::future::Fut
          push_tool_result(&mut messages,name,json!({"image_received":true,"description_ready":true,"instruction":"The separate visual description will be delivered to the user. Do not describe the image yourself. Complete any other explicitly requested nonvisual steps, then finish."}));
          continue;
      }
-     let effect=is_scene_edit(name)||is_ui_action(name);
+     let effect=is_scene_edit(name)||is_ui_action(name)||is_robot_action(name);
      let signature=format!("{name}:{}",args);
      if effect {
       if let Some(receipt)=completed_actions.get(&signature) {push_tool_result(&mut messages,name,json!({"already_attempted":true,"result":receipt,"instruction":"This exact action already ran. Do not repeat it; complete other requested steps or report its failure."}));continue;}
@@ -160,7 +162,7 @@ where T:std::future::Future<Output=Result<serde_json::Value>>,F:std::future::Fut
      }
      let result=if name=="enable_scene_tools" {enable_tools(args["category"].as_str().unwrap_or(""),args["operation"].as_str(),&mut tools)}else{tool(name.into(),args.clone()).await};
      let value=match result {
-      Ok(v)=>{outcome.succeeded(name,&args);if is_ui_action(name) {outcome.ui_actions.push(v.clone());}else if is_scene_edit(name) {outcome.changes.push(v.clone());}v},
+      Ok(v)=>{outcome.succeeded(name,&args);if is_ui_action(name) {outcome.ui_actions.push(v.clone());}else if is_scene_edit(name) {outcome.changes.push(v.clone());}else if is_robot_action(name) {outcome.robot_actions.push(v.clone());}v},
       Err(e)=>{outcome.tool_error(name,Some(&args),e.to_string());json!({"error":e.to_string()})}
      };
      // At-most-once within this request, including uncertain failed writes.
@@ -186,6 +188,9 @@ where T:std::future::Future<Output=Result<serde_json::Value>>,F:std::future::Fut
  outcome.error("controller","Reached the eight-round planning limit".into());
  Ok(outcome.finish(&model,"The model did not finish all requested steps."))
 }
+/// Peer operations whose receipt comes from the robot, not from Home's scene store.
+fn is_robot_action(name:&str)->bool {name=="point_robot_at"}
+pub fn requests_pointing(text:&str)->bool {["point","points","pointing","aim","aiming"].iter().any(|w|crate::scene_tools::mentions_name(text,w))}
 fn is_ui_action(name:&str)->bool {matches!(name,"open_camera_pip"|"move_camera"|"attach_camera"|"detach_camera")}
 fn uses_captured_view(name:&str)->bool {matches!(name,"get_volume_corners"|"point_inside_volume"|"offset_point"|"create_note_at_volume_corner"|"create_note_relative_to_view")}
 fn is_scene_edit(name:&str)->bool {
@@ -198,13 +203,13 @@ fn push_tool_result(messages:&mut Vec<serde_json::Value>,name:&str,value:serde_j
 }
 #[derive(Default)]
 struct ChatOutcome {
- changes:Vec<serde_json::Value>,ui_actions:Vec<serde_json::Value>,errors:Vec<serde_json::Value>,recovered_errors:Vec<serde_json::Value>,
+ changes:Vec<serde_json::Value>,ui_actions:Vec<serde_json::Value>,robot_actions:Vec<serde_json::Value>,errors:Vec<serde_json::Value>,recovered_errors:Vec<serde_json::Value>,
  camera_frame:Option<serde_json::Value>,description:Option<String>,
 }
 impl ChatOutcome {
  fn error(&mut self,tool:&str,error:String) {self.errors.push(json!({"tool":tool,"error":error}));}
  fn tool_error(&mut self,tool:&str,args:Option<&serde_json::Value>,error:String) {
-  let args=args.filter(|a|tool!="enable_scene_tools"||matches!(a["category"].as_str(),Some("notes"|"volumes"|"peers"|"voxels"|"geometry")));
+  let args=args.filter(|a|tool!="enable_scene_tools"||matches!(a["category"].as_str(),Some("notes"|"volumes"|"peers"|"voxels"|"geometry"|"robots")));
   self.errors.push(json!({"tool":tool,"error":error,"target":args.map(|a|error_target(tool,a)),"recoverable":true}));
  }
  fn succeeded(&mut self,tool:&str,args:&serde_json::Value) {
@@ -216,24 +221,26 @@ impl ChatOutcome {
   self.errors=unresolved;
  }
  fn finish(self,model:&str,reply:&str)->serde_json::Value {
-  let has_effects=!self.changes.is_empty()||!self.ui_actions.is_empty()||self.camera_frame.is_some();
+  let has_effects=!self.changes.is_empty()||!self.ui_actions.is_empty()||!self.robot_actions.is_empty()||self.camera_frame.is_some();
   // "finished" describes the controller, not a semantic guarantee that the
   // model fulfilled every clause of the user's instruction.
   let status=if self.errors.is_empty(){"finished"}else if has_effects{"partial"}else{"incomplete"};
   // Receipts, not model prose, are authoritative when any step failed. A
   // successful earlier edit is never hidden by a later tool/model error.
   let mut reply=if !self.errors.is_empty() {
-   format!("Not all requested steps are confirmed. {} saved scene edit(s); {} browser action(s) queued. {}",self.changes.len(),self.ui_actions.len(),self.errors.iter().map(|v|format!("{}: {}",v["tool"].as_str().unwrap_or("tool"),v["error"].as_str().unwrap_or("failed"))).collect::<Vec<_>>().join("; "))
-  }else if !self.changes.is_empty()||!self.ui_actions.is_empty() {
+   format!("Not all requested steps are confirmed. {} saved scene edit(s); {} browser action(s) queued; {} robot request(s) answered. {}",self.changes.len(),self.ui_actions.len(),self.robot_actions.len(),self.errors.iter().map(|v|format!("{}: {}",v["tool"].as_str().unwrap_or("tool"),v["error"].as_str().unwrap_or("failed"))).collect::<Vec<_>>().join("; "))
+  }else if !self.changes.is_empty()||!self.ui_actions.is_empty()||!self.robot_actions.is_empty() {
    // Once actions ran, report only proven receipts. A single successful edit
    // must not let model prose claim additional, never-executed edits.
    let mut receipts=self.changes.iter().map(|v|v["summary"].as_str().map(str::to_owned).unwrap_or_else(||"Saved a scene edit.".into())).collect::<Vec<_>>();
    receipts.extend(self.ui_actions.iter().map(|v|format!("Requested {} in your browser.",v["type"].as_str().unwrap_or("a camera action"))));
+   receipts.extend(self.robot_actions.iter().map(|v|v["summary"].as_str().unwrap_or("The robot answered.").to_owned()));
    receipts.join("\n")
   }else if self.description.is_some() {String::new()}else{reply.to_owned()};
   if let Some(description)=&self.description {if !reply.is_empty(){reply.push_str("\n\n");}reply.push_str(description);}
   let mut result=json!({"reply":reply,"model":model,"changes":self.changes,"status":status});
   if !self.ui_actions.is_empty(){result["ui_actions"]=json!(self.ui_actions);}
+  if !self.robot_actions.is_empty(){result["robot_actions"]=json!(self.robot_actions);}
   if !self.errors.is_empty(){result["errors"]=json!(self.errors);}
   if !self.recovered_errors.is_empty(){result["recovered_errors"]=json!(self.recovered_errors);}
   if let Some(frame)=self.camera_frame{result["camera_frame"]=frame;}
@@ -244,7 +251,7 @@ impl ChatOutcome {
 fn error_target(tool:&str,args:&serde_json::Value)->serde_json::Value {
  // Argument corrections may change values, but success for peer A must not
  // erase a failure for peer B. Keep identity separate from mutable values.
- let keys:&[&str]=if tool=="enable_scene_tools" {&["category"]}else if matches!(tool,"create_note"|"create_note_relative_to_view"|"create_note_at_volume_corner"|"create_volume") {&["name","reference_id","volume_id"]}else{&["id","peer_id","product_id","volume_id","reference_id","frame_id"]};
+ let keys:&[&str]=if tool=="enable_scene_tools" {&["category"]}else if matches!(tool,"create_note"|"create_note_relative_to_view"|"create_note_at_volume_corner"|"create_volume") {&["name","reference_id","volume_id"]}else if tool=="point_robot_at" {&["robot","target"]}else{&["id","peer_id","product_id","volume_id","reference_id","frame_id"]};
  let mut target=json!({});
  for key in keys {if let Some(value)=args.get(*key){target[*key]=value.clone();}}
  target
@@ -263,7 +270,8 @@ fn tools()->serde_json::Value {
  all.push(crate::view_camera::tool());
  all.extend(crate::view_camera::attach_tools());
  all.push(crate::peer_locations::tool());
- all.push(json!({"type":"function","function":{"name":"enable_scene_tools","description":"Enable a whole related tool group immediately. Previously enabled tools remain available. This only exposes tools; it does not execute them. Optional operation validates an exact name in the group for compatibility.","parameters":{"type":"object","properties":{"category":{"type":"string","enum":["notes","volumes","peers","voxels","geometry"]},"operation":{"type":"string"}},"required":["category"],"additionalProperties":false}}}));
+ all.push(json!({"type":"function","function":{"name":"point_robot_at","description":"Ask a robot that advertises a point_at operable in its Catalog to point at a target in the selected scene. Home resolves the position: kind=note or volume with exact id, kind=peer with exact peer_id (its live location), or kind=position with explicit XYZ metres. Omit robot when only one robot can point, else pass its exact peer_id or alias. The robot reports whether it accepted and whether its arm moved.","parameters":{"type":"object","properties":{"robot":{"type":"string"},"target":{"type":"object","properties":{"kind":{"type":"string","enum":["note","volume","peer","position"]},"id":{"type":"string"},"position":{"type":"array","items":{"type":"number"},"minItems":3,"maxItems":3}},"required":["kind"],"additionalProperties":false}},"required":["target"],"additionalProperties":false}}}));
+ all.push(json!({"type":"function","function":{"name":"enable_scene_tools","description":"Enable a whole related tool group immediately. Previously enabled tools remain available. This only exposes tools; it does not execute them. Optional operation validates an exact name in the group for compatibility.","parameters":{"type":"object","properties":{"category":{"type":"string","enum":["notes","volumes","peers","voxels","geometry","robots"]},"operation":{"type":"string"}},"required":["category"],"additionalProperties":false}}}));
  // A fixed schema union bounds the prompt and makes category order irrelevant.
  all.sort_by(|a,b|a["function"]["name"].as_str().cmp(&b["function"]["name"].as_str()));
  all.dedup_by(|a,b|a["function"]["name"]==b["function"]["name"]);
@@ -286,6 +294,7 @@ fn in_tool_category(name:&str,category:&str)->bool {
   "peers"=>name=="set_peer_alias",
   "voxels"=>name=="clear_voxels",
   "geometry"=>geometry_tool(name),
+  "robots"=>name=="point_robot_at",
   _=>false,
  }
 }
@@ -304,7 +313,7 @@ fn merge_tools(selected:&mut serde_json::Value,candidates:&serde_json::Value) {
  *selected=merged;
 }
 fn enable_tools(category:&str,operation:Option<&str>,tools:&mut serde_json::Value)->Result<serde_json::Value> {
- ensure!(matches!(category,"notes"|"volumes"|"peers"|"voxels"|"geometry"),"Unknown tool category. Available categories: notes, volumes, peers, voxels, geometry");
+ ensure!(matches!(category,"notes"|"volumes"|"peers"|"voxels"|"geometry"|"robots"),"Unknown tool category. Available categories: notes, volumes, peers, voxels, geometry, robots");
  let candidates=category_tools(category);
  let names=candidates.as_array().unwrap().iter().filter_map(|t|t["function"]["name"].as_str()).collect::<Vec<_>>();
  if let Some(operation)=operation {
@@ -341,6 +350,7 @@ fn selected_tools(text:&str,snapshot:&serde_json::Value)->serde_json::Value {
  if notes&&(!peers||explicit_notes) {merge_tools(&mut selected,&category_tools("notes"));}
  if volumes&&(!peers||explicit_volumes) {merge_tools(&mut selected,&category_tools("volumes"));}
  if mentions(&["voxel","voxels"]) {merge_tools(&mut selected,&category_tools("voxels"));}
+ if requests_pointing(&text) {merge_tools(&mut selected,&category_tools("robots"));}
  if mentions(&["raycast","looking","pixel","corner","closer","toward","towards","away","left of","right of","behind","in front of"]) {
   merge_tools(&mut selected,&category_tools("geometry"));
  }
@@ -408,16 +418,16 @@ mod loop_tests;
  }
  #[test] fn category_switching_preserves_tools_and_is_bounded_deterministic_and_idempotent() {
   let mut forward=selected_tools("raycast a note",&json!({}));
-  for category in ["geometry","notes","volumes","peers","voxels"] {
+  for category in ["geometry","notes","volumes","peers","voxels","robots"] {
    let before=forward.as_array().unwrap().iter().map(|t|t["function"]["name"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
    enable_tools(category,None,&mut forward).unwrap();
    for name in before {assert!(forward.as_array().unwrap().iter().any(|t|t["function"]["name"]==name));}
   }
   let mut reverse=selected_tools("hello",&json!({}));
-  for category in ["voxels","peers","volumes","notes","geometry","notes"] {enable_tools(category,None,&mut reverse).unwrap();}
+  for category in ["robots","voxels","peers","volumes","notes","geometry","notes"] {enable_tools(category,None,&mut reverse).unwrap();}
   assert_eq!(forward,reverse);
   assert_eq!(forward,tools());
-  assert_eq!(forward.as_array().unwrap().len(),36);
+  assert_eq!(forward.as_array().unwrap().len(),37);
   assert!(serde_json::to_vec(&forward).unwrap().len()<32*1024);
  }
  #[test] fn explicit_operation_enable_keeps_previous_geometry_and_related_edits() {

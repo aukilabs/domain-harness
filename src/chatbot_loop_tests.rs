@@ -30,6 +30,23 @@ fn receipt(name:&str,args:Value)->Result<Value> {
 }
 
 #[tokio::test]
+async fn robot_pointing_reports_the_robot_receipt_not_model_prose() {
+ let point=call("point_robot_at",json!({"robot":"Broom boy","target":{"kind":"position","position":"[1,0,2]"}}));
+ let (result,executed,_)=script("Have Broom boy point at [1,0,2]",VecDeque::from([
+  calls(vec![point.clone()]),calls(vec![point]),answer("Broom boy is now pointing and waving.")
+ ]),|name,args|{
+  assert_eq!(args["target"]["position"],json!([1.,0.,2.]));
+  Ok(json!({"summary":format!("{name}: Broom boy accepted the point. The arm did not move."),"robot_peer_id":"requested"}))
+ }).await;
+ // Executed once despite the repeated call; the reply is the robot's receipt.
+ assert_eq!(executed.iter().filter(|(name,_)|name=="point_robot_at").count(),1);
+ assert_eq!(result["robot_actions"].as_array().unwrap().len(),1);
+ assert!(result["reply"].as_str().unwrap().contains("The arm did not move"),"{result}");
+ assert!(!result["reply"].as_str().unwrap().contains("waving"));
+ assert_eq!(result["status"],"finished");
+}
+
+#[tokio::test]
 async fn create_then_show_completes_both_and_feeds_the_saved_receipt_back() {
  let (result,executed,prompts)=script("Create a cheese note at [1,0,2], then show it",VecDeque::from([
   calls(vec![create()]),calls(vec![view()]),answer("Saved the note and requested its view.")
