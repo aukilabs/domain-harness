@@ -17,6 +17,7 @@ void spatial_mobile_geo(const char *reference);
 void spatial_mobile_drive(const char *target, float forward, float turn);
 int32_t spatial_mobile_report_portal(const char *report);
 int32_t spatial_mobile_change_path(const char *change);
+int32_t spatial_mobile_ask_route(const char *asked);
 int32_t spatial_mobile_report_origin(const char *report);
 void spatial_mobile_depth(const char *sample);
 int32_t spatial_mobile_camera_demand(int32_t active);

@@ -249,6 +249,8 @@ struct ViewerScreen: View {
             controller.onGeo = { peer.setGeo($0) }
             controller.onStroke = { peer.saveStroke($0, frame: $1, done: $2) }
             controller.onErase = { peer.eraseStroke($0, frame: $1, done: $2) }
+            controller.onRoute = { peer.planRoute(frame: $0, from: $1, to: $2, share: $3, done: $4) }
+            controller.onRouteClear = { peer.clearRoute(frame: $0) }
             peer.onPortalResult = { controller.showPortalResult($0) }
             // A Portal seen before Home's map has arrived offers sign-in once.
             controller.onPortalSeen = { _ in
@@ -1497,26 +1499,42 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private var guideOffered = Date.distantPast
     /// What the way is for: the message being looked for, or the two being joined.
     private var guideKey: String?
+    /// Ask Home to plan a route: frame, from, to, whether to put it on everyone's map.
+    var onRoute: ((String, RoutePlace, RoutePlace, Bool, @escaping (HomeRoute?) -> Void) -> Void)?
+    /// Ask Home to take this phone's route off everyone's map.
+    var onRouteClear: ((String) -> Void)?
+    /// The way everyone sees is one Home planned and saved itself.
+    private var guideByHome = false
+    /// Home's own route has drifted from the one on the map, so the next one asked for replaces it.
+    private var guideStale = false
+    /// A Home that could not plan a route is not asked again until then; the phone plans its own.
+    private var homeRoutesAfter = Date.distantPast
+    /// Take the way everyone sees off the map, by whoever put it there.
+    private func retireShared() {
+        if let old = guideShared {
+            if guideByHome { onRouteClear?(old.frame) } else { onErase?(old.id, old.frame) { _ in } }
+        }
+        guideShared = nil; guideSaved = nil; guideByHome = false; guideStale = false
+    }
     private func endGuide() {
         guard guidePlanned != nil || !guideRoute.isEmpty || messages.way != nil || guideShared != nil else { return }
         guideRoot.childNodes.forEach { $0.removeFromParentNode() }
         guideRoute = []; guidePlanned = nil
         if messages.way != nil { messages.way = nil }
         // Nobody is being led any more, so the way comes off everyone's map.
-        if let shared = guideShared { onErase?(shared.id, shared.frame) { _ in } }
-        guideShared = nil; guideSaved = nil
+        retireShared()
     }
-    /// Show a freshly planned way to everyone. A way already shown is kept while the phone is
-    /// still on it and it still leads to the right place, so the map is not redrawn at every step.
-    private func share(_ route: [SIMD3<Float>], to goal: SIMD3<Float>, named name: String, from origin: String? = nil,
-                       frame: String, keep: ([SIMD3<Float>]) -> Bool) {
-        if let shared = guideShared, shared.frame == frame, simd_distance(shared.goal, goal) < 0.3, keep(shared.route) { return }
-        // Home is offered a way at most every few seconds.
-        guard Date().timeIntervalSince(guideOffered) > 3 else { return }
+    /// Whether the way everyone sees can stay: it still leads to the right place and `keep` holds.
+    /// The map is not redrawn at every step, and Home is offered a new way at most every few seconds.
+    private func shownServes(_ goal: SIMD3<Float>, frame: String, keep: ([SIMD3<Float>]) -> Bool) -> Bool {
+        if let shared = guideShared, shared.frame == frame, simd_distance(shared.goal, goal) < 0.3, !guideStale, keep(shared.route) { return true }
+        return Date().timeIntervalSince(guideOffered) <= 3
+    }
+    /// Show a way this phone planned to everyone, in place of the one shown before.
+    private func share(_ route: [SIMD3<Float>], to goal: SIMD3<Float>, named name: String, from origin: String? = nil, frame: String) {
         guideOffered = Date()
-        if let old = guideShared { onErase?(old.id, old.frame) { _ in } }
+        retireShared()
         guideRoot.childNodes.forEach { $0.removeFromParentNode() }
-        guideShared = nil; guideSaved = nil
         let id = UUID().uuidString.lowercased()
         guard let path = MessageRoute.path(route, id: id, to: name, from: origin) else { return }
         let color = UInt32(path.color.dropFirst(), radix: 16) ?? 0xff5fa8
@@ -1532,6 +1550,50 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         onStroke?(path, frame) { [weak self] saved in
             guard let self, self.guideShared?.id == id else { return }
             if saved { self.guideSaved = Date() } else { self.guideShared = nil }
+        }
+    }
+    /// Plan a way and hand it to `done` with its length. Home plans it on the map it holds and
+    /// saves it as a path itself; a Home that cannot leaves the phone to plan on the map it was
+    /// last sent and save the path like a drawn one. `serves` is whether the way on the map can stay.
+    private func planGuide(from: RoutePlace, to: RoutePlace, start: SIMD3<Float>, goal: SIMD3<Float>, named name: String,
+                           origin: String? = nil, scene: RenderScene, serves: Bool, still: @escaping () -> Bool,
+                           done: @escaping ([SIMD3<Float>], Float) -> Void) {
+        guidePlanning = true
+        let voxels = scene.voxels, size = scene.voxel_size, home = scene.frame
+        let ours = { [self] in
+            guideQueue.async {
+                let centers = voxels.compactMap { $0.center.count == 3 ? SIMD3($0.center[0], $0.center[1], $0.center[2]) : nil }
+                let route = MessageRoute.plan(from: start, to: goal, voxels: centers, size: size)
+                DispatchQueue.main.async {
+                    self.guidePlanning = false
+                    guard still(), self.map?.scenegraph.map.frame.id == home else { return }
+                    done(route, MessageRoute.length(route))
+                    if !serves { self.share(route, to: goal, named: name, from: origin, frame: home) }
+                }
+            }
+        }
+        guard let onRoute, Date() > homeRoutesAfter else { ours(); return }
+        if !serves { guideOffered = Date() }
+        onRoute(home, from, to, !serves) { [self] answer in
+            guard still(), map?.scenegraph.map.frame.id == home else { guidePlanning = false; return }
+            guard let answer, answer.frame == home else {
+                homeRoutesAfter = Date().addingTimeInterval(30)
+                ours(); return
+            }
+            guidePlanning = false
+            let route = answer.points
+            done(route, answer.length_m)
+            if !serves {
+                // Home has put this one on the map in place of this phone's last.
+                if !guideByHome, let old = guideShared { onErase?(old.id, old.frame) { _ in } }
+                guideRoot.childNodes.forEach { $0.removeFromParentNode() }
+                guideShared = answer.path.map { ($0.id, route, goal, home) }
+                guideSaved = guideShared == nil ? nil : Date()
+                guideByHome = guideShared != nil; guideStale = false
+            } else if guideByHome, let shared = guideShared, route.isEmpty || MessageRoute.apart(route, shared.route) >= 0.5, origin != nil {
+                // The map has filled in and the way between the two is now another.
+                guideStale = true
+            }
         }
     }
     /// The phone has reached the message: reward the user and take the way off the map.
@@ -1564,18 +1626,13 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             arrive(); return
         }
         if !guidePlanning, guidePlanned?.id != target.id || frame.timestamp - (guidePlanned?.at ?? 0) > 1.5 {
-            guidePlanning = true
-            let voxels = scene.voxels, size = scene.voxel_size, time = frame.timestamp, home = scene.frame
-            guideQueue.async {
-                let centers = voxels.compactMap { $0.center.count == 3 ? SIMD3($0.center[0], $0.center[1], $0.center[2]) : nil }
-                let route = MessageRoute.plan(from: phone, to: target.position, voxels: centers, size: size)
-                DispatchQueue.main.async {
-                    self.guidePlanning = false
-                    guard self.messages.target?.id == target.id, self.map?.scenegraph.map.frame.id == home else { return }
-                    self.guidePlanned = (target.id, time)
-                    self.guideRoute = route
-                    self.share(route, to: target.position, named: target.text, frame: home) { MessageRoute.stray(phone, from: $0) < 1 }
-                }
+            let time = frame.timestamp
+            // The way on the map is kept while the phone is still on it.
+            let serves = shownServes(target.position, frame: scene.frame) { MessageRoute.stray(phone, from: $0) < 1 }
+            planGuide(from: .point(phone), to: .note(target.id), start: phone, goal: target.position, named: target.text,
+                      scene: scene, serves: serves, still: { [weak self] in self?.messages.target?.id == target.id }) { [weak self] route, _ in
+                self?.guidePlanned = (target.id, time)
+                self?.guideRoute = route
             }
         }
         var way: MessageAim?
@@ -1592,22 +1649,18 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         guard let map, let scene = map.render, scene.frame == map.scenegraph.map.frame.id else { return }
         // Nobody is walking this one, so it is only planned again now and then, as the map fills in.
         guard !guidePlanning, guidePlanned?.id != key || time - (guidePlanned?.at ?? 0) > (guideShared == nil ? 1.5 : 5) else { return }
-        guidePlanning = true
-        let voxels = scene.voxels, size = scene.voxel_size, home = scene.frame
-        guideQueue.async {
-            let centers = voxels.compactMap { $0.center.count == 3 ? SIMD3($0.center[0], $0.center[1], $0.center[2]) : nil }
-            let route = MessageRoute.plan(from: pair.from.position, to: pair.to.position, voxels: centers, size: size)
-            DispatchQueue.main.async {
-                self.guidePlanning = false
-                guard self.messages.target == nil, self.messages.between == pair, self.map?.scenegraph.map.frame.id == home else { return }
-                self.guidePlanned = (key, time)
-                self.guideRoute = route
-                let length = MessageRoute.length(route)
-                if self.messages.betweenLength != length { self.messages.betweenLength = length }
-                self.share(route, to: pair.to.position, named: pair.to.text, from: pair.from.text, frame: home) {
-                    MessageRoute.apart(route, $0) < 0.5
-                }
-            }
+        // The way on the map is kept while it still starts in the right place.
+        let from = SIMD2(pair.from.position.x, pair.from.position.z)
+        let serves = shownServes(pair.to.position, frame: scene.frame) { $0.first.map { simd_distance(SIMD2($0.x, $0.z), from) < 0.3 } ?? false }
+        planGuide(from: .note(pair.from.id), to: .note(pair.to.id), start: pair.from.position, goal: pair.to.position, named: pair.to.text,
+                  origin: pair.from.text, scene: scene, serves: serves,
+                  still: { [weak self] in self?.messages.target == nil && self?.messages.between == pair }) { [weak self] route, length in
+            guard let self else { return }
+            self.guidePlanned = (key, time)
+            // A way this phone planned itself that has moved with the map replaces the one shown.
+            if serves, !self.guideByHome, let shared = self.guideShared, MessageRoute.apart(route, shared.route) >= 0.5 { self.guideStale = true }
+            self.guideRoute = route
+            if self.messages.betweenLength != length { self.messages.betweenLength = length }
         }
     }
     /// Where the message being looked for is from the phone, on every camera frame.
@@ -3449,7 +3502,8 @@ struct MessageGuide: View {
                     .font(.system(size: 18, weight: .bold)).foregroundStyle(Theme.accent).frame(width: 26)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("\(pair.from.text) → \(pair.to.text)").themeLabel(12, .bold).lineLimit(1)
-                    Text(center.betweenLength.map { String(format: "The way is on the map · %.1f m", $0) } ?? "Finding the way between them.")
+                    Text(center.betweenLength.map { $0 > 0 ? String(format: "The way is on the map · %.1f m", $0) : "The map shows no way between them." }
+                         ?? "Finding the way between them.")
                         .themeText(11).foregroundStyle(Theme.dim).lineLimit(2)
                 }
                 Spacer(minLength: 0)

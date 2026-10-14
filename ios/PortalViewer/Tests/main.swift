@@ -261,6 +261,18 @@ _ = pairBox.record([pairNote("d", "door", 0), pairNote("p", "printer", 5)], fram
 check(pairBox.current(picked)?.to.position.x == 5 && pairBox.current(picked)?.from == picked.from, "the two being joined follow Home's edits")
 _ = pairBox.record([pairNote("d", "door", 0)], frame: "f")
 check(pairBox.current(picked) == nil, "with either gone there is no way between them")
+struct RouteAsk: Encodable { let from: RoutePlace; let to: RoutePlace }
+let askJSON = try! JSONSerialization.jsonObject(with: JSONEncoder().encode(RouteAsk(from: .point(SIMD3(1, 2, 3)), to: .note("n")))) as! [String: [String: Any]]
+check(askJSON["from"]?["point"] as? [Double] == [1, 2, 3] && askJSON["to"]?["note"] as? String == "n" && askJSON["to"]?.count == 1,
+      "an end of a route is a point or a note, as Home reads it")
+let homeRoute = try! JSONDecoder().decode(HomeRoute.self, from: Data("""
+{"frame":"f","status":"found","length_m":3.5,"map_timestamp_ns":7,"clock":{"peer_id":"p","id":"c","hash":"h"},
+ "path":{"id":"a","title":"Way to x","color":"#ff5fa8","width_m":0.05,"segments":[[[0,0.06,0],[1,0.06,0],[1,0.06,2.5]]]}}
+""".utf8))
+check(homeRoute.points == [SIMD3(0, 0.06, 0), SIMD3(1, 0.06, 0), SIMD3(1, 0.06, 2.5)] && homeRoute.path?.id == "a" && homeRoute.length_m == 3.5,
+      "Home's route is read as the points of its path")
+let noRoute = try! JSONDecoder().decode(HomeRoute.self, from: Data(#"{"frame":"f","status":"unreachable","length_m":0,"map_timestamp_ns":7,"clock":{}}"#.utf8))
+check(noRoute.points.isEmpty && noRoute.status == "unreachable", "no way through is a route without a path")
 print("Message route checks passed")
 
 let firstPortal = try JSONSerialization.jsonObject(with: JSONEncoder().encode(PortalReport(

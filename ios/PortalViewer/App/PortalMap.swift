@@ -778,6 +778,38 @@ enum MessageRoute {
     }
 }
 
+/// One end of a route asked of Home: a point in the scene frame, or a note by its ID.
+enum RoutePlace: Encodable, Equatable {
+    case point(SIMD3<Float>)
+    case note(String)
+    private enum Key: String, CodingKey { case point, note }
+    func encode(to encoder: Encoder) throws {
+        var box = encoder.container(keyedBy: Key.self)
+        switch self {
+        case .point(let p): try box.encode([p.x, p.y, p.z], forKey: .point)
+        case .note(let id): try box.encode(id, forKey: .note)
+        }
+    }
+}
+
+/// A route as Home planned it (`spatial-harness.route/v1`). Its path is in the scene's paths
+/// like any drawn one, unless it was asked for without sharing.
+struct HomeRoute: Decodable, Equatable {
+    struct Path: Decodable, Equatable {
+        let id: String
+        let segments: [[[Float]]]
+    }
+    let frame: String
+    /// `found`, `direct` when nothing known is in the way, or `unreachable`.
+    let status: String
+    let path: Path?
+    let length_m: Float
+    /// The way's points from its start to its end. Empty when there is no way.
+    var points: [SIMD3<Float>] {
+        (path?.segments.first ?? []).compactMap { $0.count == 3 ? SIMD3($0[0], $0[1], $0[2]) : nil }
+    }
+}
+
 /// Where a spot in the room is from the phone: on the screen, or which way to turn to bring it there.
 struct MessageAim: Equatable {
     /// Across and down the screen from its top left corner, each 0 to 1. Nil when the spot is out of view.

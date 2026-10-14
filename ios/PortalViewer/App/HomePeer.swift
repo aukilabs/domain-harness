@@ -124,6 +124,26 @@ final class HomePeer: ObservableObject {
         pathAnswers[id] = done
         DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in self?.pathAnswers.removeValue(forKey: id)?(false) }
     }
+    /// Ask Home to plan a route in the scene. With `share` it replaces this phone's route on
+    /// everyone's map. `done` hears nil when Home cannot plan routes or does not answer.
+    func planRoute(frame: String, from: RoutePlace, to: RoutePlace, share: Bool, done: @escaping (HomeRoute?) -> Void) {
+        struct Plan: Encodable { let frame: String; let from: RoutePlace; let to: RoutePlace; let share: Bool }
+        askRoute(Plan(frame: frame, from: from, to: to, share: share), done: done)
+    }
+    /// Take this phone's route off everyone's map.
+    func clearRoute(frame: String) {
+        struct Clear: Encodable { let frame: String }
+        askRoute(Clear(frame: frame)) { _ in }
+    }
+    private var routeAnswers = [String: (HomeRoute?) -> Void]()
+    private struct Asked<Ask: Encodable>: Encodable { let id: String; let ask: Ask }
+    private func askRoute<Ask: Encodable>(_ ask: Ask, done: @escaping (HomeRoute?) -> Void) {
+        let id = UUID().uuidString.lowercased()
+        guard state == "live", let data = try? JSONEncoder().encode(Asked(id: id, ask: ask)), let json = String(data: data, encoding: .utf8),
+              json.withCString({ spatial_mobile_ask_route($0) == 1 }) else { done(nil); return }
+        routeAnswers[id] = done
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in self?.routeAnswers.removeValue(forKey: id)?(nil) }
+    }
     var onMap: ((PortalMap) -> Void)?
     /// Home's answer to a new-Portal report, for the user to see.
     var onPortalResult: ((String) -> Void)?
@@ -237,6 +257,12 @@ final class HomePeer: ObservableObject {
         let annotation: AnnotationResult?
         let depth_detail: String
         let local_detail: String?
+        let route: RouteAnswer?
+    }
+    private struct RouteAnswer: Decodable {
+        let id: String
+        let route: HomeRoute?
+        let error: String?
     }
     private func poll() {
         guard let pointer = spatial_mobile_poll() else { return }
@@ -259,6 +285,10 @@ final class HomePeer: ObservableObject {
                     if let note = response.update.local_detail, note != portalDetail, note.hasPrefix("Portal ") || note.hasPrefix("Home did not add") {
                         portalDetail = note
                         onPortalResult?(note)
+                    }
+                    if let answer = response.update.route, let done = routeAnswers.removeValue(forKey: answer.id) {
+                        if let error = answer.error { print("[route] \(error)") }
+                        done(answer.route)
                     }
                     annotationResult = response.update.annotation
                     state = response.update.state

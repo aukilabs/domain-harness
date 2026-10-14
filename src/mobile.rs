@@ -163,6 +163,8 @@ pub struct MobileState {
     #[serde(skip)]
     geometry: Option<serde_json::Value>,
     pub annotation: Option<serde_json::Value>,
+    /// Home's answer to the last route asked for: its `id` with a `route`, `cleared` or an `error`.
+    pub route: Option<serde_json::Value>,
     pub version: u64,
     pub state: &'static str,
     pub detail: String,
@@ -202,6 +204,8 @@ pub struct MobileClient {
     portal_receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::mobile_portal::Sighting>>>,
     path_changes: tokio::sync::mpsc::Sender<crate::scene_paths::Change>,
     path_receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::scene_paths::Change>>>,
+    route_asks: tokio::sync::mpsc::Sender<crate::scene_navigation::Asked>,
+    route_receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::scene_navigation::Asked>>>,
     origin_reports: tokio::sync::mpsc::Sender<crate::scene_origin::Observation>,
     origin_receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::scene_origin::Observation>>>,
     receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::mobile_notes::PlaceNote>>>,
@@ -212,6 +216,7 @@ impl Default for MobileClient {
         let (changes, change_receiver) = tokio::sync::mpsc::channel(1);
         let (portal_reports, portal_receiver) = tokio::sync::mpsc::channel(4);
         let (path_changes, path_receiver) = tokio::sync::mpsc::channel(16);
+        let (route_asks, route_receiver) = tokio::sync::mpsc::channel(4);
         let (pose_log, pose_log_receiver) = tokio::sync::mpsc::channel(256);
         let (origin_reports, origin_receiver) = tokio::sync::mpsc::channel(1);
         Self {
@@ -225,6 +230,8 @@ impl Default for MobileClient {
             portal_receiver: Mutex::new(Some(portal_receiver)),
             path_changes,
             path_receiver: Mutex::new(Some(path_receiver)),
+            route_asks,
+            route_receiver: Mutex::new(Some(route_receiver)),
             camera: tokio::sync::watch::channel(None).0,
             camera_configuration:tokio::sync::watch::channel(None).0,
             camera_active: AtomicBool::new(false),
@@ -246,6 +253,7 @@ impl Default for MobileClient {
                 reference: None,
                 geometry: None,
                 annotation: None,
+                route: None,
                 state: "connecting",
                 detail: "Signing in to Auki development services".into(),
 
@@ -346,6 +354,10 @@ impl MobileClient {
     /// Queue a drawn path for Home to save, or a saved one for Home to remove.
     pub fn change_path(&self, change: crate::scene_paths::Change) -> bool {
         self.snapshot().state == "live" && self.path_changes.try_send(change).is_ok()
+    }
+    /// Queue a route for Home to plan, or this phone's route for Home to take away.
+    pub fn ask_route(&self, asked: crate::scene_navigation::Asked) -> bool {
+        self.snapshot().state == "live" && self.route_asks.try_send(asked).is_ok()
     }
     /// Queue a newly seen Portal for Home to add to the scene.
     pub fn report_portal(&self, report: crate::mobile_portal::Sighting) -> bool {
@@ -571,6 +583,31 @@ impl MobileClient {
                             Ok(Ok(false)) => format!("Path {id} not {doing}: Home refused it"),
                             Ok(Err(error)) => format!("Path {id} not {doing}: {error}"),
                             Err(_) => format!("Path {id} not {doing}: Home did not answer"),
+                        });
+                    }
+                };
+                let mut route_asks = self.route_receiver.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap();
+                let route_work = async {
+                    use crate::scene_navigation::{Ask, COMPONENT, Route};
+                    while let Some(asked) = route_asks.recv().await {
+                        let component = home.scoped_component(COMPONENT);
+                        let request = uuid::Uuid::new_v4().to_string();
+                        let result = tokio::time::timeout(Duration::from_secs(4), async {
+                            Ok::<_, anyhow::Error>(match &asked.ask {
+                                Ask::Plan(plan) => serde_json::json!({"id": asked.id, "route":
+                                    operations.invoke::<_, Route>(&component, "plan", "phone-route", &request, Duration::from_secs(3), plan).await?}),
+                                Ask::Clear(clear) => serde_json::json!({"id": asked.id, "cleared":
+                                    operations.invoke::<_, bool>(&component, "clear", "phone-route", &request, Duration::from_secs(3), clear).await?}),
+                            })
+                        })
+                        .await;
+                        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                        state.version += 1;
+                        // The app matches these on the ID it asked with.
+                        state.route = Some(match result {
+                            Ok(Ok(answer)) => answer,
+                            Ok(Err(error)) => serde_json::json!({"id": asked.id, "error": error.to_string()}),
+                            Err(_) => serde_json::json!({"id": asked.id, "error": "Home did not answer"}),
                         });
                     }
                 };
@@ -878,6 +915,7 @@ impl MobileClient {
                     _ = change_work => Ok(()),
                     _ = portal_work => Ok(()),
                     _ = path_work => Ok(()),
+                    _ = route_work => Ok(()),
                     _ = origin_work => Ok(()),
                     _ = drive_work => Ok(()),
                     _ = name_work => Ok(()),

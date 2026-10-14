@@ -73,6 +73,22 @@ pub unsafe extern "C" fn spatial_mobile_change_path(change: *const c_char) -> i3
     }).unwrap_or(0)
 }
 
+/// Ask Home to plan a route, or to take this phone's route away: `{"id", "ask"}`.
+/// The answer arrives in the polled `route` under the same `id`.
+/// # Safety
+/// `asked` must be a NUL-terminated UTF-8 JSON string valid for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spatial_mobile_ask_route(asked: *const c_char) -> i32 {
+    std::panic::catch_unwind(|| {
+        if asked.is_null() { return 0; }
+        let bytes = unsafe { CStr::from_ptr(asked) }.to_bytes();
+        if bytes.len() > 8192 { return 0; }
+        let Ok(asked) = serde_json::from_slice(bytes) else { return 0; };
+        CLIENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+            .map_or(0, |client| i32::from(client.ask_route(asked)))
+    }).unwrap_or(0)
+}
+
 /// Advertise camera availability while scanning and query SDK subscription demand.
 /// Queue an unlocalized first-Portal measurement against the exact empty scene
 /// the UI captured. The bridge supplies the full authenticated SDK snapshot.
