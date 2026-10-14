@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { icons, icon, sectionHeader, listRow, actionButton } from './panel-ui.js';
 
 // Semantic boxes are independent of transient voxel and robot-occupancy layers.
-export function createSemanticVolumes({scene, camera, renderer, controls, panel, api, label, clear, openPanel, inspector, toast=()=>{}, priorityPickObjects=()=>[]}) {
+export function createSemanticVolumes({scene, camera, renderer, controls, panel, api, label, clear, openPanel, inspector, toast=()=>{}, flyTo=null, priorityPickObjects=()=>[]}) {
  const group=new THREE.Group(),preview=new THREE.Group();scene.add(group,preview);
  let context=null,items=[],draft=null,editing=null,drawing=false,start=null,press=null,pending=false,signature='',resize=null,conflicted=false;
  const handleLayer=document.createElement('div');handleLayer.className='volume-handles';renderer.domElement.parentElement.append(handleLayer);
@@ -136,7 +136,8 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
   const title=label(volume.title||'New volume','#6d28d9');title.scale.multiplyScalar(1.6);title.position.set(volume.center[0],volume.center[1]+volume.size[1]/2+.2,volume.center[2]);parent.add(title);
  }
  function draw(){clear(group);for(const v of items)if(!(draft&&v.id===editing))mesh(v,group,v.id===editing);clear(preview);if(draft)mesh(draft,preview,true,!editing);renderer.domElement.dataset.semanticVolumeCount=String(items.length);}
- function focus(v){const distance=Math.max(3,Math.max(...v.size)*2.2);controls.target.fromArray(v.center);camera.position.copy(controls.target).add(new THREE.Vector3(distance*.7,distance*.65,distance*.7));controls.update();}
+ function focus(v){const distance=Math.max(3,Math.max(...v.size)*2.2),target=new THREE.Vector3(...v.center),position=target.clone().add(new THREE.Vector3(distance*.7,distance*.65,distance*.7));
+  if(flyTo)flyTo(position,target);else{controls.target.copy(target);camera.position.copy(position);controls.update();}}
  const dimensions=v=>`${format(v.size[0].toFixed(1))} × ${format(v.size[2].toFixed(1))} m floor · ${format(v.size[1].toFixed(1))} m tall`;
  function showList(){
   list.replaceChildren();header.querySelector('.count-pill').textContent=String(items.length);

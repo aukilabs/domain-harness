@@ -311,7 +311,7 @@ const volumeInspector={element:$('selection'),
   const close=document.createElement('button');close.type='button';close.className='inspector-close';close.setAttribute('aria-label','Close inspector');close.append(icon(icons.close));close.onclick=clearSelection;
   card.replaceChildren(close,...nodes);card.hidden=false;noteCardMode='volume';},
  close(){if(noteCardMode==='volume'){noteCardMode='view';$('selection').hidden=true;}}};
-const semanticVolumes=createSemanticVolumes({scene,camera,renderer,controls,panel:panelBodies.volumes,api,label,clear,openPanel,inspector:volumeInspector,toast,priorityPickObjects:()=>[...selectable.filter(o=>o.userData.kind==='note'),...crayon.objects()]});
+const semanticVolumes=createSemanticVolumes({scene,camera,renderer,controls,panel:panelBodies.volumes,api,label,clear,openPanel,inspector:volumeInspector,toast,flyTo:(position,target)=>cameraPan.start(position,target),priorityPickObjects:()=>[...selectable.filter(o=>o.userData.kind==='note'),...crayon.objects()]});
 $('map-select').addEventListener('change',()=>semanticVolumes.reset());
 let phonePresenceBusy=false;
 const homePoseStatus=document.createElement('p');homePoseStatus.className='panel-hint';panelBodies.maps.append(homePoseStatus);
@@ -429,7 +429,7 @@ function focusPath(path){
  const box=new THREE.Box3().setFromPoints(path.segments.flat().map(p=>new THREE.Vector3(...p))),center=box.getCenter(new THREE.Vector3());
  const distance=Math.max(2,box.getSize(new THREE.Vector3()).length());
  if(attachedCamera.isActive())attachedCamera.detach();
- camera.position.copy(center).add(new THREE.Vector3(distance*.4,distance,distance));controls.target.copy(center);controls.update();showPathSelection(path);
+ cameraPan.start(center.clone().add(new THREE.Vector3(distance*.4,distance,distance)),center);showPathSelection(path);
 }
 function pathDeleteButton(path){
  const map=activeMap,frame=current?.frame;
@@ -552,7 +552,7 @@ function editNoteCard(note){
    lastScene=null;await refresh();const updated=(current?.notes||[]).find(n=>n.id===(result.id||note.id))||note;showNoteSelection(updated);toast('Note saved');}
   catch(err){status.textContent=err.message;save.disabled=false;}};
 }
-function focusPortal(p){const center=new THREE.Vector3(...p.pose_in_map.translation);camera.position.copy(center).add(new THREE.Vector3(.35,.65,.65));controls.target.copy(center);controls.update();showSelection(p.anchor_id,`[${p.pose_in_map.translation.map(v=>v.toFixed(4)).join(', ')}] m`,`${Math.round(p.side_length_m*100)} cm · ${p.anchor_id.startsWith('home:')?'Home reference aligned via measured portal':current?.local_map?'measured camera observation':'stored height, not mounting height'}`);}
+function focusPortal(p){const center=new THREE.Vector3(...p.pose_in_map.translation);cameraPan.start(center.clone().add(new THREE.Vector3(.35,.65,.65)),center);showSelection(p.anchor_id,`[${p.pose_in_map.translation.map(v=>v.toFixed(4)).join(', ')}] m`,`${Math.round(p.side_length_m*100)} cm · ${p.anchor_id.startsWith('home:')?'Home reference aligned via measured portal':current?.local_map?'measured camera observation':'stored height, not mounting height'}`);}
 function spatialPosition(kind,node){
  if(kind==='anchor')return node.pose?.translation;
  if(!node.parent_anchor)return node.position;
@@ -565,7 +565,7 @@ function spatialCoordinates(position){return `[${position.map(v=>(Math.abs(v)<5e
 function spatialComponent(component){return component?`${component.peer_id} / ${component.component_id} (${component.manifest_hash})`:'Not recorded';}
 function showSpatialSelection(kind,node,focus=false){
  const position=spatialPosition(kind,node),registry=current.landmarks;
- if(focus&&position){const center=new THREE.Vector3(...position);controls.target.copy(center);camera.position.copy(center).add(new THREE.Vector3(.5,.65,1));controls.update();}
+ if(focus&&position){const center=new THREE.Vector3(...position);cameraPan.start(center.clone().add(new THREE.Vector3(.5,.65,1)),center);}
  const parent=kind==='landmark'&&node.parent_anchor?registry.anchors?.[node.parent_anchor]:null;
  showSelection(parent?landmarkTitle(node):node.id,position?spatialCoordinates(position):'Map position unavailable',kind==='anchor'?'Full pose':'Position only',
   {kind:kind==='anchor'?'Anchor':'Landmark',monoTitle:!parent,subtitle:parent?`of anchor ${parent.id}`:undefined,onSubtitle:()=>showSpatialSelection('anchor',parent,true)});
@@ -778,7 +778,42 @@ function applyViewOffset(){const width=renderer.domElement.clientWidth,height=re
  camera.updateProjectionMatrix();}
 function easeViewOffset(){const target=panelTarget,gap=target-viewOffset;if(Math.abs(gap)<.5){if(viewOffset!==target){viewOffset=target;applyViewOffset();}return;}viewOffset=railMotion?viewOffset+gap*.22:target;applyViewOffset();}
 new ResizeObserver(()=>{clearTimeout(canvasResizeTimer);canvasResizeTimer=setTimeout(resizeCanvas,renderer.domElement.width?140:0);}).observe($('canvas'));
-renderer.setAnimationLoop(now=>{easeViewOffset();if(!cameraPan.tick(now)&&!attachedCamera.isActive())controls.update();ghostCamera.tick(now);semanticVolumes.tick();if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);renderer.render(scene,camera);});
+// Top-down flattening: as the camera looks straight down, its projection blends from perspective into a
+// flat plan view of the same scene (fully flat within 2°); tilting back blends it out again.
+const FLAT_START=12*Math.PI/180,FLAT_END=2*Math.PI/180,flatPerspective=new THREE.Matrix4(),flatOrtho=new THREE.Matrix4();
+let flatten=0;
+// Picking must follow the blended projection: rays come from unprojecting the near and far planes.
+const baseSetFromCamera=THREE.Raycaster.prototype.setFromCamera;
+THREE.Raycaster.prototype.setFromCamera=function(coords,cam){if(!cam.userData?.flatten)return baseSetFromCamera.call(this,coords,cam);
+ this.ray.origin.set(coords.x,coords.y,-1).unproject(cam);this.ray.direction.set(coords.x,coords.y,1).unproject(cam).sub(this.ray.origin).normalize();this.camera=cam;};
+function updateFlatten(){
+ const polar=controls.getPolarAngle(),t=Math.min(1,Math.max(0,(FLAT_START-polar)/(FLAT_START-FLAT_END))),amount=railMotion?t*t*(3-2*t):Math.round(t);
+ if(amount===0&&flatten===0)return;
+ flatten=amount;camera.userData.flatten=amount;camera.updateProjectionMatrix();
+ if(!amount){keepSpriteSizes(0);return;}
+ flatPerspective.copy(camera.projectionMatrix);
+ // An orthographic frustum matching the perspective view at the orbit target, including the dock's view offset.
+ const halfHeight=camera.position.distanceTo(controls.target)*Math.tan(THREE.MathUtils.degToRad(camera.fov/2))/camera.zoom,halfWidth=halfHeight*camera.aspect;
+ let left=-halfWidth,right=halfWidth,top=halfHeight,bottom=-halfHeight;
+ if(camera.view?.enabled){const v=camera.view,w=right-left,h=top-bottom;left+=v.offsetX*w/v.fullWidth;right=left+v.width*w/v.fullWidth;top-=v.offsetY*h/v.fullHeight;bottom=top-v.height*h/v.fullHeight;}
+ flatOrtho.makeOrthographic(left,right,top,bottom,camera.near,camera.far);
+ const e=camera.projectionMatrix.elements;for(let i=0;i<16;i++)e[i]=flatPerspective.elements[i]*(1-amount)+flatOrtho.elements[i]*amount;
+ camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();keepSpriteSizes(amount);
+}
+// Screen-sized sprites (note bubbles) rely on a perspective matrix to stay constant on screen; while the
+// projection is blended, scale them so their on-screen size doesn't change. Restores them when flat ends.
+const spriteView=new THREE.Vector3();
+function keepSpriteSizes(amount){
+ camera.updateMatrixWorld();const p00=camera.projectionMatrix.elements[0],perspective00=flatPerspective.elements[0];
+ scene.traverse(obj=>{
+  if(!obj.isSprite||obj.material.sizeAttenuation!==false)return;
+  if(!amount){if(obj.userData.baseScale){obj.scale.copy(obj.userData.baseScale);delete obj.userData.baseScale;}return;}
+  const base=obj.userData.baseScale??=obj.scale.clone();
+  const depth=-spriteView.setFromMatrixPosition(obj.matrixWorld).applyMatrix4(camera.matrixWorldInverse).z;
+  obj.scale.copy(base).multiplyScalar(perspective00*((1-amount)*depth+amount)/p00);
+ });
+}
+renderer.setAnimationLoop(now=>{easeViewOffset();if(!cameraPan.tick(now)&&!attachedCamera.isActive())controls.update();ghostCamera.tick(now);semanticVolumes.tick();if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);updateFlatten();renderer.render(scene,camera);});
 refresh().catch(e=>{$('notice').textContent=e.message;$('notice').classList.add('error');});setInterval(()=>{if(!busy)refresh().catch(()=>{});},500);
 
 function updatePairingDownload(){const link=$('pairing-download');link.href=isLocalScene()?localSceneUrl()+'/connection':'/api/home-connection';link.download=isLocalScene()?activeMap.slice(6)+'-connection.json':'home-connection.json';link.textContent=isLocalScene()?'Download phone connection for selected scene ↗':'Download Xmart connection ↗';}
@@ -843,7 +878,7 @@ function glyphFor(key,name){
 }
 function focusPose(name,state){
  if(!state.pose)return;
- const target=new THREE.Vector3(...state.pose.translation).add(new THREE.Vector3(0,.3,0));camera.position.copy(target).add(new THREE.Vector3(2,2.4,2.7));controls.target.copy(target);controls.update();
+ const target=new THREE.Vector3(...state.pose.translation).add(new THREE.Vector3(0,.3,0));cameraPan.start(target.clone().add(new THREE.Vector3(2,2.4,2.7)),target);
  showSelection(name+' · '+state.status,`[${state.pose.translation.map(n=>n.toFixed(3)).join(', ')}] m`,'Calibrated robot base · arrow points forward · illustrative pose glyph');
 }
 function renderRunners(entries){
