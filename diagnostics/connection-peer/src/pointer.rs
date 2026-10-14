@@ -1,6 +1,6 @@
 //! `point_at` Operable over this peer's own declared frames and transforms.
 //! A target frame resolves into the base only through compact pose Products
-//! this peer publishes, on their one clock; there is no frame-name lookup and
+//! this peer publishes, on their one clock and session; there is no frame-name lookup and
 //! no axis guess. Milestone 1 resolves and accepts but does not move an arm.
 use crate::compact_pose::{Contract, FrameRef, Lifetime, Update};
 use crate::point_at::*;
@@ -65,11 +65,18 @@ fn now_ns() -> u64 {
 }
 
 /// The latest observation of `t`, as the destination-from-source transform.
-fn value(t: &Transform, clock: &ClockReference, now: u64) -> Result<(Pose, Used)> {
+fn value(t: &Transform, clock: &ClockReference, session: &str, now: u64) -> Result<(Pose, Used)> {
     t.contract.validate_output(&t.product.producer)?;
     ensure!(
         t.contract.clock == *clock,
         "{} -> {} is on another clock; crossing clocks needs a time transform",
+        t.contract.from_frame.id,
+        t.contract.to_frame.id
+    );
+    // A new session is a new frame lineage; never compose across a reset.
+    ensure!(
+        t.contract.session_id == session,
+        "{} -> {} belongs to another session",
         t.contract.from_frame.id,
         t.contract.to_frame.id
     );
@@ -110,6 +117,7 @@ pub fn resolve(
     known: &Frames,
     base: &FrameRef,
     clock: &ClockReference,
+    session: &str,
     now: u64,
 ) -> Result<PointAtAccepted> {
     uuid::Uuid::parse_str(&request.request_id).context("request_id must be a UUID")?;
@@ -160,7 +168,7 @@ pub fn resolve(
             if reached.iter().any(|r| r.0 == *next) {
                 continue;
             }
-            match value(t, clock, now) {
+            match value(t, clock, session, now) {
                 Ok((pose, observation)) => {
                     let step = if forward { pose } else { crate::alignment::inverse(&pose)? };
                     let mut used = used.clone();
@@ -236,6 +244,7 @@ impl Pointer {
     pub fn mount(p: &crate::poses::Publisher, known: Arc<Mutex<Frames>>) -> Result<Self> {
         let base: FrameRef = (&p.contract.from_frame).into();
         let clock = p.contract.clock.clone();
+        let session = p.contract.session_id.clone();
         let component = p.runtime.component(ComponentSpec::new(COMPONENT).operable(contract()))?;
         let busy = Arc::new(Mutex::new(Busy::default()));
         let operation = component.operable_ordered(
@@ -247,7 +256,7 @@ impl Pointer {
                 let rejected = |e: anyhow::Error| InvocationError::Rejected(format!("{e:#}"));
                 let accepted = {
                     let known = known.lock().map_err(|_| InvocationError::TargetUnavailable)?;
-                    resolve(&request, &known, &base, &clock, now_ns()).map_err(rejected)?
+                    resolve(&request, &known, &base, &clock, &session, now_ns()).map_err(rejected)?
                 };
                 busy.lock()
                     .map_err(|_| InvocationError::TargetUnavailable)?
@@ -383,7 +392,7 @@ mod tests {
         }
     }
     fn run(f: &Fixture, r: &PointAt) -> Result<PointAtAccepted> {
-        resolve(r, &f.frames, &f.base, &clock(), NOW)
+        resolve(r, &f.frames, &f.base, &clock(), "s", NOW)
     }
     fn close(a: [f64; 3], b: [f64; 3]) {
         assert!(a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-9), "{a:?} vs {b:?}");
@@ -446,7 +455,9 @@ mod tests {
         // Another clock is never composed without a time transform.
         let mut other = clock();
         other.hash = "c".repeat(32);
-        assert!(resolve(&request(&f.world, [-1., 2., 0.5]), &f.frames, &f.base, &other, NOW).is_err());
+        assert!(resolve(&request(&f.world, [-1., 2., 0.5]), &f.frames, &f.base, &other, "s", NOW).is_err());
+        // Nor a transform from another session, even on the same clock.
+        assert!(resolve(&request(&f.world, [-1., 2., 0.5]), &f.frames, &f.base, &clock(), "reset", NOW).is_err());
     }
 
     #[test]

@@ -19,7 +19,7 @@ also exposes BBOS poses. `--portals` implies poses and adds:
 its frame by full Registry reference and resolves into `bbos-base` only through
 this peer's own compact pose Products: the sampled base pose (at most 800 ms
 old), the held head extrinsic and, once aligned, the held Home alignment. All
-must share one clock; a lost or stale link refuses the request. Milestone 1
+must share one clock and pose session; a lost or stale link refuses the request. Milestone 1
 accepts or rejects (one request at a time, held 3 s) and reports the base-frame
 point and the observations it used; it does not command the arms.
 
