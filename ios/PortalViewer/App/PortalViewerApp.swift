@@ -67,6 +67,8 @@ struct ViewerScreen: View {
             if !controller.snoozed { MessageFound(center: controller.messages) }
             VStack(spacing: 0) {
                 MessageBanner(center: controller.messages) { withAnimation { showMessages = true } }
+                // The messages open at the top, beside the buttons, not under them.
+                ZStack(alignment: .topTrailing) {
                 HStack(alignment: .top) {
                     VolumeControls(editor: controller.volumes, peer: peer)
                     Spacer(minLength: 0)
@@ -125,8 +127,9 @@ struct ViewerScreen: View {
                 }
                 if showMessages && !controller.snoozed {
                     MessageList(center: controller.messages) { withAnimation { showMessages = false } }
-                        .padding(.horizontal).frame(maxWidth: .infinity, alignment: .trailing)
+                        .padding(.top, 16).padding(.trailing, 80)
                         .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .topTrailing)))
+                }
                 }
                 Spacer()
             }
@@ -3394,12 +3397,12 @@ struct MessageList: View {
                 rows
                 ScrollView { rows }
             }
-            .frame(maxHeight: 300)
+            .frame(maxHeight: 150)
             Text(!center.pairing ? "Tap a message to be shown where it is."
                  : center.picked == nil ? "Tap the message the way starts at." : "Now tap the message it leads to.")
                 .themeText(10).foregroundStyle(center.pairing ? Theme.accent : Theme.dim)
         }
-        .themePanel(padding: 14).frame(maxWidth: 300)
+        .themePanel(padding: 12).frame(maxWidth: 260)
     }
     private var rows: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -3411,7 +3414,7 @@ struct MessageList: View {
                     HStack(spacing: 8) {
                         Text("\(index + 1)").themeLabel(10, .semibold).foregroundStyle(Theme.dim).frame(width: 22, alignment: .trailing)
                         Text(message.text).themeText(12, message.unread ? .bold : .regular)
-                            .lineLimit(2).multilineTextAlignment(.leading)
+                            .lineLimit(1).multilineTextAlignment(.leading)
                         Spacer(minLength: 0)
                         if message.unread { Circle().fill(Theme.accent).frame(width: 8, height: 8) }
                     }
