@@ -602,7 +602,7 @@ a.btn{text-decoration:none}
 .rail-tab.tilting .rail-face,.agent-tool.tilting .rail-face{transition:transform .08s linear,box-shadow .2s ease,background .2s ease}
 .rail-tab .rail-face svg,.agent-tool .rail-face svg{position:relative;z-index:1;width:22px;height:22px;padding:0;border-radius:0;background:none!important;color:var(--rail-glyph);transition:transform .25s cubic-bezier(.2,.8,.2,1.2),filter .2s ease,color .2s ease}
 /* Hover: raised brushed plate,a light that follows the tilt,and one narrow sheen pass. */
-.rail-tab:hover .rail-face,.rail-tab:focus-visible .rail-face,.agent-tool:not(:disabled):hover .rail-face,.agent-tool:focus-visible .rail-face{background:radial-gradient(circle at var(--light-x,35%) var(--light-y,30%),rgba(255,255,255,.55),transparent 60%),var(--brush),var(--plate-hover);box-shadow:var(--plate-shadow),var(--plate-rim)}
+.rail-tab:hover .rail-face,.rail-tab:focus-visible .rail-face,.agent-tool:not(:disabled):hover .rail-face,.agent-tool:focus-visible .rail-face{background:radial-gradient(circle at var(--light-x,35%) var(--light-y,30%),var(--plate-light),transparent 60%),var(--brush),var(--plate-hover);box-shadow:var(--plate-shadow),var(--plate-rim)}
 .rail-tab:hover .rail-face svg,.rail-tab:focus-visible .rail-face svg,.agent-tool:not(:disabled):hover .rail-face svg,.agent-tool:focus-visible .rail-face svg{color:var(--rail-glyph-active);transform:translateZ(6px) scale(1.08);filter:drop-shadow(0 2px 1.5px rgba(24,24,27,.25))}
 /* The sheen band sits over the icon and slides with the tilt rather than sweeping on its own. */
 /* Spotlight over the icon that follows the cursor; registered properties let its position glide. */
@@ -872,14 +872,14 @@ select.form-control{appearance:none;-webkit-appearance:none;padding-right:30px;b
 .list-row-tile{transform:perspective(200px) rotateX(var(--tilt-x,0deg)) rotateY(var(--tilt-y,0deg));transition:transform .4s var(--ease-out),background .2s ease,box-shadow .2s ease}
 .list-row.tilting .list-row-tile{transition:transform .08s linear,background .2s ease,box-shadow .2s ease}
 .list-row-tile svg{transition:transform .25s var(--ease-spring),filter .2s ease,color .2s ease}
-.list-row:hover:not([aria-current="true"],[aria-pressed="true"]) .list-row-tile:not(:has(.list-row-photo)){background:radial-gradient(circle at var(--light-x,35%) var(--light-y,30%),rgba(255,255,255,.55),transparent 60%),var(--brush),var(--plate-hover);box-shadow:var(--plate-shadow),var(--plate-rim)}
+.list-row:hover:not([aria-current="true"],[aria-pressed="true"]) .list-row-tile:not(:has(.list-row-photo)){background:radial-gradient(circle at var(--light-x,35%) var(--light-y,30%),var(--plate-light),transparent 60%),var(--brush),var(--plate-hover);box-shadow:var(--plate-shadow),var(--plate-rim)}
 .list-row:hover:not([aria-current="true"],[aria-pressed="true"]) .list-row-tile svg{color:var(--rail-glyph-active)}
 .list-row:hover .list-row-tile svg{transform:scale(1.1);filter:drop-shadow(0 2px 1.5px rgba(24,24,27,.25))}
 .list-row:hover .list-row-tile:has(.list-row-photo){box-shadow:var(--plate-shadow)}
 /* Icon buttons: the full tab treatment at a smaller size. */
 :is(.panel-close,.inspector-close,.icon-toggle,.tree-toggle,.copy-button,.search-clear,.agent-icon-button){position:relative;transform:perspective(160px) rotateX(var(--tilt-x,0deg)) rotateY(var(--tilt-y,0deg));transition:transform .4s var(--ease-out),background .2s ease,box-shadow .2s ease,color .2s ease}
 :is(.panel-close,.inspector-close,.icon-toggle,.tree-toggle,.copy-button,.search-clear,.agent-icon-button).tilting{transition:transform .08s linear,background .2s ease,box-shadow .2s ease,color .2s ease}
-:is(.panel-close,.inspector-close,.icon-toggle,.tree-toggle,.copy-button,.search-clear,.agent-icon-button):hover{background:radial-gradient(circle at var(--light-x,35%) var(--light-y,30%),rgba(255,255,255,.55),transparent 60%),var(--brush),var(--plate-hover);box-shadow:var(--plate-shadow),var(--plate-rim);color:var(--rail-glyph-active)}
+:is(.panel-close,.inspector-close,.icon-toggle,.tree-toggle,.copy-button,.search-clear,.agent-icon-button):hover{background:radial-gradient(circle at var(--light-x,35%) var(--light-y,30%),var(--plate-light),transparent 60%),var(--brush),var(--plate-hover);box-shadow:var(--plate-shadow),var(--plate-rim);color:var(--rail-glyph-active)}
 :is(.panel-close,.inspector-close,.icon-toggle,.tree-toggle,.copy-button,.search-clear,.agent-icon-button) svg{transition:transform .25s var(--ease-spring),filter .2s ease,rotate .12s ease}
 :is(.panel-close,.inspector-close,.icon-toggle,.tree-toggle,.copy-button,.search-clear,.agent-icon-button):hover svg{transform:scale(1.1);filter:drop-shadow(0 2px 1.5px rgba(24,24,27,.25))}
 :is(.panel-close,.inspector-close,.icon-toggle,.tree-toggle,.copy-button,.search-clear,.agent-icon-button):active{transform:perspective(160px) rotateX(var(--tilt-x,0deg)) rotateY(var(--tilt-y,0deg)) scale(.92)}
@@ -1022,3 +1022,17 @@ select.form-control{appearance:none;-webkit-appearance:none;padding-right:30px;b
 .agent-sheet-head{padding-left:18px}
 @media(prefers-reduced-motion:reduce){.agent-bar.pending .agent-orb,.agent-bar.pending[data-mode="agent"] .agent-shell::before{animation:presence-pulse 1.5s ease-in-out infinite!important}}
 @keyframes presence-pulse{50%{opacity:.45}}
+/* An active tool keeps its colour under hover and focus, like the selected tab; the spotlight still plays over it. */
+.agent-tool[aria-pressed="true"]:is(:hover,:focus-visible) .rail-face{background:linear-gradient(180deg,rgba(255,255,255,.16),rgba(255,255,255,0) 55%,rgba(0,0,0,.06)),var(--tab);box-shadow:inset 0 1px 0 rgba(255,255,255,.35),inset 0 -1px 0 rgba(0,0,0,.15),0 4px 12px -4px color-mix(in srgb,var(--tab) 45%,transparent)}
+/* The fade at the top of the conversation sits in padding, so the first message starts below it. */
+.scene-chat-history{padding-top:16px}
+.agent-sheet-head{padding-bottom:2px}
+/* The M wears the assistant's colour swirl; hovering sets it turning with a soft glow. */
+.rail-logo span{background:conic-gradient(from var(--orb-angle),var(--orb-colors));transition:filter .3s ease,transform .3s var(--ease-spring)}
+.rail-logo:is(:hover,:focus-visible) span{animation:orb-spin 2.4s linear infinite;filter:saturate(1.15) drop-shadow(0 0 6px color-mix(in srgb,#8b5cf6 35%,transparent));transform:scale(1.06)}
+@media(prefers-reduced-motion:reduce){.rail-logo:is(:hover,:focus-visible) span{animation:none;transform:none}}
+
+/* Hover highlight strength per theme: bright on light metal, a faint sheen on dark. */
+:root{--plate-light:rgba(255,255,255,.09)}
+:root[data-theme="light"]{--plate-light:rgba(255,255,255,.55)}
+:root:not([data-theme="light"]) :is(.rail-tab,.agent-tool):not([aria-expanded="true"],[aria-pressed="true"]):is(:hover,:focus-visible) .rail-glint{opacity:.35}
