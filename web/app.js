@@ -55,20 +55,37 @@ const rail=document.createElement('nav');rail.className='icon-rail';rail.setAttr
 const panelNames={maps:'Maps',notes:'Notes',volumes:'Volumes',tags:'Tags',fleet:'Devices',settings:'Settings'};
 const panelAccents={maps:'emerald',notes:'amber',volumes:'violet',tags:'pink',fleet:'cyan',settings:'zinc'};
 const iconPaths={maps:'M2 4l5-2 4 2 5-2v12l-5 2-4-2-5 2ZM7 2v12M11 4v12',notes:'M4 2h10v14H4ZM6 6h6M6 9h6M6 12h4',tags:'M2 2h6.5l7.5 7.5-6.5 6.5L2 8.5ZM5.5 5.5h.01',fleet:'M4 6h10v9H4ZM6 2h6v4M7 9h.1M11 9h.1M7 12h4M1 10h3M14 10h3',settings:'M2 5h8M14 5h2M2 13h2M8 13h8M10 5a2 2 0 1 0 4 0 2 2 0 1 0-4 0M4 13a2 2 0 1 0 4 0 2 2 0 1 0-4 0'};
-const panelBodies={};let activePanel=null;
+const panelBodies={};let activePanel=null,panelTarget=0;
+{const sceneBar=document.createElement('div');sceneBar.className='scene-bar';sceneBar.append(document.querySelector('.viewport-heading'),document.querySelector('.view-controls'));document.querySelector('.viewport').append(sceneBar);
+ const toggle=$('top');toggle.classList.add('mode-toggle');toggle.innerHTML='<span>3D</span><span>2D</span>';}
 iconPaths.volumes='M2 5l7-3 7 3v8l-7 3-7-3ZM2 5l7 3 7-3M9 8v8';
-const railIcon=path=>`<svg aria-hidden="true" width="20" height="20" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="${path}"/></svg>`;
+const railIcon=(path,weight=1.5)=>`<svg aria-hidden="true" width="20" height="20" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="${weight}" stroke-linecap="round" stroke-linejoin="round"><path d="${path}"/></svg>`;
+// The McKenna mark heads the dock; the floating header keeps only status, scene tools and the account.
+const railLogo=document.createElement('a');railLogo.className='rail-logo';railLogo.href='/';railLogo.setAttribute('aria-label','McKenna home');railLogo.innerHTML='<span aria-hidden="true"></span>';rail.append(railLogo);
 const railTabs=document.createElement('div');railTabs.className='rail-tabs';rail.append(railTabs);
 for(const [id,name] of Object.entries(panelNames)){
  const button=document.createElement('button');button.type='button';button.className='rail-tab';button.dataset.panel=id;button.dataset.accent=panelAccents[id];button.setAttribute('aria-label',name);button.setAttribute('aria-controls','panel-'+id);
- button.innerHTML=railIcon(iconPaths[id]);
- button.onclick=()=>openPanel(activePanel===id?null:id);railTabs.append(button);
+ button.innerHTML=`<span class="rail-face">${railIcon(iconPaths[id],1.35)}<span class="rail-glint" aria-hidden="true"></span></span>`;
+ button.onclick=()=>{switchPanel(activePanel===id?null:id);pulseRailTab(button);};railTabs.append(button);
  const panel=document.createElement('section');panel.id='panel-'+id;panel.className='workspace-panel';panel.dataset.accent=panelAccents[id];panel.setAttribute('aria-labelledby','panel-title-'+id);
  panel.innerHTML=`<div class="panel-heading"><span class="panel-heading-icon" aria-hidden="true">${railIcon(iconPaths[id])}</span><h2 id="panel-title-${id}">${name}</h2><button type="button" class="panel-close" aria-label="Close ${name} panel">${railIcon('M4.5 4.5l9 9M13.5 4.5l-9 9')}</button></div><div class="panel-body"></div>`;
  panel.querySelector('.panel-close').onclick=()=>{openPanel(null);button.focus();};
  panel.addEventListener('keydown',e=>{if(e.key==='Escape'&&!e.target.closest('input,textarea,select,dialog')){openPanel(null);button.focus();}});
  panelBodies[id]=panel.lastElementChild;sidebar.append(panel);
 }
+// Rail motion: the hovered plate tilts away from the cursor, and a click pulses it into the tab colour.
+const railMotion=!matchMedia('(prefers-reduced-motion: reduce)').matches;
+function pulseRailTab(button){if(!railMotion)return;button.classList.remove('pulse');void button.offsetWidth;button.classList.add('pulse');}
+const railIndicator=document.createElement('span');railIndicator.className='rail-indicator';railIndicator.setAttribute('aria-hidden','true');railIndicator.hidden=true;railTabs.prepend(railIndicator);
+function moveRailIndicator(){const tab=railTabs.querySelector('[aria-expanded="true"]');railIndicator.hidden=!tab;if(!tab)return;railIndicator.style.setProperty('--tab',getComputedStyle(tab).getPropertyValue('--tab'));railIndicator.style.setProperty('--indicator-y',(tab.offsetTop+tab.offsetHeight+2)+'px');}
+railTabs.addEventListener('animationend',e=>{if(e.animationName==='rail-wash')e.target.closest('.rail-tab')?.classList.remove('pulse');});
+railTabs.addEventListener('pointermove',e=>{
+ const tab=e.target.closest('.rail-tab');if(!tab||!railMotion)return;
+ const box=tab.getBoundingClientRect(),dx=(e.clientX-box.left)/box.width*2-1,dy=(e.clientY-box.top)/box.height*2-1;
+ tab.classList.add('tilting');tab.style.setProperty('--tilt-x',(-dy*7).toFixed(2)+'deg');tab.style.setProperty('--tilt-y',(dx*7).toFixed(2)+'deg');
+ tab.style.setProperty('--light-x',((1-dx)*50).toFixed(1)+'%');tab.style.setProperty('--light-y',((1-dy)*50).toFixed(1)+'%');tab.style.setProperty('--spot-x',((dx+1)*50).toFixed(1)+'%');tab.style.setProperty('--spot-y',((dy+1)*50).toFixed(1)+'%');
+});
+railTabs.addEventListener('pointerout',e=>{const tab=e.target.closest('.rail-tab');if(tab&&!tab.contains(e.relatedTarget)){tab.classList.remove('tilting');for(const name of ['--tilt-x','--tilt-y','--light-x','--light-y','--spot-x','--spot-y'])tab.style.removeProperty(name);}});
 // One shared tooltip shows each rail button's name on hover and keyboard focus (WCAG 1.4.13: dismissible, hoverable, persistent).
 // It repeats the button's aria-label, so it is hidden from assistive technology.
 const railTip=document.createElement('div');railTip.className='rail-tooltip';railTip.setAttribute('aria-hidden','true');railTip.hidden=true;document.body.append(railTip);
@@ -109,7 +126,31 @@ $('runner-card').hidden=true;
 $('sensor-catalog-status').hidden=true;
 moveTo('settings','#demo-controls, aside > .section-label, aside > .layer, #robot-volume-status');
 sidebar.querySelectorAll(':scope > .map-label').forEach(el=>el.remove());
-function openPanel(id){activePanel=id;shell.classList.toggle('panel-collapsed',!id);for(const key of Object.keys(panelNames)){$('panel-'+key).hidden=key!==id;rail.querySelector(`[data-panel="${key}"]`).setAttribute('aria-expanded',String(key===id));}syncRailTabStops();}
+// Liquid panel motion: the panel flows out of the clicked tab on two slightly out-of-step springs
+// (fast width/rotation, softer height/skew), pours back into it on close, and ripples when switching.
+let panelMotion=null;
+function spring(frames,stiffness,damping){const out=[];let x=0,v=0;for(let i=0;i<frames;i++){for(let k=0;k<4;k++){const a=stiffness*(1-x)-damping*v;v+=a/240;x+=v/240;}out.push(x);}out[frames-1]=1;return out;}
+const fast=spring(40,260,22),soft=spring(40,150,13.5);
+function panelOrigin(id){const tab=railTabs.querySelector(`[data-panel="${id}"]`);if(!tab)return '0px 40px';return `0px ${tab.getBoundingClientRect().top+tab.offsetHeight/2-sidebar.getBoundingClientRect().top}px`;}
+function liquidFrame(p,q){return {transform:`perspective(1200px) translateX(${(-22*(1-p)).toFixed(2)}px) rotateY(${(-26*(1-p)).toFixed(2)}deg) skewY(${(7*(1-q)).toFixed(2)}deg) scale(${(.5+.5*p).toFixed(4)},${(.3+.7*q).toFixed(4)})`,opacity:Math.min(1,p*2.4),borderRadius:`${(16+26*Math.max(0,1-q)).toFixed(1)}px`};}
+function switchPanel(id){
+ panelMotion?.cancel();
+ if(!railMotion){openPanel(id);return;}
+ const from=activePanel;
+ if(!id){ // Pour back into the tab, then collapse.
+  const origin=panelOrigin(from),frames=[];for(let i=0;i<=16;i++){const t=i/16,p=1-t*t;frames.push({...liquidFrame(p,p),transformOrigin:origin});}
+  panelMotion=sidebar.animate(frames,{duration:260,easing:'linear'});panelMotion.onfinish=()=>{panelMotion=null;openPanel(null);};return;
+ }
+ openPanel(id);enterPanel(id);
+ const origin=panelOrigin(id);
+ if(!from){panelMotion=sidebar.animate(fast.map((p,i)=>({...liquidFrame(p,soft[i]),transformOrigin:origin})),{duration:fast.length*16,easing:'linear'});return;}
+ // Switching: a quick decaying ripple centred on the new tab.
+ const ripple=[];for(let i=0;i<=30;i++){const t=i/30,a=Math.exp(-5*t)*Math.sin(16*t);ripple.push({transform:`perspective(1200px) skewY(${(2.6*a).toFixed(3)}deg) scale(${(1+.02*a).toFixed(4)},${(1-.045*a).toFixed(4)})`,transformOrigin:origin});}
+ panelMotion=sidebar.animate(ripple,{duration:520,easing:'linear'});
+}
+// Panel contents settle in one after another.
+function enterPanel(id){if(!railMotion)return;const body=$('panel-'+id);body.classList.remove('entering');void body.offsetWidth;body.classList.add('entering');setTimeout(()=>body.classList.remove('entering'),700);}
+function openPanel(id){activePanel=id;shell.classList.toggle('panel-collapsed',!id);for(const key of Object.keys(panelNames)){$('panel-'+key).hidden=key!==id;rail.querySelector(`[data-panel="${key}"]`).setAttribute('aria-expanded',String(key===id));}syncRailTabStops();moveRailIndicator?.();if(typeof measurePanelCover==='function')measurePanelCover();}
 const userMenu=$('user-menu'),userMenuButton=$('user-menu-button');
 userMenuButton.setAttribute('aria-expanded','false');
 userMenu.addEventListener('beforetoggle',e=>{if(e.newState!=='open')return;const box=userMenuButton.getBoundingClientRect();userMenu.style.top=(box.bottom+6)+'px';userMenu.style.right=(innerWidth-box.right)+'px';});
@@ -211,7 +252,7 @@ async function runnerCatalog(){
 function domainCenter(){return new THREE.Box3().setFromPoints((current?.portals||[]).map(p=>new THREE.Vector3(...p.pose_in_map.translation))).getCenter(new THREE.Vector3());}
 function fit(){if(current?.simulation){const d=Math.max(12,11/Math.max(camera.aspect,.2));camera.position.set(0,d,d*.4);controls.target.set(0,0,0);}else if(current?.portals.length){const c=domainCenter();const box=new THREE.Box3().setFromPoints(current.portals.map(p=>new THREE.Vector3(...p.pose_in_map.translation)));const size=box.getSize(new THREE.Vector3());const distance=Math.max(size.x/Math.max(camera.aspect,.2),size.z)*1.65+3;camera.position.copy(c).add(new THREE.Vector3(0,distance,distance*.25));controls.target.copy(c);}else{camera.position.set(3.6,3.5,4.6);controls.target.set(0,.5,0);}controls.update();}
 fit();
-const map2D=createMap2D($('canvas'),active=>{controls.enabled=!active;$('top').textContent=active?'3D':'2D';$('top').setAttribute('aria-pressed',String(active));$('top').title=active?'Switch to 3D mode':'Switch to 2D mode';$('top').setAttribute('aria-label',$('top').title);$('canvas').dataset.viewMode=active?'2d':'3d';});
+const map2D=createMap2D($('canvas'),active=>{controls.enabled=!active;$('top').setAttribute('aria-pressed',String(active));$('top').title=active?'Switch to 3D mode':'Switch to 2D mode';$('top').setAttribute('aria-label',$('top').title);$('canvas').dataset.viewMode=active?'2d':'3d';});
 const attachedCamera=createAttachedCamera({host:$('canvas'),camera,controls,map2D,context:()=>({scene:activeMap,frame:current?.frame}),request:async(action,signal)=>{
  const q=new URLSearchParams({follow:'true',home_frame:action.frame,sensor:action.sensor_id,expected_manifest:action.pose_product.manifest_hash});
  const response=await fetch('/api/sensors?'+q,{signal});const value=await response.json();if(!response.ok)throw Error(value.error||'Sensor unavailable');return value;
@@ -717,8 +758,22 @@ async function action(fn){if(busy)return;busy=true;document.querySelectorAll('#l
 $('load').onclick=()=>action(async()=>{const f=await api('/api/fixtures');for(const c of f.contributions)await api('/api/contributions',c);$('notice').textContent='Two scans aligned through Portal A. Ready to project a detection.';});
 $('project').onclick=()=>action(async()=>{const f=await api('/api/fixtures');const result=await api('/api/detections',f.detection);$('notice').textContent=result.applied?'Book placed at the first occupied voxel hit.':'This detection is already placed. No duplicate object created.';});
 $('replay').onclick=()=>action(async()=>{const f=await api('/api/fixtures');const r=await api('/api/contributions',f.contributions[0]);$('notice').textContent=r.applied?'Contribution accepted.':'Replay ignored. Voxel evidence and object count are unchanged.';});
-new ResizeObserver(()=>{const {width,height}=$('canvas').getBoundingClientRect();renderer.setSize(width,height);camera.aspect=width/height;camera.updateProjectionMatrix();}).observe($('canvas'));
-renderer.setAnimationLoop(now=>{if(!cameraPan.tick(now)&&!attachedCamera.isActive())controls.update();ghostCamera.tick(now);semanticVolumes.tick();if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);renderer.render(scene,camera);});
+// Resizing reallocates the full-resolution drawing buffer, so wait until the panel slide settles
+// instead of resizing on every frame of it.
+let canvasResizeTimer=0;
+function resizeCanvas(){const {width,height}=$('canvas').getBoundingClientRect();if(!width||!height)return;renderer.setSize(width,height);applyViewOffset();}
+// The floating panel covers the left of the canvas. Instead of resizing, shift the projection so the
+// scene stays centred in the visible area; the shift eases with the panel slide.
+let viewOffset=0;
+// Layout offsets ignore the slide transform, so this is the panel's resting edge; it is read on change, not per frame.
+function measurePanelCover(){const main=document.querySelector('.shell>main');panelTarget=Math.max(0,rail.offsetLeft+rail.offsetWidth-main.offsetLeft);}
+addEventListener('resize',measurePanelCover);
+function applyViewOffset(){const width=renderer.domElement.clientWidth,height=renderer.domElement.clientHeight;if(!width||!height)return;
+ if(viewOffset>.5){camera.aspect=(width+viewOffset)/height;camera.setViewOffset(width+viewOffset,height,0,0,width,height);}else{camera.aspect=width/height;camera.clearViewOffset();}
+ camera.updateProjectionMatrix();}
+function easeViewOffset(){const target=panelTarget,gap=target-viewOffset;if(Math.abs(gap)<.5){if(viewOffset!==target){viewOffset=target;applyViewOffset();}return;}viewOffset=railMotion?viewOffset+gap*.22:target;applyViewOffset();}
+new ResizeObserver(()=>{clearTimeout(canvasResizeTimer);canvasResizeTimer=setTimeout(resizeCanvas,renderer.domElement.width?140:0);}).observe($('canvas'));
+renderer.setAnimationLoop(now=>{easeViewOffset();if(!cameraPan.tick(now)&&!attachedCamera.isActive())controls.update();ghostCamera.tick(now);semanticVolumes.tick();if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);renderer.render(scene,camera);});
 refresh().catch(e=>{$('notice').textContent=e.message;$('notice').classList.add('error');});setInterval(()=>{if(!busy)refresh().catch(()=>{});},500);
 
 function updatePairingDownload(){const link=$('pairing-download');link.href=isLocalScene()?localSceneUrl()+'/connection':'/api/home-connection';link.download=isLocalScene()?activeMap.slice(6)+'-connection.json':'home-connection.json';link.textContent=isLocalScene()?'Download phone connection for selected scene ↗':'Download Xmart connection ↗';}
@@ -1563,7 +1618,7 @@ async function renderFiducials(focusKey=null){
    const download=document.createElement('a');download.className='btn btn-secondary btn-sm';download.href=marker.download_url;download.download=`${marker.key}.svg`;download.textContent='Download SVG';
    const linkRow=document.createElement('div');linkRow.className='fiducial-actions';linkRow.append(print,download);
    const measured=document.createElement('div');measured.className='fiducial-measured';const measuredText=document.createElement('span');measuredText.textContent=`Measured black square: ${sizeText}`;
-   const edit=actionButton('Set measured size',{variant:'ghost'});measured.append(measuredText,edit);
+   const edit=actionButton('Set measured size',{variant:'secondary'});edit.classList.add('btn-sm');measured.append(measuredText,edit);
    body.append(linkRow,measured);
    edit.onclick=()=>{
     const measure=document.createElement('form');measure.className='fiducial-measurement';
