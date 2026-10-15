@@ -41,7 +41,7 @@ test('Devices groups types and puts camera feeds first',async({page})=>{
  expect(await robot.locator('.device-capabilities > section').evaluateAll(nodes=>nodes.map(n=>n.getAttribute('aria-label')))).toEqual(['Cameras','Maps','Poses & odometry','Other']);
  const cameras=robot.getByRole('region',{name:'Cameras',exact:true});
  expect(await cameras.locator('summary').allTextContents()).toEqual(['Component · a-camera','Component · z-camera']);
- await expect(cameras.locator('[data-component="z-camera"]')).toContainText('Product · camera-history');
+ await expect(cameras.locator('[data-component="z-camera"] .capability-facts dt:text-is("Product") + dd')).toContainText('camera-history');
  await expect(robot.getByRole('region',{name:'Other',exact:true})).toContainText('camera-name-only');
  await cameras.getByRole('button',{name:'Technical details for Z camera',exact:true}).click();count=2;
  await expect(robot.locator('[data-observations]')).toHaveAttribute('data-observations','2');

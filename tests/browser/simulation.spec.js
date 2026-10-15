@@ -26,7 +26,7 @@ test('Devices exposes real-inventory fields, component catalogs and observation 
  const robot=await openDevice(page,'robot-peer-1');
  await expect(robot).toContainText('robot-peer-1');
  await expect(robot).toContainText('Component · fake-voxel-source');
- await expect(robot).toContainText('Product · fake-voxels-scene');
+ await expect(robot.locator('.capability-facts dt:text-is("Product") + dd')).toContainText('fake-voxels-scene');
  await expect(robot).toContainText('4 observations received over P2P');
  peer.received_observations=5;
  await expect(robot).toContainText('5 observations received over P2P');

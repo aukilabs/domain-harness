@@ -1240,3 +1240,37 @@ html.booted body{animation:boot-in .3s ease}
 :root:not([data-theme="light"]) .btn-secondary:not(:disabled):hover{background:rgba(255,255,255,.06);box-shadow:inset 0 0 0 1px rgba(255,255,255,.1),0 4px 10px -4px rgba(0,0,0,.5)}
 :root:not([data-theme="light"]) .btn-ghost:not(:disabled):hover{background:rgba(255,255,255,.045);box-shadow:none}
 :root:not([data-theme="light"]) :is(.btn-secondary,.btn-ghost,.btn-danger-ghost,.user-menu-button)::after{background:radial-gradient(120px circle at var(--spot-x) var(--spot-y),rgba(255,255,255,.07),transparent 70%)}
+/* Device capabilities: ⓘ opens an inset glass well under the row. Facts first (label/value rows, as on the
+   scene cards), then the manifest itself behind a "Raw manifest" disclosure with its copy button alongside. */
+#device-detail .capability .capability-raw[open]{display:flow-root;margin-top:0}
+.capability-well{margin:8px -4px 2px;padding:2px 10px 8px;border-radius:12px;background:rgba(0,0,0,.16);box-shadow:inset 0 0 0 1px var(--glass-rim),inset 0 1px 3px rgba(0,0,0,.28)}
+:root[data-theme="light"] .capability-well{background:rgba(24,24,27,.035);box-shadow:inset 0 0 0 1px rgba(24,24,27,.06),inset 0 1px 2px rgba(24,24,27,.06)}
+#device-detail .capability-well .capability-facts{display:grid;grid-template-columns:84px minmax(0,1fr);gap:0;margin:0;padding:0;border:0}
+#device-detail .capability-well .capability-facts:empty{display:none}
+#device-detail .capability-well .capability-facts :is(dt,dd){display:flex;align-items:center;min-height:32px;margin:0;padding:6px 0;border-top:1px solid color-mix(in srgb,var(--nav-line) 60%,transparent)}
+#device-detail .capability-well .capability-facts :is(dt,dd):nth-child(-n+2){border-top:0}
+#device-detail .capability-well .capability-facts dt{padding-right:10px;font-size:12px;line-height:16px;color:var(--muted)}
+#device-detail .capability-well .capability-facts dd{gap:4px;font:12px/16px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--nav-text);overflow-wrap:anywhere}
+#device-detail .capability-well .capability-facts dd>span{flex:1;min-width:0;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;word-break:break-all}
+#device-detail .capability-well .capability-facts .copy-button{margin:-6px -6px -6px 0}
+.capability-well>.btn{width:100%;margin:6px 0 2px;justify-content:center}
+.capability-manifest-header{display:flex;align-items:center;gap:4px;margin:2px -6px 0 0;padding-top:4px;border-top:1px solid color-mix(in srgb,var(--nav-line) 60%,transparent)}
+.capability-facts:empty+.capability-manifest-header,.capability-well>.capability-manifest-header:first-child{border-top:0}
+.capability-manifest-header .disclosure{flex:1;width:auto;height:32px;margin:0 0 0 -8px;padding:0 8px;font-size:12px;color:var(--nav-text)}
+.capability-manifest-header .disclosure svg{width:14px;height:14px}
+#device-detail .capability-manifest .capability-json{max-height:260px;margin:2px 0 4px;padding:10px 12px;border-radius:9px;background:var(--nav-rail);box-shadow:inset 0 0 0 1px var(--glass-rim);color:var(--muted);font:11.5px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:slashed-zero;tab-size:2;white-space:pre;overflow:auto}
+:root[data-theme="light"] #device-detail .capability-manifest .capability-json{background:rgba(255,255,255,.7)}
+.capability-json:focus-visible{outline-offset:-2px!important}
+.capability-json .json-key{color:var(--tab-ink,#22d3ee)}
+.capability-json :is(.json-string,.json-number,.json-literal){color:var(--nav-text)}
+.capability-json :is(.json-number,.json-literal){font-weight:600}
+#device-detail .capability .icon-toggle[aria-expanded="true"]{color:var(--tab-ink)}
+/* Capability groups: a small caption in the section colour's ink over a glass card holding the rows. */
+#device-detail .device-capabilities .capability-group{display:flex;align-items:center;gap:6px;margin:16px 0 6px;padding:0 2px;font-size:12px;font-weight:600;line-height:16px;letter-spacing:.01em;color:var(--muted)}
+#device-detail .device-capabilities .capability-group svg{flex-shrink:0;color:var(--tab-ink)}
+#device-detail .device-capabilities .capability-group>span:nth-of-type(1){flex:1}
+.capability-group-count{font-weight:500;font-variant-numeric:tabular-nums;color:var(--nav-muted)}
+.capability-card{padding:0 12px;border-radius:12px;background:var(--glass-fill);box-shadow:inset 0 0 0 1px var(--glass-rim)}
+:root[data-theme="light"] .capability-card{background:rgba(255,255,255,.6);box-shadow:inset 0 0 0 1px var(--glass-rim),0 1px 2px rgba(24,24,27,.04)}
+#device-detail .capability-card .capability{padding:10px 0}
+#device-detail .capability-card .capability .list-row-title{font-size:13.5px;font-weight:500}

@@ -822,6 +822,11 @@ function showSelection(title,body,note,{kind,subtitle,onSubtitle,monoTitle=false
 function factsList(facts){const list=document.createElement('dl');list.className='spatial-fields card-facts';
  for(const [name,value,copy] of facts){const term=document.createElement('dt'),description=document.createElement('dd'),text=document.createElement('span');term.textContent=name;text.textContent=value;if(copy)text.className='mono-id';description.append(text);if(copy)description.append(copyButton(String(value),'Copy '+name.toLowerCase()));list.append(term,description);}
  return list;}
+// Pretty-printed JSON as text nodes, with keys, strings, numbers and literals wrapped for colour.
+function jsonTokens(json){const out=[];let at=0;
+ for(const m of json.matchAll(/("(?:\\.|[^"\\])*")(\s*:)?|\b(?:true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g)){if(m.index>at)out.push(json.slice(at,m.index));
+  const span=document.createElement('span');span.className='json-'+(m[2]?'key':m[1]?'string':/\d/.test(m[0])?'number':'literal');span.textContent=m[1]||m[0];out.push(span);if(m[2])out.push(m[2]);at=m.index+m[0].length;}
+ out.push(json.slice(at));return out;}
 const xyz=(values,digits=2)=>['x','y','z'].map((axis,i)=>`${axis} ${values[i].toFixed(digits)}`).join('  ')+' m';
 // Every card variant shares one anatomy: a header (a tile in the section colour, the kind and the title), the
 // close button in the corner, then the body. Builders keep emitting a kind chip and title; this turns them
@@ -1462,7 +1467,7 @@ function renderFleetRows(){
  const signature=JSON.stringify([peers.map(({received_observations,...rest})=>rest),fleetNetwork?.enabled,fleetNetwork?.status,fleetNetwork?.aliases,sensors.map(o=>[o.value,o.textContent,o.dataset.peer]),$('sensor-select').value,deviceView,deviceOfflineOpen]);
  if(signature===fleetSignature)return;fleetSignature=signature;
  const focus=fleetList.contains(document.activeElement)?document.activeElement.dataset.focusKey:null;
- openedTechnical=new Set(Array.from(fleetList.querySelectorAll('details[open][data-technical]'),d=>d.dataset.technical));
+ openedTechnical=new Set(Array.from(fleetList.querySelectorAll('details[open][data-technical],div[data-technical]:not([hidden])'),d=>d.dataset.technical));
  fleetList.replaceChildren();
  const peer=deviceView&&peers.find(p=>p.peer_id===deviceView);
  if(deviceView&&!peer)deviceView=null;
@@ -1562,8 +1567,11 @@ function renderDeviceDetail(peer,feeds,openedTechnical){
   for(const type of ['Cameras','Maps','Poses & odometry','Detections','Sensors & observations','Other']){
    const matching=entries.filter(item=>catalogType(item.entry,item.kind,catalog)===type).sort((a,b)=>a.entry.manifest[a.kind+'_id'].localeCompare(b.entry.manifest[b.kind+'_id']));
    if(!matching.length)continue;
-   const group=document.createElement('section');group.dataset.catalogType=type;group.setAttribute('aria-label',type);const heading=document.createElement('h4');heading.className='capability-group';heading.textContent=type;group.append(heading);
-   for(const {kind,entry} of matching)group.append(capabilityRow(peer,kind,entry,catalog,openedTechnical));
+   // A caption (glyph, type, count) over a glass card of rows, so groups never read as one more row.
+   const group=document.createElement('section');group.dataset.catalogType=type;group.setAttribute('aria-label',type);const heading=document.createElement('h4');heading.className='capability-group';
+   const label=document.createElement('span'),count=document.createElement('span');label.textContent=type;count.className='capability-group-count';count.textContent=matching.length;heading.append(icon(CATALOG_ICONS[type],14),label,count);
+   const card=document.createElement('div');card.className='capability-card';group.append(heading,card);
+   for(const {kind,entry} of matching)card.append(capabilityRow(peer,kind,entry,catalog,openedTechnical));
    capabilities.append(group);
   }
   view.append(capabilities);
@@ -1572,6 +1580,7 @@ function renderDeviceDetail(peer,feeds,openedTechnical){
  fleetList.append(view);
  if(deviceRenaming&&!peer.self)showRename();
 }
+const CATALOG_ICONS={'Cameras':icons.camera,'Maps':icons.map,'Poses & odometry':icons.pin,'Detections':'M2 6V2h4M12 2h4v4M16 12v4h-4M6 16H2v-4M9 9h.01','Sensors & observations':'M9 9h.01M6 6a4.2 4.2 0 0 0 0 6M12 6a4.2 4.2 0 0 1 0 6M3.5 3.5a7.8 7.8 0 0 0 0 11M14.5 3.5a7.8 7.8 0 0 1 0 11','Other':CUBE_ICON};
 function capabilityRow(peer,kind,entry,catalog,openedTechnical){
  const id=entry.manifest[kind+'_id'],row=document.createElement('div');row.className='capability';row.dataset[kind]=id;
  const made=kind==='component'?(catalog.products||[]).filter(p=>p.manifest.producer?.component_id===id):[];
@@ -1603,9 +1612,18 @@ function capabilityRow(peer,kind,entry,catalog,openedTechnical){
  const summary=document.createElement('summary');summary.className='visually-hidden';summary.textContent=(kind==='component'?'Component':'Product')+' · '+id;raw.append(summary);
  const info=document.createElement('button');info.type='button';info.className='icon-toggle';info.setAttribute('aria-label','Technical details for '+humanize(id));info.setAttribute('aria-expanded',String(raw.open));info.append(icon(icons.info,16));info.dataset.focusKey='info:'+raw.dataset.technical;
  info.onclick=()=>{const open=!raw.open;info.setAttribute('aria-expanded',String(open));if(open){raw.open=true;reveal(raw);}else conceal(raw,()=>{raw.open=false;});};head.append(info);
- for(const product of made){const line=document.createElement('p');line.className='mono-id capability-product';line.textContent='Product · '+product.manifest.product_id;raw.append(line);
-  if(product.metadata?.schema==='spatial-harness.compact-pose-contract/v1')raw.append(actionButton('Inspect live pose',{onClick:()=>inspectPose(peer.peer_id,product,deviceName(peer)+' / '+product.manifest.product_id)}));}
- const pre=document.createElement('pre');pre.className='capability-json';pre.textContent=JSON.stringify(entry.manifest,null,2);raw.append(pre,copyButton(pre.textContent,'Copy manifest'));
+ // Opened, it is an inset well: the product and key manifest fields as label/value rows, then the manifest
+ // itself behind "Raw manifest" (its open state survives re-renders like the well's, via data-technical).
+ const well=document.createElement('div');well.className='capability-well';raw.append(well);
+ const manifest=entry.manifest,names=list=>(list||[]).map(o=>o.name).filter(Boolean).join(', ');
+ const facts=factsList([['ID',id,true],...made.map(p=>['Product',p.manifest.product_id,true]),['Outputs',names(manifest.observables)],['Operations',names(manifest.operables)],['Producer',manifest.producer&&[manifest.producer.component_id,manifest.producer.slot].filter(Boolean).join(' · ')],['Schema',entry.metadata?.schema],['Manifest hash',entry.manifest_hash,true]].filter(([,value])=>value));
+ facts.classList.add('capability-facts');for(const value of facts.querySelectorAll('dd>span'))value.title=value.textContent;well.append(facts);
+ for(const product of made)if(product.metadata?.schema==='spatial-harness.compact-pose-contract/v1')well.append(actionButton('Inspect live pose',{iconPath:icons.pin,onClick:()=>inspectPose(peer.peer_id,product,deviceName(peer)+' / '+product.manifest.product_id)}));
+ const json=JSON.stringify(manifest,null,2),source=document.createElement('div');source.className='capability-manifest';source.id='manifest-'+raw.dataset.technical.replace(/[^\w-]/g,'_');source.dataset.technical=raw.dataset.technical+':json';source.hidden=!openedTechnical.has(source.dataset.technical);
+ const pre=document.createElement('pre');pre.className='capability-json';pre.tabIndex=0;pre.setAttribute('aria-label','Manifest JSON');pre.append(...jsonTokens(json));source.append(pre);
+ const header=document.createElement('div');header.className='capability-manifest-header';
+ const toggle=disclosure('Raw manifest',{expanded:!source.hidden,controls:source.id,onToggle:()=>{const open=source.hidden;toggle.setAttribute('aria-expanded',String(open));if(open){source.hidden=false;reveal(source);}else conceal(source,()=>{source.hidden=true;});}});
+ toggle.dataset.focusKey='manifest:'+raw.dataset.technical;header.append(toggle,copyButton(json,'Copy manifest'));well.append(header,source);
  row.append(raw);
  return row;
 }
