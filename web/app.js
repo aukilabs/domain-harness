@@ -1904,3 +1904,5 @@ async function renderFiducials(focusKey=null){
  createdFiducialKey=null;
 }
 renderFiducials();
+// The interface is built: show it (see html.booting in style.css).
+requestAnimationFrame(()=>document.documentElement.classList.replace('booting','booted'));
