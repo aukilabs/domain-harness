@@ -312,15 +312,16 @@ const ground=new THREE.Mesh(new THREE.PlaneGeometry(200,200),new THREE.MeshStand
 // never run out and never swim. A small shader patch fades each line toward the horizon; lines only cost
 // their own pixels, which keeps software-rendered browsers (and the browser tests) fast.
 // `grid.material.opacity` stays the opacity setting and drives both layers.
-const gridFade={uCam:{value:new THREE.Vector3()},uCentre:{value:new THREE.Vector2()},uFadeFar:{value:40}};
+const gridFade={uCam:{value:new THREE.Vector3()},uCentre:{value:new THREE.Vector2()},uFadeFar:{value:40},uClip:{value:100}};
 // Fades a line material toward the horizon. The fade is measured in 3D from the camera and scaled by the
 // distance to what it looks at, so everything between the camera and its target stays crisp at any tilt
 // (a flat distance from the camera faded the floor right in front of a downward look). `reach` scales how
 // far past the target a layer carries; `limit` is the layer's half-extent, faded softly so its end never shows.
+// Either way the fade finishes short of the camera's far plane (uClip): zoomed out and tilted, no hard cut-off.
 function fadeWithDistance(material,reach,limit){
  material.onBeforeCompile=shader=>{Object.assign(shader.uniforms,gridFade,{uReach:{value:reach},uLimit:{value:limit}});
   shader.vertexShader='varying vec3 vGridWorld;\n'+shader.vertexShader.replace('#include <project_vertex>','#include <project_vertex>\nvGridWorld=(modelMatrix*vec4(position,1.)).xyz;');
-  shader.fragmentShader='varying vec3 vGridWorld;uniform vec3 uCam;uniform vec2 uCentre;uniform float uFadeFar;uniform float uReach;uniform float uLimit;\n'+shader.fragmentShader.replace('#include <color_fragment>','#include <color_fragment>\ndiffuseColor.a*=(1.-smoothstep(uFadeFar*(1.+.4*uReach),uFadeFar*(1.+1.8*uReach),distance(uCam,vGridWorld)))*(1.-smoothstep(uLimit*.6,uLimit*.95,distance(uCentre,vGridWorld.xz)));');};
+  shader.fragmentShader='varying vec3 vGridWorld;uniform vec3 uCam;uniform vec2 uCentre;uniform float uFadeFar;uniform float uReach;uniform float uLimit;uniform float uClip;\n'+shader.fragmentShader.replace('#include <color_fragment>','#include <color_fragment>\nfloat fadeEnd=min(uFadeFar*(1.+1.8*uReach),uClip*.9);\ndiffuseColor.a*=(1.-smoothstep(min(uFadeFar*(1.+.4*uReach),fadeEnd*.55),fadeEnd,distance(uCam,vGridWorld)))*(1.-smoothstep(uLimit*.6,uLimit*.95,distance(uCentre,vGridWorld.xz)));');};
  return material;
 }
 // Each line is split into short pieces: the fade reads each fragment's world position, and one line hundreds of
@@ -341,7 +342,7 @@ grid.material={get opacity(){return gridMajor.material.opacity;},set opacity(v){
 grid.material.opacity=.32;
 // Follow the camera in whole major cells so the lines stay put in the world while the grid never ends.
 gridMajor.onBeforeRender=()=>{const snap=2.5;grid.position.x=Math.round(controls.target.x/snap)*snap;grid.position.z=Math.round(controls.target.z/snap)*snap;grid.updateMatrixWorld();
- gridFade.uCam.value.copy(camera.position);gridFade.uCentre.value.set(controls.target.x,controls.target.z);gridFade.uFadeFar.value=Math.max(4,camera.position.distanceTo(controls.target));};
+ gridFade.uCam.value.copy(camera.position);gridFade.uCentre.value.set(controls.target.x,controls.target.z);gridFade.uFadeFar.value=Math.max(4,camera.position.distanceTo(controls.target));gridFade.uClip.value=camera.far;};
 // The axes mark the world origin, so they stay put rather than following the camera.
 scene.add(grid,gridAxes);
 // The demo floor plane dissolves into the background the same way, instead of ending in a hard edge.
