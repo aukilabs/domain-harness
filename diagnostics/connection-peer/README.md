@@ -208,3 +208,34 @@ declared Registry axes.
 
 `tests/diagnostic_body.rs` runs this module against Home's follower over
 authenticated loopback peers.
+
+# Greeting (`--greet`)
+
+`--greet` adds a `greeter` component with a `greet` Operable
+(`spatial-harness.greet/v1`, `src/greet.rs`): the robot says "Hi <name>! Nice
+to meet you." through BBOS's speaker, where it stands. Nothing moves. The words
+come from [piper](https://github.com/rhasspy/piper) (offline text to speech) in
+`scripts/diagnostic-greet.py`, played by `play-bracketbot-speech.py`; one
+greeting at a time, and names are reduced to letters, digits and a few marks
+before they are spoken. The text reaches piper on stdin only.
+
+piper lives in the robot user's `~/tools`, nothing system-wide:
+
+```sh
+mkdir -p ~/tools/piper-voices && cd ~/tools
+curl -sSLO https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_aarch64.tar.gz
+tar -xzf piper_linux_aarch64.tar.gz && rm piper_linux_aarch64.tar.gz
+cd piper-voices && for f in en_US-lessac-medium.onnx en_US-lessac-medium.onnx.json; do
+  curl -sSLO https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/$f; done
+```
+
+Without it the greeter still mounts but refuses every greeting.
+
+Home's `peer-greeter` component (`greet_peer`, `src/peer_greeter.rs`) uses it:
+a robot that offers both `navigate` and `greet` goes to a peer, following the
+peer's live pose, re-sending its route when they move more than 0.5 m (or every
+8 s) and aiming 0.7 m short of them; within 1 m it cancels navigation and calls
+`greet` with the peer's name. Over the Operable a peer may only ask to be greeted
+itself; the Home viewer's "Go say hi" asks before the robot moves, and Stop
+cancels the job and the robot's navigation. A job gives up after 3 minutes or 15
+failures in a row.
