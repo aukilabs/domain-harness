@@ -2243,7 +2243,9 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 let color = UInt32(stroke.color.dropFirst(), radix: 16) ?? 0xffca55
                 let shade = UIColor(red: CGFloat((color >> 16) & 255)/255,
                     green: CGFloat((color >> 8) & 255)/255, blue: CGFloat(color & 255)/255, alpha: 1)
-                let material = Self.flowingMaterial(shade)
+                // Routes show which way they run; a drawing stays as it was drawn.
+                let route = stroke.title.hasPrefix("Way to ") || stroke.title.hasPrefix("Way from ")
+                let material = route ? Self.flowingMaterial(shade) : Self.crayonMaterial(shade)
                 for (index, segment) in stroke.segments.enumerated() {
                     let points = segment.filter { $0.count == 3 }.map { SIMD3<Float>($0[0], $0[1], $0[2]) }
                     guard let node = Self.pathNode(points, width: stroke.width_m, material: material,
@@ -2760,18 +2762,22 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         return material
     }
 
-    /// A saved path's colour with a glow that runs along it the way it was drawn: a long
-    /// brightening tail and a sharp head, so even a still frame shows which way it goes.
+    /// A route's colour with a soft glow that runs along it the way it goes: a long
+    /// brightening tail and a sharp head, so even a still frame shows the direction.
     private static func flowingMaterial(_ color: UIColor) -> SCNMaterial {
         let material = crayonMaterial(color)
         material.diffuse.contents = glow(color)
         material.diffuse.wrapS = .repeat; material.diffuse.wrapT = .clamp
+        // Smoothed, so the bands do not shimmer on a thin line seen from afar.
+        material.diffuse.minificationFilter = .linear
+        material.diffuse.magnificationFilter = .linear
+        material.diffuse.mipFilter = .linear
         material.diffuse.contentsTransform = flowShift
         flowing.add(material.diffuse)
         return material
     }
     /// Metres between glows, and how fast they travel.
-    private static let flowTile: Float = 0.45, flowSpeed: Float = 0.7
+    private static let flowTile: Float = 0.8, flowSpeed: Float = 0.4
     private static let flowing = NSHashTable<SCNMaterialProperty>.weakObjects()
     private static var flowShift = SCNMatrix4MakeScale(1 / flowTile, 1, 1)
     /// Moves every path's glow on, from one clock, so a path rebuilt when Home's map
@@ -2786,7 +2792,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         if let tile = glowTiles[color] { return tile }
         var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
         color.getRed(&r, green: &g, blue: &b, alpha: &a)
-        let light = UIColor(red: r + (1 - r) * 0.75, green: g + (1 - g) * 0.75, blue: b + (1 - b) * 0.75, alpha: 1)
+        let light = UIColor(red: r + (1 - r) * 0.35, green: g + (1 - g) * 0.35, blue: b + (1 - b) * 0.35, alpha: 1)
         let tile = UIGraphicsImageRenderer(size: CGSize(width: 128, height: 4)).image { drawn in
             let colors = [color, color, light, light, color].map(\.cgColor) as CFArray
             let locations: [CGFloat] = [0, 0.3, 0.86, 0.92, 1]
