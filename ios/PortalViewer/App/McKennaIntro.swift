@@ -66,8 +66,8 @@ struct McKennaIntro: View {
                           detail: "So Home can see this screen when someone opens it. iOS asks again on every launch.",
                           state: permissions.screen) { permissions.askScreen(screen) }
             PermissionRow(symbol: "camera.fill", title: "Camera",
-                          detail: "To read Portals and see the room in AR. Asked after screen recording, which needs the camera free.",
-                          state: permissions.screen == .waiting ? .blocked : permissions.camera) { permissions.askCamera() }
+                          detail: "To read Portals and see the room in AR.",
+                          state: permissions.camera) { permissions.askCamera() }
             PermissionRow(symbol: "location.north.line.fill", title: "Location",
                           detail: "To find north and place the scene on the Earth.",
                           state: permissions.location) { permissions.askLocation() }
@@ -91,7 +91,12 @@ struct McKennaIntro: View {
     private func finish() {
         guard !finished else { return }
         finished = true
-        done()
+        // Never leave without the camera asked for: without it there is no AR at all.
+        if mode == .firstBoot, AVCaptureDevice.authorizationStatus(for: .video) == .notDetermined {
+            AVCaptureDevice.requestAccess(for: .video) { _ in Task { @MainActor in done() } }
+        } else {
+            done()
+        }
     }
 }
 
