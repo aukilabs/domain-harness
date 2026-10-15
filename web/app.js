@@ -8,6 +8,7 @@ import { createMap2D } from './map-2d.js';
 import { createCrayon } from './crayon.js';
 import { createGhostCamera, createCameraPan, isEditing } from './ghost-camera.js';
 import { createNoteBubble } from './note-bubble.js';
+import { createNoteLod } from './note-lod.js';
 import { createPipWindow } from './pip-window.js';
 import { createVideoPresentation } from './video-presentation.js';
 import { readCameraResponse } from './camera-frame.js';
@@ -348,6 +349,8 @@ scene.add(grid,gridAxes);
 // The demo floor plane dissolves into the background the same way, instead of ending in a hard edge.
 fadeWithDistance(ground.material,1.3);ground.material.transparent=true;ground.renderOrder=-2;
 const groups=Object.fromEntries(['voxels','portals','objects','rays','notes'].map(k=>[k,new THREE.Group()]));Object.values(groups).forEach(g=>scene.add(g));
+// Far notes become pins, and further out overlapping pins merge into a counted cluster; the open note keeps its text.
+const noteLod=createNoteLod({scene,camera,renderer,notes:groups.notes,pinned:bubble=>bubble.userData.note?.id===selectedNoteId});
 crayon=createCrayon({button:$('crayon'),canvas:renderer.domElement,camera,controls,scene,voxels:groups.voxels,
  state:()=>({map:activeMap,frame:current?.frame,paths:current?.paths,editable:isLocalScene()&&!!current&&!map2D.isActive()}),
  save:async(context,stroke,extend=false)=>{const result=await api('/api/paths'+(extend?'/'+encodeURIComponent(stroke.id):'')+'?scene='+encodeURIComponent(context.map),{frame:context.frame,stroke},extend?'PATCH':'POST');if(activeMap===context.map&&current?.frame===context.frame)current.paths=result;lastScene=null;return result;},
@@ -408,7 +411,7 @@ const volumeInspector={element:$('selection'),
   const close=document.createElement('button');close.type='button';close.className='inspector-close';close.setAttribute('aria-label','Close inspector');close.append(icon(icons.close));close.onclick=closeCard;
   card.replaceChildren(close,...nodes);card.hidden=false;noteCardMode='volume';},
  close(){if(noteCardMode==='volume'){noteCardMode='view';$('selection').hidden=true;}}};
-const semanticVolumes=createSemanticVolumes({scene,camera,renderer,controls,panel:panelBodies.volumes,api,label:volumeLabel,clear,openPanel,inspector:volumeInspector,toast,flyTo:(position,target)=>cameraPan.start(position,target),priorityPickObjects:()=>[...selectable.filter(o=>o.userData.kind==='note'),...crayon.objects()]});
+const semanticVolumes=createSemanticVolumes({scene,camera,renderer,controls,panel:panelBodies.volumes,api,label:volumeLabel,clear,openPanel,inspector:volumeInspector,toast,flyTo:(position,target)=>cameraPan.start(position,target),priorityPickObjects:()=>[...selectable.filter(o=>o.userData.kind==='note'),...noteLod.objects(),...crayon.objects()]});
 // The volume tool draws on the 3D floor, so it can't start while the 2D plan is open.
 $('volume-draw').addEventListener('click',e=>{if(map2D.isActive())e.stopImmediatePropagation();},true);
 $('map-select').addEventListener('change',()=>{semanticVolumes.reset();try{localStorage.setItem('home.lastScene',$('map-select').value);}catch{}});
@@ -491,7 +494,7 @@ function build(data){flatSpritesAge=Infinity;
   if(note.phone_pose)continue;
   const peer=Boolean(note.robot_pose||note.anchor_robot||note.id?.startsWith('robot-name:')||note.id?.startsWith('phone-name:'));
   const tag=createNoteBubble(noteTitle(note),{peer});tag.position.fromArray(note.position);
-  tag.userData={kind:'note',note};groups.notes.add(tag);selectable.push(tag);
+  tag.userData={kind:'note',note,peer};groups.notes.add(tag);selectable.push(tag);
  }
  $('canvas').dataset.noteCount=String((data.notes||[]).length);
  for(const o of data.objects){
@@ -887,8 +890,11 @@ renderer.domElement.addEventListener('pointerup',e=>{
  if(!current||!pointerStart||Math.hypot(e.clientX-pointerStart[0],e.clientY-pointerStart[1])>4)return;
  if(placingNote){const target=placementTarget;stopNotePlacement();const box=renderer.domElement.getBoundingClientRect(),pick=new THREE.Raycaster();pick.setFromCamera(new THREE.Vector2((e.clientX-box.left)/box.width*2-1,1-(e.clientY-box.top)/box.height*2),camera);const request={source:'scene',frame:current.frame,origin:pick.ray.origin.toArray(),direction:pick.ray.direction.toArray()};if(target)target(request);else beginLabel(request);return;}
  const r=renderer.domElement.getBoundingClientRect(), ray=new THREE.Raycaster();ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),camera);
- const hits=ray.intersectObjects([...selectable,...crayon.objects()].filter(o=>{for(let p=o;p;p=p.parent){if(!p.visible)return false;}return true;}));// Nothing hit: the click moves the spot cursor (the floor ring) there. Drags orbit and never get this far.
- if(!hits.length){clearSelection();const floor=ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,1,0),0),new THREE.Vector3());if(floor&&!crayon.isActive()&&!map2D.isActive())placeSpotMarker(floor);return;}const h=hits.find(h=>h.object.userData.kind==='note')||hits.find(h=>h.object.userData.kind==='path')||hits.find(h=>h.object.userData.kind==='portal')||hits[0],d=h.object.userData;
+ const hits=ray.intersectObjects([...selectable,...noteLod.objects(),...crayon.objects()].filter(o=>{for(let p=o;p;p=p.parent){if(!p.visible)return false;}return true;}));
+ // Nothing hit: the click moves the spot cursor (the floor ring) there. Drags orbit and never get this far.
+ if(!hits.length){clearSelection();const floor=ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,1,0),0),new THREE.Vector3());if(floor&&!crayon.isActive()&&!map2D.isActive())placeSpotMarker(floor);return;}const h=hits.find(h=>h.object.userData.kind==='note')||hits.find(h=>h.object.userData.kind==='note-cluster')||hits.find(h=>h.object.userData.kind==='path')||hits.find(h=>h.object.userData.kind==='portal')||hits[0],d=h.object.userData;
+ // A cluster flies in until its notes stand apart again.
+ if(d.kind==='note-cluster'){const offset=camera.position.clone().sub(controls.target).setLength(noteLod.clusterAt*.5);cameraPan.start(d.centre.clone().add(offset),d.centre.clone());return;}
  if(d.kind==='voxels'){const v=current.voxels[h.instanceId];showSelection('Occupied voxel','','',{kind:'Voxel',facts:[['Position',xyz(v.center),true],['Evidence',String(v.evidence)],['Cell size','10 cm']]});}
  if(d.kind==='occupancy'){const t=current.occupancy_tiles[h.instanceId],state=t.value===100?'Occupied':t.value===0?'Free':'Unknown';showSelection(state+' cell','','',{kind:'Occupancy',facts:[['State',state],['Position',xyz(t.center),true],['Value',String(t.value)],['Sample','10 cm · retrieved in 2 m cells']]});}
  if(d.kind==='path'){showPathSelection(d.path);return;}
@@ -976,7 +982,7 @@ function keepSpriteSizes(amount){
 function keepAboveGrid(){if(attachedCamera.isActive()||map2D.isActive())return;const floor=grid.position.y+.05;if(camera.position.y<floor)camera.position.y=floor;}
 renderer.setAnimationLoop(now=>{easeViewOffset();if(!cameraPan.tick(now)&&!attachedCamera.isActive())controls.update();keepAboveGrid();ghostCamera.tick(now);if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);updateFlatten();
  // Volume handles are HTML placed from this frame's camera: settle its matrices and projection first so they never trail a glide.
- camera.updateMatrixWorld();semanticVolumes.tick();renderer.render(scene,camera);});
+ camera.updateMatrixWorld();semanticVolumes.tick();noteLod.tick();renderer.render(scene,camera);});
 refresh().catch(e=>{$('notice').textContent=e.message;$('notice').classList.add('error');});setInterval(()=>{if(!busy)refresh().catch(()=>{});},500);
 
 function updatePairingDownload(){const link=$('pairing-download');link.href=isLocalScene()?localSceneUrl()+'/connection':'/api/home-connection';link.download=isLocalScene()?activeMap.slice(6)+'-connection.json':'home-connection.json';link.textContent=isLocalScene()?'Download phone connection for selected scene ↗':'Download Xmart connection ↗';}

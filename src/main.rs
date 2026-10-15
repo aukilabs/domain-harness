@@ -1511,6 +1511,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/crayon.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/crayon.js")) }))
         .route("/ghost-camera.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/ghost-camera.js")) }))
         .route("/note-bubble.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/note-bubble.js")) }))
+        .route("/note-lod.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/note-lod.js")) }))
         .route("/pip-window.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/pip-window.js")) }))
         .route("/view-camera.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/view-camera.js")) }))
         .route("/attached-camera.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/attached-camera.js")) }))
