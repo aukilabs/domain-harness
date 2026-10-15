@@ -324,7 +324,7 @@ const gridFade={uCam:{value:new THREE.Vector3()},uCentre:{value:new THREE.Vector
 // (a flat distance from the camera faded the floor right in front of a downward look). `reach` scales how
 // far past the target a layer carries; `limit` is the layer's half-extent, faded softly so its end never shows.
 // Either way the fade finishes short of the camera's far plane (uClip): zoomed out and tilted, no hard cut-off.
-function fadeWithDistance(material,reach,limit){
+function fadeWithDistance(material,reach,limit=1e6){
  // Grid layers fade themselves; the scene's distance fog would double it.
  material.fog=false;
  material.onBeforeCompile=shader=>{Object.assign(shader.uniforms,gridFade,{uReach:{value:reach},uLimit:{value:limit}});
@@ -354,7 +354,7 @@ gridMajor.onBeforeRender=()=>{const snap=2.5;grid.position.x=Math.round(controls
 // The axes mark the world origin, so they stay put rather than following the camera.
 scene.add(grid,gridAxes);
 // The demo floor plane dissolves into the background the same way, instead of ending in a hard edge.
-fadeWithDistance(ground.material,1.3);ground.material.transparent=true;ground.renderOrder=-2;
+fadeWithDistance(ground.material,1.3,100);ground.material.transparent=true;ground.renderOrder=-2;
 const groups=Object.fromEntries(['voxels','portals','objects','rays','notes'].map(k=>[k,new THREE.Group()]));Object.values(groups).forEach(g=>scene.add(g));
 // Note and volume labels are HTML over the canvas (scene-labels.js): one zoom tier for the whole scene, animated
 // changes of form and fixed stacking. They never take the pointer: canvas clicks ask labelHit(), once per event.
