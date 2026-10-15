@@ -7,6 +7,7 @@ import { createSemanticVolumes, legacyVolumesForView } from './semantic-volumes.
 import { createMap2D } from './map-2d.js';
 import { createCrayon } from './crayon.js';
 import { createGhostCamera, createCameraPan, isEditing } from './ghost-camera.js';
+import { createCameraRig } from './camera-rig.js';
 import { createNoteBubble } from './note-bubble.js';
 import { createSceneLabels } from './scene-labels.js';
 import { TIERS } from './note-lod.js';
@@ -212,16 +213,23 @@ $('canvas').append(renderer.domElement);renderer.domElement.setAttribute('aria-l
 const controls=new OrbitControls(camera,renderer.domElement);controls.enableDamping=true;
 // Mouse: left-drag looks around (orbits; a click without a drag still selects), right- or middle-drag pans
 // across the ground, and the wheel zooms toward the cursor. Touch: one finger pans, two pinch and rotate.
-controls.mouseButtons={LEFT:THREE.MOUSE.ROTATE,MIDDLE:THREE.MOUSE.PAN,RIGHT:THREE.MOUSE.PAN};controls.touches={ONE:THREE.TOUCH.PAN,TWO:THREE.TOUCH.DOLLY_ROTATE};
+const mouseButtons={LEFT:THREE.MOUSE.ROTATE,MIDDLE:THREE.MOUSE.PAN,RIGHT:THREE.MOUSE.PAN};controls.mouseButtons={...mouseButtons};controls.touches={ONE:THREE.TOUCH.PAN,TWO:THREE.TOUCH.DOLLY_ROTATE};
 controls.screenSpacePanning=false;controls.zoomToCursor=true;controls.minDistance=1.2;controls.maxDistance=60;controls.maxPolarAngle=Math.PI*.49;
 let crayon=null;
 const cameraPan=createCameraPan({camera,controls});
 renderer.domElement.addEventListener('pointerdown',()=>cameraPan.cancel(),true);
 renderer.domElement.addEventListener('wheel',()=>cameraPan.cancel(),{capture:true,passive:true});
 for(const id of ['map-select','fit','top','demo-view'])$(id).addEventListener(id==='map-select'?'change':'click',()=>cameraPan.cancel(),true);
-const ghostCamera=createGhostCamera({camera,controls,canvas:renderer.domElement,enabled:()=>!map2D.isActive()&&!crayon?.isActive(),onMove:()=>{cameraPan.cancel();closeSpotMenu();if(attachedCamera.isActive())attachedCamera.detach();
- // The first time someone moves with the keyboard, show the whole scheme once.
- try{if(!localStorage.getItem('camera-keys-hint')){localStorage.setItem('camera-keys-hint','1');toast('WASD move · Space / Shift up and down · Q / E turn · drag to look around · right-drag to pan');}}catch{}}});
+// The camera and orbit target move within one set of limits, kept by the rig (camera-rig.js); the attached camera
+// and the 2D plan drive the camera themselves.
+const rig=createCameraRig({camera,controls,floor:()=>grid.position.y,paused:()=>attachedCamera.isActive()||map2D.isActive()});
+const ghostCamera=createGhostCamera({camera,controls,rig,canvas:renderer.domElement,enabled:()=>!map2D.isActive()&&!crayon?.isActive(),onMove:()=>{cameraPan.cancel();closeSpotMenu();if(attachedCamera.isActive())attachedCamera.detach();}});
+// OrbitControls turns a Shift-drag into a pan and a Shift right-drag into a look. Shift held to sink is movement,
+// not that modifier, so for that press the buttons are swapped and the drag does what it does without Shift.
+// Capture listeners run before OrbitControls' own; the plain one after it puts the buttons back.
+renderer.domElement.addEventListener('pointerdown',e=>{controls.mouseButtons={...mouseButtons};
+ if(e.shiftKey&&!e.ctrlKey&&!e.metaKey&&ghostCamera.sinking())controls.mouseButtons={LEFT:THREE.MOUSE.PAN,MIDDLE:THREE.MOUSE.ROTATE,RIGHT:THREE.MOUSE.ROTATE};},true);
+renderer.domElement.addEventListener('pointerdown',()=>{controls.mouseButtons={...mouseButtons};});
 let activeMap='demo',current=null,busy=false,refreshing=false,lastScene=null,selectable=[],selectedNoteId=null,selectedPathId=null,deletingPathId=null,deletingNoteId=null,selectedSpatialNode=null,spatialSignature='';
 let homeOffline=false,catalogInitialized=false;
 function isLocalScene(map=activeMap){return map.startsWith('local:');}
@@ -318,18 +326,21 @@ const ground=new THREE.Mesh(new THREE.PlaneGeometry(200,200),new THREE.MeshStand
 // never run out and never swim. A small shader patch fades each line toward the horizon; lines only cost
 // their own pixels, which keeps software-rendered browsers (and the browser tests) fast.
 // `grid.material.opacity` stays the opacity setting and drives both layers.
-const gridFade={uCam:{value:new THREE.Vector3()},uCentre:{value:new THREE.Vector2()},uFadeFar:{value:40},uClip:{value:100}};
+// uPx is one device pixel's width in metres per metre of depth; uOrbit and uFlat locate the flattened top-down view.
+const gridFade={uCam:{value:new THREE.Vector3()},uCentre:{value:new THREE.Vector2()},uFadeFar:{value:40},uClip:{value:100},uPx:{value:.001},uOrbit:{value:10},uFlat:{value:0}};
 // Fades a line material toward the horizon. The fade is measured in 3D from the camera and scaled by the
 // distance to what it looks at, so everything between the camera and its target stays crisp at any tilt
 // (a flat distance from the camera faded the floor right in front of a downward look). `reach` scales how
 // far past the target a layer carries; `limit` is the layer's half-extent, faded softly so its end never shows.
 // Either way the fade finishes short of the camera's far plane (uClip): zoomed out and tilted, no hard cut-off.
-function fadeWithDistance(material,reach,limit=1e6){
+// With a line `spacing`, a layer also fades where its lines would land only a few pixels apart (toward the horizon):
+// there 1 px lines alias into a moiré that crawls and flickers with any sub-pixel camera move.
+function fadeWithDistance(material,reach,limit=1e6,spacing=0){
  // Grid layers fade themselves; the scene's distance fog would double it.
  material.fog=false;
- material.onBeforeCompile=shader=>{Object.assign(shader.uniforms,gridFade,{uReach:{value:reach},uLimit:{value:limit}});
+ material.onBeforeCompile=shader=>{Object.assign(shader.uniforms,gridFade,{uReach:{value:reach},uLimit:{value:limit},uSpacing:{value:spacing}});
   shader.vertexShader='varying vec3 vGridWorld;\n'+shader.vertexShader.replace('#include <project_vertex>','#include <project_vertex>\nvGridWorld=(modelMatrix*vec4(position,1.)).xyz;');
-  shader.fragmentShader='varying vec3 vGridWorld;uniform vec3 uCam;uniform vec2 uCentre;uniform float uFadeFar;uniform float uReach;uniform float uLimit;uniform float uClip;\n'+shader.fragmentShader.replace('#include <color_fragment>','#include <color_fragment>\nfloat fadeEnd=min(uFadeFar*(1.+1.8*uReach),uClip*.9);\ndiffuseColor.a*=(1.-smoothstep(min(uFadeFar*(1.+.4*uReach),fadeEnd*.55),fadeEnd,distance(uCam,vGridWorld)))*(1.-smoothstep(uLimit*.6,uLimit*.95,distance(uCentre,vGridWorld.xz)));');};
+  shader.fragmentShader='varying vec3 vGridWorld;uniform vec3 uCam;uniform vec2 uCentre;uniform float uFadeFar;uniform float uReach;uniform float uLimit;uniform float uClip;uniform float uPx;uniform float uOrbit;uniform float uFlat;uniform float uSpacing;\n'+shader.fragmentShader.replace('#include <color_fragment>','#include <color_fragment>\nfloat fadeEnd=min(uFadeFar*(1.+1.8*uReach),uClip*.9),gridDist=max(distance(uCam,vGridWorld),1e-4);\ndiffuseColor.a*=(1.-smoothstep(min(uFadeFar*(1.+.4*uReach),fadeEnd*.55),fadeEnd,gridDist))*(1.-smoothstep(uLimit*.6,uLimit*.95,distance(uCentre,vGridWorld.xz)));\nif(uSpacing>0.)diffuseColor.a*=smoothstep(2.,5.,uSpacing*abs(uCam.y-vGridWorld.y)/gridDist/(mix(gridDist,uOrbit,uFlat)*uPx));');};
  return material;
 }
 // Each line is split into short pieces: the fade reads each fragment's world position, and one line hundreds of
@@ -338,7 +349,7 @@ function lineGrid(spacing,extent,reach,piece){
  const points=[],half=extent/2;
  for(let v=-half;v<=half+1e-6;v+=spacing)for(let a=-half;a<half-1e-6;a+=piece){const b=Math.min(half,a+piece);points.push(a,0,v,b,0,v,v,0,a,v,0,b);}
  const geometry=new THREE.BufferGeometry();geometry.setAttribute('position',new THREE.Float32BufferAttribute(points,3));
- return new THREE.LineSegments(geometry,fadeWithDistance(new THREE.LineBasicMaterial({color:'#52525b',transparent:true,depthWrite:false}),reach,half));
+ return new THREE.LineSegments(geometry,fadeWithDistance(new THREE.LineBasicMaterial({color:'#52525b',transparent:true,depthWrite:false}),reach,half,spacing));
 }
 const gridMinor=lineGrid(.5,90,1,1),gridMajor=lineGrid(2.5,400,3,5);
 const axisPoints=[];for(let a=-200;a<200;a+=5)axisPoints.push(a,0,0,a+5,0,0,0,0,a,0,0,a+5);
@@ -349,12 +360,18 @@ const grid=new THREE.Group();grid.add(gridMinor,gridMajor);grid.position.y=-.14;
 grid.material={get opacity(){return gridMajor.material.opacity;},set opacity(v){gridMajor.material.opacity=gridAxes.material.opacity=v;gridMinor.material.opacity=v*.55;}};
 grid.material.opacity=.32;
 // Follow the camera in whole major cells so the lines stay put in the world while the grid never ends.
-gridMajor.onBeforeRender=()=>{const snap=2.5;grid.position.x=Math.round(controls.target.x/snap)*snap;grid.position.z=Math.round(controls.target.z/snap)*snap;grid.updateMatrixWorld();
- gridFade.uCam.value.copy(camera.position);gridFade.uCentre.value.set(controls.target.x,controls.target.z);gridFade.uFadeFar.value=Math.max(4,camera.position.distanceTo(controls.target));gridFade.uClip.value=camera.far;};
+// Runs just before drawing, so the ground and both layers (which all share these uniforms) see this frame's camera.
+const gridBuffer=new THREE.Vector2();
+function followGrid(){const snap=2.5;grid.position.x=Math.round(controls.target.x/snap)*snap;grid.position.z=Math.round(controls.target.z/snap)*snap;grid.updateMatrixWorld();
+ const orbit=camera.position.distanceTo(controls.target);
+ gridFade.uCam.value.copy(camera.position);gridFade.uCentre.value.set(controls.target.x,controls.target.z);gridFade.uFadeFar.value=Math.max(4,orbit);gridFade.uClip.value=camera.far;
+ gridFade.uPx.value=2*Math.tan(THREE.MathUtils.degToRad(camera.fov/2))/camera.zoom/Math.max(1,renderer.getDrawingBufferSize(gridBuffer).y);gridFade.uOrbit.value=orbit;gridFade.uFlat.value=camera.userData.flatten||0;}
 // The axes mark the world origin, so they stay put rather than following the camera.
 scene.add(grid,gridAxes);
 // The demo floor plane dissolves into the background the same way, instead of ending in a hard edge.
-fadeWithDistance(ground.material,1.3,100);ground.material.transparent=true;ground.renderOrder=-2;
+// It sits only 1 cm below the grid, closer than the depth buffer can resolve far away: push its depth back so
+// distant grid lines never z-fight it.
+fadeWithDistance(ground.material,1.3,100);ground.material.transparent=true;ground.renderOrder=-2;Object.assign(ground.material,{polygonOffset:true,polygonOffsetFactor:1,polygonOffsetUnits:4});
 const groups=Object.fromEntries(['voxels','portals','objects','rays','notes'].map(k=>[k,new THREE.Group()]));Object.values(groups).forEach(g=>scene.add(g));
 // Note and volume labels are HTML over the canvas (scene-labels.js): one zoom tier for the whole scene, animated
 // changes of form and fixed stacking. They never take the pointer: canvas clicks ask labelHit(), once per event.
@@ -405,7 +422,7 @@ const volumeInspector={element:$('selection'),
   const close=document.createElement('button');close.type='button';close.className='inspector-close';close.setAttribute('aria-label','Close inspector');close.append(icon(icons.close));close.onclick=closeCard;
   card.replaceChildren(close,...nodes);card.hidden=false;noteCardMode='volume';},
  close(){if(noteCardMode==='volume'){noteCardMode='view';$('selection').hidden=true;}}};
-const semanticVolumes=createSemanticVolumes({scene,camera,renderer,controls,panel:panelBodies.volumes,api,label,labels:sceneLabels,priorityHit:labelHit,safeArea:()=>sceneSafeArea(),rects:()=>frameRects,clear,openPanel,inspector:volumeInspector,toast,flyTo:(position,target)=>cameraPan.start(position,target),priorityPickObjects:()=>crayon.objects()});
+const semanticVolumes=createSemanticVolumes({scene,camera,renderer,controls,panel:panelBodies.volumes,api,label,labels:sceneLabels,priorityHit:labelHit,safeArea:()=>sceneSafeArea(false),rects:()=>frameRects,clear,openPanel,inspector:volumeInspector,toast,flyTo:(position,target)=>cameraPan.start(position,target),priorityPickObjects:()=>crayon.objects()});
 // The volume tool draws on the 3D floor, so it can't start while the 2D plan is open.
 $('volume-draw').addEventListener('click',e=>{if(map2D.isActive())e.stopImmediatePropagation();},true);
 $('map-select').addEventListener('change',()=>{semanticVolumes.reset();try{localStorage.setItem('home.lastScene',$('map-select').value);}catch{}});
@@ -991,10 +1008,10 @@ function keepSpriteSizes(amount){
   obj.scale.copy(base).multiplyScalar(perspective00*((1-amount)*depth+amount)/p00);
  }
 }
-// Smooth wheel zoom: a wheel notch eases in over ~70 ms instead of cutting 5% in one frame (trackpads and pinches,
-// already smooth, apply on the next frame). Same scale per notch as OrbitControls, and the same zoom-to-cursor: the
-// camera dollies along the ray through the cursor, then the target is re-derived as OrbitControls does. Wheels over
-// the canvas or the label, handle and locator layers above it land here; OrbitControls' own wheel never fires.
+// Smooth wheel movement: a wheel notch eases in over ~70 ms instead of jumping in one frame (trackpads and pinches,
+// already smooth, apply on the next frame), 5% per notch as in OrbitControls. The rig turns it into a move forward
+// or back along the ray through the cursor (see dolly in camera-rig.js). Wheels over the canvas or the label,
+// handle and locator layers above it land here; OrbitControls' own wheel never fires.
 let wheelZoom=0,wheelTau=0,wheelAt=null,wheelLast=0;
 renderer.domElement.parentElement.addEventListener('wheel',e=>{
  if(!(e.target===renderer.domElement||e.target.closest?.('.volume-handles,.content-locator')))return;
@@ -1006,19 +1023,14 @@ renderer.domElement.parentElement.addEventListener('wheel',e=>{
 },{capture:true,passive:false});
 renderer.domElement.addEventListener('pointerdown',()=>{wheelZoom=0;},true);
 $('map-select').addEventListener('change',()=>{wheelZoom=0;});
-const wheelRay=new THREE.Vector3(),wheelView=new THREE.Vector3(),wheelPlane=new THREE.Plane(),wheelHit=new THREE.Vector3(),wheelLine=new THREE.Ray();
+const wheelRay=new THREE.Vector3();
 function applyWheelZoom(now){
  if(!wheelZoom){wheelLast=0;return;}
  const dt=Math.min(64,wheelLast?now-wheelLast:16);wheelLast=now;
  const step=wheelTau?wheelZoom*(1-Math.exp(-dt/wheelTau)):wheelZoom;wheelZoom=Math.abs(wheelZoom-step)<1e-4?0:wheelZoom-step;
- const before=camera.position.distanceTo(controls.target),after=THREE.MathUtils.clamp(before*Math.exp(step),controls.minDistance,controls.maxDistance);
- if(Math.abs(after-before)<1e-6){wheelZoom=0;return;}
  const r=frameRects.canvas||renderer.domElement.getBoundingClientRect();
  wheelRay.set((wheelAt[0]-r.left)/r.width*2-1,1-(wheelAt[1]-r.top)/r.height*2,.5).unproject(camera).sub(camera.position).normalize();
- camera.position.addScaledVector(wheelRay,before-after);camera.updateMatrixWorld();
- wheelView.set(0,0,-1).transformDirection(camera.matrixWorld);
- if(Math.abs(camera.up.dot(wheelView))<Math.cos(THREE.MathUtils.degToRad(70)))camera.lookAt(controls.target);
- else{wheelPlane.setFromNormalAndCoplanarPoint(camera.up,controls.target);if(wheelLine.set(camera.position,wheelView).intersectPlane(wheelPlane,wheelHit))controls.target.copy(wheelHit);}
+ if(!rig.dolly(wheelRay,step))wheelZoom=0;
 }
 // Far away, content fades into the background instead of meeting the far plane: linear fog scaled to the orbit
 // distance (always ending before the far plane), so the store stays clear at any normal zoom and dissolves only
@@ -1034,10 +1046,12 @@ const contentLocator=createContentLocator({camera,renderer,rects:()=>frameRects,
   if(attachedCamera.isActive())attachedCamera.detach();cameraPan.start(centre.clone().add(flat.multiplyScalar(Math.cos(tilt)*distance)).add(new THREE.Vector3(0,Math.sin(tilt)*distance,0)),centre);}});
 // The free part of the 3D view in client px: the canvas minus the rail, the open panel, the top and bottom bars and
 // the inspector card. The locator and the volume handles stay inside it.
-function sceneSafeArea(){const r=renderer.domElement.getBoundingClientRect(),area={left:r.left+72,top:r.top+68,right:r.right-16,bottom:r.bottom-80};
+// cardColumn=false leaves the card as its own rect (area.card) instead of cutting the full height right of it, so
+// volume handles can still sit below a short card (cutting the column hid the +X handle of any wide box).
+function sceneSafeArea(cardColumn=true){const r=renderer.domElement.getBoundingClientRect(),area={left:r.left+72,top:r.top+68,right:r.right-16,bottom:r.bottom-80};
  const aside=document.querySelector('.shell>aside');if(aside&&!document.querySelector('.shell')?.classList.contains('panel-collapsed'))area.left=Math.max(area.left,aside.getBoundingClientRect().right+8);
  const bar=document.querySelector('.agent-bar')?.getBoundingClientRect();if(bar&&bar.height>64)area.bottom=Math.min(area.bottom,bar.top-8);
- const card=$('selection');if(card&&!card.hidden)area.right=Math.min(area.right,card.getBoundingClientRect().left-8);
+ const card=$('selection');if(card&&!card.hidden){const c=card.getBoundingClientRect();if(cardColumn)area.right=Math.min(area.right,c.left-8);else area.card={left:c.left-8,top:c.top-8,right:c.right+8,bottom:c.bottom+8};}
  return area;}
 function setContentBounds(data){
  scene.updateMatrixWorld();const box=new THREE.Box3();for(const g of [groups.voxels,groups.portals,groups.objects])box.expandByObject(g);
@@ -1047,16 +1061,23 @@ function setContentBounds(data){
  if(box.isEmpty()){controls.maxTargetRadius=Infinity;return;}
  controls.cursor.copy(box.getCenter(new THREE.Vector3()));controls.maxTargetRadius=box.getSize(new THREE.Vector3()).length()/2+80;
 }
-// The camera never goes beneath the grid. Orbiting is limited to above the horizon, but views the assistant sets
-// (and detaching an attached camera) lift that limit, so the floor is also held here, every frame.
-// It runs last before drawing (after the ghost camera's own moves), and the orbit target can't sink below the floor either.
-function keepAboveGrid(){if(attachedCamera.isActive()||map2D.isActive())return;const floor=grid.position.y+.05;if(camera.position.y<floor)camera.position.y=floor;if(controls.target.y<grid.position.y)controls.target.y=grid.position.y;}
+// OrbitControls' damping only shrinks the rest of a glide by 5% a frame, so after a rotate the camera creeps on
+// for seconds at a fraction of a pixel per frame: it looks still while grid lines keep popping between pixels.
+// Once under 2 px of the glide is left, end it. (_sphericalDelta and _panOffset are OrbitControls' pending moves.)
+function settleOrbit(){if(controls.state!==-1)return;const pixel=THREE.MathUtils.degToRad(camera.fov)/camera.zoom/(renderer.domElement.clientHeight||700);
+ const turn=controls._sphericalDelta,pan=controls._panOffset;
+ if(Math.abs(turn.theta)<2*pixel&&Math.abs(turn.phi)<2*pixel)turn.theta=turn.phi=0;
+ if(pan.length()<2*pixel*camera.position.distanceTo(controls.target))pan.set(0,0,0);}
 // The canvas and its host are measured once per frame, before any overlay writes, and shared with the overlays
 // (labels, volume handles, locator, wheel zoom), so the frame forces at most one layout.
 const frameRects={canvas:null,host:null};
-renderer.setAnimationLoop(now=>{frameRects.canvas=renderer.domElement.getBoundingClientRect();frameRects.host=renderer.domElement.parentElement.getBoundingClientRect();easeViewOffset();cameraFlying=cameraPan.tick(now);if(!cameraFlying&&!attachedCamera.isActive()){applyWheelZoom(now);controls.update();}else wheelZoom=0;ghostCamera.tick(now);keepAboveGrid();updateFog();if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);updateFlatten();
+renderer.setAnimationLoop(now=>{frameRects.canvas=renderer.domElement.getBoundingClientRect();frameRects.host=renderer.domElement.parentElement.getBoundingClientRect();easeViewOffset();cameraFlying=cameraPan.tick(now);if(!cameraFlying&&!attachedCamera.isActive()){applyWheelZoom(now);controls.update();settleOrbit();}else wheelZoom=0;
+ // A key held into a flight (Fit, the locator, a note) waits for it to land rather than nudging it every frame.
+ if(!cameraFlying)ghostCamera.tick(now);
+ // Last camera write before drawing: everything above is brought within the floor and orbit limits.
+ rig.settle();updateFog();if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);updateFlatten();
  // Volume handles are HTML placed from this frame's camera: settle its matrices and projection first so they never trail a glide.
- camera.updateMatrixWorld();semanticVolumes.tick();sceneLabels.setSelected(selectedNoteId?'note:'+selectedNoteId:null);sceneLabels.tick(now);if(hoverAt&&sceneLabels.moving)updateHover();contentLocator.tick(now);renderer.render(scene,camera);});
+ camera.updateMatrixWorld();semanticVolumes.tick();sceneLabels.setSelected(selectedNoteId?'note:'+selectedNoteId:null);sceneLabels.tick(now);if(hoverAt&&sceneLabels.moving)updateHover();contentLocator.tick(now);followGrid();renderer.render(scene,camera);});
 refresh().catch(e=>{$('notice').textContent=e.message;$('notice').classList.add('error');});setInterval(()=>{if(!busy)refresh().catch(()=>{});},500);
 
 function updatePairingDownload(){const link=$('pairing-download');link.href=isLocalScene()?localSceneUrl()+'/connection':'/api/home-connection';link.download=isLocalScene()?activeMap.slice(6)+'-connection.json':'home-connection.json';link.textContent=isLocalScene()?'Download phone connection for selected scene ↗':'Download Xmart connection ↗';}
@@ -1836,7 +1857,7 @@ function spotTool(label,face,accent,run,disabledReason=''){
  const hit=document.createElement('span'),lift=document.createElement('span'),plate=document.createElement('span'),glyph=document.createElement('span');hit.className='spot-hit';lift.className='spot-lift';plate.className='spot-plate';lift.append(plate);glyph.className='rail-face';glyph.append(typeof face==='string'?icon(face,20):face);button.append(hit,lift,glyph);
  // The ring has done its job once a tool starts there; only Ask keeps it, until the question is sent.
  button.onclick=()=>{if(disabledReason)return;const at=spot;closeSpotMenu();run(at);};return button;}
-function closeSpotMenu(clearMarker=true){if(spotMenu.hidden||spotMenu.dataset.closing)return;sceneLabels.setMask(null);
+function closeSpotMenu(clearMarker=true){if(spotMenu.hidden||spotMenu.dataset.closing)return;
  // Focus goes back where it was before the menu opened, unless a tool has already moved it on.
  if(spotMenu.contains(document.activeElement))(spotMenu.returnFocus?.isConnected?spotMenu.returnFocus:document.body).focus?.({preventScroll:true});clearTimeout(spotTipTimer);spotTip.hidden=true;spot=null;if(clearMarker&&!chatFocus)spotMarker.visible=false;
  if(matchMedia('(prefers-reduced-motion: reduce)').matches){spotMenu.hidden=true;return;}
@@ -1867,7 +1888,7 @@ function openSpotMenu(e){
  spotMenu.replaceChildren(...tools);spotMenu.getAnimations({subtree:true}).forEach(a=>a.cancel());delete spotMenu.dataset.closing;spotMenu.hidden=false;
  // Centred on the cursor, shifted inward near an edge so the whole ring stays on screen.
  const half=SPOT_SIZE/2,x=Math.min(Math.max(half+8,e.clientX),innerWidth-half-8),y=Math.min(Math.max(half+8,e.clientY),innerHeight-half-8);
- spotMenu.style.left=x-half+'px';spotMenu.style.top=y-half+'px';sceneLabels.setMask({x,y,radius:half+6});sceneLabels.setHover(null);
+ spotMenu.style.left=x-half+'px';spotMenu.style.top=y-half+'px';sceneLabels.setHover(null);
  // Tools fly out under a resting cursor: hints wait until they have landed.
  clearTimeout(spotMenu.settle);delete spotMenu.dataset.opening;
  if(!matchMedia('(prefers-reduced-motion: reduce)').matches){

@@ -1510,6 +1510,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/map-2d.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/map-2d.js")) }))
         .route("/crayon.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/crayon.js")) }))
         .route("/ghost-camera.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/ghost-camera.js")) }))
+        .route("/camera-rig.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/camera-rig.js")) }))
         .route("/note-bubble.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/note-bubble.js")) }))
         .route("/note-lod.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/note-lod.js")) }))
         .route("/scene-labels.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/scene-labels.js")) }))

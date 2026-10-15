@@ -76,16 +76,18 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
   let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
   for(const sx of [-1,1])for(const sy of [-1,1])for(const sz of [-1,1]){const c=screen(localPoint(draft,[sx*draft.size[0]/2,sy*draft.size[1]/2,sz*draft.size[2]/2]));minX=Math.min(minX,c.x);maxX=Math.max(maxX,c.x);minY=Math.min(minY,c.y);maxY=Math.max(maxY,c.y);}
   const S=Math.sqrt(Math.max(0,(maxX-minX)*(maxY-minY))),centre={x:(minX+maxX)/2,y:(minY+maxY)/2};
-  // Handles never sit over the panels, bars or the inspector card (where one once covered Delete).
+  // Handles never sit over the panels, bars or the inspector card (where one once covered Delete). They fade over
+  // 16 px around the free area's edge (and the card's 8 px gutter) rather than cutting out: fully shown while the
+  // plate clears it, gone (and inert) once the centre reaches the card. The card is a rect, not a column.
   const now=performance.now();if(safeArea&&(!area||now-areaAt>250)){area=safeArea();areaAt=now;}
-  const inside=(x,y)=>!area||(x+parent.left>area.left&&x+parent.left<area.right&&y+parent.top>area.top&&y+parent.top<area.bottom);
+  const clearance=(x,y)=>{if(!area)return Infinity;x+=parent.left;y+=parent.top;const c=area.card,edge=Math.min(x-area.left,area.right-x,y-area.top,area.bottom-y);return c?Math.min(edge,Math.max(c.left-x,x-c.right,c.top-y,y-c.bottom)):edge;};
   const right=new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld,0).multiplyScalar(.5),placed=[],mounting=shownDraft!==draft.id;shownDraft=draft.id;
   for(const h of [...handles].sort((a,b)=>rank(a)-rank(b))){
    const [world,normal]=anchor(draft,h),at=screen(world);let x=at.x,y=at.y,opacity=h.kind==='move'?1:h.kind==='resize'&&h.axis===1?smooth(70,100,S):smooth(110,170,S);
    if(normal){const tip=screen(world.clone().addScaledVector(normal,.5)),side=screen(world.clone().add(right)),dx=tip.x-x,dy=tip.y-y,length=Math.hypot(dx,dy),metre=Math.hypot(side.x-x,side.y-y)||1;
     if(length>1e-3){x+=dx/length*26;y+=dy/length*26;}if(h.kind==='resize')opacity*=smooth(.25,.45,length/metre);}
    else{const dx=x-centre.x,dy=y-centre.y,length=Math.hypot(dx,dy)||1;x+=dx/length*24;y+=dy/length*24;}
-   if(!at.on||!inside(x,y))opacity=0;
+   if(at.on)opacity*=smooth(-8,8,clearance(x,y));else opacity=0;
    for(const q of placed)if(q.opacity>.05)opacity*=smooth(28,40,Math.hypot(q.x-x,q.y-y));
    const active=resize?.h===h;if(active)opacity=1;placed.push({x,y,opacity});
    h.button.hidden=false;h.button.classList.toggle('active',active);

@@ -25,7 +25,7 @@ export function createSceneLabels({camera,controls,renderer,parent=renderer.domE
  const layer=document.createElement('div');layer.className='scene-labels';layer.setAttribute('aria-hidden','true');parent.append(layer);
  const sources=new Map(),labels=new Map(),clusters=new Map(),point=new THREE.Vector3(),at=new THREE.Vector3();
  const lastWorld=new THREE.Matrix4(),lastProjection=new THREE.Matrix4();let lastSize=0;
- let tier=0,selected=null,hovered=null,mask=null,moving=false,dirty=true,declutterAt=0,settled=false,clusterCache=null,focus=null,restSince=0,host=null,canvasRect=null;
+ let tier=0,selected=null,hovered=null,moving=false,dirty=true,declutterAt=0,settled=false,clusterCache=null,focus=null,restSince=0,host=null,canvasRect=null;
 
  function shown(anchor){if(!anchor.parent)return false;for(let o=anchor;o;o=o.parent)if(!o.visible)return false;return true;}
  function create(item){
@@ -146,18 +146,13 @@ export function createSceneLabels({camera,controls,renderer,parent=renderer.domE
     if(at){pin.style.transform=`translate(calc(-50% + ${(at[0]-label.x)*k}px),${(at[1]-label.y)*k}px)`;pin.style.opacity=String(merge.dir>0?1-k*.85:1-k);}
     if(t>=1){label.merge=null;pin.style.transform='';pin.style.opacity='';delete el.dataset.merging;el.dataset.form=label.form==='merged'?'hidden':label.form;}
    }
-   // Labels under an open overlay (the right-click ring) fade out instead of flickering through its glass.
-   const covered=!!mask&&label.visible&&underMask(hitRect(label));if(covered!==!!label.masked){label.masked=covered;el.classList.toggle('masked',covered);}
-   label.rect=label.visible&&!label.merge&&!label.faint&&!covered?hitRect(label):null;
+   label.rect=label.visible&&!label.merge&&!label.faint?hitRect(label):null;
   }
   for(const cluster of clusters.values())cluster.rect=cluster.visible&&!cluster.faint&&cluster.form==='cluster'?{left:cluster.x+host.left-16,right:cluster.x+host.left+16,top:cluster.y+host.top-29,bottom:cluster.y+host.top+3}:null;
   // Declutter at 5 Hz while moving (step down only), and once when the view settles (steps back up allowed).
   if(!still){settled=false;if(now-declutterAt>200){declutterAt=now;declutter(false);}}
   else if(!settled){settled=true;declutterAt=now;declutter(true);}
  }
- // mask: {x, y, radius} in client px, or null. A label is under it when its rect comes within the circle.
- function underMask(r){if(!r)return false;const dx=Math.max(r.left-mask.x,0,mask.x-r.right),dy=Math.max(r.top-mask.y,0,mask.y-r.bottom);return dx*dx+dy*dy<mask.radius*mask.radius;}
- function setMask(next){mask=next;if(!mask)for(const label of labels.values())if(label.masked){label.masked=false;label.el.classList.remove('masked');}}
  function declutter(mayReturn){
   const rank=label=>label.item.id===selected?1000:label.item.id===hovered?900:label.item.kind==='note'?(label.item.peer?90:100):50;
   const near=label=>{label.item.anchor.getWorldPosition(at);return at.distanceTo(controls.target);};
@@ -189,5 +184,5 @@ export function createSceneLabels({camera,controls,renderer,parent=renderer.domE
  }
  function setSelected(id){if(id===selected)return;labels.get(selected)?.el.classList.remove('selected');selected=id;labels.get(id)?.el.classList.add('selected');dirty=true;clusterCache=null;}
  function setHover(id){if(id===hovered)return;labels.get(hovered)?.el.classList.remove('hovered');hovered=id;labels.get(id)?.el.classList.add('hovered');}
- return {sync,tick,hitTest,setSelected,setHover,setMask,setFocus(x,y){focus=[x,y];},get tier(){return tier;},get moving(){return moving;}};
+ return {sync,tick,hitTest,setSelected,setHover,setFocus(x,y){focus=[x,y];},get tier(){return tier;},get moving(){return moving;}};
 }
