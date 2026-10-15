@@ -577,14 +577,16 @@ function noteAnchorText(note){
  return note.anchor_portal?`${note.height_m} m above portal ${note.anchor_portal}`:'Anchored in Home';
 }
 function cardActions(...buttons){const row=document.createElement('div');row.className='card-actions';row.append(...buttons);return row;}
-// Send the robot that advertises `navigate` to a place in this local scene.
-// Home plans the route on the scene map; the robot's own navigation drives it.
-async function sendRobot(target,status){status.textContent='Planning the route…';try{const r=await api(localSceneUrl()+'/navigate-robot',{target});status.textContent=r.summary;lastScene=null;}catch(error){status.textContent='Not sent · '+error.message;}}
-async function stopRobotNav(status){try{const r=await api('/api/robots/stop',{});status.textContent=r.summary;}catch(error){status.textContent='Not stopped · '+error.message;}}
-function robotGoControls(target){
- const box=document.createElement('div');box.setAttribute('aria-label','Robot navigation');
- const status=document.createElement('p');status.className='form-status';status.setAttribute('role','status');
- box.append(cardActions(actionButton('Send robot here',{onClick:()=>sendRobot(target,status)}),actionButton('Stop robot',{variant:'danger-ghost',onClick:()=>stopRobotNav(status)})),status);
+// Robot actions on a selected spot (note, voxel, occupancy cell): point here,
+// send a robot here, and stop. Each confirms on the card before anything moves.
+function robotGoControls(target,at=target.position){
+ const pointers=at?pointingRobots():[],movers=navigatingRobots(),box=document.createElement('div');box.setAttribute('aria-label','Robot actions');
+ if(!pointers.length&&!movers.length)return box;
+ const status=statusLine(),buttons=[];
+ if(pointers.length)buttons.push(actionButton('Point here',{iconPath:POINT_ICON,onClick:()=>confirmPointAt(new THREE.Vector3(...at),pointers)}));
+ if(movers.length)buttons.push(actionButton('Send robot here',{iconPath:SEND_ICON,onClick:()=>confirmSendTo(target,movers)}),
+  actionButton('Stop robot',{variant:'danger-ghost',onClick:()=>stopRobots(movers,status)}));
+ box.append(cardActions(...buttons),status);
  return box;
 }
 function showNoteSelection(note){
@@ -600,7 +602,7 @@ function showNoteSelection(note){
  if(note.anchor_portal)field('Anchor portal',note.anchor_portal,true);
  field('Note ID',note.id,true);
  card.append(technical);
- if(isLocalScene())card.append(robotGoControls({kind:'note',id:note.id}));
+ if(isLocalScene())card.append(robotGoControls({kind:'note',id:note.id},note.position));
  const reason=noteReadOnlyReason(note);
  if(reason){const lock=document.createElement('p');lock.className='card-readonly';lock.append(icon(icons.lock,14),document.createTextNode('Read-only · '+reason));card.append(lock);}
  else card.append(cardActions(actionButton('Edit',{onClick:()=>editNoteCard(note)}),actionButton('Delete',{variant:'danger-ghost',onClick:()=>confirmNoteDelete(note)})));
@@ -869,7 +871,7 @@ renderer.domElement.addEventListener('pointerup',e=>{
  if(e.semanticVolume)return;
  if(e.button!==0)return;
  if(!current||!pointerStart||Math.hypot(e.clientX-pointerStart[0],e.clientY-pointerStart[1])>4)return;
- if(pointPick){const robot=pointPick;stopPointPick();const point=scenePoint(e);if(point)confirmPointAt(point,[robot]);return;}
+ if(pick){picked(e);return;}
  if(placingNote){const target=placementTarget;stopNotePlacement();const box=renderer.domElement.getBoundingClientRect(),pick=new THREE.Raycaster();pick.setFromCamera(new THREE.Vector2((e.clientX-box.left)/box.width*2-1,1-(e.clientY-box.top)/box.height*2),camera);const request={source:'scene',frame:current.frame,origin:pick.ray.origin.toArray(),direction:pick.ray.direction.toArray()};if(target)target(request);else beginLabel(request);return;}
  const r=renderer.domElement.getBoundingClientRect(), ray=new THREE.Raycaster();ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),camera);
  const hits=ray.intersectObjects([...selectable,...crayon.objects()].filter(o=>{for(let p=o;p;p=p.parent){if(!p.visible)return false;}return true;}));if(!hits.length){clearSelection();return;}const h=hits.find(h=>h.object.userData.kind==='note')||hits.find(h=>h.object.userData.kind==='path')||hits.find(h=>h.object.userData.kind==='portal')||hits[0],d=h.object.userData;
@@ -1031,38 +1033,61 @@ function glyphFor(key,name){
 function focusPose(name,state,key){
  if(!state.pose)return;
  const target=new THREE.Vector3(...state.pose.translation).add(new THREE.Vector3(0,.3,0));cameraPan.start(target.clone().add(new THREE.Vector3(2,2.4,2.7)),target);
- showSelection(name,'',state.status,{kind:'Robot',facts:[['Position',xyz(state.pose.translation,3),true],['Pose','Calibrated robot base · arrow points forward · illustrative glyph']]});
- const peer=key?.startsWith('body:')?key.slice(5):null,robot=peer&&pointingRobots().find(r=>r.peer_id===peer);
- if(robot)$('selection').append(cardActions(actionButton('Point at…',{variant:'primary',iconPath:POINT_ICON,onClick:()=>startPointPick(robot)})));
+ showRobotCard(name,state,key);
 }
-// Pointing a robot at a spot: robots that advertise point_at, a confirm on the card
-// (the arm moves), then Home's /api/robot-point, the same path the chat tool uses.
+function showRobotCard(name,state,key){
+ showSelection(name,'',state.status,{kind:'Robot',facts:[['Position',xyz(state.pose.translation,3),true],['Pose','Calibrated robot base · arrow points forward · illustrative glyph']]});
+ const peer=key?.startsWith('body:')?key.slice(5):null;if(!peer)return;
+ const robot={peer_id:peer,name},canPoint=pointingRobots().some(r=>r.peer_id===peer),canSend=navigatingRobots().some(r=>r.peer_id===peer);
+ const driving=keyDrive.peer===peer,again=()=>showRobotCard(name,state,key);
+ const buttons=[];
+ if(canPoint)buttons.push(actionButton('Point at…',{iconPath:POINT_ICON,onClick:()=>startPick(robot,'point')}));
+ if(canSend)buttons.push(actionButton('Send to…',{onClick:()=>startPick(robot,'send')}));
+ // Keyboard driving needs only a live pose here; the robot decides whether it accepts this Home.
+ if(isLocalScene())buttons.push(actionButton(driving?'Stop driving (Esc)':'Drive with keyboard',{variant:driving?'danger-ghost':'secondary',onClick:()=>{driving?stopKeyDrive():startKeyDrive(peer);again();}}));
+ const status=document.createElement('p');status.className='form-status';status.setAttribute('role','status');
+ if(driving)status.textContent='WASD or arrow keys · Esc stops';
+ if(canSend||driving)buttons.push(actionButton('Stop',{variant:'danger-ghost',onClick:()=>{stopKeyDrive();if(canSend)stopRobots([robot],status);else again();}}));
+ if(buttons.length)$('selection').append(cardActions(...buttons),status);
+}
+// Robot actions on any spot: point an arm at it, or send a robot there. Each shows
+// only when some robot advertises that operation, and each asks before anything moves.
 const POINT_AT_INSTRUCTION='spatial-harness.point-at/v1';
+const NAVIGATE_INSTRUCTION='spatial-harness.navigate/v1';
 const POINT_ICON='M9 1.5v3M9 13.5v3M1.5 9h3M13.5 9h3M9 5.5a3.5 3.5 0 1 0 0 7a3.5 3.5 0 1 0 0-7';
-function pointingRobots(){
- return (fleetNetwork?.peers||[]).filter(p=>(p.catalog?.components||[]).some(c=>(c.manifest?.operables||[]).some(o=>o?.instruction===POINT_AT_INSTRUCTION)))
+const SEND_ICON='M3 15 9 2l6 13-6-3.5Z';
+function robotsWith(instruction){
+ return (fleetNetwork?.peers||[]).filter(p=>(p.catalog?.components||[]).some(c=>(c.manifest?.operables||[]).some(o=>o?.instruction===instruction)))
   .map(p=>({peer_id:p.peer_id,name:fleetNetwork?.aliases?.[p.peer_id]||p.name||p.peer_id}));
 }
-let pointPick=null;  // the robot waiting for a clicked spot
-function startPointPick(robot){
- pointPick=robot;renderer.domElement.style.cursor='crosshair';
- showSelection(`Point ${robot.name} at…`,'','Click a spot in the scene. Nothing moves until you confirm.',{kind:'Robot'});
- $('selection').append(cardActions(actionButton('Cancel',{onClick:()=>{stopPointPick();clearSelection();}})));
+function pointingRobots(){return robotsWith(POINT_AT_INSTRUCTION);}
+function navigatingRobots(){return robotsWith(NAVIGATE_INSTRUCTION);}
+function robotDistance(robot,point){const at=declaredBodies.entries.find(e=>e.peer_id===robot.peer_id)?.pose?.translation;return at?new THREE.Vector3(...at).distanceTo(point):null;}
+let pick=null;  // {robot, action}: a robot waiting for a clicked spot
+function startPick(robot,action){
+ pick={robot,action};renderer.domElement.style.cursor='crosshair';
+ showSelection(action==='point'?`Point ${robot.name} at…`:`Send ${robot.name} to…`,'','Click a spot in the scene. Nothing moves until you confirm.',{kind:'Robot'});
+ $('selection').append(cardActions(actionButton('Cancel',{onClick:()=>{stopPick();clearSelection();}})));
 }
-function stopPointPick(){pointPick=null;renderer.domElement.style.cursor='';}
+function stopPick(){pick=null;renderer.domElement.style.cursor='';}
 // The scene point under the pointer: the first visible pickable hit, else the ground plane.
 function scenePoint(e){
  const r=renderer.domElement.getBoundingClientRect(),ray=new THREE.Raycaster();ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,1-(e.clientY-r.top)/r.height*2),camera);
  const hit=ray.intersectObjects(selectable.filter(o=>{for(let p=o;p;p=p.parent)if(!p.visible)return false;return true;}))[0];
  return hit?hit.point.clone():ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,1,0),0),new THREE.Vector3());
 }
+function picked(e){
+ const {robot,action}=pick;stopPick();const point=scenePoint(e);if(!point)return;
+ if(action==='point')confirmPointAt(point,[robot]);
+ else confirmSendTo({kind:'position',position:point.toArray().map(n=>Math.round(n*1000)/1000)},[robot]);
+}
+function statusLine(){const status=document.createElement('p');status.className='form-status';status.setAttribute('role','status');return status;}
 function confirmPointAt(point,robots){
  if(!robots.length){toast('No robot here advertises pointing');return;}
  const scene=activeMap,target=point.toArray().map(n=>Math.round(n*1000)/1000),facts=[['Target',xyz(target),true]];
- for(const r of robots){const at=declaredBodies.entries.find(e=>e.peer_id===r.peer_id)?.pose?.translation;if(at)facts.push([`${r.name} distance`,new THREE.Vector3(...at).distanceTo(point).toFixed(2)+' m']);}
+ for(const r of robots){const d=robotDistance(r,point);if(d!==null)facts.push([`${r.name} distance`,d.toFixed(2)+' m']);}
  showSelection(robots.length===1?`Point ${robots[0].name} here?`:'Point a robot here?','','The arm will move. Clear the space in front of the robot first.',{kind:'Robot',facts});
- const status=document.createElement('p');status.className='form-status';status.setAttribute('role','status');
- const cancel=actionButton('Cancel',{onClick:clearSelection});
+ const status=statusLine(),cancel=actionButton('Cancel',{onClick:clearSelection});
  const buttons=robots.map(r=>actionButton(robots.length===1?'Point':`Point with ${r.name}`,{variant:'primary',iconPath:POINT_ICON,onClick:async()=>{
   for(const b of [cancel,...buttons])b.disabled=true;status.textContent=`Asking ${r.name}…`;
   try{const result=await api('/api/robot-point',{scene,robot:r.peer_id,position:target});status.textContent=result.summary||'Accepted';toast(result.summary||`${r.name} accepted`);}
@@ -1071,7 +1096,44 @@ function confirmPointAt(point,robots){
  }}));
  $('selection').append(cardActions(cancel,...buttons),status);buttons[0].focus();
 }
-document.addEventListener('keydown',e=>{if(e.key==='Escape'&&pointPick){e.preventDefault();stopPointPick();clearSelection();}});
+// Sending a robot: with several, choose one; Home then plans and draws the route
+// without sending it, and only Confirm hands it to the robot (re-planned from where
+// the robot stands then). Stop stays on the card once it is on its way.
+let sendPlan=0;
+function confirmSendTo(target,robots){
+ if(!robots.length){toast('No robot here advertises navigation');return;}
+ if(robots.length>1){
+  showSelection('Send which robot?','','Home plans the route for the one you choose and asks again before it moves.',{kind:'Robot'});
+  $('selection').append(cardActions(actionButton('Cancel',{onClick:clearSelection}),...robots.map(r=>actionButton(r.name,{variant:'primary',onClick:()=>confirmSendTo(target,[r])}))));return;
+ }
+ const robot=robots[0],url=localSceneUrl()+'/navigate-robot',plan=++sendPlan;
+ showSelection(`Send ${robot.name} here?`,'','Planning the route…',{kind:'Robot'});
+ $('selection').append(cardActions(actionButton('Cancel',{onClick:clearSelection})));
+ api(url,{robot:robot.peer_id,target,preview:true}).then(route=>{
+  if(plan!==sendPlan)return;lastScene=null;  // the shared route draws on the next refresh
+  showSelection(`Send ${robot.name} along this route?`,'',route.summary,{kind:'Robot',facts:[['Route',route.route.length_m.toFixed(1)+' m'],['Waypoints',String(route.waypoints)],['Drives','The robot. Its own navigation avoids obstacles and stops on arrival.']]});
+  const status=statusLine(),cancel=actionButton('Cancel',{onClick:clearSelection});
+  const send=actionButton('Send',{variant:'primary',iconPath:SEND_ICON,onClick:async()=>{
+   send.disabled=cancel.disabled=true;status.textContent=`Sending ${robot.name}…`;
+   try{const r=await api(url,{robot:robot.peer_id,target});status.textContent=r.summary;toast(`${robot.name} is on its way`);lastScene=null;
+    send.replaceWith(actionButton('Stop',{variant:'danger-ghost',onClick:()=>stopRobots([robot],status)}));}
+   catch(e){status.textContent='Not sent · '+e.message;send.disabled=false;}
+   finally{cancel.disabled=false;}
+  }});
+  $('selection').append(cardActions(cancel,send),status);send.focus();
+ }).catch(e=>{
+  if(plan!==sendPlan)return;
+  showSelection(`Can't send ${robot.name} here`,'',e.message,{kind:'Robot'});
+  $('selection').append(cardActions(actionButton('Close',{onClick:clearSelection})));
+ });
+}
+async function stopRobots(robots,status){
+ for(const r of robots){
+  try{const result=await api('/api/robots/stop',{robot:r.peer_id});status.textContent=result.summary;}
+  catch(e){status.textContent='Not stopped · '+e.message;}
+ }
+}
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&pick){e.preventDefault();stopPick();clearSelection();}});
 function renderRunners(entries){
  const keys=new Set(entries.map(e=>e.key));
  for(const [key,glyph] of robots)if(!keys.has(key)){scene.remove(glyph.group);clear(glyph.group);robots.delete(key);poseUpdates.delete(key);}
@@ -1800,6 +1862,7 @@ function openSpotMenu(e){
   spotTool('Draw a path',icons.pen,'amber',()=>{if($('crayon').getAttribute('aria-pressed')!=='true')$('crayon').click();},!$('crayon').disabled),
   spotTool('New volume here','M9 1.5 15.5 5v8L9 16.5 2.5 13V5ZM2.5 5 9 8.5l6.5-3.5M9 8.5v8','violet',at=>semanticVolumes.beginAt(at.point.toArray()),!$('volume-draw').disabled),
   spotTool('Point a robot here',POINT_ICON,'cyan',at=>confirmPointAt(at.point,pointingRobots()),pointingRobots().length>0),
+  spotTool('Send a robot here',SEND_ICON,'cyan',at=>confirmSendTo({kind:'position',position:at.point.toArray().map(n=>Math.round(n*1000)/1000)},navigatingRobots()),isLocalScene()&&navigatingRobots().length>0),
   divider,ask);
  spotMenu.hidden=false;
  const box=spotMenu.getBoundingClientRect(),x=Math.min(Math.max(8,e.clientX-box.width/2),innerWidth-box.width-8),y=e.clientY-box.height-22<8?e.clientY+22:e.clientY-box.height-22;

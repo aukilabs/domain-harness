@@ -1077,7 +1077,8 @@ async fn point_robot_at(s:&Shared,key:&str,frame:&str,args:Value)->anyhow::Resul
 /// advertises. The robot's own navigation stack drives and avoids obstacles.
 async fn navigate_robot(s:&Shared,key:&str,frame:&str,args:Value)->anyhow::Result<Value> {
     #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Target {kind:String,#[serde(default)] id:Option<String>,#[serde(default)] position:Option<[f64;3]>}
-    #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Go {#[serde(default)] robot:Option<String>,target:Target}
+    // `preview` plans and shares the route without sending it, so a person can see it and confirm first.
+    #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Go {#[serde(default)] robot:Option<String>,target:Target,#[serde(default)] preview:bool}
     let a:Go=serde_json::from_value(args)?;
     let network=spatial_home::peer_aliases::network(s.peer.borrow().clone())?;
     let candidate=spatial_home::robot_navigation::select(&network,a.robot.as_deref())?;
@@ -1100,6 +1101,11 @@ async fn navigate_robot(s:&Shared,key:&str,frame:&str,args:Value)->anyhow::Resul
     anyhow::ensure!(route.status!=spatial_home::scene_navigation::Status::Unreachable,"The scene map shows no way for {robot} to get there");
     let points=route.path.as_ref().and_then(|p|p.segments.first()).cloned().ok_or_else(||anyhow::anyhow!("{robot} is already there"))?;
     let waypoints=spatial_home::robot_navigation::waypoints(&points,0.25)?;
+    let known=match route.status {spatial_home::scene_navigation::Status::Direct=>" The map shows nothing in the way, but part of the floor is unseen.",_=>""};
+    if a.preview {
+        return Ok(json!({"summary":format!("Route for {robot}: {:.1} m, {} waypoint(s).{known}",route.length_m,waypoints.len()),
+            "robot_peer_id":candidate.peer_id,"robot":robot,"route":route,"waypoints":waypoints.len(),"preview":true}));
+    }
     let scene_frame=spatial_home::conventions::registry(&home_peer,frame)?;
     let instruction=spatial_home::navigate::Navigate{request_id:uuid::Uuid::new_v4().to_string(),
         frame:spatial_home::compact_pose::FrameRef::from(&scene_frame),waypoints};
@@ -1107,7 +1113,6 @@ async fn navigate_robot(s:&Shared,key:&str,frame:&str,args:Value)->anyhow::Resul
     s.navigation.try_send(spatial_home::robot_navigation::Invoke{candidate:candidate.clone(),request:spatial_home::robot_navigation::Request::Navigate(instruction,reply)})
         .map_err(|_|anyhow::anyhow!("Home P2P is not running, or another robot request is pending"))?;
     let accepted=receive.await.map_err(|_|anyhow::anyhow!("Robot navigation request was dropped"))??;
-    let known=match route.status {spatial_home::scene_navigation::Status::Direct=>" The map shows nothing in the way, but part of the floor is unseen.",_=>""};
     Ok(json!({"summary":format!("{robot} is on its way: {:.1} m route, {} waypoint(s).{known} Its own navigation avoids obstacles and stops on arrival.",
         route.length_m,accepted.waypoints_nav.len()),"robot_peer_id":candidate.peer_id,"route":route,"result":accepted}))
 }
