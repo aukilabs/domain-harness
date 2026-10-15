@@ -1632,10 +1632,6 @@ async fn main() -> anyhow::Result<()> {
             }),
         )
         .route(
-            "/peer-presence.js",
-            get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/peer-presence.js")) }),
-        )
-        .route(
             "/phone-trails.js",
             get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/phone-trails.js")) }),
         )

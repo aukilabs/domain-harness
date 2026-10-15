@@ -15,21 +15,6 @@ owner, ID and hash. Ambiguous paths are rejected; no first-Product authority.
 Home fetches definitions during Catalog discovery. It requires them before
 using pose or depth. Missing definitions are retried, without inline fallback.
 
-Discovery, Registry resolution and rendering do not share an all-peers barrier.
-Home checks the SDK's authenticated-peer snapshot every 250 ms, independently of
-DDS discovery. Connected peers get revision-aware Catalog refreshes one second
-after the previous request completes, with bounded concurrency. Registry work
-runs separately, prioritizes pose dependencies, and publishes each validated
-definition immediately. An unrelated missing sensor definition does not gate a
-pose whose own references are resolved.
-
-Home subscribes to sampled poses in their declared native frame before a
-scene alignment exists. The ten-second SDK buffer is retention, not a warmup.
-When the held alignment arrives, consumers can use the retained captures for
-which that alignment is valid, without restarting the native stream. The viewer
-updates each peer independently; it still requires a valid, fresh pose in the
-selected Home frame, and never draws an unaligned pose as if it were calibrated.
-
 ## Time
 
 Native motion is sampled. The viewer only renders recent arrivals (under two

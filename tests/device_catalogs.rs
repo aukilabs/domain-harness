@@ -33,9 +33,6 @@ async fn catalogs_are_real_refreshable_and_not_retained_as_live_peers() -> Resul
                 .iter()
                 .any(|p| p["manifest"]["product_id"] == "phone-local-voxels")
         );
-        let unchanged = spatial_home::device_catalogs::fetch_revision(&pair.a, pair.b.peer_id(), &routes, Some(&catalog)).await;
-        assert_eq!(unchanged["catalog_status"], "ready");
-        assert_eq!(unchanged["catalog"], catalog["catalog"]);
         let mut cache = Catalogs::new();
         cache.insert(pair.b.peer_id().to_string(), catalog);
         // The phone owns its map even without portal alignment or a Home push.
@@ -43,8 +40,6 @@ async fn catalogs_are_real_refreshable_and_not_retained_as_live_peers() -> Resul
         publisher.publish(spatial_home::mobile_local::Snapshot {
             session: session.clone(), timestamp_ns: 1, cells: vec![[1, 2, 3]],
         })?;
-        let changed = spatial_home::device_catalogs::fetch_revision(&pair.a, pair.b.peer_id(), &routes, cache.get(&pair.b.peer_id().to_string())).await;
-        assert!(changed["catalog"]["revision"].as_u64().unwrap() > unchanged["catalog"]["revision"].as_u64().unwrap());
         let scenes = spatial_home::sensor_preview::scene_products(&cache);
         assert_eq!(scenes.len(), 1);
         assert!(spatial_home::mobile_local::render(&pair.b.peer_id().to_string()).is_err());

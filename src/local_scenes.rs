@@ -242,14 +242,6 @@ impl LocalScenes {
             .get(id)
             .ok_or_else(|| anyhow!("Unknown local scenegraph"))
     }
-    /// Discovery needs only the live frame identity, not a cloned voxel map or
-    /// disk-backed annotation/volume views on every scheduling tick.
-    pub fn frame_id(&self, id: &str) -> Result<String> {
-        let snapshot = self.snapshot(id)?;
-        let views = self.mobile_views.lock().map_err(|_| anyhow!("Local scene view unavailable"))?;
-        Ok(views.get(id).and_then(|v| v["frame"].as_str())
-            .unwrap_or(&snapshot.scenegraph.map.frame.id).to_owned())
-    }
     pub fn view(&self, id: &str) -> Result<Value> {
         let snapshot = self.snapshot(id)?;
         if let Some(view) = self
