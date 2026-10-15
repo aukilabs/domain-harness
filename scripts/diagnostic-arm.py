@@ -67,15 +67,27 @@ def kinematics(cfg):
     return fk
 
 
-def measured_limits(cfg, name):
-    path = Path(cfg.urdf_path).parent.parent.parent/name/'ranges.calibration.json'
-    if not path.exists():
-        raise RuntimeError(f'{name} is not range-calibrated; run its calibrate.py first')
-    ranges = json.loads(path.read_text())
-    lower = np.minimum(ranges['cal_min'], ranges['cal_max'])
-    upper = np.maximum(ranges['cal_min'], ranges['cal_max'])
+def measured_limits(cfg, name, state=None):
+    """The arm's measured joint limits, in motor turns.
+
+    Newer BBOS keeps the calibration in the arm board's flash and republishes
+    each joint's two calibrated extremes as cal_min/cal_max in every
+    <arm>.state record; older BBOS wrote them to ranges.calibration.json. The
+    named extremes are not ordered, so the limits are their min and max.
+    """
+    if state is not None and 'cal_min' in (getattr(getattr(state, 'dtype', None), 'names', None) or ()):
+        low, high = np.asarray(state['cal_min'], float), np.asarray(state['cal_max'], float)
+    else:
+        path = Path(cfg.urdf_path).parent.parent.parent/name/'ranges.calibration.json'
+        if not path.exists():
+            raise RuntimeError(f'{name} is not range-calibrated; run its calibrate.py first')
+        ranges = json.loads(path.read_text())
+        low, high = np.asarray(ranges['cal_min'], float), np.asarray(ranges['cal_max'], float)
+    lower, upper = np.minimum(low, high), np.maximum(low, high)
     if not np.isfinite(lower[:7]).all() or not np.isfinite(upper[:7]).all():
         raise RuntimeError(f'{name} has no finite measured limits')
+    if np.any(upper[:7]-lower[:7] <= 0):
+        raise RuntimeError(f'{name} has a joint with no calibrated travel; recalibrate it')
     return lower, upper
 
 
@@ -88,7 +100,7 @@ class Arms:
         for name in ('arm_left', 'arm_right'):
             cfg = Config(name)
             cfg.ik.init()
-            self.arms[name] = dict(cfg=cfg, fk=kinematics(cfg), limits=measured_limits(cfg, name),
+            self.arms[name] = dict(cfg=cfg, fk=kinematics(cfg),
                                    state=stack.enter_context(Reader(name+'.state', keeptime=False)))
         self.imu = stack.enter_context(Reader('imu.orientation', keeptime=False))
         self.battery = stack.enter_context(Reader('drive.status', keeptime=False))
@@ -129,8 +141,9 @@ def plan(arms, name, target):
     """Checked joint targets for one request; raises ValueError to refuse it."""
     from bracketbot_point import HOME, check_path, plan_point_at
     arm = arms.arms[name]
-    fk, (lower, upper) = arm['fk'], arm['limits']
     state = arms.healthy(name)
+    # Read with every plan, so a recalibration is honoured without a restart.
+    fk, (lower, upper) = arm['fk'], measured_limits(arm['cfg'], name, state)
     if np.max(np.abs(state['vel'])) > .02:
         raise ValueError('arm is moving')
     start = state['pos'].astype(float).copy()
