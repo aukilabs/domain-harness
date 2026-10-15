@@ -702,7 +702,7 @@ pub async fn serve_scene(
                     &publisher.runtime, &publisher.endpoint,
                     publisher.session_clock.clone(),
                 )?;
-                let mut traffic = crate::peer_traffic::Publisher::mount(&publisher.runtime, &publisher.endpoint, &publisher.clock, publisher.started)?;
+                let mut traffic = crate::peer_traffic::Publisher::mount(&publisher.runtime, &publisher.endpoint, &publisher.clock, publisher.session_clock.clone())?;
                 let mut local_mobile = crate::local_mobile::Publisher::mount_all(
                     &publisher.runtime, &publisher.endpoint, local_scenes.clone(),
                     publisher.session_clock.clone(),
