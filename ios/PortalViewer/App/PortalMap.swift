@@ -29,7 +29,7 @@ struct Portal: Decodable, Equatable {
 
 struct PortalMap: Decodable, Equatable {
     let scenegraph: Scene
-    let render: RenderScene?
+    var render: RenderScene?
     struct Scene: Decodable, Equatable {
         let map: Definition
         let anchors: [String: Portal]
@@ -147,7 +147,7 @@ struct HomeProfile: Decodable {
 struct RenderScene: Decodable, Equatable {
     let frame: String
     let voxel_size: Float
-    let voxels: [Voxel]
+    var voxels: [Voxel]
     let objects: [ObjectLabel]
     let notes: [Note]
     var volumes: [SemanticVolume]? = nil
