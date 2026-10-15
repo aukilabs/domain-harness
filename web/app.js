@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createArOverlay } from './ar.js';
 import { createPhoneTrails, cameraShape } from './phone-trails.js';
+import { createPeerPresence } from './peer-presence.js';
 import { createCompactPoseTrail } from './compact-pose-trail.js';
 import { createSemanticVolumes, legacyVolumesForView } from './semantic-volumes.js';
 import { createMap2D } from './map-2d.js';
@@ -209,7 +210,7 @@ const disconnectRobots=document.createElement('button');disconnectRobots.id='dis
 disconnectRobots.onclick=async()=>{disconnectRobots.disabled=true;try{await api('/api/simulation/disconnect',{});}catch(e){disconnectRobots.disabled=false;showAvailability(e.message);}};
 const notesBody=panelBodies.notes;
 const tagsBody=panelBodies.tags;
-let fleetNetwork=null,fleetSignature='';
+let fleetNetwork=null,fleetSignature='',peerRefreshBusy=false;
 const componentControlResults=new Map();
 let componentControlPending=false;
 const sceneBackground=document.documentElement.dataset.theme==='light'?'#e8e8f0':'#0d0d0f';
@@ -404,41 +405,52 @@ const semanticVolumes=createSemanticVolumes({scene,camera,renderer,controls,pane
 // The volume tool draws on the 3D floor, so it can't start while the 2D plan is open.
 $('volume-draw').addEventListener('click',e=>{if(map2D.isActive())e.stopImmediatePropagation();},true);
 $('map-select').addEventListener('change',()=>{semanticVolumes.reset();try{localStorage.setItem('home.lastScene',$('map-select').value);}catch{}});
-let phonePresenceBusy=false;
 const homePoseStatus=document.createElement('p');homePoseStatus.className='panel-hint';panelBodies.maps.append(homePoseStatus);
-$('map-select').addEventListener('change',()=>{homePoseStatus.textContent='';phoneTrails.reset(null);});
+$('map-select').addEventListener('change',()=>{peerPresence.update(null,[]);homePoseStatus.textContent='';phoneTrails.reset(null);});
 // Robots that declare a body on their pose's base frame, aligned to this scene.
 let declaredBodies={frame:null,entries:[]};
+let presenceCatalogErrors=[];
 const sameFrame=(a,b)=>Boolean(a&&b)&&a.peer_id===b.peer_id&&a.id===b.id&&a.hash===b.hash;
-async function refreshPhonePresence(){
- if(phonePresenceBusy||!isLocalScene()||!current)return;
- const map=activeMap,frame=current.frame;phonePresenceBusy=true;
- try{const poses=[],errors=[],bodies=[];
-  // Only peers with a sampled pose can be drawn as a body; skip the lookup without any.
-  const posed=(fleetNetwork?.peers||[]).some(peer=>(peer.catalog?.products||[]).some(p=>p.metadata?.schema==='spatial-harness.compact-pose-contract/v1'));
-  const declared=posed?(await api('/api/robot-states').catch(()=>({robots:[]}))).robots||[]:[];
-  // Look every peer up at once: Home answers pose lookups one at a time, so a
-  // peer-by-peer loop made each pass longer than the freshness window.
-  await Promise.all((fleetNetwork?.peers||[]).map(async peer=>{
-   const products=(peer.catalog?.products||[]).filter(p=>p.metadata?.schema==='spatial-harness.compact-pose-contract/v1'&&(p.metadata.value?.lifetime??'sampled')==='sampled');
-   if(!products.length)return;
-   const name=fleetNetwork?.aliases?.[peer.peer_id]||peer.name||peer.peer_id;
-   if(products.length!==1){errors.push(name+': ambiguous pose Products');return;}
-   const product=products[0],q=new URLSearchParams({debug_pose:'true',sensor:peer.peer_id+'/'+product.manifest.product_id,expected_manifest:product.manifest_hash,home_frame:frame});
-   try{const value=await api('/api/sensors?'+q),home=value.home_pose;
-    if(home?.frame!==frame||home.tracking?.status!=='valid'||value.stream!=='live')return;
-    const p=home.tracking.pose,[x,y,z,w]=p.rotation_xyzw;
-    const body=declared.find(r=>r.peer_id===peer.peer_id&&sameFrame(r.base_frame,product.metadata.value.from_frame));
-    if(body){bodies.push({peer_id:peer.peer_id,name,received_age_ms:value.age_ms,receivedAt:performance.now(),body,
-     base_frame:value.resolved?.contract?.from_frame,pose:{translation:p.translation,rotation_xyzw:p.rotation_xyzw}});return;}
-    poses.push({receivedAt:performance.now(),peer_id:peer.peer_id,name,clock:{session_id:value.resolved.contract.session_id+':'+home.alignment_timestamp_ns},capture_timestamp_ns:value.timestamp_ns,received_age_ms:value.age_ms,
-     pose:{to_frame_id:frame,translation:p.translation,rotation_wxyz:[w,x,y,z]}});
-   }catch(e){errors.push(name+': '+e.message);}
-  }));
-  if(activeMap!==map||current?.frame!==frame)return;
-  if(activeMap===map&&current?.frame===frame){declaredBodies={frame,entries:bodies};refreshRunner();}
-  if(activeMap===map&&current?.frame===frame){const fresh=poses.map(p=>({...p,received_age_ms:p.received_age_ms+performance.now()-p.receivedAt})).filter(p=>p.received_age_ms<2000);phoneTrails.ingest(frame,fresh);homePoseStatus.textContent=errors.length?errors.join(' · '):fresh.length?plural(fresh.length,'phone')+' aligned to this Home scene':'';$('canvas').dataset.phonePoseStatus=errors.join('\n');}
- }catch{if(activeMap===map)phoneTrails.ingest(frame,[]);}finally{phonePresenceBusy=false;}
+const peerPresence=createPeerPresence({
+ read:async(target,signal)=>{const r=await fetch(target.url,{signal});if(!r.ok)throw new Error(await r.text());return r.json();},
+ changed:rows=>{
+  if(!isLocalScene()||!current)return;
+  const frame=current.frame,poses=[],errors=[...presenceCatalogErrors],bodies=[],now=performance.now();
+  const declared=rows.find(r=>r.target.key==='bodies')?.value?.robots||[];
+  for(const {target,value,error,receivedAt} of rows){
+   if(target.key==='bodies')continue;
+   const {peer_id,name,product}=target;
+   if(error){errors.push(name+': '+error);continue;}
+   const home=value?.home_pose,age=value?.age_ms+now-receivedAt;
+   if(home?.frame!==frame||home.tracking?.status!=='valid'||value.stream!=='live'||!(age<2000))continue;
+   const p=home.tracking.pose,[x,y,z,w]=p.rotation_xyzw;
+   const body=declared.find(r=>r.peer_id===peer_id&&sameFrame(r.base_frame,product.metadata.value.from_frame));
+   if(body){bodies.push({peer_id,name,received_age_ms:value.age_ms,receivedAt,body,base_frame:value.resolved?.contract?.from_frame,pose:p});continue;}
+   poses.push({peer_id,name,clock:{session_id:value.resolved.contract.session_id+':'+home.alignment_timestamp_ns},capture_timestamp_ns:value.timestamp_ns,received_age_ms:age,
+    pose:{to_frame_id:frame,translation:p.translation,rotation_wxyz:[w,x,y,z]}});
+  }
+  declaredBodies={frame,entries:bodies};refreshRunner();phoneTrails.ingest(frame,poses);
+  homePoseStatus.textContent=errors.length?errors.join(' · '):poses.length?plural(poses.length,'peer')+' aligned to this Home scene':'';
+  $('canvas').dataset.phonePoseStatus=errors.join('\n');
+ }
+});
+function refreshPhonePresence(){
+ presenceCatalogErrors=[];
+ if(!isLocalScene()||!current){peerPresence.update(null,[]);return;}
+ const frame=current.frame,targets=[];
+ for(const peer of fleetNetwork?.peers||[]){
+  const products=(peer.catalog?.products||[]).filter(p=>p.metadata?.schema==='spatial-harness.compact-pose-contract/v1'&&(p.metadata.value?.lifetime??'sampled')==='sampled');
+  const name=fleetNetwork?.aliases?.[peer.peer_id]||peer.name||peer.peer_id;
+  if(!products.length)continue;
+  if(products.length!==1){presenceCatalogErrors.push(name+': ambiguous pose Products');continue;}
+  const product=products[0];
+  const q=new URLSearchParams({debug_pose:'true',sensor:peer.peer_id+'/'+product.manifest.product_id,expected_manifest:product.manifest_hash,home_frame:frame});
+  targets.push({key:JSON.stringify([peer.peer_id,product.manifest.product_id,product.manifest_hash]),peer_id:peer.peer_id,name,product,url:'/api/sensors?'+q});
+ }
+ // Body descriptions are independent: draw the pose immediately, refine its
+ // appearance when its registry-backed body becomes available.
+ if(targets.length)targets.push({key:'bodies',url:'/api/robot-states',intervalMs:1000});
+ peerPresence.update(JSON.stringify([activeMap,frame]),targets);
 }
 setInterval(refreshPhonePresence,200);
 function build(data){flatSpritesAge=Infinity;
@@ -975,7 +987,16 @@ renderer.setAnimationLoop(now=>{easeViewOffset();if(!cameraPan.tick(now)&&!attac
 refresh().catch(e=>{$('notice').textContent=e.message;$('notice').classList.add('error');});setInterval(()=>{if(!busy)refresh().catch(()=>{});},500);
 
 function updatePairingDownload(){const link=$('pairing-download');link.href=isLocalScene()?localSceneUrl()+'/connection':'/api/home-connection';link.download=isLocalScene()?activeMap.slice(6)+'-connection.json':'home-connection.json';link.textContent=isLocalScene()?'Download phone connection for selected scene ↗':'Download Xmart connection ↗';}
-async function refreshPeer(){try{const peer=await api('/api/peer');$('p2p-status').textContent=peer.enabled?'P2P · '+peer.status:'P2P disabled';$('p2p-detail').textContent=peer.connection?peer.connection.peer_id:peer.detail||'Configure a peer to join the network.';$('pairing-download').hidden=peer.status!=='Ready';updatePairingDownload();fleetNetwork=peer;renderFleetRows();}catch{$('p2p-status').textContent='P2P unavailable';$('pairing-download').hidden=true;fleetNetwork=null;renderFleetRows();}}
+async function refreshPeer(){
+ if(peerRefreshBusy)return;peerRefreshBusy=true;
+ const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),2000);
+ try{const response=await fetch('/api/peer',{signal:controller.signal});if(!response.ok)throw new Error('Peer inventory unavailable');const peer=await response.json();
+  $('p2p-status').textContent=peer.enabled?'P2P · '+peer.status:'P2P disabled';$('p2p-detail').textContent=peer.connection?peer.connection.peer_id:peer.detail||'Configure a peer to join the network.';$('pairing-download').hidden=peer.status!=='Ready';updatePairingDownload();fleetNetwork=peer;renderFleetRows();refreshPhonePresence();
+ }catch{$('p2p-status').textContent='P2P unavailable';$('pairing-download').hidden=true;fleetNetwork=null;renderFleetRows();}
+ finally{clearTimeout(timeout);peerRefreshBusy=false;}
+}
+// Catalog visibility must not wait for a large voxel-scene download or edit.
+setInterval(refreshPeer,500);
 
 // Dynamic telemetry is independent of scene updates and synthetic peer scans.
 const robots=new Map(),poseUpdates=new Map(),robotVolumes=new Map(),bodyVolumePeers=new Set();

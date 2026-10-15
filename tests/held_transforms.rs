@@ -18,10 +18,20 @@ impl CuttableConnection {
         let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST,0)).await?;
         let route = format!("/ip4/127.0.0.1/tcp/{}",listener.local_addr()?.port());
         let task = tokio::spawn(async move {
-            let (mut incoming,_) = listener.accept().await.unwrap();
-            drop(listener);
-            let mut outgoing = tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST,port)).await.unwrap();
-            let _ = tokio::io::copy_bidirectional(&mut incoming,&mut outgoing).await;
+            // Pose and UTC-transform subscriptions may connect concurrently.
+            // Cut every connection on this route, not just the first accept.
+            let mut connections = tokio::task::JoinSet::new();
+            loop { tokio::select! {
+                result = listener.accept() => {
+                    let Ok((mut incoming,_)) = result else { break; };
+                    connections.spawn(async move {
+                        if let Ok(mut outgoing) = tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST,port)).await {
+                            let _ = tokio::io::copy_bidirectional(&mut incoming,&mut outgoing).await;
+                        }
+                    });
+                }
+                _ = connections.join_next(), if !connections.is_empty() => {}
+            } }
         });
         Ok(Self {route,task})
     }
@@ -79,7 +89,8 @@ async fn retained_held_stream_is_shared_idle_revocable_and_catalog_scoped() -> R
                 assert_eq!(cache.at(&reference,&contract,9,1_000_000)?.0.translation[0],10.);
                 assert_eq!(other_reader.at(&reference,&contract,9,1_000_000)?.1,100);
             }
-            assert_eq!(products.endpoint.active_subscriptions(),1);
+            // The session UTC transform has its own subscription as well.
+            assert_eq!(products.endpoint.product_active_subscriptions(&reference.product_id),1);
             // A failed transport invalidates an otherwise idle, valid held state.
             connection.cut().await;
             until(||cache.at(&reference,&contract,9,100).is_err()).await?;
@@ -92,12 +103,14 @@ async fn retained_held_stream_is_shared_idle_revocable_and_catalog_scoped() -> R
             until(||cache.at(&reference,&contract,10,110).is_ok()).await?;
             assert_eq!(cache.at(&reference,&contract,10,109)?.0.translation[0],10.);
             assert_eq!(cache.at(&reference,&contract,10,110)?.0.translation[0],11.);
-            publisher.lose()?; // revocation at 111
-            until(||cache.at(&reference,&contract,11,111).is_err_and(|e|e.to_string().contains("revoked"))).await?;
+            publisher.lose()?; // A loss is an event on the actual SDK session clock.
+            let lost_at = products.timing.clock.now_ns();
+            until(||cache.at(&reference,&contract,11,lost_at).is_err_and(|e|e.to_string().contains("revoked"))).await?;
             assert_eq!(cache.at(&reference,&contract,11,110)?.0.translation[0],11.);
-            publisher.align(120,&transform(12.))?;
-            until(||cache.at(&reference,&contract,12,120).is_ok()).await?;
-            assert!(cache.at(&reference,&contract,12,115).is_err(), "do not cross a revocation");
+            let recovered_at = lost_at + 10;
+            publisher.align(recovered_at,&transform(12.))?;
+            until(||cache.at(&reference,&contract,12,recovered_at).is_ok()).await?;
+            assert!(cache.at(&reference,&contract,12,lost_at).is_err(), "do not cross a revocation");
             let mut foreign = reference.clone(); foreign.manifest_hash = "wrong".into();
             assert!(cache.at(&foreign,&contract,0,120).is_err());
             let mut changed = contract.clone(); changed.to_frame.id = "new-origin".into();
@@ -106,8 +119,8 @@ async fn retained_held_stream_is_shared_idle_revocable_and_catalog_scoped() -> R
             tx.send_replace(Default::default());
             until(||cache.at(&reference,&contract,0,120).is_err() && products.endpoint.active_subscriptions()==0).await?;
             tx.send_replace(rows);
-            until(||cache.at(&reference,&contract,12,120).is_ok()).await?;
-            assert_eq!(products.endpoint.active_subscriptions(),1);
+            until(||cache.at(&reference,&contract,12,recovered_at).is_ok()).await?;
+            assert_eq!(products.endpoint.product_active_subscriptions(&reference.product_id),1);
             // Explicit closure is not an idle held transform.
             products.endpoint.unexport_product(&reference.product_id);
             until(||cache.at(&reference,&contract,0,120).is_err()).await?;

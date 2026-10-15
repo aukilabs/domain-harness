@@ -170,18 +170,23 @@ async fn home_fetches_exact_registry_definitions_before_inspection() -> Result<(
             .collect::<Vec<_>>();
         let mut row =
             spatial_home::device_catalogs::fetch(&pair.a, pair.b.peer_id(), &routes).await;
-        let registry = spatial_home::product_registry::resolve(
+        let mut progress = Vec::new();
+        let registry = spatial_home::product_registry::resolve_progress(
             &pair.a,
             pair.b.peer_id(),
             &row,
             None,
             &Default::default(),
+            |definitions| progress.push(definitions),
         )
         .await;
         assert_eq!(registry["status"], "ready", "{registry}");
         let c: Contract =
             serde_json::from_value(row["catalog"]["products"][0]["metadata"]["value"].clone())?;
         let (resolved, _) = spatial_home::product_registry::resolved_contract(&registry, &c)?;
+        assert!(progress.iter().any(|r| r["status"] == "loading"
+            && spatial_home::product_registry::resolved_contract(r, &c).is_ok()),
+            "native pose definitions must be published before the whole Registry pass finishes");
         assert_eq!(resolved.to_frame.frame_id, format!("phone-ar:{session}"));
         row["catalog"]["products"][0]["metadata"]["value"]["from_frame"]["hash"] =
             serde_json::json!("a".repeat(32));
