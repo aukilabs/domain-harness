@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { icons, icon, sectionHeader, listRow, actionButton, markSelected } from './panel-ui.js';
 
 // Semantic boxes are independent of transient voxel and robot-occupancy layers.
-export function createSemanticVolumes({scene, camera, renderer, controls, panel, api, label, clear, openPanel, inspector, toast=()=>{}, flyTo=null, priorityPickObjects=()=>[]}) {
+export function createSemanticVolumes({scene, camera, renderer, controls, panel, api, label, clear, openPanel, inspector, toast=()=>{}, flyTo=null, priorityPickObjects=()=>[], labels=null, priorityHit=()=>null}) {
  const group=new THREE.Group(),preview=new THREE.Group();scene.add(group,preview);
  let context=null,items=[],draft=null,editing=null,drawing=false,start=null,press=null,pending=false,signature='',resize=null,conflicted=false;
  const handleLayer=document.createElement('div');handleLayer.className='volume-handles';renderer.domElement.parentElement.append(handleLayer);
@@ -136,9 +136,13 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
   box.position.fromArray(volume.center);box.position.y+=.004;box.scale.fromArray(volume.size);box.rotation.y=volume.yaw;box.userData.volume=volume;parent.add(box);
   const edges=new THREE.EdgesGeometry(box.geometry),material=isDraft?new THREE.LineDashedMaterial({color:0x7c3aed,dashSize:.04,gapSize:.03}):new THREE.LineBasicMaterial({color:0x7c3aed,transparent:!selected,opacity:selected?1:.4});
   const outline=new THREE.LineSegments(edges,material);outline.position.copy(box.position);outline.scale.copy(box.scale);outline.rotation.copy(box.rotation);if(isDraft)outline.computeLineDistances();parent.add(outline);
-  const title=label(volume.title||'New volume');title.position.set(volume.center[0],volume.center[1]+volume.size[1]/2+.08,volume.center[2]);parent.add(title);
+  // Scene labels draw the name (hidden on the volume being edited: its card shows it); otherwise a sprite.
+  const at=[volume.center[0],volume.center[1]+volume.size[1]/2+.08,volume.center[2]];
+  if(labels){const anchor=new THREE.Object3D();anchor.position.fromArray(at);parent.add(anchor);labelItems.push({id:'volume:'+(isDraft&&!editing?'draft':volume.id),kind:'volume',anchor,text:volume.title||'New volume',volumeId:volume.id,hidden:selected});}
+  else{const title=label(volume.title||'New volume');title.position.fromArray(at);parent.add(title);}
  }
- function draw(){clear(group);for(const v of items)if(!(draft&&v.id===editing))mesh(v,group,v.id===editing);clear(preview);if(draft)mesh(draft,preview,true,!editing);renderer.domElement.dataset.semanticVolumeCount=String(items.length);}
+ let labelItems=[];
+ function draw(){labelItems=[];clear(group);for(const v of items)if(!(draft&&v.id===editing))mesh(v,group,v.id===editing);clear(preview);if(draft)mesh(draft,preview,true,!editing);renderer.domElement.dataset.semanticVolumeCount=String(items.length);labels?.sync('semantic-volumes',labelItems);}
  function focus(v){const distance=Math.max(3,Math.max(...v.size)*2.2),target=new THREE.Vector3(...v.center),position=target.clone().add(new THREE.Vector3(distance*.7,distance*.65,distance*.7));
   if(flyTo)flyTo(position,target);else{controls.target.copy(target);camera.position.copy(position);controls.update();}}
  const dimensions=v=>`${format(v.size[0].toFixed(1))} × ${format(v.size[2].toFixed(1))} m floor · ${format(v.size[1].toFixed(1))} m tall`;
@@ -232,8 +236,11 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
  canvas.addEventListener('pointerup',e=>{if(drawing){e.stopImmediatePropagation();e.preventDefault();if(start){const p=groundPoint(e);if(p)footprint(p,e.shiftKey);if(canvas.hasPointerCapture(e.pointerId))canvas.releasePointerCapture(e.pointerId);if(!p||p.distanceTo(start)<.3){start=null;message('Drag a front edge at least 30 cm long.');return;}endDrawing();message('Front edge ready. Add a title and use the handles to adjust the volume.');focus(draft);renderCard('create');}return;}
   if(pending||e.button!==0||!press||Math.hypot(e.clientX-press[0],e.clientY-press[1])>4||!group.visible)return;
   const r=canvas.getBoundingClientRect(),ray=new THREE.Raycaster();ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),camera);
-  // Notes are drawn through translucent volumes. Let the normal scene picker
-  // handle them before this capture-phase listener claims the click.
+  // A volume's own label selects it; any other label (notes are drawn through translucent volumes) and the
+  // priority objects go to the normal scene picker before this capture-phase listener claims the click.
+  const tagged=priorityHit(e),labelled=tagged?.kind==='volume'&&items.find(v=>v.id===tagged.volumeId);
+  if(labelled){e.semanticVolume=true;select(labelled);return;}
+  if(tagged&&tagged.kind!=='volume')return;
   const priority=priorityPickObjects().filter(o=>{for(let p=o;p;p=p.parent){if(!p.visible)return false;}return true;});
   if(ray.intersectObjects(priority).length)return;
   const hit=ray.intersectObjects([...group.children,...preview.children]).find(h=>h.object.userData.volume);if(hit){e.semanticVolume=true;select(hit.object.userData.volume);}

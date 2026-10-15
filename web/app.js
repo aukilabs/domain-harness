@@ -8,7 +8,8 @@ import { createMap2D } from './map-2d.js';
 import { createCrayon } from './crayon.js';
 import { createGhostCamera, createCameraPan, isEditing } from './ghost-camera.js';
 import { createNoteBubble } from './note-bubble.js';
-import { createNoteLod } from './note-lod.js';
+import { createSceneLabels } from './scene-labels.js';
+import { TIERS } from './note-lod.js';
 import { createPipWindow } from './pip-window.js';
 import { createVideoPresentation } from './video-presentation.js';
 import { readCameraResponse } from './camera-frame.js';
@@ -349,8 +350,13 @@ scene.add(grid,gridAxes);
 // The demo floor plane dissolves into the background the same way, instead of ending in a hard edge.
 fadeWithDistance(ground.material,1.3);ground.material.transparent=true;ground.renderOrder=-2;
 const groups=Object.fromEntries(['voxels','portals','objects','rays','notes'].map(k=>[k,new THREE.Group()]));Object.values(groups).forEach(g=>scene.add(g));
-// Far notes become pins, and further out overlapping pins merge into a counted cluster; the open note keeps its text.
-const noteLod=createNoteLod({scene,camera,renderer,notes:groups.notes,pinned:bubble=>bubble.userData.note?.id===selectedNoteId});
+// Note and volume labels are HTML over the canvas (scene-labels.js): one zoom tier for the whole scene, animated
+// changes of form and fixed stacking. They never take the pointer: canvas clicks ask labelHit(), once per event.
+const sceneLabels=createSceneLabels({camera,controls,renderer,hidden:()=>map2D?.isActive()});
+const labelHit=e=>e.labelHit!==undefined?e.labelHit:(e.labelHit=sceneLabels.hitTest(e.clientX,e.clientY));
+// A cluster flies in to where its notes show as pins again: 80% of the pin tier's scale.
+function openCluster(centre){const height=renderer.domElement.clientHeight||700,distance=Math.max(controls.minDistance,TIERS[0].up*.8*height/(2*Math.tan(THREE.MathUtils.degToRad(camera.fov/2))));
+ cameraPan.start(centre.clone().add(camera.position.clone().sub(controls.target).setLength(distance)),centre.clone());}
 crayon=createCrayon({button:$('crayon'),canvas:renderer.domElement,camera,controls,scene,voxels:groups.voxels,
  state:()=>({map:activeMap,frame:current?.frame,paths:current?.paths,editable:isLocalScene()&&!!current&&!map2D.isActive()}),
  save:async(context,stroke,extend=false)=>{const result=await api('/api/paths'+(extend?'/'+encodeURIComponent(stroke.id):'')+'?scene='+encodeURIComponent(context.map),{frame:context.frame,stroke},extend?'PATCH':'POST');if(activeMap===context.map&&current?.frame===context.frame)current.paths=result;lastScene=null;return result;},
@@ -361,24 +367,6 @@ const boxGeometry=new THREE.BoxGeometry(1,1,1), cubeMaterial=new THREE.MeshStand
 function clear(group){for(const child of [...group.children]){group.remove(child);if(child.isInstancedMesh)child.dispose();child.traverse(o=>{if(o.geometry&&o.geometry!==boxGeometry)o.geometry.dispose();if(o.material&&o.material!==cubeMaterial){for(const m of Array.isArray(o.material)?o.material:[o.material]){m.map?.dispose();m.dispose();}}});}}
 function label(text,color='#36594a'){
  const c=document.createElement('canvas');c.width=384;c.height=96;const ctx=c.getContext('2d');ctx.fillStyle='#fcfdf6';ctx.beginPath();ctx.roundRect(4,8,376,76,18);ctx.fill();ctx.font='500 30px system-ui';ctx.textAlign='center';ctx.fillStyle=color;ctx.fillText(text,192,56,356);const tex=new THREE.CanvasTexture(c);tex.colorSpace=THREE.SRGBColorSpace;const sprite=new THREE.Sprite(new THREE.SpriteMaterial({map:tex,depthTest:false}));sprite.scale.set(.65,.1625,1);return sprite;
-}
-// Volume labels: a light chip (violet cube tile, the title, optional muted detail) that keeps one on-screen size
-// like the note bubbles, stands just above its anchor and truncates long titles rather than squashing them.
-function volumeLabel(title,detail=''){
- const dpr=2,font='600 15px system-ui, -apple-system, sans-serif',small='500 12.5px system-ui, -apple-system, sans-serif',canvas=document.createElement('canvas'),ctx=canvas.getContext('2d');
- const fit=(text,f,max)=>{ctx.font=f;if(ctx.measureText(text).width<=max)return text;while(text&&ctx.measureText(text+'…').width>max)text=text.slice(0,-1);return text.trimEnd()+'…';};
- const name=fit(String(title||'Volume'),font,220),extra=detail?fit(String(detail),small,120):'';
- ctx.font=font;const nameWidth=ctx.measureText(name).width;ctx.font=small;const extraWidth=extra?ctx.measureText(extra).width+8:0;
- const pad=12,h=34,w=Math.ceil(5+24+9+nameWidth+extraWidth+13);canvas.width=(w+pad*2)*dpr;canvas.height=(h+pad*2)*dpr;ctx.scale(dpr,dpr);
- ctx.shadowColor='rgba(24,24,27,.2)';ctx.shadowBlur=10;ctx.shadowOffsetY=3;ctx.fillStyle='rgba(255,255,255,.97)';ctx.beginPath();ctx.roundRect(pad,pad,w,h,11);ctx.fill();
- ctx.shadowColor='transparent';ctx.strokeStyle='rgba(24,24,27,.09)';ctx.lineWidth=1;ctx.beginPath();ctx.roundRect(pad+.5,pad+.5,w-1,h-1,10.5);ctx.stroke();
- const tile=ctx.createLinearGradient(0,pad+5,0,pad+29);tile.addColorStop(0,'#8b5cf6');tile.addColorStop(1,'#6d28d9');ctx.fillStyle=tile;ctx.beginPath();ctx.roundRect(pad+5,pad+5,24,24,7);ctx.fill();
- ctx.save();ctx.translate(pad+8,pad+8);ctx.strokeStyle='#fff';ctx.lineWidth=1.6;ctx.lineJoin='round';ctx.lineCap='round';ctx.stroke(new Path2D(CUBE_ICON));ctx.restore();
- ctx.textBaseline='middle';ctx.font=font;ctx.fillStyle='#18181b';ctx.fillText(name,pad+38,pad+h/2+1);
- if(extra){ctx.font=small;ctx.fillStyle='#71717a';ctx.fillText(extra,pad+38+nameWidth+8,pad+h/2+1);}
- const texture=new THREE.CanvasTexture(canvas);texture.colorSpace=THREE.SRGBColorSpace;
- const sprite=new THREE.Sprite(new THREE.SpriteMaterial({map:texture,transparent:true,depthTest:false,depthWrite:false,sizeAttenuation:false,toneMapped:false}));
- const unit=.00072;sprite.scale.set((w+pad*2)*unit,(h+pad*2)*unit,1);sprite.center.set(.5,pad/(h+pad*2));sprite.renderOrder=70;return sprite;
 }
 const phoneTrails=createPhoneTrails(scene,text=>createNoteBubble(text,{peer:true}),peer=>cameraShape(fleetNetwork?.peers?.find(p=>p.peer_id===peer)?.catalog));
 const compactTrail=createCompactPoseTrail(scene);
@@ -411,7 +399,7 @@ const volumeInspector={element:$('selection'),
   const close=document.createElement('button');close.type='button';close.className='inspector-close';close.setAttribute('aria-label','Close inspector');close.append(icon(icons.close));close.onclick=closeCard;
   card.replaceChildren(close,...nodes);card.hidden=false;noteCardMode='volume';},
  close(){if(noteCardMode==='volume'){noteCardMode='view';$('selection').hidden=true;}}};
-const semanticVolumes=createSemanticVolumes({scene,camera,renderer,controls,panel:panelBodies.volumes,api,label:volumeLabel,clear,openPanel,inspector:volumeInspector,toast,flyTo:(position,target)=>cameraPan.start(position,target),priorityPickObjects:()=>[...selectable.filter(o=>o.userData.kind==='note'),...noteLod.objects(),...crayon.objects()]});
+const semanticVolumes=createSemanticVolumes({scene,camera,renderer,controls,panel:panelBodies.volumes,api,label,labels:sceneLabels,priorityHit:labelHit,clear,openPanel,inspector:volumeInspector,toast,flyTo:(position,target)=>cameraPan.start(position,target),priorityPickObjects:()=>crayon.objects()});
 // The volume tool draws on the 3D floor, so it can't start while the 2D plan is open.
 $('volume-draw').addEventListener('click',e=>{if(map2D.isActive())e.stopImmediatePropagation();},true);
 $('map-select').addEventListener('change',()=>{semanticVolumes.reset();try{localStorage.setItem('home.lastScene',$('map-select').value);}catch{}});
@@ -477,7 +465,8 @@ function build(data){flatSpritesAge=Infinity;
   groups.portals.add(g);
  }
  if(first)phoneTrails.reset(data.frame);
- for(const volume of legacyVolumesForView(data)){
+ const volumeLabels=[];
+ for(const [index,volume] of legacyVolumesForView(data).entries()){
   const [w,h,d]=volume.dimensions;
   const group=new THREE.Group();group.position.fromArray(volume.position);group.rotation.y=volume.yaw;
   const geometry=new THREE.BoxGeometry(w,h,d);
@@ -485,17 +474,20 @@ function build(data){flatSpritesAge=Infinity;
   body.position.y=h/2;group.add(body);
   const edges=new THREE.LineSegments(new THREE.EdgesGeometry(geometry),new THREE.LineBasicMaterial({color:0x22cddd}));
   edges.position.y=h/2;group.add(edges);
-  const tag=volumeLabel(volume.name,volume.semantic_type);tag.position.set(0,h+.06,0);group.add(tag);
+  const anchor=new THREE.Object3D();anchor.position.set(0,h+.06,0);group.add(anchor);volumeLabels.push({id:'legacy-volume:'+(volume.id??index),kind:'volume',anchor,text:volume.name,detail:volume.semantic_type});
   groups.objects.add(group);
  }
+ sceneLabels.sync('legacy-volumes',volumeLabels);
  $('canvas').dataset.volumeCount=String(data.semantic_volumes?.frame===data.frame?data.semantic_volumes.items.length:(data.volumes||[]).length);
  renderer.domElement.dataset.legacyVolumeCount=String(legacyVolumesForView(data).length);
+ const noteLabels=[];
  for(const note of data.notes||[]){
   if(note.phone_pose)continue;
   const peer=Boolean(note.robot_pose||note.anchor_robot||note.id?.startsWith('robot-name:')||note.id?.startsWith('phone-name:'));
-  const tag=createNoteBubble(noteTitle(note),{peer});tag.position.fromArray(note.position);
-  tag.userData={kind:'note',note,peer};groups.notes.add(tag);selectable.push(tag);
+  const anchor=new THREE.Object3D();anchor.position.fromArray(note.position);groups.notes.add(anchor);
+  noteLabels.push({id:'note:'+note.id,kind:'note',anchor,text:noteTitle(note),peer,note});
  }
+ sceneLabels.sync('notes',noteLabels);
  $('canvas').dataset.noteCount=String((data.notes||[]).length);
  for(const o of data.objects){
   const point=new THREE.Mesh(new THREE.SphereGeometry(.04,20,14),new THREE.MeshStandardMaterial({color:'#dd895d',emissive:'#65361b',emissiveIntensity:.15}));point.position.fromArray(o.position);point.userData={kind:'object',object:o};groups.objects.add(point);selectable.push(point);
@@ -890,26 +882,35 @@ renderer.domElement.addEventListener('pointerup',e=>{
  if(!current||!pointerStart||Math.hypot(e.clientX-pointerStart[0],e.clientY-pointerStart[1])>4)return;
  if(placingNote){const target=placementTarget;stopNotePlacement();const box=renderer.domElement.getBoundingClientRect(),pick=new THREE.Raycaster();pick.setFromCamera(new THREE.Vector2((e.clientX-box.left)/box.width*2-1,1-(e.clientY-box.top)/box.height*2),camera);const request={source:'scene',frame:current.frame,origin:pick.ray.origin.toArray(),direction:pick.ray.direction.toArray()};if(target)target(request);else beginLabel(request);return;}
  const r=renderer.domElement.getBoundingClientRect(), ray=new THREE.Raycaster();ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),camera);
- const hits=ray.intersectObjects([...selectable,...noteLod.objects(),...crayon.objects()].filter(o=>{for(let p=o;p;p=p.parent){if(!p.visible)return false;}return true;}));
+ // Labels first: a note opens its card, a cluster flies in. A legacy volume's chip falls through to the scene pick.
+ const label=labelHit(e);
+ if(label?.kind==='note'){showNoteSelection(label.note);return;}
+ if(label?.kind==='note-cluster'){openCluster(label.centre);return;}
+ const hits=ray.intersectObjects([...selectable,...crayon.objects()].filter(o=>{for(let p=o;p;p=p.parent){if(!p.visible)return false;}return true;}));
  // Nothing hit: the click moves the spot cursor (the floor ring) there. Drags orbit and never get this far.
- if(!hits.length){clearSelection();const floor=ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,1,0),0),new THREE.Vector3());if(floor&&!crayon.isActive()&&!map2D.isActive())placeSpotMarker(floor);return;}const h=hits.find(h=>h.object.userData.kind==='note')||hits.find(h=>h.object.userData.kind==='note-cluster')||hits.find(h=>h.object.userData.kind==='path')||hits.find(h=>h.object.userData.kind==='portal')||hits[0],d=h.object.userData;
- // A cluster flies in until its notes stand apart again.
- if(d.kind==='note-cluster'){const offset=camera.position.clone().sub(controls.target).setLength(noteLod.clusterAt*.5);cameraPan.start(d.centre.clone().add(offset),d.centre.clone());return;}
+ if(!hits.length){clearSelection();const floor=ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,1,0),0),new THREE.Vector3());if(floor&&!crayon.isActive()&&!map2D.isActive())placeSpotMarker(floor);return;}const h=hits.find(h=>h.object.userData.kind==='path')||hits.find(h=>h.object.userData.kind==='portal')||hits[0],d=h.object.userData;
  if(d.kind==='voxels'){const v=current.voxels[h.instanceId];showSelection('Occupied voxel','','',{kind:'Voxel',facts:[['Position',xyz(v.center),true],['Evidence',String(v.evidence)],['Cell size','10 cm']]});}
  if(d.kind==='occupancy'){const t=current.occupancy_tiles[h.instanceId],state=t.value===100?'Occupied':t.value===0?'Free':'Unknown';showSelection(state+' cell','','',{kind:'Occupancy',facts:[['State',state],['Position',xyz(t.center),true],['Value',String(t.value)],['Sample','10 cm · retrieved in 2 m cells']]});}
  if(d.kind==='path'){showPathSelection(d.path);return;}
- if(d.kind==='note')showNoteSelection(d.note);
  if(d.kind==='object'){const o=d.object;showSelection(o.label,'','',{kind:'Object',facts:[['Position',xyz(o.position),true],['Source',o.source_peer,true]]});}
  if(d.kind==='portal'&&(d.portal.anchor_id.length===11||d.portal.anchor_id.startsWith('home:'))){showSelection(d.portal.anchor_id,'','Double-click to approach',{kind:'Portal',monoTitle:true});return;}
  if(d.kind==='portal')showSelection(`Portal ${d.portal.payload.split(':').at(-1)}`,'','',{kind:'Portal',facts:[['Encoded size',`${d.portal.side_length_m.toFixed(2)} m`],['Source','Manually supplied · no backend lookup']]});
 });
+// Hover: the label under the pointer gets its ring and a pointer cursor (unless a tool owns the cursor).
+let hoverFrame=0,hoverEvent=null;
+renderer.domElement.addEventListener('pointermove',e=>{if(e.buttons||e.pointerType==='touch')return;hoverEvent=e;if(hoverFrame)return;
+ hoverFrame=requestAnimationFrame(()=>{hoverFrame=0;const hit=sceneLabels.hitTest(hoverEvent.clientX,hoverEvent.clientY),canvas=renderer.domElement;sceneLabels.setHover(hit?.id||null);
+  if(!placingNote&&!crayon.isActive()&&['','pointer'].includes(canvas.style.cursor))canvas.style.cursor=hit?'pointer':'';});});
+renderer.domElement.addEventListener('pointerleave',()=>sceneLabels.setHover(null));
 renderer.domElement.addEventListener('dblclick',e=>{
  if(e.button!==0||!current||crayon.isActive()||map2D.isActive())return;
  const r=renderer.domElement.getBoundingClientRect(),ray=new THREE.Raycaster();
  ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,1-(e.clientY-r.top)/r.height*2),camera);
+ const label=labelHit(e);
+ if(label?.kind==='note'){focusNote(label.note);return;}
+ if(label?.kind==='note-cluster'){openCluster(label.centre);return;}
+ if(label?.kind==='volume'){closeUp(label.anchor.getWorldPosition(new THREE.Vector3()).toArray());return;}
  const hits=ray.intersectObjects(selectable.filter(o=>{for(let p=o;p;p=p.parent)if(!p.visible)return false;return true;}));
- const note=hits.find(h=>h.object.userData.kind==='note');
- if(note){focusNote(note.object.userData.note);return;}
  const volume=semanticVolumes.pick(ray);if(volume){closeUp(volume.point.toArray());return;}
  const hit=hits[0];if(hit)closeUp(hit.point.toArray());
 });
@@ -982,7 +983,7 @@ function keepSpriteSizes(amount){
 function keepAboveGrid(){if(attachedCamera.isActive()||map2D.isActive())return;const floor=grid.position.y+.05;if(camera.position.y<floor)camera.position.y=floor;}
 renderer.setAnimationLoop(now=>{easeViewOffset();if(!cameraPan.tick(now)&&!attachedCamera.isActive())controls.update();keepAboveGrid();ghostCamera.tick(now);if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);updateFlatten();
  // Volume handles are HTML placed from this frame's camera: settle its matrices and projection first so they never trail a glide.
- camera.updateMatrixWorld();semanticVolumes.tick();noteLod.tick();renderer.render(scene,camera);});
+ camera.updateMatrixWorld();semanticVolumes.tick();sceneLabels.setSelected(selectedNoteId?'note:'+selectedNoteId:null);sceneLabels.tick(now);renderer.render(scene,camera);});
 refresh().catch(e=>{$('notice').textContent=e.message;$('notice').classList.add('error');});setInterval(()=>{if(!busy)refresh().catch(()=>{});},500);
 
 function updatePairingDownload(){const link=$('pairing-download');link.href=isLocalScene()?localSceneUrl()+'/connection':'/api/home-connection';link.download=isLocalScene()?activeMap.slice(6)+'-connection.json':'home-connection.json';link.textContent=isLocalScene()?'Download phone connection for selected scene ↗':'Download Xmart connection ↗';}

@@ -27,23 +27,3 @@ export function createNoteBubble(text,{peer=false}={}){
  sprite.scale.set(height*layout.width/layout.height,height,1);sprite.center.set(.5,0);sprite.renderOrder=80;
  sprite.userData.bubble={text:String(text),width:layout.width,height:layout.height};return sprite;
 }
-
-// Far-away notes: a round pin in the bubble's colours with a note glyph, or (count > 1) a stacked pin holding
-// the number of notes it stands for. Same units as the bubbles, so sizes match on screen.
-const NOTE_GLYPH='M4 2h10v14H4ZM6 6h6M6 9h6M6 12h4';
-export function createNotePin({peer=false,count=1}={}){
- const canvas=document.createElement('canvas'),ctx=canvas.getContext('2d'),colors=bubbleColors(peer),stacked=count>1;
- const size=stacked?72:60,tail=10,pad=4,width=size+pad*2+(stacked?8:0),height=size+tail+pad*2;canvas.width=width;canvas.height=height;
- const cx=width/2-(stacked?4:0),cy=pad+size/2;
- const disc=(x,y,r,fill,ring)=>{ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fillStyle=fill;ctx.fill();if(ring){ctx.lineWidth=2;ctx.strokeStyle=ring;ctx.stroke();}};
- if(stacked)disc(cx+8,cy-2,size/2-3,colors.foreground,colors.background);
- ctx.beginPath();ctx.moveTo(cx-8,cy+size/2-5);ctx.lineTo(cx,cy+size/2+tail);ctx.lineTo(cx+8,cy+size/2-5);ctx.closePath();ctx.fillStyle=colors.background;ctx.fill();
- disc(cx,cy,size/2-1,colors.background,stacked?colors.foreground:null);
- ctx.fillStyle=colors.foreground;ctx.strokeStyle=colors.foreground;
- if(stacked){ctx.font='700 30px ui-rounded, "SF Pro Rounded", system-ui, sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(count>99?'99+':String(count),cx,cy+1);}
- else{ctx.save();ctx.translate(cx-15,cy-15);ctx.scale(30/18,30/18);ctx.lineWidth=1.7;ctx.lineJoin='round';ctx.lineCap='round';ctx.stroke(new Path2D(NOTE_GLYPH));ctx.restore();}
- const texture=new THREE.CanvasTexture(canvas);texture.colorSpace=THREE.SRGBColorSpace;
- const material=new THREE.SpriteMaterial({map:texture,transparent:true,depthTest:false,depthWrite:false,sizeAttenuation:false,toneMapped:false});
- const sprite=new THREE.Sprite(material),scale=.026/78;sprite.scale.set(width*scale,height*scale,1);sprite.center.set(cx/width,pad/height);sprite.renderOrder=81;
- return sprite;
-}
