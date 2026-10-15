@@ -10,6 +10,7 @@ import { createGhostCamera, createCameraPan, isEditing } from './ghost-camera.js
 import { createNoteBubble } from './note-bubble.js';
 import { createSceneLabels } from './scene-labels.js';
 import { TIERS } from './note-lod.js';
+import { createContentLocator } from './content-locator.js';
 import { createPipWindow } from './pip-window.js';
 import { createVideoPresentation } from './video-presentation.js';
 import { readCameraResponse } from './camera-frame.js';
@@ -202,7 +203,7 @@ const componentControlResults=new Map();
 let componentControlPending=false;
 const sceneBackground=document.documentElement.dataset.theme==='light'?'#e8e8f0':'#0d0d0f';
 const scene=new THREE.Scene();scene.background=new THREE.Color(sceneBackground);scene.fog=new THREE.Fog(sceneBackground,10,26);
-const camera=new THREE.PerspectiveCamera(42,1,.01,100);
+const camera=new THREE.PerspectiveCamera(42,1,.01,160);
 const renderer=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true});renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.1;
 $('canvas').append(renderer.domElement);renderer.domElement.setAttribute('aria-label','3D voxel map');
 const controls=new OrbitControls(camera,renderer.domElement);controls.enableDamping=true;
@@ -321,6 +322,8 @@ const gridFade={uCam:{value:new THREE.Vector3()},uCentre:{value:new THREE.Vector
 // far past the target a layer carries; `limit` is the layer's half-extent, faded softly so its end never shows.
 // Either way the fade finishes short of the camera's far plane (uClip): zoomed out and tilted, no hard cut-off.
 function fadeWithDistance(material,reach,limit){
+ // Grid layers fade themselves; the scene's distance fog would double it.
+ material.fog=false;
  material.onBeforeCompile=shader=>{Object.assign(shader.uniforms,gridFade,{uReach:{value:reach},uLimit:{value:limit}});
   shader.vertexShader='varying vec3 vGridWorld;\n'+shader.vertexShader.replace('#include <project_vertex>','#include <project_vertex>\nvGridWorld=(modelMatrix*vec4(position,1.)).xyz;');
   shader.fragmentShader='varying vec3 vGridWorld;uniform vec3 uCam;uniform vec2 uCentre;uniform float uFadeFar;uniform float uReach;uniform float uLimit;uniform float uClip;\n'+shader.fragmentShader.replace('#include <color_fragment>','#include <color_fragment>\nfloat fadeEnd=min(uFadeFar*(1.+1.8*uReach),uClip*.9);\ndiffuseColor.a*=(1.-smoothstep(min(uFadeFar*(1.+.4*uReach),fadeEnd*.55),fadeEnd,distance(uCam,vGridWorld)))*(1.-smoothstep(uLimit*.6,uLimit*.95,distance(uCentre,vGridWorld.xz)));');};
@@ -352,7 +355,7 @@ fadeWithDistance(ground.material,1.3);ground.material.transparent=true;ground.re
 const groups=Object.fromEntries(['voxels','portals','objects','rays','notes'].map(k=>[k,new THREE.Group()]));Object.values(groups).forEach(g=>scene.add(g));
 // Note and volume labels are HTML over the canvas (scene-labels.js): one zoom tier for the whole scene, animated
 // changes of form and fixed stacking. They never take the pointer: canvas clicks ask labelHit(), once per event.
-const sceneLabels=createSceneLabels({camera,controls,renderer,hidden:()=>map2D?.isActive()});
+const sceneLabels=createSceneLabels({camera,controls,renderer,hidden:()=>map2D?.isActive(),fog:()=>scene.fog});
 const labelHit=e=>e.labelHit!==undefined?e.labelHit:(e.labelHit=sceneLabels.hitTest(e.clientX,e.clientY));
 // A cluster flies in to where its notes show as pins again: 80% of the pin tier's scale.
 function openCluster(centre){const height=renderer.domElement.clientHeight||700,distance=Math.max(controls.minDistance,TIERS[0].up*.8*height/(2*Math.tan(THREE.MathUtils.degToRad(camera.fov/2))));
@@ -508,6 +511,7 @@ function build(data){flatSpritesAge=Infinity;
  if(noteCardMode!=='view'){}else if(selectedSpatialNode){const {kind,id}=selectedSpatialNode;const node=data.landmarks?.[kind==='anchor'?'anchors':'landmarks']?.[id];if(node)showSpatialSelection(kind,node);else{selectedSpatialNode=null;$('selection').hidden=true;}}
  else if(selectedPathId){const path=data.paths?.items.find(p=>p.id===selectedPathId);if(path){if($('selection').dataset.pathId!==path.id)showPathSelection(path);}else{selectedPathId=null;crayon.select(null);$('selection').hidden=true;}}else if(selectedNoteId){const note=(data.notes||[]).find(n=>n.id===selectedNoteId);if(note){if($('selection').dataset.noteId!==note.id)showNoteSelection(note);}else{selectedNoteId=null;$('selection').hidden=true;}}else $('selection').hidden=true;
  updateMapUI();if(data.occupancy_tiles){$('empty').hidden=data.occupancy_tiles.length>0;$('voxel-count').textContent=data.occupancy_tiles.length.toLocaleString();}if(first)fit();revealScene();
+ setContentBounds(data);
 }
 function pathLength(path){let total=0;for(const segment of path.segments)for(let i=1;i<segment.length;i++)total+=Math.hypot(...segment[i].map((v,k)=>v-segment[i-1][k]));return total;}
 function pathSwatch(path,size=12){const swatch=document.createElement('span');swatch.className='path-swatch';swatch.style.setProperty('--swatch',path.color||'#2563eb');swatch.style.width=swatch.style.height=size+'px';return swatch;}
@@ -754,7 +758,7 @@ function updateMapUI(){
  document.querySelector('.flow').hidden=domain||!current?.demo;
  $('demo-view').hidden=!current?.demo;
  setSnapshotLinks(activeMap==='home-live'?'/api/home-live-snapshot':isRunner()?runnerUrl('/api/runner-snapshot'):domain?'/api/domain-snapshot':'/api/snapshots');
- ground.visible=Boolean(current?.demo);scene.fog=null;grid.position.x=local?0:-5;grid.position.z=local?0:3;
+ ground.visible=Boolean(current?.demo);grid.position.x=local?0:-5;grid.position.z=local?0:3;
  const list=$('portal-list');list.replaceChildren();{for(const p of (current?.portals||[]).filter(p=>p.anchor_id.length===11||p.anchor_id.startsWith('home:'))){const button=document.createElement('button');button.className='portal-row';button.textContent=p.anchor_id;const size=document.createElement('span');size.textContent=`${Math.round(p.side_length_m*100)} cm`;button.append(size);button.onclick=()=>focusPortal(p);list.append(button);}}
  list.hidden=Boolean(current?.landmarks);renderSpatialLists();
  if(isLocalScene()) {
@@ -1009,12 +1013,36 @@ function applyWheelZoom(now){
  if(Math.abs(camera.up.dot(wheelView))<Math.cos(THREE.MathUtils.degToRad(70)))camera.lookAt(controls.target);
  else{wheelPlane.setFromNormalAndCoplanarPoint(camera.up,controls.target);if(new THREE.Ray(camera.position,wheelView).intersectPlane(wheelPlane,wheelHit))controls.target.copy(wheelHit);}
 }
+// Far away, content fades into the background instead of meeting the far plane: linear fog scaled to the orbit
+// distance (always ending before the far plane), so the store stays clear at any normal zoom and dissolves only
+// when you pull right out. Labels fade with it. If you lose the content, the locator points back to it, and the
+// orbit target is leashed to within 80 m of the content so it can't drift off for good.
+function updateFog(){const end=THREE.MathUtils.clamp(6.4*camera.position.distanceTo(controls.target),50,camera.far*.92);scene.fog.near=end*.5;scene.fog.far=end;}
+let cameraFlying=false;
+const contentLocator=createContentLocator({camera,renderer,fog:()=>scene.fog,blocked:()=>cameraFlying||map2D.isActive()||attachedCamera.isActive()||!current,
+ safeArea:()=>{const r=renderer.domElement.getBoundingClientRect(),area={left:r.left+72,top:r.top+68,right:r.right-16,bottom:r.bottom-80};
+  const aside=document.querySelector('.shell>aside');if(aside&&!document.querySelector('.shell')?.classList.contains('panel-collapsed'))area.left=Math.max(area.left,aside.getBoundingClientRect().right+8);
+  const bar=document.querySelector('.agent-bar')?.getBoundingClientRect();if(bar&&bar.height>64)area.bottom=Math.min(area.bottom,bar.top-8);
+  const card=$('selection');if(card&&!card.hidden)area.right=Math.min(area.right,card.getBoundingClientRect().left-8);
+  return area;},
+ // Back to the content: same heading, a downward tilt between 35° and 60°, far enough to see all of it.
+ fly:(centre,radius)=>{const distance=THREE.MathUtils.clamp(radius*2.4,6,60),offset=camera.position.clone().sub(controls.target),flat=new THREE.Vector3(offset.x,0,offset.z);
+  if(flat.lengthSq()<1e-6)flat.set(0,0,1);flat.normalize();const tilt=THREE.MathUtils.degToRad(THREE.MathUtils.clamp(THREE.MathUtils.radToDeg(Math.asin(Math.min(1,Math.max(-1,offset.y/(offset.length()||1))))),35,60));
+  if(attachedCamera.isActive())attachedCamera.detach();cameraPan.start(centre.clone().add(flat.multiplyScalar(Math.cos(tilt)*distance)).add(new THREE.Vector3(0,Math.sin(tilt)*distance,0)),centre);}});
+function setContentBounds(data){
+ scene.updateMatrixWorld();const box=new THREE.Box3();for(const g of [groups.voxels,groups.portals,groups.objects])box.expandByObject(g);
+ for(const n of data.notes||[])if(n.position)box.expandByPoint(new THREE.Vector3(...n.position));
+ for(const v of data.semantic_volumes?.items||[])box.expandByPoint(new THREE.Vector3(...v.center));
+ contentLocator.setBounds(box);
+ if(box.isEmpty()){controls.maxTargetRadius=Infinity;return;}
+ controls.cursor.copy(box.getCenter(new THREE.Vector3()));controls.maxTargetRadius=box.getSize(new THREE.Vector3()).length()/2+80;
+}
 // The camera never goes beneath the grid. Orbiting is limited to above the horizon, but views the assistant sets
 // (and detaching an attached camera) lift that limit, so the floor is also held here, every frame.
 function keepAboveGrid(){if(attachedCamera.isActive()||map2D.isActive())return;const floor=grid.position.y+.05;if(camera.position.y<floor)camera.position.y=floor;}
-renderer.setAnimationLoop(now=>{easeViewOffset();if(!cameraPan.tick(now)&&!attachedCamera.isActive()){applyWheelZoom(now);controls.update();}else wheelZoom=0;keepAboveGrid();ghostCamera.tick(now);if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);updateFlatten();
+renderer.setAnimationLoop(now=>{easeViewOffset();cameraFlying=cameraPan.tick(now);if(!cameraFlying&&!attachedCamera.isActive()){applyWheelZoom(now);controls.update();}else wheelZoom=0;keepAboveGrid();updateFog();ghostCamera.tick(now);if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);updateFlatten();
  // Volume handles are HTML placed from this frame's camera: settle its matrices and projection first so they never trail a glide.
- camera.updateMatrixWorld();semanticVolumes.tick();sceneLabels.setSelected(selectedNoteId?'note:'+selectedNoteId:null);sceneLabels.tick(now);renderer.render(scene,camera);});
+ camera.updateMatrixWorld();semanticVolumes.tick();sceneLabels.setSelected(selectedNoteId?'note:'+selectedNoteId:null);sceneLabels.tick(now);contentLocator.tick(now);renderer.render(scene,camera);});
 refresh().catch(e=>{$('notice').textContent=e.message;$('notice').classList.add('error');});setInterval(()=>{if(!busy)refresh().catch(()=>{});},500);
 
 function updatePairingDownload(){const link=$('pairing-download');link.href=isLocalScene()?localSceneUrl()+'/connection':'/api/home-connection';link.download=isLocalScene()?activeMap.slice(6)+'-connection.json':'home-connection.json';link.textContent=isLocalScene()?'Download phone connection for selected scene ↗':'Download Xmart connection ↗';}

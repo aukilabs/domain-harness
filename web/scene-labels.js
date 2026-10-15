@@ -14,12 +14,13 @@ import { zoomTier, clusterNotes } from './note-lod.js';
 const NOTE_GLYPH='M4 2h10v14H4ZM6 6h6M6 9h6M6 12h4',CUBE='M9 1.5 15.5 5v8L9 16.5 2.5 13V5ZM2.5 5 9 8.5l6.5-3.5M9 8.5v8';
 const glyph=(d,size)=>`<svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;
 const reduceMotion=()=>matchMedia('(prefers-reduced-motion: reduce)').matches;
+const smoothstep=(a,b,x)=>{const t=Math.min(1,Math.max(0,(x-a)/(b-a)));return t*t*(3-2*t);};
 const easeOut=t=>1-Math.pow(1-Math.min(1,Math.max(0,t)),3);
 const MERGE_MS=260,CLUSTER_DELAY_MS=180;
 
-export function createSceneLabels({camera,controls,renderer,parent=renderer.domElement.parentElement,hidden=()=>false}){
+export function createSceneLabels({camera,controls,renderer,parent=renderer.domElement.parentElement,hidden=()=>false,fog=()=>null}){
  const layer=document.createElement('div');layer.className='scene-labels';layer.setAttribute('aria-hidden','true');parent.append(layer);
- const sources=new Map(),labels=new Map(),clusters=new Map(),point=new THREE.Vector3();
+ const sources=new Map(),labels=new Map(),clusters=new Map(),point=new THREE.Vector3(),at=new THREE.Vector3();
  let tier=0,selected=null,hovered=null,dirty=true,clusterCache=null,focus=null,lastView='',restSince=0,host=null,canvasRect=null;
 
  function shown(anchor){if(!anchor.parent)return false;for(let o=anchor;o;o=o.parent)if(!o.visible)return false;return true;}
@@ -118,10 +119,13 @@ export function createSceneLabels({camera,controls,renderer,parent=renderer.domE
   const view=camera.matrixWorld.elements.join(',')+camera.projectionMatrix.elements.join(',')+canvasRect.width+'x'+canvasRect.height;
   if(view!==lastView){lastView=view;restSince=now;}const still=now-restSince>100;
   if(dirty){dirty=false;decide(now);}
-  for(const cluster of clusters.values())write(cluster,cluster.members.every(m=>shown(m.anchor))?place(cluster.centre):null,still);
+  // Labels fade with the scene's distance fog; a faint label isn't clickable, and the selected one stays readable.
+  const f=fog(),fade=(world,floor=0)=>{const alpha=f?1-smoothstep(f.near,f.far,camera.position.distanceTo(world)):1;return Math.max(floor,alpha);};
+  const tint=(target,alpha)=>{const value=alpha>.99?'':alpha.toFixed(2);if(target.alpha!==value){target.alpha=value;target.el.style.opacity=value;}};
+  for(const cluster of clusters.values()){const alpha=fade(cluster.centre);cluster.faint=alpha<.5;write(cluster,alpha>.01&&cluster.members.every(m=>shown(m.anchor))?place(cluster.centre):null,still);tint(cluster,alpha);}
   for(const label of labels.values()){
-   const {item,el}=label;
-   write(label,shown(item.anchor)?place(item.anchor.getWorldPosition(point)):null,still);
+   const {item,el}=label;item.anchor.getWorldPosition(at);const alpha=fade(at,item.id===selected?.5:0);label.faint=alpha<.5;
+   write(label,alpha>.01&&shown(item.anchor)?place(at):null,still);tint(label,alpha);
    if(label.merge){
     // Slide the pin into its cluster (dir 1) or back out of it (dir -1).
     const merge=label.merge,cluster=clusters.get(merge.key),centre=cluster?.centre||merge.centre,t=reduceMotion()?1:(now-merge.start)/MERGE_MS,k=merge.dir>0?easeOut(t):1-easeOut(t),pin=el.querySelector('.label-pin');
@@ -129,9 +133,9 @@ export function createSceneLabels({camera,controls,renderer,parent=renderer.domE
     if(at){pin.style.transform=`translate(calc(-50% + ${(at[0]-label.x)*k}px),${(at[1]-label.y)*k}px)`;pin.style.opacity=String(merge.dir>0?1-k*.85:1-k);}
     if(t>=1){label.merge=null;pin.style.transform='';pin.style.opacity='';delete el.dataset.merging;el.dataset.form=label.form==='merged'?'hidden':label.form;}
    }
-   label.rect=label.visible&&!label.merge?hitRect(label):null;
+   label.rect=label.visible&&!label.merge&&!label.faint?hitRect(label):null;
   }
-  for(const cluster of clusters.values())cluster.rect=cluster.visible&&cluster.form==='cluster'?{left:cluster.x+host.left-16,right:cluster.x+host.left+16,top:cluster.y+host.top-29,bottom:cluster.y+host.top+3}:null;
+  for(const cluster of clusters.values())cluster.rect=cluster.visible&&!cluster.faint&&cluster.form==='cluster'?{left:cluster.x+host.left-16,right:cluster.x+host.left+16,top:cluster.y+host.top-29,bottom:cluster.y+host.top+3}:null;
  }
 
  // Top-most first, in the fixed stacking order.

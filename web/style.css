@@ -1532,3 +1532,16 @@ select.form-control[size]:focus{animation:none}
 .volume-zoom-pill[hidden]{display:none}
 .volume-zoom-pill:hover{background:color-mix(in srgb,#7c3aed 12%,var(--sheet-glass))}
 :root:not([data-theme="light"]) .volume-zoom-pill{color:#c4b5fd}
+/* Content locator (content-locator.js): a glass pill on the edge of the free screen area pointing back to the
+   content, with its distance. It springs in and fades out quickly; with reduced motion it only fades. */
+.content-locator{position:absolute;left:0;top:0;z-index:6;display:flex;align-items:center;gap:6px;height:36px;padding:0 12px 0 10px;border:0;border-radius:999px;
+ background:var(--sheet-glass);color:var(--nav-text);box-shadow:inset 0 0 0 1px var(--glass-rim),0 10px 24px -10px rgba(24,24,27,.45),0 2px 6px rgba(24,24,27,.08);
+ -webkit-backdrop-filter:blur(18px) saturate(1.3);backdrop-filter:blur(18px) saturate(1.3);font:600 12px/1 system-ui,-apple-system,sans-serif;font-variant-numeric:tabular-nums;white-space:nowrap;cursor:pointer;will-change:transform}
+.content-locator[hidden]{display:none}
+.content-locator .locator-arrow{flex:none;color:#059669}
+:root:not([data-theme="light"]) .content-locator .locator-arrow{color:#34d399}
+.content-locator:hover{box-shadow:inset 0 0 0 1px color-mix(in srgb,#059669 40%,transparent),0 12px 28px -10px rgba(24,24,27,.5),0 2px 6px rgba(24,24,27,.1)}
+.content-locator.shown{animation:locator-in .32s var(--ease-spring)}
+.content-locator.leaving{opacity:0;transition:opacity .16s ease}
+@keyframes locator-in{from{opacity:0;scale:.6}}
+@media(prefers-reduced-motion:reduce){.content-locator.shown{animation:locator-fade .16s ease}@keyframes locator-fade{from{opacity:0}}}
