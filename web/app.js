@@ -359,6 +359,24 @@ function clear(group){for(const child of [...group.children]){group.remove(child
 function label(text,color='#36594a'){
  const c=document.createElement('canvas');c.width=384;c.height=96;const ctx=c.getContext('2d');ctx.fillStyle='#fcfdf6';ctx.beginPath();ctx.roundRect(4,8,376,76,18);ctx.fill();ctx.font='500 30px system-ui';ctx.textAlign='center';ctx.fillStyle=color;ctx.fillText(text,192,56,356);const tex=new THREE.CanvasTexture(c);tex.colorSpace=THREE.SRGBColorSpace;const sprite=new THREE.Sprite(new THREE.SpriteMaterial({map:tex,depthTest:false}));sprite.scale.set(.65,.1625,1);return sprite;
 }
+// Volume labels: a light chip (violet cube tile, the title, optional muted detail) that keeps one on-screen size
+// like the note bubbles, stands just above its anchor and truncates long titles rather than squashing them.
+function volumeLabel(title,detail=''){
+ const dpr=2,font='600 15px system-ui, -apple-system, sans-serif',small='500 12.5px system-ui, -apple-system, sans-serif',canvas=document.createElement('canvas'),ctx=canvas.getContext('2d');
+ const fit=(text,f,max)=>{ctx.font=f;if(ctx.measureText(text).width<=max)return text;while(text&&ctx.measureText(text+'…').width>max)text=text.slice(0,-1);return text.trimEnd()+'…';};
+ const name=fit(String(title||'Volume'),font,220),extra=detail?fit(String(detail),small,120):'';
+ ctx.font=font;const nameWidth=ctx.measureText(name).width;ctx.font=small;const extraWidth=extra?ctx.measureText(extra).width+8:0;
+ const pad=12,h=34,w=Math.ceil(5+24+9+nameWidth+extraWidth+13);canvas.width=(w+pad*2)*dpr;canvas.height=(h+pad*2)*dpr;ctx.scale(dpr,dpr);
+ ctx.shadowColor='rgba(24,24,27,.2)';ctx.shadowBlur=10;ctx.shadowOffsetY=3;ctx.fillStyle='rgba(255,255,255,.97)';ctx.beginPath();ctx.roundRect(pad,pad,w,h,11);ctx.fill();
+ ctx.shadowColor='transparent';ctx.strokeStyle='rgba(24,24,27,.09)';ctx.lineWidth=1;ctx.beginPath();ctx.roundRect(pad+.5,pad+.5,w-1,h-1,10.5);ctx.stroke();
+ const tile=ctx.createLinearGradient(0,pad+5,0,pad+29);tile.addColorStop(0,'#8b5cf6');tile.addColorStop(1,'#6d28d9');ctx.fillStyle=tile;ctx.beginPath();ctx.roundRect(pad+5,pad+5,24,24,7);ctx.fill();
+ ctx.save();ctx.translate(pad+8,pad+8);ctx.strokeStyle='#fff';ctx.lineWidth=1.6;ctx.lineJoin='round';ctx.lineCap='round';ctx.stroke(new Path2D(CUBE_ICON));ctx.restore();
+ ctx.textBaseline='middle';ctx.font=font;ctx.fillStyle='#18181b';ctx.fillText(name,pad+38,pad+h/2+1);
+ if(extra){ctx.font=small;ctx.fillStyle='#71717a';ctx.fillText(extra,pad+38+nameWidth+8,pad+h/2+1);}
+ const texture=new THREE.CanvasTexture(canvas);texture.colorSpace=THREE.SRGBColorSpace;
+ const sprite=new THREE.Sprite(new THREE.SpriteMaterial({map:texture,transparent:true,depthTest:false,depthWrite:false,sizeAttenuation:false,toneMapped:false}));
+ const unit=.00072;sprite.scale.set((w+pad*2)*unit,(h+pad*2)*unit,1);sprite.center.set(.5,pad/(h+pad*2));sprite.renderOrder=70;return sprite;
+}
 const phoneTrails=createPhoneTrails(scene,text=>createNoteBubble(text,{peer:true}),peer=>cameraShape(fleetNetwork?.peers?.find(p=>p.peer_id===peer)?.catalog));
 const compactTrail=createCompactPoseTrail(scene);
 $('map-select').addEventListener('change',()=>compactTrail.reset());
@@ -390,7 +408,7 @@ const volumeInspector={element:$('selection'),
   const close=document.createElement('button');close.type='button';close.className='inspector-close';close.setAttribute('aria-label','Close inspector');close.append(icon(icons.close));close.onclick=closeCard;
   card.replaceChildren(close,...nodes);card.hidden=false;noteCardMode='volume';},
  close(){if(noteCardMode==='volume'){noteCardMode='view';$('selection').hidden=true;}}};
-const semanticVolumes=createSemanticVolumes({scene,camera,renderer,controls,panel:panelBodies.volumes,api,label,clear,openPanel,inspector:volumeInspector,toast,flyTo:(position,target)=>cameraPan.start(position,target),priorityPickObjects:()=>[...selectable.filter(o=>o.userData.kind==='note'),...crayon.objects()]});
+const semanticVolumes=createSemanticVolumes({scene,camera,renderer,controls,panel:panelBodies.volumes,api,label:volumeLabel,clear,openPanel,inspector:volumeInspector,toast,flyTo:(position,target)=>cameraPan.start(position,target),priorityPickObjects:()=>[...selectable.filter(o=>o.userData.kind==='note'),...crayon.objects()]});
 // The volume tool draws on the 3D floor, so it can't start while the 2D plan is open.
 $('volume-draw').addEventListener('click',e=>{if(map2D.isActive())e.stopImmediatePropagation();},true);
 $('map-select').addEventListener('change',()=>{semanticVolumes.reset();try{localStorage.setItem('home.lastScene',$('map-select').value);}catch{}});
@@ -464,7 +482,7 @@ function build(data){flatSpritesAge=Infinity;
   body.position.y=h/2;group.add(body);
   const edges=new THREE.LineSegments(new THREE.EdgesGeometry(geometry),new THREE.LineBasicMaterial({color:0x22cddd}));
   edges.position.y=h/2;group.add(edges);
-  const tag=label(volume.name+' · '+volume.semantic_type,'#087b88');tag.position.set(0,h+.12,0);group.add(tag);
+  const tag=volumeLabel(volume.name,volume.semantic_type);tag.position.set(0,h+.06,0);group.add(tag);
   groups.objects.add(group);
  }
  $('canvas').dataset.volumeCount=String(data.semantic_volumes?.frame===data.frame?data.semantic_volumes.items.length:(data.volumes||[]).length);

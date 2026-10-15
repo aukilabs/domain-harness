@@ -136,7 +136,7 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
   box.position.fromArray(volume.center);box.position.y+=.004;box.scale.fromArray(volume.size);box.rotation.y=volume.yaw;box.userData.volume=volume;parent.add(box);
   const edges=new THREE.EdgesGeometry(box.geometry),material=isDraft?new THREE.LineDashedMaterial({color:0x7c3aed,dashSize:.04,gapSize:.03}):new THREE.LineBasicMaterial({color:0x7c3aed,transparent:!selected,opacity:selected?1:.4});
   const outline=new THREE.LineSegments(edges,material);outline.position.copy(box.position);outline.scale.copy(box.scale);outline.rotation.copy(box.rotation);if(isDraft)outline.computeLineDistances();parent.add(outline);
-  const title=label(volume.title||'New volume','#6d28d9');title.scale.multiplyScalar(1.6);title.position.set(volume.center[0],volume.center[1]+volume.size[1]/2+.2,volume.center[2]);parent.add(title);
+  const title=label(volume.title||'New volume');title.position.set(volume.center[0],volume.center[1]+volume.size[1]/2+.08,volume.center[2]);parent.add(title);
  }
  function draw(){clear(group);for(const v of items)if(!(draft&&v.id===editing))mesh(v,group,v.id===editing);clear(preview);if(draft)mesh(draft,preview,true,!editing);renderer.domElement.dataset.semanticVolumeCount=String(items.length);}
  function focus(v){const distance=Math.max(3,Math.max(...v.size)*2.2),target=new THREE.Vector3(...v.center),position=target.clone().add(new THREE.Vector3(distance*.7,distance*.65,distance*.7));
