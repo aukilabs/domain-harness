@@ -2,6 +2,7 @@ import SwiftUI
 import AVFoundation
 import CoreLocation
 import UserNotifications
+import Network
 
 /// The full-screen McKenna opening. On first boot the compass swings round
 /// looking for north, then the screen lists what the app needs, one row per
@@ -62,27 +63,30 @@ struct McKennaIntro: View {
                 }
             }
             .padding(.bottom, 6)
+            // One at a time, top to bottom: only the next row can be tapped.
             PermissionRow(symbol: "camera.fill", title: "Camera",
                           detail: "To read Portals and see the room in AR.",
-                          state: permissions.camera) { permissions.askCamera() }
+                          state: permissions.gate(.camera)) { permissions.askCamera() }
             PermissionRow(symbol: "location.north.line.fill", title: "Location",
                           detail: "To find north and place the scene on the Earth.",
-                          state: permissions.location) { permissions.askLocation() }
+                          state: permissions.gate(.location)) { permissions.askLocation() }
             PermissionRow(symbol: "bell.badge.fill", title: "Notifications",
                           detail: "To tell you when someone leaves you a message.",
-                          state: permissions.notifications) { permissions.askNotifications() }
+                          state: permissions.gate(.notifications)) { permissions.askNotifications() }
             PermissionRow(symbol: "wifi", title: "Local network",
-                          detail: "To reach Home directly. iOS asks the first time this phone finds Home.",
-                          state: .automatic) {}
+                          detail: "To reach Home directly over this Wi-Fi.",
+                          state: permissions.gate(.local)) { permissions.askLocalNetwork() }
             PermissionRow(symbol: "rectangle.dashed.badge.record", title: "Screen recording",
                           detail: "So Home can see this screen. iOS asks for this one every time McKenna opens.",
-                          state: permissions.screen) { permissions.askScreen(screen) }
+                          state: permissions.gate(.screen)) { permissions.askScreen(screen) }
             Spacer()
             Button(action: finish) {
-                Text(permissions.allAnswered ? "Continue" : "Continue anyway")
+                Text("Continue")
                     .font(.system(size: 17, weight: .semibold)).frame(maxWidth: .infinity).padding(.vertical, 14)
                     .background(Color.white, in: Capsule()).foregroundStyle(.black)
             }
+            .disabled(!permissions.allAnswered)
+            .opacity(permissions.allAnswered ? 1 : 0.35)
         }
         .padding(24)
         .onAppear { permissions.refresh() }
@@ -145,9 +149,39 @@ final class Permissions: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published var camera = State.waiting
     @Published var location = State.waiting
     @Published var notifications = State.waiting
+    @Published var local = State.waiting
     private let locator = CLLocationManager()
+    private var probe: NWConnection?
 
-    var allAnswered: Bool { [screen, camera, location, notifications].allSatisfy { $0 == .allowed || $0 == .denied } }
+    enum Kind: CaseIterable { case camera, location, notifications, local, screen }
+    private func state(_ kind: Kind) -> State {
+        switch kind { case .camera: camera; case .location: location; case .notifications: notifications; case .local: local; case .screen: screen }
+    }
+    private func answered(_ kind: Kind) -> Bool { [.allowed, .denied].contains(state(kind)) }
+    /// A row's state as shown: only the first unanswered row may be tapped.
+    func gate(_ kind: Kind) -> State {
+        let next = Kind.allCases.first { !answered($0) }
+        return answered(kind) || kind == next ? state(kind) : .blocked
+    }
+    var allAnswered: Bool { Kind.allCases.allSatisfy(answered) }
+
+    /// iOS asks about the local network the first time the app reaches a device on it.
+    /// Reach the paired Home's address (or the router) with one tiny packet, now.
+    func askLocalNetwork() {
+        let profile = UserDefaults.standard.string(forKey: "homeConnectionProfile") ?? ""
+        let host = profile.components(separatedBy: "/ip4/").dropFirst().first?
+            .components(separatedBy: "/").first.flatMap { $0.isEmpty ? nil : $0 }
+        let target = host ?? "192.168.1.1"
+        let connection = NWConnection(host: NWEndpoint.Host(target), port: 9, using: .udp)
+        connection.start(queue: .main)
+        connection.send(content: Data([0]), completion: .contentProcessed { _ in })
+        probe = connection
+        // iOS does not say what was chosen; the prompt has been shown, so the row is done.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            self?.local = .allowed
+            self?.probe?.cancel(); self?.probe = nil
+        }
+    }
 
     override init() {
         super.init()
