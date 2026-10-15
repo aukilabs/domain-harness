@@ -132,8 +132,13 @@ class Arms:
         for field in ('pos', 'vel', 'temp', 'current'):
             if not np.isfinite(d[field]).all():
                 raise RuntimeError('invalid arm feedback')
-        if np.max(d['temp']) >= 50 or np.any(np.abs(d['current']) >= np.asarray(arm['cfg'].hard_current_limit)*.8):
-            raise RuntimeError('arm protection margin exceeded; yielding to factory controller')
+        if np.max(d['temp']) >= 50:
+            raise RuntimeError('arm temperature margin exceeded; yielding to factory controller')
+        # Older BBOS declares a per-joint current limit; newer BBOS declares none
+        # (its board firmware and safety daemon own protection). Never invent one.
+        limit = getattr(arm['cfg'], 'hard_current_limit', None)
+        if limit is not None and np.any(np.abs(d['current']) >= np.asarray(limit)*.8):
+            raise RuntimeError('arm current margin exceeded; yielding to factory controller')
         return d
 
 
@@ -249,7 +254,7 @@ def main():
             try:
                 request_id, name, target = parse_request(line)
                 *poses, report = plan(arms, name, target)
-            except (ValueError, RuntimeError) as e:
+            except Exception as e:  # Any planning failure refuses this request; nothing has moved.
                 emit('rejected', reason=str(e))
                 continue
             emit('planned', arm=name, executes=args.execute, aim_error_deg=report['aim_error_deg'],
