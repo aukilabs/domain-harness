@@ -364,9 +364,11 @@ struct ViewerScreen: View {
             // A Portal seen before Home's map has arrived offers sign-in once.
             controller.onPortalSeen = { _ in
                 guard !peer.running, !connecting, !promptedForLogin else { return }
-                promptedForLogin = true; connecting = true
+                if !peer.autoConnect() { promptedForLogin = true; connecting = true }
             }
+            peer.autoConnect()
         }
+        .onChange(of: peer.needsSignIn) { _, needed in if needed { connecting = true } }
         .onChange(of: controller.drawing) { _, drawing in
             // Drawing takes the screen: the notes panel, and anything half made in it, goes.
             if drawing, showNotes { withAnimation { showNotes = false }; controller.volumes.cancel() }
@@ -414,7 +416,8 @@ struct ViewerScreen: View {
                                 .textContentType(.username).keyboardType(.emailAddress)
                                 .textInputAutocapitalization(.never).autocorrectionDisabled()
                             SecureField("Password", text: $peer.password).textContentType(.password)
-                            Text("Use a User account with access to Home's Domain. Passwords are not saved.")
+                            if peer.hasSavedLogin { Button("Forget saved login", role: .destructive) { peer.forgetLogin() } }
+                            Text("Your successful login is saved in this iPhone’s Keychain and used to reconnect automatically.")
                                 .font(.caption)
                         }
                         if peer.profile == nil {
@@ -445,7 +448,7 @@ struct ViewerScreen: View {
             }
         }
         .onChange(of: phase) { _, value in
-            if value == .active { controller.start() } else { controller.pause() }
+            if value == .active { controller.start(); peer.autoConnect() } else { controller.pause() }
             // Leaving the foreground always lets go of the joystick.
             if value != .active { peer.drive(target: nil) }
             if value == .background { peer.disconnect(background: true) }
@@ -1785,7 +1788,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     }
     @Published var status = "Connect to Home to receive its scene"
     @Published var shareDepth = true {
-        didSet { if !shareDepth { onDepth?(nil); onLocalMap?(nil); depthStatus = "Depth sharing off" } }
+        didSet { if !shareDepth { clearPendingVoxels(); onDepth?(nil); onLocalMap?(nil); depthStatus = "Depth sharing off" } }
     }
     @Published var depthStatus = "Scan a Portal to share depth"
     var onDepth: ((PhoneDepthSample?) -> Void)?
@@ -1851,6 +1854,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private let cameraShareContext = CIContext()
     private var cameraShareBusy = false
     private var cameraShareNext: TimeInterval = 0
+    private var depthImageShareNext: TimeInterval = 0
     private var lastPosePublication: TimeInterval = 0
     private var lastNativePosePublication: TimeInterval = 0
     @Published var placement: NotePlacement?
@@ -1859,6 +1863,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private let root = SCNNode()
     /// Home's voxels, kept across scene updates and redrawn a chunk at a time.
     private let voxelChunks = VoxelChunks()
+    private var pendingVoxels = PendingVoxels()
+    private let pendingVoxelOverlay = PendingVoxelOverlay()
     private var lastMiniMapVoxels = Date.distantPast
     private let visionQueue = DispatchQueue(label: "home.portal.vision")
     private var busy = false
@@ -2172,7 +2178,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                                        ownFrame: "phone-camera:" + poseSession)
         // Everything is redrawn except the point still being carried: taking it out and putting it
         // back would restart its dust trail every time Home sends an update.
-        root.childNodes.filter { $0 !== floating && $0 !== crayonRoot && $0 !== guideRoot && $0 !== voxelChunks.root }.forEach { $0.removeFromParentNode() }
+        root.childNodes.filter { $0 !== floating && $0 !== crayonRoot && $0 !== guideRoot && $0 !== voxelChunks.root && $0 !== pendingVoxelOverlay.root }.forEach { $0.removeFromParentNode() }
         if guideRoot.parent == nil { root.addChildNode(guideRoot) }
         if voxelChunks.root.parent == nil { root.addChildNode(voxelChunks.root) }
         voxelChunks.root.isHidden = !showVoxels
@@ -2325,55 +2331,19 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         // Voxels that arrive as deltas are drawn by voxelChunks, face by face.
         if voxelChunks.isEmpty || voxelChunks.frame != scene.frame {
         // One indexed mesh per chunk avoids a SceneKit node for every voxel.
-        let corners: [SIMD3<Float>] = [SIMD3(-1,-1,-1), SIMD3(1,-1,-1), SIMD3(1,1,-1), SIMD3(-1,1,-1),
-                                       SIMD3(-1,-1,1), SIMD3(1,-1,1), SIMD3(1,1,1), SIMD3(-1,1,1)]
-        let faces: [UInt32] = [0,2,1,0,3,2,4,5,6,4,6,7,0,1,5,0,5,4,
-                               3,7,6,3,6,2,0,4,7,0,7,3,1,2,6,1,6,5]
         if scene.voxel_size.isFinite && scene.voxel_size > 0 {
             for start in stride(from: 0, to: scene.voxels.count, by: 8192) {
-                var vertices = [SCNVector3]()
-                var inner = [SCNVector3]()
-                var colors = [Float]()
-                var indices = [UInt32]()
+                var mesh = VoxelSurface.Mesh()
                 for voxel in scene.voxels[start..<min(start + 8192, scene.voxels.count)] {
                     guard voxel.center.count == 3, voxel.center.allSatisfy(\.isFinite) else { continue }
                     let center = SIMD3(voxel.center[0], voxel.center[1], voxel.center[2])
                     let rgb = voxel.linear_rgb?.count == 3 ? voxel.linear_rgb! : [0.08, 0.55, 0.85]
-                    let base = UInt32(vertices.count)
-                    for corner in corners {
-                        let p = center + corner * scene.voxel_size * 0.48
-                        vertices.append(SCNVector3(p.x, p.y, p.z))
-                        let q = center + corner * scene.voxel_size * 0.45
-                        inner.append(SCNVector3(q.x, q.y, q.z))
-                        colors.append(contentsOf: rgb + [0.65])
+                    for (direction, corners, _) in VoxelChunks.faces {
+                        mesh.append(base: center - scene.voxel_size * 0.48, size: scene.voxel_size * 0.96,
+                                    color: SIMD3(rgb[0], rgb[1], rgb[2]), direction: direction, corners: corners)
                     }
-                    indices.append(contentsOf: faces.map { base + $0 })
                 }
-                let colorData = colors.withUnsafeBytes { Data($0) }
-                let colorSource = SCNGeometrySource(data: colorData, semantic: .color,
-                    vectorCount: vertices.count, usesFloatComponents: true, componentsPerVector: 4,
-                    bytesPerComponent: 4, dataOffset: 0, dataStride: 16)
-                let geometry = SCNGeometry(sources: [SCNGeometrySource(vertices: vertices), colorSource],
-                    elements: [SCNGeometryElement(indices: indices, primitiveType: .triangles)])
-                // The voxels are see-through, and SceneKit does not sort triangles inside one mesh,
-                // so drawn plainly they show through each other in whatever order Home listed them.
-                // A slightly smaller copy of every voxel goes down first as depth with no colour.
-                // Colour then lands on the nearest faces only. The copy sits just inside the coloured
-                // faces, so the two never share a depth and cannot flicker against each other.
-                let depth = SCNMaterial()
-                depth.lightingModel = .constant
-                depth.colorBufferWriteMask = []
-                let shell = SCNGeometry(sources: [SCNGeometrySource(vertices: inner)],
-                    elements: [SCNGeometryElement(indices: indices, primitiveType: .triangles)])
-                shell.materials = [depth]
-                let first = SCNNode(geometry: shell)
-                first.renderingOrder = -2
-                first.name = "voxels"; first.isHidden = !showVoxels
-                root.addChildNode(first)
-                let material = SCNMaterial()
-                material.lightingModel = .constant
-                material.writesToDepthBuffer = false
-                geometry.materials = [material]
+                let geometry = mesh.geometry()
                 let second = SCNNode(geometry: geometry)
                 second.renderingOrder = -1
                 second.name = "voxels"; second.isHidden = !showVoxels
@@ -2630,9 +2600,34 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             origin: [origin.x, origin.y, origin.z], direction: [direction.x, direction.y, direction.z])
     }
 
+    private func clearPendingVoxels() {
+        pendingVoxels.clear()
+        pendingVoxelOverlay.clear()
+    }
+
+    private func reconcilePendingVoxels() {
+        let retired = pendingVoxels.receivedMapUpdate(frame: voxelChunks.frame)
+        pendingVoxelOverlay.update(pendingVoxels, retired: retired)
+    }
+
+    private func previewPendingVoxels(_ sample: PhoneDepthSample) {
+        guard let frame = map?.scenegraph.map.frame.id,
+              sample.session == poseSession,
+              sample.camera_to_session.from_frame_id == "phone-camera:" + sample.session,
+              sample.camera_to_session.to_frame_id == "phone-ar:" + sample.session,
+              sample.camera_to_session.to_frame_id == sample.alignment.session_to_home.from_frame_id,
+              sample.alignment.session_to_home.to_frame_id == frame else { return }
+        let cameraToHome = sample.alignment.session_to_home.matrix * sample.camera_to_session.matrix
+        pendingVoxels.capture(points: sample.points, cameraToHome: cameraToHome, frame: frame, session: sample.session)
+        pendingVoxelOverlay.update(pendingVoxels)
+        if pendingVoxelOverlay.root.parent == nil { root.addChildNode(pendingVoxelOverlay.root) }
+        pendingVoxelOverlay.root.isHidden = !showVoxels
+    }
+
     /// Changed voxel chunks from Home: redraw just those, and update the voxels the app reads.
     func applyVoxels(_ data: Data) {
         guard voxelChunks.apply(data) else { return }
+        reconcilePendingVoxels()
         if voxelChunks.root.parent == nil { root.addChildNode(voxelChunks.root) }
         voxelChunks.root.isHidden = !showVoxels
         guard let map, voxelChunks.frame == map.scenegraph.map.frame.id else { return }
@@ -2657,6 +2652,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     private func invalidate() {
+        clearPendingVoxels()
         volumes.invalidate()
         drawing = false
         onPose?(nil)
@@ -3147,9 +3143,9 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         lastPoseSent = frame.timestamp
         onPose?(PhonePoseSample(session: poseSession, timestamp: frame.timestamp, cameraInAR: frame.camera.transform))
     }
-    private func shareCamera(_ frame: ARFrame, alignment: UInt64, withPose: Bool) {
+    private func shareCamera(_ frame: ARFrame, alignment: UInt64) {
         guard spatial_mobile_camera_demand(1) != 0, !cameraShareBusy,
-              withPose || frame.timestamp >= cameraShareNext else { return }
+              frame.timestamp >= cameraShareNext - 0.0001 else { return }
         let buffer = frame.capturedImage
         let width = Double(CVPixelBufferGetWidth(buffer)), height = Double(CVPixelBufferGetHeight(buffer))
         guard width > 0, height > 0, abs(width / height - 4.0 / 3.0) < 0.01 else { return }
@@ -3158,7 +3154,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         // that picture has no pose to place it by.
         sendPose(frame)
         cameraShareBusy = true
-        cameraShareNext = frame.timestamp + 0.2
+        cameraShareNext = frame.timestamp + 0.1
         let timestamp = UInt64(frame.timestamp * 1_000_000_000)
         let k = frame.camera.intrinsics
         let fx = Double(k[0][0]), fy = Double(k[1][1]), cx = Double(k[2][0]), cy = Double(k[2][1])
@@ -3166,7 +3162,9 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         let sx = sentWidth / width, sy = sentHeight / height
         let session = poseSession
         let context = cameraShareContext
-        let depth = frame.sceneDepth
+        // RGB runs at 10 Hz; raw depth retains its existing 5 Hz ceiling.
+        let depth = frame.timestamp >= depthImageShareNext - 0.0001 ? frame.sceneDepth : nil
+        if depth != nil { depthImageShareNext = frame.timestamp + 0.2 }
         cameraShareQueue.async { [weak self] in
             if let depth, let confidence = depth.confidenceMap {
                 Self.shareDepthImage(depth.depthMap, confidence, timestamp: timestamp, session: session,
@@ -3192,7 +3190,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         }
     }
     /// Long side of the picture sent, in pixels. The short side is three quarters of it.
-    private static let cameraShareLongSide = 960.0
+    private static let cameraShareLongSide = 640.0
     /// The LiDAR depth map as 16-bit millimetres with its confidence map, as the
     /// sensor gave it. Its intrinsics are the camera's, scaled to the depth map.
     private static func shareDepthImage(_ depth: CVPixelBuffer, _ confidence: CVPixelBuffer, timestamp: UInt64, session: String,
@@ -3231,7 +3229,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         Self.flow(at: frame.timestamp)
         sampleCrayon()
         // Aligned frames are shared below, together with their pose.
-        if !aligned { shareCamera(frame, alignment: 0, withPose: false) }
+        if !aligned { shareCamera(frame, alignment: 0) }
         aimAtMessage(frame)
         guideToMessage(frame)
         if north == .searching {
@@ -3276,6 +3274,9 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         if aligned {
             root.isHidden = false; applyCameraFeed()
             captureDepth(frame)
+            // Video has its own cadence, independent of the 5 Hz mini-map updates.
+            // shareCamera publishes the exact capture-time pose for every sent image.
+            shareCamera(frame, alignment: depthAlignment?.timestamp_ns ?? 1)
             if let map, frame.timestamp - lastPosePublication >= 0.2 {
                 lastPosePublication = frame.timestamp
                 let cameraInHome = root.simdTransform.inverse * frame.camera.transform
@@ -3288,10 +3289,6 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                                          heading: heading.x.isFinite ? heading : SIMD2(0, -1))
                 selfInHome = cameraInHome
                 refreshDevices()
-                // The picture of this same frame, so a reader finds a pose with
-                // exactly the picture's capture time.
-                // An alignment restored from before a relaunch has no capture time of its own.
-                shareCamera(frame, alignment: depthAlignment?.timestamp_ns ?? 1, withPose: true)
             }
         }
         guard placement == nil, let map, !busy, cooldown.canScan(at: frame.timestamp),
@@ -3417,6 +3414,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 guard let sample else { self.depthStatus = "No reliable depth here. Aim at nearby surfaces."; return }
                 self.depthStatus = "LiDAR active · \(sample.points.count) \(sample.colors == nil ? "" : "colored ")voxels per capture"
                 self.onDepth?(sample)
+                self.previewPendingVoxels(sample)
+                if !self.pendingVoxels.cells.isEmpty { self.depthStatus += " · Magenta: awaiting Home" }
             }
         }
     }
