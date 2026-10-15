@@ -552,3 +552,119 @@ pub unsafe extern "C" fn spatial_mobile_depth(value: *const c_char) {
         }
     });
 }
+
+// ---------------------------------------------------------------------------
+// Onboarding (onboarding.md). Every call returns JSON the caller frees with
+// spatial_mobile_string_free: the answer, or `{"error": "..."}`.
+
+type Answer<T> = Result<T, String>;
+fn answer(result: Answer<serde_json::Value>) -> *mut c_char {
+    let value = result.unwrap_or_else(|e| serde_json::json!({"error": e.to_string()}));
+    CString::new(value.to_string()).map_or(std::ptr::null_mut(), CString::into_raw)
+}
+/// # Safety
+/// `value` must be null or a NUL-terminated string valid for this call.
+unsafe fn text(value: *const c_char, limit: usize) -> Answer<String> {
+    if value.is_null() { return Err("Missing argument".into()); }
+    let bytes = unsafe { CStr::from_ptr(value) }.to_bytes();
+    if bytes.len() > limit { return Err("Argument too large".into()); }
+    std::str::from_utf8(bytes).map(str::to_owned).map_err(|e| e.to_string())
+}
+fn connected() -> Answer<Arc<MobileClient>> {
+    CLIENT.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        .filter(|c| !c.finished()).ok_or_else(|| "Not connected to Home".to_string())
+}
+fn failed(e: impl std::fmt::Display) -> String { e.to_string() }
+
+/// This model's screen and camera numbers, with `points_per_mm` for drawing
+/// the 30 mm marker; an error on a model without measurements.
+/// # Safety
+/// `model` must be a NUL-terminated string, e.g. "iPhone16,1".
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spatial_mobile_onboarding_screen(model: *const c_char) -> *mut c_char {
+    std::panic::catch_unwind(|| answer((|| {
+        let screen = spatial_home::onboarding::screen(&unsafe { text(model, 64) }?).map_err(failed)?;
+        let mut value = serde_json::to_value(screen).map_err(failed)?;
+        value["points_per_mm"] = serde_json::json!(1. / screen.mm_per_point);
+        value["side_points"] = serde_json::json!(spatial_home::onboarding::MARKER_SIDE_M * 1000. / screen.mm_per_point);
+        Ok(value)
+    })())).unwrap_or(std::ptr::null_mut())
+}
+
+/// Start hosting: `{"alias", "wifi"?: {"ssid","password"?,"hidden"?}, "display": {"model","center_points","side_points"}}`.
+/// Answers `{"invitation": <QR text>}`.
+/// # Safety
+/// `request` must be a NUL-terminated UTF-8 JSON string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spatial_mobile_onboarding_host(request: *const c_char) -> *mut c_char {
+    std::panic::catch_unwind(|| answer((|| {
+        let request: serde_json::Value = serde_json::from_str(&unsafe { text(request, 8192) }?).map_err(failed)?;
+        let alias = request["alias"].as_str().ok_or("Missing alias")?;
+        let wifi = match &request["wifi"] { serde_json::Value::Null => None, w => Some(serde_json::from_value(w.clone()).map_err(failed)?) };
+        let display = serde_json::from_value(request["display"].clone()).map_err(failed)?;
+        let invitation = connected()?.host_onboarding(alias, wifi, display).map_err(failed)?;
+        Ok(serde_json::json!({"invitation": invitation}))
+    })())).unwrap_or(std::ptr::null_mut())
+}
+
+/// Read a scanned code without acting on it: `{"session","alias","home","wifi"}`
+/// for an invitation (the app may need to connect to `home` first), an error otherwise.
+/// # Safety
+/// `scanned` must be a NUL-terminated UTF-8 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spatial_mobile_onboarding_parse(scanned: *const c_char) -> *mut c_char {
+    std::panic::catch_unwind(|| answer((|| {
+        let invitation = spatial_home::onboarding::Invitation::parse(&unsafe { text(scanned, 4096) }?).map_err(failed)?;
+        Ok(serde_json::json!({"session": invitation.session, "alias": invitation.alias,
+            "home": invitation.home, "wifi": invitation.wifi}))
+    })())).unwrap_or(std::ptr::null_mut())
+}
+
+/// Join from a scanned invitation: `{"started": true}`, `{"started": false}` when
+/// this session was already seen, or an error (e.g. connected to another Home).
+/// # Safety
+/// `scanned` must be a NUL-terminated UTF-8 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spatial_mobile_onboarding_join(scanned: *const c_char) -> *mut c_char {
+    std::panic::catch_unwind(|| answer((|| {
+        let started = connected()?.join_onboarding(&unsafe { text(scanned, 4096) }?).map_err(failed)?;
+        Ok(serde_json::json!({"started": started}))
+    })())).unwrap_or(std::ptr::null_mut())
+}
+
+/// Stop hosting or joining.
+#[unsafe(no_mangle)]
+pub extern "C" fn spatial_mobile_onboarding_stop() {
+    let _ = std::panic::catch_unwind(|| {
+        if let Some(client) = CLIENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref() { client.stop_onboarding(); }
+    });
+}
+
+/// A camera frame while joining: packed luma plus
+/// `{"session","timestamp_ns","width","height","fx","fy","cx","cy","camera_to_session"}`.
+/// 1 when the host's marker was seen in it, 0 otherwise.
+/// # Safety
+/// luma must span length readable bytes; frame must be NUL-terminated UTF-8.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spatial_mobile_onboarding_frame(luma: *const u8, length: usize, frame: *const c_char) -> i32 {
+    std::panic::catch_unwind(|| {
+        if luma.is_null() || length == 0 || length > 1920 * 1920 { return 0; }
+        let Ok(frame) = (unsafe { text(frame, 8192) }) else { return 0 };
+        let Ok(frame) = serde_json::from_str::<spatial_home::mobile_onboarding::Frame>(&frame) else { return 0 };
+        let Ok(client) = connected() else { return 0 };
+        let luma = unsafe { std::slice::from_raw_parts(luma, length) };
+        i32::from(client.onboarding_frame(luma, &frame).unwrap_or(false))
+    }).unwrap_or(0)
+}
+
+/// A code to draw: `{"width": n, "modules": "0101…"}`, n×n modules row by row,
+/// quiet zone excluded.
+/// # Safety
+/// `value` must be a NUL-terminated UTF-8 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spatial_mobile_onboarding_qr(value: *const c_char) -> *mut c_char {
+    std::panic::catch_unwind(|| answer((|| {
+        let (width, modules) = spatial_home::onboarding::qr_modules(&unsafe { text(value, 4096) }?).map_err(failed)?;
+        Ok(serde_json::json!({"width": width, "modules": modules.iter().map(|d| if *d { '1' } else { '0' }).collect::<String>()}))
+    })())).unwrap_or(std::ptr::null_mut())
+}

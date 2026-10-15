@@ -34,6 +34,10 @@ struct ViewerScreen: View {
     @State private var showMessages = false
     /// The panel for leaving a note, surface or box. Out of the way until asked for.
     @State private var showNotes = false
+    /// Adding a device: this phone shows it the way into the scene.
+    @State private var hostingOnboarding = false
+    /// The joined session whose place this phone has already taken on.
+    @State private var adoptedSession: String?
     @Environment(\.scenePhase) private var phase
     /// Whether voxels are reaching Home right now: ink sending, orange failing, grey idle.
     private var sending: Bool {
@@ -123,6 +127,16 @@ struct ViewerScreen: View {
                     .padding(.top, 10)
                     .accessibilityLabel(showNotes ? "Close notes" : "Leave a note")
                     MessageButton(center: controller.messages, open: $showMessages).padding(.top, 10)
+                    // Add a robot or phone to this scene.
+                    Button { hostingOnboarding = true } label: {
+                        Image(systemName: "plus.viewfinder").font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(Theme.dim)
+                            .frame(width: 36, height: 36).background(Theme.paper, in: Circle())
+                            .shadow(color: Theme.glow, radius: 4, y: 2)
+                    }
+                    .padding(.top, 10)
+                    .disabled(peer.state != "live")
+                    .accessibilityLabel("Add a device")
                     }
                     .opacity(controller.snoozed ? 0 : 1).disabled(controller.snoozed)
                 }
@@ -240,6 +254,24 @@ struct ViewerScreen: View {
             .padding()
             // Last, so the way to a message is never under a panel or a button.
             if !controller.snoozed { MessageMarker(center: controller.messages) }
+            if let joining = peer.onboarding, joining.role == "joiner" {
+                OnboardingJoinCard(state: joining, cancel: { peer.stopOnboarding() })
+                    .frame(maxHeight: .infinity, alignment: .top).padding(.top, 60).padding(.horizontal, 16)
+            }
+            if hostingOnboarding {
+                OnboardingHostView(controller: controller, peer: peer, close: { hostingOnboarding = false })
+            }
+        }
+        .onChange(of: peer.onboarding) { _, onboarding in
+            let joining = onboarding?.role == "joiner" ? onboarding : nil
+            controller.onboardingMarker = joining?.looking == true ? joining?.marker : nil
+            if let joining, let found = joining.alignment, adoptedSession != joining.session {
+                adoptedSession = joining.session
+                controller.adoptOnboarding(found)
+                phoneName = joining.alias
+                Onboarding.playSuccess()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4) { peer.stopOnboarding() }
+            }
         }
         .overlay(alignment: .top) {
             // Home is watching this screen: say so, on the screen it sees.
@@ -288,6 +320,7 @@ struct ViewerScreen: View {
                 return true
             }
             peer.onPortalResult = { controller.showPortalResult($0) }
+            controller.onInvitation = { peer.handleInvitation($0) }
             // A Portal seen before Home's map has arrived offers sign-in once.
             controller.onPortalSeen = { _ in
                 guard !peer.running, !connecting, !promptedForLogin else { return }
@@ -1802,7 +1835,74 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private let root = SCNNode()
     private let visionQueue = DispatchQueue(label: "home.portal.vision")
     private var busy = false
-    private var aligned = false
+    private var aligned = false { didSet { if calibrated != aligned { calibrated = aligned } } }
+    /// Whether this phone knows where it is in the scene.
+    @Published private(set) var calibrated = false
+    // MARK: Onboarding (onboarding.md)
+    /// Showing another device the way in: publish every pose, and never doze off.
+    var onboardingHosting = false {
+        didSet {
+            UIApplication.shared.isIdleTimerDisabled = onboardingHosting
+            if onboardingHosting { restReference = nil }
+        }
+    }
+    /// Joining: the host's marker to look for in camera frames.
+    var onboardingMarker: String?
+    /// An onboarding invitation QR seen while scanning.
+    var onInvitation: ((String) -> Void)?
+    private let onboardingQueue = DispatchQueue(label: "home.phone.onboarding")
+    private var onboardingBusy = false
+    private var lastOnboardingFrame: TimeInterval = 0
+    /// Hand a frame's luma plane, intrinsics and pose to the bridge to look for the marker.
+    private func lookForMarker(_ frame: ARFrame) {
+        guard onboardingMarker != nil, !onboardingBusy, case .normal = frame.camera.trackingState,
+              frame.timestamp - lastOnboardingFrame >= 0.1 else { return }
+        lastOnboardingFrame = frame.timestamp
+        onboardingBusy = true
+        let session = poseSession
+        let k = frame.camera.intrinsics
+        let image = frame.capturedImage
+        let capture: [String: Any] = [
+            "session": session, "timestamp_ns": UInt64(frame.timestamp * 1_000_000_000),
+            "width": CVPixelBufferGetWidthOfPlane(image, 0), "height": CVPixelBufferGetHeightOfPlane(image, 0),
+            "fx": Double(k[0][0]), "fy": Double(k[1][1]), "cx": Double(k[2][0]), "cy": Double(k[2][1]),
+            "camera_to_session": [
+                "from_frame_id": "phone-camera:\(session)", "to_frame_id": "phone-ar:\(session)",
+                "translation": Portal.Pose.transform(frame.camera.transform, from: "", to: "").translation.map(Double.init),
+                "rotation_wxyz": Portal.Pose.transform(frame.camera.transform, from: "", to: "").rotation_wxyz.map(Double.init),
+            ],
+        ]
+        onboardingQueue.async { [weak self] in
+            defer { DispatchQueue.main.async { self?.onboardingBusy = false } }
+            guard let json = try? JSONSerialization.data(withJSONObject: capture),
+                  let text = String(data: json, encoding: .utf8) else { return }
+            CVPixelBufferLockBaseAddress(image, .readOnly)
+            defer { CVPixelBufferUnlockBaseAddress(image, .readOnly) }
+            guard let base = CVPixelBufferGetBaseAddressOfPlane(image, 0) else { return }
+            let width = CVPixelBufferGetWidthOfPlane(image, 0), height = CVPixelBufferGetHeightOfPlane(image, 0)
+            let row = CVPixelBufferGetBytesPerRowOfPlane(image, 0)
+            var luma = [UInt8](repeating: 0, count: width * height)
+            luma.withUnsafeMutableBytes { out in
+                for y in 0..<height { memcpy(out.baseAddress! + y * width, base + y * row, width) }
+            }
+            _ = text.withCString { spatial_mobile_onboarding_frame(luma, luma.count, $0) }
+        }
+    }
+    /// Take on the place in the scene that onboarding found, as if a Portal had been read.
+    func adoptOnboarding(_ found: OnboardingState.JoinAlignment) {
+        guard let map, found.session_to_home.from_frame_id == "phone-ar:\(poseSession)",
+              found.session_to_home.to_frame_id == map.scenegraph.map.frame.id else {
+            status = "Onboarding placed an earlier AR session; scan the code again"; return
+        }
+        let sessionToHome = found.session_to_home.matrix
+        alignment.reset()
+        root.simdTransform = sessionToHome.inverse
+        root.isHidden = false; applyCameraFeed()
+        aligned = true
+        depthAlignment = DepthAlignment(timestamp_ns: found.timestamp_ns, portal_id: found.portal_id,
+                                        portal_to_session: found.portal_to_session, session_to_home: found.session_to_home)
+        status = "Placed in the scene by onboarding · \(map.render?.voxels.count ?? 0) voxels"
+    }
     private var generation = 0
     private var lastAttempt: TimeInterval = 0
     private var cooldown = CalibrationCooldown()
@@ -2928,6 +3028,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
 
     /// Flat (screen up or down) and rotated less than about two degrees.
     private func checkRest(_ frame: ARFrame) {
+        if onboardingHosting { return }
         let transform = frame.camera.transform
         let flat = abs(transform.columns.2.y) > 0.9
         let orientation = simd_quatf(transform)
@@ -2981,10 +3082,12 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             let request = VNDetectBarcodesRequest()
             request.symbologies = [.qr]
             try? VNImageRequestHandler(cvPixelBuffer: image, orientation: .up).perform([request])
-            let code = (request.results ?? []).compactMap { $0.payloadStringValue }
-                .compactMap { PortalMap.portalCode($0) }.first
+            let payloads = (request.results ?? []).compactMap { $0.payloadStringValue }
+            let code = payloads.compactMap { PortalMap.portalCode($0) }.first
+            let invitation = payloads.first { $0.hasPrefix(Onboarding.prefix) }
             DispatchQueue.main.async {
                 self.busy = false
+                if let invitation { self.onInvitation?(invitation) }
                 guard self.generation == capturedGeneration, self.map == nil, let code else { return }
                 self.status = "Portal \(code) in view. It aligns as soon as Home's map arrives."
                 self.onPortalSeen?(code)
@@ -3097,8 +3200,10 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             // This frame, and any already on their way, are still in the compass's axes.
             if north != .searching { lastAttempt = frame.timestamp + 0.5; return }
         }
+        lookForMarker(frame)
         if case .normal = frame.camera.trackingState {
-            if frame.timestamp < lastNativePosePublication || frame.timestamp - lastNativePosePublication >= 0.2 {
+            // A joiner asks where this phone was at its own capture times: keep every pose.
+            if onboardingHosting || frame.timestamp < lastNativePosePublication || frame.timestamp - lastNativePosePublication >= 0.2 {
                 lastNativePosePublication = frame.timestamp
                 sendPose(frame)
             }
@@ -3168,11 +3273,13 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             let height = Float(CVPixelBufferGetHeight(frame.capturedImage))
             var found: (String, simd_float4x4, simd_float4x4, Float)?
             var unknown: (String, simd_float4x4)?
+            var invitation: String?
             for code in request.results ?? [] {
                 guard let payload = code.payloadStringValue else {
                     feedback = "QR visible but unreadable. Move closer and avoid glare."
                     continue
                 }
+                if payload.hasPrefix(Onboarding.prefix) { invitation = payload; feedback = "Onboarding code seen"; continue }
                 guard let portal = map.matching(payload) else {
                     if let newCode = PortalMap.portalCode(payload) {
                         feedback = "Portal \(newCode) is not in this scene yet."
@@ -3202,8 +3309,10 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             let result = found
             let candidate = unknown
             let scanFeedback = feedback
+            let seenInvitation = invitation
             DispatchQueue.main.async {
                 self.busy = false
+                if let seenInvitation { self.onInvitation?(seenInvitation) }
                 guard self.generation == capturedGeneration, self.placement == nil else { return }
                 guard case .normal = self.view.session.currentFrame?.camera.trackingState else { return }
                 if let (code, portalInAR) = candidate { self.offerNewPortal(code, portalInAR: portalInAR, at: frame.timestamp) }
