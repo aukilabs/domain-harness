@@ -1007,12 +1007,18 @@ fn persist_notes(notes: &Notes, path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+/// Wait for `next`, giving up after `limit`; `None` waits for as long as it takes.
+pub(crate) async fn next_within<T>(limit: Option<Duration>, next: impl std::future::Future<Output = T>) -> Result<T, tokio::time::error::Elapsed> {
+    match limit { Some(limit) => tokio::time::timeout(limit, next).await, None => Ok(next.await) }
+}
+
 /// Authenticated SDK subscription, pinned to this scene's Product and frame.
+/// With `idle` set, a stream quiet that long after the first scene returns Ok.
 pub async fn receive(
     peer: &auki_sdk::AukiPeer,
     home: &HomeConnection,
     stop: &tokio_util::sync::CancellationToken,
-    idle: Duration,
+    idle: Option<Duration>,
     mut accept: impl FnMut(Value),
 ) -> Result<()> {
     receive_scene(peer, home, stop, idle, |scene| { accept(scene.mobile()?); Ok(()) }).await
@@ -1024,7 +1030,7 @@ pub async fn receive_scene(
     peer: &auki_sdk::AukiPeer,
     home: &HomeConnection,
     stop: &tokio_util::sync::CancellationToken,
-    idle: Duration,
+    idle: Option<Duration>,
     mut accept: impl FnMut(&Scene) -> Result<()>,
 ) -> Result<()> {
     let expected = home.validate(peer)?;
@@ -1085,7 +1091,7 @@ pub async fn receive_scene(
             let next = tokio::select! {
                 _=stop.cancelled()=>return Ok(()),
                 exit=peer.wait_stopped()=>bail!("Phone peer stopped: {exit:?}"),
-                event=tokio::time::timeout(if received {idle} else {Duration::from_secs(30)},subscription.next())=>event,
+                event=next_within(if received {idle} else {Some(Duration::from_secs(30))},subscription.next())=>event,
             };
             match next {
                 Err(_) if received => return Ok(()),

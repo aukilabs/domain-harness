@@ -434,7 +434,7 @@ pub async fn run(hardware: Hardware) -> Result<()> {
                 let profile: HomeConnection = serde_json::from_slice(&std::fs::read(&home_path)?)?;
                 let cancel = tokio_util::sync::CancellationToken::new();
                 crate::local_mobile::receive_scene(&running.peer, &profile, &cancel,
-                    Duration::from_secs(5), |scene| {
+                    Some(Duration::from_secs(5)), |scene| {
                         save(&cache, &serde_json::json!({
                             "schema":"spatial.robot-volume-input/v1", "authenticated":true,
                             "home_peer_id":profile.peer_id, "home_frame":profile.frame,
