@@ -178,6 +178,10 @@ pub struct MobileState {
     pub onboarding: Option<serde_json::Value>,
 }
 
+/// Fixed port the phone listens on when it knows its Wi-Fi address, so Home
+/// and robots can dial it directly instead of only through Auki's relay.
+pub const DIRECT_PORT: u16 = 4330;
+
 pub struct MobileClient {
     camera: tokio::sync::watch::Sender<Option<(u64, Vec<u8>, Instant, Option<crate::mobile_camera::Geometry>)>>,
     camera_configuration:tokio::sync::watch::Sender<Option<crate::mobile_camera::RegisteredConfiguration>>,
@@ -508,14 +512,16 @@ impl MobileClient {
         }
     }
 
+    /// `lan` is this phone's Wi-Fi IPv4 address, if it is on Wi-Fi: see `DIRECT_PORT`.
     pub async fn run(
         self: Arc<Self>,
         profile: String,
         sign_in: SignIn,
         identity: String,
+        lan: Option<std::net::Ipv4Addr>,
     ) {
         let result = self
-            .connect(profile, sign_in, Path::new(&identity))
+            .connect(profile, sign_in, Path::new(&identity), lan)
             .await;
         if let Err(error) = result {
             self.status("error", error.to_string());
@@ -530,6 +536,7 @@ impl MobileClient {
         profile: String,
         sign_in: SignIn,
         identity: &Path,
+        lan: Option<std::net::Ipv4Addr>,
     ) -> Result<()> {
         ensure!(
             profile.len() <= 32 * 1024,
@@ -560,8 +567,17 @@ impl MobileClient {
         if self.stop.is_cancelled() {
             return Ok(());
         }
-        let config =
-            AukiPeerConfig::dev().with_listen_addresses(["/ip4/0.0.0.0/tcp/0".parse()?])?;
+        // Home pulls this phone's pose and depth through its Catalog, so Home must
+        // be able to dial the phone. Discovery publishes advertised routes, never
+        // listen addresses, so on a random port the phone is reachable only through
+        // the relay. On Wi-Fi, also listen on a fixed port and advertise that direct
+        // route; the relay stays as the fallback.
+        let config = match lan {
+            Some(ip) => AukiPeerConfig::dev()
+                .with_listen_addresses([format!("/ip4/0.0.0.0/tcp/{DIRECT_PORT}").parse()?])?
+                .with_advertised_direct_routes([format!("/ip4/{ip}/tcp/{DIRECT_PORT}").parse()?])?,
+            None => AukiPeerConfig::dev().with_listen_addresses(["/ip4/0.0.0.0/tcp/0".parse()?])?,
+        };
         let auth = AukiPeerBootstrap::authenticate(
             AuthClient::new(AuthEnvironment::dev())?,
             credentials,
