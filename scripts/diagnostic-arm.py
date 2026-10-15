@@ -34,6 +34,10 @@ RATE_HZ = 50
 MOVE_SECONDS = 4.
 AIM_SECONDS = 2.5
 HOLD_SECONDS = 3.
+# BBOS trips a motor after 15 s above 50 C; a move heats the mast lift, so a
+# request is refused at plan time with this much headroom left.
+TEMP_LIMIT_C = 50.
+PLAN_TEMP_MARGIN_C = 3.
 # Assumed, as in bracketbot_aim: BBOS base's origin is on the floor under the
 # drive axle. arm_base is BBOS base turned +90 deg about Z, raised to the axle.
 ARM_BASE_IN_BASE = dict(translation=[0., 0., .165/2],
@@ -72,6 +76,14 @@ def measured_limits(cfg, name):
     return lower, upper
 
 
+class ArmProtection(RuntimeError):
+    """A protection margin, with a short code (hot, current) for alerts."""
+
+    def __init__(self, code, reason):
+        super().__init__(reason)
+        self.code = code
+
+
 class Arms:
     """Per-arm kinematics, limits and live feedback readers."""
 
@@ -103,7 +115,7 @@ class Arms:
             raise RuntimeError('stale BBOS feedback; relinquishing to factory controller')
         return d
 
-    def healthy(self, name, arm_max_age=.25):
+    def healthy(self, name, arm_max_age=.25, temp_limit=TEMP_LIMIT_C):
         if np.max(np.abs(self.fresh(self.imu)['rpy'][:2])) > 10:
             raise RuntimeError('robot tilted; yielding to factory safety controller')
         if float(self.fresh(self.battery, 15)['voltage']) < self.low_voltage:
@@ -113,8 +125,15 @@ class Arms:
         for field in ('pos', 'vel', 'temp', 'current'):
             if not np.isfinite(d[field]).all():
                 raise RuntimeError('invalid arm feedback')
-        if np.max(d['temp']) >= 50 or np.any(np.abs(d['current']) >= np.asarray(arm['cfg'].hard_current_limit)*.8):
-            raise RuntimeError('arm protection margin exceeded; yielding to factory controller')
+        joints = list(arm['cfg'].joint_names)
+        hot = int(np.argmax(d['temp']))
+        if d['temp'][hot] >= temp_limit:
+            raise ArmProtection('hot', f"{joints[hot]} at {d['temp'][hot]:.0f} C (limit {temp_limit:.0f} C)")
+        limits = np.asarray(arm['cfg'].hard_current_limit, float)*.8
+        over = np.flatnonzero(np.abs(d['current']) >= limits)
+        if over.size:
+            i = int(over[0])
+            raise ArmProtection('current', f"{joints[i]} drawing {abs(d['current'][i]):.1f} A (limit {limits[i]:.1f} A)")
         return d
 
 
@@ -123,7 +142,7 @@ def plan(arms, name, target):
     from bracketbot_point import HOME, check_path, plan_point_at
     arm = arms.arms[name]
     fk, (lower, upper) = arm['fk'], arm['limits']
-    state = arms.healthy(name)
+    state = arms.healthy(name, temp_limit=TEMP_LIMIT_C-PLAN_TEMP_MARGIN_C)
     if np.max(np.abs(state['vel'])) > .02:
         raise ValueError('arm is moving')
     start = state['pos'].astype(float).copy()
@@ -224,7 +243,8 @@ def main():
                 request_id, name, target = parse_request(line)
                 *poses, report = plan(arms, name, target)
             except (ValueError, RuntimeError) as e:
-                emit('rejected', reason=str(e))
+                code = getattr(e, 'code', 'unreachable' if isinstance(e, ValueError) else 'other')
+                emit('rejected', reason=str(e), code=code)
                 continue
             emit('planned', arm=name, executes=args.execute, aim_error_deg=report['aim_error_deg'],
                  hand_floor_m=report['aimed_hand_floor_m'])
@@ -234,7 +254,7 @@ def main():
                 execute(arms, name, poses, lambda: bool(stop), emit)
                 emit('done')
             except Exception as e:  # The writers are closed; BBOS idle policy holds the arm.
-                emit('fault', reason=str(e))
+                emit('fault', reason=str(e), code=getattr(e, 'code', 'other'))
                 raise
 
 
