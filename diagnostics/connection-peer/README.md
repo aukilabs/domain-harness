@@ -106,6 +106,33 @@ writer is a new pose session, so it starts a fresh one) and when an essential
 helper (arm, nav or drive) exits, so a restart respawns them all. Camera, depth
 and robot-state helpers degrade without stopping the peer.
 
+## Onboarding from a phone (`--portals`)
+
+The detector hands onboarding codes (an invitation QR, a session's `ONB:`
+marker) to `src/onboard.rs` in-process; they are never published, since an
+invitation may hold a Wi-Fi password. On an invitation for this runner's Home
+(same Home peer and scene frame), the robot:
+
+1. joins the invitation's Wi-Fi if it is not already on it, with
+   `sudo -n nmcli dev wifi connect …` (arguments without a shell; the
+   previous network is kept on failure). This needs a sudoers entry for
+   exactly that command for the runner's user; without it the join fails and
+   says so;
+2. names itself in Home with the alias (Home's `name` operation, bound to
+   this Peer ID);
+3. asks the phone to show its 50 mm marker, and times the phone's capture
+   clock against this one (BBOS stamps camera frames with wall-clock
+   nanoseconds) over 16 authenticated exchanges;
+4. for each sighting of the marker, undistorts its corners with the head
+   camera's fisheye model, solves the 50 mm square, asks the phone where the
+   marker was in the scene at that instant, and hands the alignment worker
+   "where this camera was in the scene";
+5. the alignment worker composes that with the capture-time base pose and the
+   head extrinsic, and publishes the held transform into the scene once five
+   sightings agree within 2 cm / 2° — the same Product a Portal alignment uses.
+
+An invitation for a different Home is refused (restart with that profile).
+
 ## Validation and operation
 
 ```sh

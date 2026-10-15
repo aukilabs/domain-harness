@@ -267,6 +267,7 @@ impl Worker {
             let mut pose_received = Instant::now();
             let mut valid = false;
             let mut published: u64 = 0;
+            let mut onboarding = crate::onboarding::Agreement::default();
             let mut loss = 0;
             let mut geometry = home.identity;
             let mut last_message = String::new();
@@ -322,6 +323,33 @@ impl Worker {
                 if !ready {
                     std::thread::sleep(Duration::from_millis(50));
                     continue;
+                }
+                // Onboarding: marker sightings already placed in the scene become
+                // this world's held transform once enough of them agree.
+                let pending: Vec<_> = crate::onboard::SHARED.sightings.lock().unwrap().drain(..).collect();
+                for s in pending {
+                    if s.timestamp_ns <= loss { continue; }
+                    let placed = sampled_at(&source, &native, s.timestamp_ns)
+                        .and_then(|base| solve(&s.camera_in_home, &base, &c.camera_to_base));
+                    let solution = match placed {
+                        Ok(alignment) => crate::onboarding::Solution { timestamp_ns: s.timestamp_ns,
+                            native_to_scene: alignment, timing_error_m: s.timing_error_m, range_m: s.range_m },
+                        Err(e) => { crate::diagnostic_log!("Onboarding sighting has no pose: {e}"); continue; }
+                    };
+                    match onboarding.add(solution) {
+                        Ok(Some(agreed)) => {
+                            let at = s.timestamp_ns.max(published.saturating_add(1));
+                            if output.publish(at, Arc::new(Update { tracking: Tracking::Valid { pose: agreed } })).is_ok() {
+                                published = at;
+                                valid = true;
+                                *crate::onboard::SHARED.agreed.lock().unwrap() = Some(at);
+                                crate::diagnostic_log!("Alignment established into {} from an onboarding marker", contract.to_frame.id);
+                                onboarding = Default::default();
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(e) => crate::diagnostic_log!("Onboarding sighting rejected: {e}"),
+                    }
                 }
                 if let (Some(home), Some(d)) = (home, latest(&detections)) {
                     // Wait for the right pose bracket, but never reuse pre-loss detections.

@@ -18,6 +18,7 @@ import { moveMapCamera, applyChatActions, chatResultPresentation } from './view-
 import { createAttachedCamera } from './attached-camera.js';
 import { createRobotModel } from './robot-model.js';
 import { applyRobotHealth, applyPointingStatus } from './robot-health.js';
+import { createSlashCommands } from './slash-commands.js';
 import { createAgentBar } from './agent-bar.js';
 const $=id=>document.getElementById(id);
 const chatForm=$('scene-chat-form'),chatInput=$('scene-chat-input'),chatStatus=$('scene-chat-status');
@@ -34,11 +35,21 @@ function renderChat(){
  const fresh=chatShown.map===activeMap?chatShown.count:messages.length;chatShown={map:activeMap,count:messages.length};
  chatHistory.replaceChildren();chatHistory.hidden=!messages.length&&!pending;
  messages.forEach((m,i)=>{const row=document.createElement('div');row.className='scene-chat-message '+m.role+(i>=fresh?' enter':'');
-  const who=document.createElement('strong');who.className='visually-hidden';who.textContent=m.role==='user'?'You':'Qwen';
+  const who=document.createElement('strong');who.className=m.direct?'scene-chat-source':'visually-hidden';who.textContent=m.role==='user'?'You':m.direct?'Home':'Qwen';
   // The "nothing was saved" receipt stays with the reply, as a quiet note rather than body text.
   const shown=m.display_content||m.content,receipt=m.role==='user'?null:shown.match(/\n\nNo scene changes were saved\.$/);
   const text=document.createElement('div');text.className='scene-chat-text';text.textContent=receipt?shown.slice(0,receipt.index):shown;row.append(who,text);
   if(receipt){const note=document.createElement('div');note.className='scene-chat-receipt';note.textContent='No scene changes were saved.';row.append(note);}
+  if(m.role==='assistant'&&m.explanation){
+   const details=document.createElement('div');details.className='scene-chat-explanation';details.id=`chat-explanation-${i}`;details.textContent=m.explanation;
+   text.tabIndex=0;text.setAttribute('role','button');text.setAttribute('aria-controls',details.id);text.setAttribute('aria-label',text.textContent+' — toggle explanation');
+   text.title='Right-click to expand or collapse explanation. Keyboard: Enter or Space.';
+   const sync=()=>{details.hidden=!m.explanation_expanded;text.setAttribute('aria-expanded',String(!!m.explanation_expanded));};
+   const toggle=e=>{e.preventDefault();e.stopPropagation();m.explanation_expanded=!m.explanation_expanded;sync();};
+   row.addEventListener('contextmenu',toggle);
+   text.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){if(!e.repeat)toggle(e);else e.preventDefault();}});
+   sync();row.append(details);
+  }
   chatHistory.append(row);});
  if(pending){const row=document.createElement('div');row.className='scene-chat-message assistant thinking enter';const text=document.createElement('div');text.className='scene-chat-text';text.textContent='Thinking…';row.append(text);chatHistory.append(row);}
  document.querySelector('.scene-chat').classList.toggle('pending',pending);
@@ -46,6 +57,7 @@ function renderChat(){
  document.querySelector('.agent-bar').classList.toggle('has-conversation',!!messages.length||pending);agentBar?.syncSheet();
 }
 let chatPendingMap=null;
+const slashCommands=createSlashCommands({input:chatInput,container:document.querySelector('.scene-chat'),getScene:()=>activeMap,fetchInventory:scene=>api('/api/commands?scene='+encodeURIComponent(scene))});
 $('agent-new').onclick=()=>{if(chatPending)return;chatConversations.delete(activeMap);renderChat();chatStatus.textContent='Local Qwen · inspect scene and edit volume descriptions';chatInput.focus();};
 chatInput.addEventListener('input',()=>{chatForm.querySelector('button').disabled=chatPending||!chatInput.value.trim();});
 chatForm.onsubmit=async e=>{
@@ -53,23 +65,25 @@ chatForm.onsubmit=async e=>{
  // Sending while the conversation is minimised brings it back, so the reply isn't hidden.
  if(chatCompact){chatCompact=false;try{localStorage.setItem('home.chat.compact','false');}catch{}syncChatCompact();}
  const map=activeMap,message=chatInput.value.trim(),history=(chatConversations.get(map)||[]).slice(-18);
- history.push({role:'user',content:message});
+ const direct=message.startsWith('/');let command;
+ if(direct){try{command=slashCommands.prepare();}catch(error){chatStatus.textContent=error.message;toast(error.message);return;}}
+ history.push({role:'user',content:message,direct});
  if(history.reduce((n,m)=>n+m.content.length,0)>32000){chatStatus.textContent='Conversation is too long. Start a shorter conversation.';toast(chatStatus.textContent);return;}
- chatConversations.set(map,history);chatPending=true;chatPendingMap=map;renderChat();chatInput.value='';chatForm.querySelector('button').disabled=true;chatStatus.textContent='Qwen is thinking…';
+ chatConversations.set(map,history);chatPending=true;chatPendingMap=map;renderChat();chatInput.value='';slashCommands.submitted();chatForm.querySelector('button').disabled=true;chatStatus.textContent=direct?'Executing directly in Home…':'Qwen is thinking…';
  try{
-  const result=await api('/api/chat',{messages:history.map(({role,content})=>({role,content})),scene:map});
+  const result=direct?await api('/api/commands',command):await api('/api/chat',{messages:history.filter(m=>!m.direct).map(({role,content})=>({role,content})),scene:map});
   const browser=result.ui_actions===undefined?null:await applyChatCamera(result.ui_actions,map);
   const presentation=chatResultPresentation(result,browser);
-  history.push({role:'assistant',content:presentation.content,display_content:presentation.display_content});
+  history.push({role:'assistant',content:presentation.content,display_content:presentation.display_content,explanation:presentation.explanation,direct});
   chatStatus.textContent=presentation.status;
   if(result.changes?.length){
    // A failed refresh cannot undo saved receipts or offer the whole edit again.
    lastScene=null;try{await refresh();}catch(error){chatStatus.textContent+=' · View refresh failed: '+error.message;}
   }
- }catch(error){history.pop();if(activeMap===map&&!chatInput.value)chatInput.value=message;chatStatus.textContent=error.message;toast(error.message);}
+ }catch(error){if(direct){history.push({role:'assistant',direct:true,content:'Command failed or was not confirmed: '+error.message+'. Check the current state before retrying; Home will not retry automatically.'});}else{history.pop();if(activeMap===map&&!chatInput.value)chatInput.value=message;}chatStatus.textContent=error.message;toast(error.message);}
  finally{chatPending=false;chatPendingMap=null;renderChat();if(document.activeElement===document.body||document.activeElement?.closest?.('.agent-bar'))chatInput.focus({preventScroll:true});chatForm.querySelector('button').disabled=!chatInput.value.trim();}
 };
-$('map-select').addEventListener('change',()=>{renderChat();chatStatus.textContent=chatPending?'A local reply is pending for the previous scene…':'Local Qwen · inspect scene and edit volume descriptions';});
+$('map-select').addEventListener('change',()=>{slashCommands.reset();renderChat();chatStatus.textContent=chatPending?'A local reply is pending for the previous scene…':'Ask Qwen, or type / for direct commands';});
 for(const event of ['pointerdown','pointerup','click','dblclick','contextmenu','wheel','keydown','keyup']){
  document.querySelector('.scene-chat').addEventListener(event,e=>e.stopPropagation());
 }
@@ -403,23 +417,25 @@ async function refreshPhonePresence(){
   // Only peers with a sampled pose can be drawn as a body; skip the lookup without any.
   const posed=(fleetNetwork?.peers||[]).some(peer=>(peer.catalog?.products||[]).some(p=>p.metadata?.schema==='spatial-harness.compact-pose-contract/v1'));
   const declared=posed?(await api('/api/robot-states').catch(()=>({robots:[]}))).robots||[]:[];
-  for(const peer of fleetNetwork?.peers||[]){
-   if(activeMap!==map||current?.frame!==frame)return;
+  // Look every peer up at once: Home answers pose lookups one at a time, so a
+  // peer-by-peer loop made each pass longer than the freshness window.
+  await Promise.all((fleetNetwork?.peers||[]).map(async peer=>{
    const products=(peer.catalog?.products||[]).filter(p=>p.metadata?.schema==='spatial-harness.compact-pose-contract/v1'&&(p.metadata.value?.lifetime??'sampled')==='sampled');
-   if(!products.length)continue;
+   if(!products.length)return;
    const name=fleetNetwork?.aliases?.[peer.peer_id]||peer.name||peer.peer_id;
-   if(products.length!==1){errors.push(name+': ambiguous pose Products');continue;}
+   if(products.length!==1){errors.push(name+': ambiguous pose Products');return;}
    const product=products[0],q=new URLSearchParams({debug_pose:'true',sensor:peer.peer_id+'/'+product.manifest.product_id,expected_manifest:product.manifest_hash,home_frame:frame});
    try{const value=await api('/api/sensors?'+q),home=value.home_pose;
-    if(home?.frame!==frame||home.tracking?.status!=='valid'||value.stream!=='live')continue;
+    if(home?.frame!==frame||home.tracking?.status!=='valid'||value.stream!=='live')return;
     const p=home.tracking.pose,[x,y,z,w]=p.rotation_xyzw;
     const body=declared.find(r=>r.peer_id===peer.peer_id&&sameFrame(r.base_frame,product.metadata.value.from_frame));
     if(body){bodies.push({peer_id:peer.peer_id,name,received_age_ms:value.age_ms,receivedAt:performance.now(),body,
-     base_frame:value.resolved?.contract?.from_frame,pose:{translation:p.translation,rotation_xyzw:p.rotation_xyzw}});continue;}
+     base_frame:value.resolved?.contract?.from_frame,pose:{translation:p.translation,rotation_xyzw:p.rotation_xyzw}});return;}
     poses.push({receivedAt:performance.now(),peer_id:peer.peer_id,name,clock:{session_id:value.resolved.contract.session_id+':'+home.alignment_timestamp_ns},capture_timestamp_ns:value.timestamp_ns,received_age_ms:value.age_ms,
      pose:{to_frame_id:frame,translation:p.translation,rotation_wxyz:[w,x,y,z]}});
    }catch(e){errors.push(name+': '+e.message);}
-  }
+  }));
+  if(activeMap!==map||current?.frame!==frame)return;
   if(activeMap===map&&current?.frame===frame){declaredBodies={frame,entries:bodies};refreshRunner();}
   if(activeMap===map&&current?.frame===frame){const fresh=poses.map(p=>({...p,received_age_ms:p.received_age_ms+performance.now()-p.receivedAt})).filter(p=>p.received_age_ms<2000);phoneTrails.ingest(frame,fresh);homePoseStatus.textContent=errors.length?errors.join(' · '):fresh.length?plural(fresh.length,'phone')+' aligned to this Home scene':'';$('canvas').dataset.phonePoseStatus=errors.join('\n');}
  }catch{if(activeMap===map)phoneTrails.ingest(frame,[]);}finally{phonePresenceBusy=false;}
@@ -464,7 +480,8 @@ function build(data){flatSpritesAge=Infinity;
  $('canvas').dataset.volumeCount=String(data.semantic_volumes?.frame===data.frame?data.semantic_volumes.items.length:(data.volumes||[]).length);
  renderer.domElement.dataset.legacyVolumeCount=String(legacyVolumesForView(data).length);
  for(const note of data.notes||[]){
-  if(note.phone_pose)continue;
+  // Registry robots draw their own name tag from their pose; these labels are for phones.
+  if(note.phone_pose||note.robot_pose?.registry)continue;
   const peer=Boolean(note.robot_pose||note.anchor_robot||note.id?.startsWith('robot-name:')||note.id?.startsWith('phone-name:'));
   const tag=createNoteBubble(noteTitle(note),{peer});tag.position.fromArray(note.position);
   tag.userData={kind:'note',note};groups.notes.add(tag);selectable.push(tag);
@@ -482,7 +499,7 @@ function build(data){flatSpritesAge=Infinity;
    const marker=new THREE.Mesh(new THREE.OctahedronGeometry(.045),new THREE.MeshStandardMaterial({color:'#7f9aba'}));marker.position.fromArray(p);groups.rays.add(marker);
   }
  }
- $('empty').hidden=data.portals.length>0||data.voxels.length>0;if(activeMap==='home-live')$('empty').textContent='Waiting for Home to observe UCOF1J40N7O';else $('empty').textContent='No geometry yet';$('voxel-count').textContent=data.voxels.length.toLocaleString();$('observation-count').textContent=data.integrated_observations??'—';$('object-count').textContent=data.objects.length;
+ $('empty').hidden=data.portals.length>0||data.voxels.length>0||(data.paths?.items?.length||0)>0;if(activeMap==='home-live')$('empty').textContent='Waiting for Home to observe UCOF1J40N7O';else $('empty').textContent='No geometry yet';$('voxel-count').textContent=data.voxels.length.toLocaleString();$('observation-count').textContent=data.integrated_observations??'—';$('object-count').textContent=data.objects.length;
  for(const [peer,id] of [['iphone','phone-state'],['bracketbot','bot-state']]){const n=data.sources[peer];$(id).textContent=n?'Contributed':'Ready';$(id).classList.toggle('active',Boolean(n));}
  $('load').innerHTML=data.integrated_observations?'Reload test contributions <span>↗</span>':'Load two test peers <span>↗</span>';
  $('project').disabled=busy||!data.voxels.length;$('replay').disabled=busy||!data.sources.iphone;
@@ -890,7 +907,7 @@ renderer.domElement.addEventListener('dblclick',e=>{
  const volume=semanticVolumes.pick(ray);if(volume){closeUp(volume.point.toArray());return;}
  const hit=hits[0];if(hit)closeUp(hit.point.toArray());
 });
-async function api(path,body,method){if(path==='/api/chat'&&body){camera.updateMatrixWorld();const right=map2D.isActive()?[1,0,0]:new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld,0).toArray();body={...body,viewer:{frame:current?.frame||'',mode:map2D.isActive()?'2d':'3d',screen_right:right,camera_position:camera.position.toArray(),camera_target:controls.target.toArray(),...(chatFocus?{focus_point:chatFocus}:{})}};chatFocus=null;spotMarker.visible=false;}const r=await fetch(path,body?{method:method||'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:method?{method}:undefined);const text=await r.text();let result;try{result=JSON.parse(text);}catch{throw new Error(text);}if(!r.ok){const error=new Error(result.error||text);error.status=r.status;throw error;}return result;}
+async function api(path,body,method){if((path==='/api/chat'||path==='/api/commands')&&body){camera.updateMatrixWorld();const right=map2D.isActive()?[1,0,0]:new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld,0).toArray();body={...body,viewer:{frame:current?.frame||'',mode:map2D.isActive()?'2d':'3d',screen_right:right,camera_position:camera.position.toArray(),camera_target:controls.target.toArray(),...(chatFocus?{focus_point:chatFocus}:{})}};chatFocus=null;spotMarker.visible=false;}const r=await fetch(path,body?{method:method||'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:method?{method}:undefined);const text=await r.text();let result;try{result=JSON.parse(text);}catch{throw new Error(text);}if(!r.ok){const error=new Error(result.error||text);error.status=r.status;throw error;}return result;}
 function peerSceneUrl(map){return '/api/sensors?scene=true&sensor='+encodeURIComponent(map.slice(11));}
 // The 3D view stays hidden until the first scene is built and framed, then fades in, so a refresh never
 // shows the default grid, the camera jump or a flash of the empty state. A fallback reveals it regardless.
@@ -1022,7 +1039,8 @@ function glyphFor(key,name){
  }
  if(glyph.name!==name){
   if(glyph.tag){glyph.group.remove(glyph.tag);glyph.tag.material.map.dispose();glyph.tag.material.dispose();}
-  glyph.tag=label(name,glyph.color);glyph.tag.position.set(0,0,.6);glyph.group.add(glyph.tag);glyph.name=name;
+  // The same peer bubble phones carry, so every peer's name reads alike.
+  glyph.tag=createNoteBubble(name,{peer:true});glyph.tag.position.set(0,0,.6);glyph.group.add(glyph.tag);glyph.name=name;
  }
  return glyph;
 }
@@ -1043,7 +1061,9 @@ function renderRunners(entries){
  }
  entries.forEach((entry,i)=>{
   const glyph=glyphFor(entry.key,entry.name),state=entry.state;
-  glyph.tag.visible=activeMap!=='home-live'&&!isLocalScene();  // local scenes name robots with a note bubble
+  // Robots drawn from registry poses have no presence note bubble, so name them here;
+  // above the URDF's battery and pointing labels once the model has loaded.
+  glyph.tag.visible=activeMap!=='home-live';glyph.tag.position.z=glyph.robot?2.02:.6;
   glyph.state=state;glyph.group.visible=Boolean(state.pose)&&$('runner-layer').checked&&!usesBodyVolume(entry.key);
   if(state.pose){glyph.group.position.fromArray(state.pose.translation);glyph.group.quaternion.fromArray(state.pose.rotation_xyzw);}
   setGlyphModel(glyph,state.model||null);
@@ -1265,13 +1285,13 @@ function restartSensor(){
 }
 async function applyChatCamera(actions,map){
  return applyChatActions(actions,{scene:map,context:()=>({scene:activeMap,frame:current?.frame}),apply:async(action,guard)=>{
-  if(['attach_camera','detach_camera','move_camera'].includes(action.type))cameraPan.cancel();
+  if(['attach_camera','detach_camera'].includes(action.type))cameraPan.cancel();
   if(action.type==='attach_camera')return attachedCamera.attach(action);
   if(action.type==='detach_camera'){
    if(action.scene!==activeMap||action.frame!==current?.frame)throw Error('Selected scene changed; ask again');
    return attachedCamera.detach();
   }
-  if(action.type==='move_camera'){const result=moveMapCamera(action,{scene:activeMap,frame:current?.frame,camera,controls,map2D});attachedCamera.detach();return result;}
+  if(action.type==='move_camera')return moveMapCamera(action,{scene:activeMap,frame:current?.frame,camera,controls,map2D,cameraPan,beforeMove:()=>attachedCamera.detach()});
   const catalog=await api('/api/sensors');
   guard();
   const sensor=catalog.sensors.find(s=>s.id===action.sensor_id&&s.peer_id===action.peer_id);
@@ -1784,7 +1804,8 @@ function noteRowTile(note){
 }
 let notesSignature='';
 function renderNotes(){
- const notes=current?.notes||[],paths=current?.paths?.items||[];
+ // Registry robots are drawn from their poses; their labels exist for phones.
+ const notes=(current?.notes||[]).filter(n=>!n.robot_pose?.registry),paths=current?.paths?.items||[];
  const writable=notesWritable();
  const signature=JSON.stringify([activeMap,writable,notesQuery,selectedNoteId,selectedPathId,notes.map(n=>[n.id,noteTitle(n),n.details?.description,Boolean(n.details?.thumbnail),noteReadOnlyReason(n)]),paths.map(p=>[p.id,p.title,p.color,p.segments.length])]);
  newNoteButton.disabled=!writable||!current;notesReadOnly.hidden=writable;notesReadOnly.textContent=writable?'':'This map is read-only. Switch to a Home scene to add notes.';

@@ -67,6 +67,12 @@ fn lock(state: &Shared) -> Result<std::sync::MutexGuard<'_, Store>, ApiError> {
         .lock()
         .map_err(|_| ApiError(anyhow::anyhow!("state unavailable")))
 }
+fn require_reference(state: &Shared) -> Result<(), ApiError> {
+    if !state.local_scenes.reference_enabled {
+        return Err(anyhow::anyhow!("Reference scene was deleted; select a local scene").into());
+    }
+    Ok(())
+}
 
 #[derive(Deserialize)]
 struct PreviewQuery {
@@ -238,6 +244,7 @@ async fn remote_snapshot(
     ))
 }
 async fn home_live_scene(State(s): State<Shared>) -> ApiResult {
+    require_reference(&s)?;
     let live = s.home_live.borrow();
     if live.scene.is_none() {
         let store = lock(&s)?;
@@ -287,7 +294,10 @@ async fn home_live_status(State(s): State<Shared>) -> ApiResult {
 }
 async fn scene_sources(State(s): State<Shared>) -> ApiResult {
     let mut status = s.remote_scene.borrow().status_view();
-    let mut local = vec![json!({"id":"demo","name":spatial_home::environments::reference_name()})];
+    let mut local = Vec::new();
+    if s.local_scenes.reference_enabled {
+        local.push(json!({"id":"demo","name":spatial_home::environments::reference_name()}));
+    }
     local.extend(s.local_scenes.rows());
     if !lock(&s)?.demo && let Some(preferred) = s.local_scenes.preferred_id() {
         status["preferred"] = json!(preferred);
@@ -385,6 +395,7 @@ async fn simulation_scene(
     Ok(Json(value))
 }
 async fn scene(State(s): State<Shared>) -> ApiResult {
+    require_reference(&s)?;
     let store = lock(&s)?;
     let mut view = serde_json::to_value(&store.built.view).map_err(anyhow::Error::from)?;
     view["environment_name"] = json!(spatial_home::environments::reference_name());
@@ -410,11 +421,14 @@ async fn get_paths(State(s):State<Shared>,axum::extract::Query(q):axum::extract:
 }
 async fn create_path(State(s):State<Shared>,headers:HeaderMap,axum::extract::Query(q):axum::extract::Query<VolumeQuery>,Json(value):Json<PathWrite>)->ApiResult {
     local_write(&headers)?;
-    if !q.scene.starts_with("local:") { return Err(anyhow::anyhow!("Choose a local Home scene to draw").into()); }
-    let (key,frame)=volume_context(&s,&q.scene)?;
-    if frame!=value.frame { return Err(anyhow::anyhow!("Scene frame changed; redraw the path").into()); }
-    let id=value.stroke.id.clone();
-    Ok(Json(json!(s.local_scenes.paths.change(&key,&frame,&id,Some(value.stroke))?)))
+    Ok(Json(json!(save_scene_path(&s,&q.scene,&value.frame,value.stroke)?)))
+}
+fn save_scene_path(s:&Shared,scene:&str,expected_frame:&str,stroke:spatial_home::scene_paths::Stroke)->anyhow::Result<spatial_home::scene_paths::Paths> {
+    anyhow::ensure!(scene.starts_with("local:"),"Choose a local Home scene to draw");
+    let (key,frame)=volume_context(s,scene).map_err(|e|e.0)?;
+    anyhow::ensure!(frame==expected_frame,"Scene frame changed; redraw the path");
+    let id=stroke.id.clone();
+    s.local_scenes.paths.change(&key,&frame,&id,Some(stroke))
 }
 async fn delete_path(State(s):State<Shared>,headers:HeaderMap,axum::extract::Path(id):axum::extract::Path<String>,axum::extract::Query(q):axum::extract::Query<VolumeQuery>)->ApiResult {
     local_write(&headers)?;
@@ -441,6 +455,7 @@ fn volume_context(s: &Shared, scene: &str) -> Result<(String, String), ApiError>
         Ok((id.into(), snapshot.scenegraph.map.frame.id.clone()))
     } else {
         if scene != "demo" { return Err(anyhow::anyhow!("Choose a local Home scene to edit volumes").into()); }
+        require_reference(s)?;
         Ok(("canonical".into(), spatial_home::model::FRAME.into()))
     }
 }
@@ -515,6 +530,7 @@ async fn delete_note(
         return Ok(Json(json!({"deleted":id})));
     }
     let mut store = lock(&s)?;
+    require_reference(&s)?;
     spatial_home::notes::remove(&mut store, &id)?;
     s.changes.send_replace(());
     Ok(Json(json!({"deleted":id})))
@@ -539,6 +555,7 @@ async fn rename_note(
         return Ok(Json(json!(editor.change(&id,Some((text,details)))?)));
     }
     let mut store = lock(&s)?;
+    require_reference(&s)?;
     let note = spatial_home::notes::update(&mut store, &id, text, details)?;
     s.changes.send_replace(());
     Ok(Json(json!(note)))
@@ -567,6 +584,7 @@ async fn add_note(
         return Ok(Json(json!(editor.create(spatial_home::notes::TextNote{id:uuid::Uuid::new_v4().to_string(),text:note.text.trim().into(),details:note.details,position,anchor_portal:note.portal,anchor_robot:None,anchor_surface:None,height_m:note.height_m})?)));
     }
     let mut store = lock(&s)?;
+    require_reference(&s)?;
     let note = spatial_home::notes::add_detailed(
         &mut store,
         spatial_home::notes::NewNote {
@@ -580,6 +598,7 @@ async fn add_note(
     Ok(Json(json!(note)))
 }
 async fn domain_scene(State(s): State<Shared>) -> ApiResult {
+    require_reference(&s)?;
     let s = lock(&s)?;
     let map = &s.built.domain_portals;
     Ok(Json(
@@ -587,6 +606,7 @@ async fn domain_scene(State(s): State<Shared>) -> ApiResult {
     ))
 }
 async fn domain_snapshot(State(s): State<Shared>) -> ApiResult {
+    require_reference(&s)?;
     Ok(Json(
         serde_json::to_value(&lock(&s)?.built.domain_portals).map_err(anyhow::Error::from)?,
     ))
@@ -615,6 +635,7 @@ async fn landmark_catalog(
     State(s): State<Shared>,
     axum::extract::Query(query): axum::extract::Query<LandmarkQuery>,
 ) -> ApiResult {
+    require_reference(&s)?;
     let store = lock(&s)?;
     let mut landmarks = spatial_home::landmarks::from_registries(
         &store.built.registries,
@@ -728,6 +749,7 @@ async fn fiducial_print(
     )))
 }
 async fn catalog(State(s): State<Shared>) -> ApiResult {
+    if !s.local_scenes.reference_enabled { return Ok(Json(s.peer.borrow()["catalog"].clone())); }
     Ok(Json(lock(&s)?.built.catalog.clone()))
 }
 async fn mapping_status(State(s): State<Shared>) -> ApiResult {
@@ -772,6 +794,7 @@ async fn local_scene_connection(State(s): State<Shared>, axum::extract::Path(id)
     Ok(Json(serde_json::to_value(s.local_scenes.connection(&id, home)?).map_err(anyhow::Error::from)?))
 }
 async fn snapshots(State(s): State<Shared>) -> ApiResult {
+    require_reference(&s)?;
     let s = lock(&s)?;
     Ok(Json(
         json!({"domain_portals":s.built.domain_portals,"portals":s.built.portals,"voxels":s.built.voxels,"objects":s.built.view.objects,"registries":s.built.registries}),
@@ -838,6 +861,7 @@ async fn contribute(
     headers: HeaderMap,
     Json(c): Json<Contribution>,
 ) -> ApiResult {
+    require_reference(&s)?;
     local_write(&headers)?;
     let mut store = lock(&s)?;
     let applied = store.apply(Event::Contribution(c))?;
@@ -851,6 +875,7 @@ async fn detect(
     headers: HeaderMap,
     Json(d): Json<Detection>,
 ) -> ApiResult {
+    require_reference(&s)?;
     local_write(&headers)?;
     let mut store = lock(&s)?;
     let applied = store.apply(Event::Detection(d))?;
@@ -868,6 +893,7 @@ struct RayRequest {
     max_distance: f64,
 }
 async fn cast(State(s): State<Shared>, headers: HeaderMap, Json(r): Json<RayRequest>) -> ApiResult {
+    require_reference(&s)?;
     local_write(&headers)?;
     if r.frame != spatial_home::model::FRAME {
         return Err(ApiError(anyhow::anyhow!("ray must be in canonical frame")));
@@ -900,6 +926,7 @@ async fn label_pick(
             return Ok(Json(editor.pick(&mut picks,*origin,*direction)?));
         }
     }
+    require_reference(&s)?;
     let live = s.home_live.borrow();
     if live.status_view()["status"] != "connected" {
         if let spatial_home::picking::PickRequest::Scene {
@@ -958,6 +985,7 @@ async fn label_save(
         picks.consume(&request.token);return Ok(Json(json!(note)));
     }
     let mut store = lock(&s)?;
+    require_reference(&s)?;
     let note = spatial_home::notes::add_surface_detailed(
         &mut store,
         request.text,
@@ -1193,9 +1221,49 @@ async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Jso
         spatial_home::scene_tools::mentions_name(&latest,title).then(||title.to_string())
     }).collect::<Vec<_>>()).unwrap_or_default();
     let tool_state=std::sync::Arc::new(std::sync::Mutex::new((std::collections::BTreeSet::<String>::new(),Vec::<[f64;3]>::new(),Vec::<[f64;3]>::new())));
-    let result=spatial_home::chatbot::chat_with_async_tools(request,|name,mut args| {
-        let s=s.clone();let scene=scene.clone();let key=key.clone();let frame=frame.clone();let viewer=viewer.clone();let latest=latest.clone();let named_notes=named_notes.clone();let tool_state=tool_state.clone();
-        async move {
+    let context=std::sync::Arc::new(SceneToolContext{scene,key,frame,viewer,latest,named_notes,tool_state});
+    let result=spatial_home::chatbot::chat_with_async_tools(request,|name,args|scene_tool(s.clone(),context.clone(),name,args),|args| {
+        let network=s.peer.borrow().clone();let tx=s.previews.clone();
+        async move {spatial_home::camera_vision::capture(&tx,&network,args).await}
+    }).await?;
+    Ok(Json(result))
+}
+
+/// The execution boundary shared by Qwen and deterministic slash commands.
+/// `latest`/`named_notes` are language guards for chat, empty for typed commands.
+#[derive(Clone)]
+struct SceneToolContext {
+    scene:String,key:String,frame:String,viewer:Option<spatial_home::chatbot::Viewer>,
+    latest:String,named_notes:Vec<String>,
+    tool_state:std::sync::Arc<std::sync::Mutex<(std::collections::BTreeSet<String>,Vec<[f64;3]>,Vec<[f64;3]>)>>,
+}
+async fn create_route(s:&Shared,context:&SceneToolContext,args:Value)->anyhow::Result<Value> {
+    anyhow::ensure!(context.scene.starts_with("local:"),"Choose a local Home scene to draw a path");
+    let query:spatial_home::scene_routes::Query=serde_json::from_value(args)?;
+    let network=spatial_home::peer_aliases::network(s.peer.borrow().clone())?;
+    let live=query.live_endpoints(&s.previews,&network,&context.frame).await?;
+    let mut view=s.local_scenes.view(&context.key)?;
+    // Read authored note positions from their editor, not the periodic map cache.
+    for target in &query.waypoints {
+        if let spatial_home::scene_routes::Target::Note{id}=target {
+            let editor=s.local_scenes.note_editors.lock().map_err(|_|anyhow::anyhow!("Scene annotations unavailable"))?
+                .get(&context.key).cloned().ok_or_else(||anyhow::anyhow!("Scene annotations unavailable"))?;
+            let note=editor.get_note(id)?;
+            let notes=view["notes"].as_array_mut().ok_or_else(||anyhow::anyhow!("Scene notes unavailable"))?;
+            notes.retain(|n|n["id"]!=*id);notes.push(json!(note));
+        }
+    }
+    let route=query.plan(&view,&network,&context.frame,&live)?;
+    live.validate(&context.frame)?;
+    save_scene_path(s,&context.scene,&context.frame,route.stroke.clone())?;
+    let warning=if route.crosses_unobserved_floor {" Includes unobserved floor; not a verified navigable route."}else{""};
+    Ok(json!({"operation":"create_path","id":route.stroke.id,"frame":context.frame,"before":null,"after":route.stroke,
+        "waypoints":route.waypoints,"length_m":route.length_m,"crosses_unobserved_floor":route.crosses_unobserved_floor,
+        "summary":format!("Floor path saved through {} waypoints ({:.1} m). Snapshot of current positions; no robot movement.{}",route.waypoints.len(),route.length_m,warning)}))
+}
+async fn scene_tool(s:Shared,context:std::sync::Arc<SceneToolContext>,name:String,mut args:serde_json::Value)->anyhow::Result<serde_json::Value> {
+        if name=="create_path" {return create_route(&s,&context,args).await;}
+        let SceneToolContext{scene,key,frame,viewer,latest,named_notes,tool_state}=(*context).clone();
         let network=s.peer.borrow().clone();
         if name=="get_peer_pose" {return spatial_home::peer_locations::get(&s.previews,&network,args,&frame).await;}
         if name=="point_robot_at" {return point_robot_at(&s,&key,&frame,args).await;}
@@ -1310,7 +1378,8 @@ async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Jso
             },
             "inspect_scenegraph"=>{
                 anyhow::ensure!(args.as_object().is_some_and(|a|a.is_empty()),"Unexpected tool arguments");
-                let view=if scene.starts_with("local:"){s.local_scenes.view(&key)?}else{serde_json::to_value(&lock(&s).map_err(|e|e.0)?.built.view)?};
+                let mut view=if scene.starts_with("local:"){s.local_scenes.view(&key)?}else{serde_json::to_value(&lock(&s).map_err(|e|e.0)?.built.view)?};
+                if key=="canonical" {view["notes"]=json!(spatial_home::notes::from_registries(&lock(&s).map_err(|e|e.0)?.built.registries,&frame)?.items);}
                 let notes=view["notes"].as_array().map(|n|n.iter().map(|n|json!({"authored":n["anchor_robot"].is_null()&&!n["id"].as_str().unwrap_or("").starts_with("robot-name:")&&!n["id"].as_str().unwrap_or("").starts_with("phone-name:"),"id":n["id"],"text":n["text"],"position":n["position"],"description":n["details"]["description"]})).collect::<Vec<_>>()).unwrap_or_default();
                 let network=spatial_home::peer_aliases::network(s.peer.borrow().clone())?;
                 let peers=network["peers"].as_array().map(|peers|peers.iter().map(|p|{
@@ -1379,11 +1448,24 @@ async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Jso
             },
             _=>anyhow::bail!("Unknown scene tool"),
         }
-        }
-    },|args| {
-        let network=s.peer.borrow().clone();let tx=s.previews.clone();
-        async move {spatial_home::camera_vision::capture(&tx,&network,args).await}
-    }).await?;
+}
+fn command_context(s:&Shared,scene:String,viewer:Option<spatial_home::chatbot::Viewer>)->Result<std::sync::Arc<SceneToolContext>,ApiError> {
+    let (key,frame)=volume_context(s,&scene)?;
+    Ok(std::sync::Arc::new(SceneToolContext{scene,key,frame,viewer,latest:String::new(),named_notes:Vec::new(),tool_state:Default::default()}))
+}
+async fn command_inventory(s:&Shared,context:std::sync::Arc<SceneToolContext>)->anyhow::Result<serde_json::Value> {
+    let scene=scene_tool(s.clone(),context,"inspect_scenegraph".into(),json!({})).await?;
+    spatial_home::commands::inventory(scene,&spatial_home::peer_aliases::network(s.peer.borrow().clone())?)
+}
+async fn get_commands(State(s):State<Shared>,axum::extract::Query(q):axum::extract::Query<VolumeQuery>)->ApiResult {
+    let context=command_context(&s,q.scene,None)?;
+    Ok(Json(command_inventory(&s,context).await?))
+}
+async fn execute_command(State(s):State<Shared>,headers:HeaderMap,Json(request):Json<spatial_home::commands::Request>)->ApiResult {
+    local_write(&headers)?;
+    let context=command_context(&s,request.scene.clone(),request.viewer.clone())?;
+    let inventory=command_inventory(&s,context.clone()).await?;
+    let result=spatial_home::commands::execute(&request,&inventory,|name,args|scene_tool(s.clone(),context.clone(),name,args)).await?;
     Ok(Json(result))
 }
 fn spatial_move_request(text:&str)->bool{["move","reposition","relocate"].iter().any(|word|spatial_home::scene_tools::mentions_name(text,word))}
@@ -1432,10 +1514,12 @@ async fn main() -> anyhow::Result<()> {
     let local_scenes = Arc::new(spatial_home::local_scenes::LocalScenes::load(
         &lock_path.with_extension("scenes"),
     )?);
+    if local_scenes.reference_enabled {
     spatial_home::notes::initialize(&mut store)?;
     local_scenes.volumes.import_notes("canonical",spatial_home::model::FRAME,
         &spatial_home::notes::from_registries(&store.built.registries,spatial_home::model::FRAME)?.volumes)?;
     store.built.registries["semantic_volumes"] = json!(local_scenes.volumes.get("canonical", spatial_home::model::FRAME)?);
+    }
     store.built.registries["fiducials"] = {
         let fiducials = fiducials
             .lock()
@@ -1555,6 +1639,11 @@ async fn main() -> anyhow::Result<()> {
     } else {
         None
     };
+    tokio::spawn({
+        let (scenes, states, network, previews, stop) =
+            (local_scenes.clone(), robot_states.clone(), peer_rx.clone(), preview_tx.clone(), shutdown.clone());
+        async move { spatial_home::registry_robots::serve(scenes, states, network, previews, stop).await }
+    });
     let state = Arc::new(AppState {
         local_scenes,
         simulation_disconnect,
@@ -1579,6 +1668,8 @@ async fn main() -> anyhow::Result<()> {
     });
     let app = Router::new()
         .route("/api/chat",post(chat_message))
+        .route("/api/commands",get(get_commands).post(execute_command))
+        .route("/slash-commands.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript")],include_str!("../web/slash-commands.js")) }))
         .route(
             "/api/simulation/disconnect",
             post(disconnect_simulated_robots),
@@ -1725,6 +1816,9 @@ async fn main() -> anyhow::Result<()> {
     server?;
     Ok(())
 }
+
+#[cfg(test)]
+mod command_tests;
 
 #[cfg(test)]
 mod ui_access_tests {

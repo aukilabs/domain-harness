@@ -220,6 +220,8 @@ final class HomePeer: ObservableObject {
     }
 
     var onMap: ((PortalMap) -> Void)?
+    /// Voxel chunks that changed, as the bridge hands them over.
+    var onVoxels: ((Data) -> Void)?
     /// Home's answer to a new-Portal report, for the user to see.
     var onPortalResult: ((String) -> Void)?
     private var portalDetail = ""
@@ -284,6 +286,12 @@ final class HomePeer: ObservableObject {
             }
             let (first, second) = app.map { ($0.key, $0.secret) } ?? (email, password)
             print("[bridge] built from \(String(cString: spatial_bridge_source()))")
+            // Home dials this phone directly at its Wi-Fi address; the relay stays as a fallback.
+            if let address = Self.wifiAddress() {
+                address.withCString { spatial_mobile_set_lan_address($0) }
+            } else {
+                spatial_mobile_set_lan_address(nil)
+            }
             let start = app == nil ? spatial_mobile_start : spatial_mobile_start_app
             let accepted = profileJSON.withCString { profile in
                 first.withCString { first in
@@ -307,6 +315,24 @@ final class HomePeer: ObservableObject {
                 Task { @MainActor in self?.poll() }
             }
         } catch { password = ""; appSecret = ""; detail = error.localizedDescription; state = "error" }
+    }
+
+    /// This phone's Wi-Fi IPv4 address, if it is on Wi-Fi.
+    static func wifiAddress() -> String? {
+        var list: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&list) == 0, let first = list else { return nil }
+        defer { freeifaddrs(list) }
+        for entry in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            let interface = entry.pointee
+            guard String(cString: interface.ifa_name) == "en0", let address = interface.ifa_addr,
+                  address.pointee.sa_family == UInt8(AF_INET) else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            if getnameinfo(address, socklen_t(address.pointee.sa_len), &host, socklen_t(host.count),
+                           nil, 0, NI_NUMERICHOST) == 0 {
+                return String(cString: host)
+            }
+        }
+        return nil
     }
 
     func disconnect(background: Bool = false) {
@@ -348,6 +374,11 @@ final class HomePeer: ObservableObject {
         let error: String?
     }
     private func poll() {
+        if let voxels = spatial_mobile_voxels() {
+            let data = Data(String(cString: voxels).utf8)
+            spatial_mobile_string_free(voxels)
+            onVoxels?(data)
+        }
         guard let pointer = spatial_mobile_poll() else { return }
         defer { spatial_mobile_string_free(pointer) }
         do {

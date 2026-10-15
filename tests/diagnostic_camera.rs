@@ -10,6 +10,10 @@ mod fisheye {pub use spatial_home::fisheye::*;}
 struct Home {schema:String,domain_id:String,peer_id:String,routes:Vec<String>,frame:String,product_id:String}
 #[allow(dead_code)] #[path="../diagnostics/connection-peer/src/poses.rs"] mod poses;
 #[allow(dead_code)] #[path="../diagnostics/connection-peer/src/camera.rs"] mod camera;
+// Onboarding, which the camera and alignment workers hand off to.
+mod onboarding {pub use spatial_home::onboarding::*;}
+mod square_pose {pub use spatial_home::square_pose::*;}
+#[allow(dead_code)] #[path="../diagnostics/connection-peer/src/onboard.rs"] mod onboard;
 // The camera and alignment modules hand their transforms to the pointer as
 // this type; the pointer itself (arm motion) is not part of these tests.
 #[allow(dead_code)] mod pointer {
