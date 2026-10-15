@@ -104,6 +104,8 @@ pub mod scene_paths;
 pub mod scene_navigation;
 
 pub mod robot_runner;
+pub mod navigate;
+pub mod robot_navigation;
 pub mod robot_pointing;
 pub mod point_at;
 pub mod chatbot;

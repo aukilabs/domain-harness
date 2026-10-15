@@ -528,8 +528,8 @@ renderer.domElement.addEventListener('pointerup',e=>{
  if(!current||!pointerStart||Math.hypot(e.clientX-pointerStart[0],e.clientY-pointerStart[1])>4)return;
  const r=renderer.domElement.getBoundingClientRect(), ray=new THREE.Raycaster();ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),camera);
  const hits=ray.intersectObjects([...selectable,...crayon.objects()].filter(o=>{for(let p=o;p;p=p.parent){if(!p.visible)return false;}return true;}));if(!hits.length){selectedPathId=null;crayon.select(null);selectedNoteId=null;selectedSpatialNode=null;updateSpatialSelection();$('selection').hidden=true;return;}const h=hits.find(h=>h.object.userData.kind==='note')||hits.find(h=>h.object.userData.kind==='path')||hits.find(h=>h.object.userData.kind==='portal')||hits[0],d=h.object.userData;
- if(d.kind==='voxels'){const v=current.voxels[h.instanceId];showSelection('Occupied voxel',`[${v.center.map(n=>n.toFixed(2)).join(', ')}] m`,`Evidence ${v.evidence} · 10 cm cell`);}
- if(d.kind==='occupancy'){const t=current.occupancy_tiles[h.instanceId];showSelection('Occupancy · '+(t.value===100?'occupied':t.value===0?'free':'unknown'),`[${t.center.map(n=>n.toFixed(2)).join(', ')}] m`,`Value ${t.value} · 10 cm sample · retrieved in 2 m cells`);}
+ if(d.kind==='voxels'){const v=current.voxels[h.instanceId];showSelection('Occupied voxel',`[${v.center.map(n=>n.toFixed(2)).join(', ')}] m`,`Evidence ${v.evidence} · 10 cm cell`);if(isLocalScene())$('selection').append(robotGoControls({kind:'position',position:v.center}));}
+ if(d.kind==='occupancy'){const t=current.occupancy_tiles[h.instanceId];showSelection('Occupancy · '+(t.value===100?'occupied':t.value===0?'free':'unknown'),`[${t.center.map(n=>n.toFixed(2)).join(', ')}] m`,`Value ${t.value} · 10 cm sample · retrieved in 2 m cells`);if(isLocalScene())$('selection').append(robotGoControls({kind:'position',position:t.center}));}
  if(d.kind==='path'){showPathSelection(d.path);noteView='path';openPanel('notes');renderNotes();return;}
  if(d.kind==='note')showNoteSelection(d.note);
  if(d.kind==='object'){const o=d.object;showSelection(o.label,`[${o.position.map(n=>n.toFixed(2)).join(', ')}] m`,`Source: ${o.source_peer}`);}
@@ -1080,6 +1080,16 @@ function noteFields(container,note){
  }catch(e){if(version===generation){photoError=e;status.textContent=e.message;}}finally{bitmap?.close();}})();};
  return {read:async title=>{await pending;if(photoError)throw photoError;return {title,description:description.value,photo};}};
 }
+// Send the robot that advertises `navigate` to a place in this local scene.
+// Home plans the route on the scene map; the robot's own navigation drives it.
+async function sendRobot(target,status){status.textContent='Planning the route…';try{const r=await api(localSceneUrl()+'/navigate-robot',{target});status.textContent=r.summary;lastScene=null;}catch(error){status.textContent='Not sent · '+error.message;}}
+async function stopRobotNav(status){try{const r=await api('/api/robots/stop',{});status.textContent=r.summary;}catch(error){status.textContent='Not stopped · '+error.message;}}
+function robotGoControls(target){
+ const box=document.createElement('div');box.setAttribute('aria-label','Robot navigation');
+ const status=document.createElement('small');status.className='panel-hint';status.setAttribute('role','status');
+ box.append(uiButton('Send robot here',()=>sendRobot(target,status)),uiButton('Stop robot',()=>stopRobotNav(status)),status);
+ return box;
+}
 function renderNotes(){
  if(noteView==='edit')return;
  notesBody.replaceChildren();const notes=current?.notes||[];const selected=notes.find(n=>n.id===sidebarNoteId);
@@ -1098,6 +1108,7 @@ function renderNotes(){
   if(selected.details?.description)noteMessage(selected.details.description);
   if(selected.details?.photo)notesBody.append(notePhoto(selected));
   notesBody.append(uiButton('Focus in scene',()=>focusNote(selected)));
+  if(isLocalScene())notesBody.append(robotGoControls({kind:'note',id:selected.id}));
   if(!selected.anchor_robot&&!selected.phone_pose&&!selected.robot_pose&&!isRunner()&&activeMap!=='domain'){
    notesBody.append(uiButton('Edit',()=>editSidebarNote(selected)),uiButton('Delete',async()=>{const error=noteMessage('Deleting…');try{await api(noteUrl(selected.id),undefined,'DELETE');noteView='list';lastScene=null;await refresh();renderNotes();}catch(e){error.textContent=e.message;}}));
   }

@@ -524,6 +524,23 @@ async fn phone_reports_a_new_portal_into_the_selected_scene() -> Result<()> {
             _ => panic!("expected Home's keyboard command"),
         }
         pushed.close().await?;
+        // Home plans a robot's route as its own peer, through the scene's planner.
+        let route = scenes.plan_route("humanoid-hub-conference", &home_peer, spatial_home::scene_navigation::RouteRequest {
+            frame: home.frame.clone(),
+            from: spatial_home::scene_navigation::Place::Point([0., 0., 0.]),
+            to: spatial_home::scene_navigation::Place::Point([1.5, 0., 0.5]),
+            agent: Some(spatial_home::scene_navigation::Agent { radius_m: 0.25, height_m: 1.6 }),
+            share: Some(false),
+        })?;
+        assert_eq!(route.frame, home.frame);
+        assert_ne!(route.status, spatial_home::scene_navigation::Status::Unreachable);
+        let points = route.path.as_ref().expect("a route to follow").segments[0].clone();
+        let waypoints = spatial_home::robot_navigation::waypoints(&points, 0.25)?;
+        assert_eq!(waypoints.last(), points.last(), "the goal is the last waypoint");
+        assert!(scenes.plan_route("no-such-scene", &home_peer, spatial_home::scene_navigation::RouteRequest {
+            frame: home.frame.clone(), from: spatial_home::scene_navigation::Place::Point([0.; 3]),
+            to: spatial_home::scene_navigation::Place::Point([1., 0., 0.]), agent: None, share: Some(false),
+        }).is_err());
         // A restart keeps the reported Portal.
         let reloaded = LocalScenes::load(dir.path())?;
         assert_eq!(reloaded.snapshot("humanoid-hub-conference")?.scenegraph.anchors.len(), 2);

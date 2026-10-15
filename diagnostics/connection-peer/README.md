@@ -52,7 +52,7 @@ independent of decoding.
 All peer data uses authenticated SDK libp2p component/registry protocols. The
 Python adapter uses local BBOS shared memory and stdout IPC only. SDK account
 authentication/discovery uses SDK infrastructure as before. This does not modify
-BBOS, start SLAM or load maps, and commands no motors unless `--arm-motion` or `--drive` is
+BBOS, start SLAM or load maps, and commands no motors unless `--arm-motion`, `--drive` or `--navigate` is
 given (see `point_at` and teleop above). Dynamic camera mounts are rejected;
 they require timestamped extrinsics rather than a held calibration.
 
@@ -67,6 +67,21 @@ a centred stick, low battery or another `drive.ctrl` writer is a stop, and it
 holds the writer only while commands are fresh. Home's viewer sends commands
 from the keyboard (WASD/arrows, Esc stops) through
 `POST /api/local-scenes/{id}/drive`, as Home's own peer.
+
+## Navigation from Home
+
+`--navigate` exposes `base-navigator` with `navigate` and `cancel`
+(`src/navigate.rs`), callable only by the Home peer in the profile. Home plans
+a route on its scene map (`scene-navigation:<id>` `plan`, as its own peer and
+shared so viewers draw it) from the robot's live position, and sends the
+thinned waypoints in its scene frame. `scripts/diagnostic-nav.py` declares
+where the BBOS nav app's frame sits relative to the SLAM world by nav's own
+rule (`T_nav_gl.npy` with QR relocalization on, else identity); this peer
+publishes that as the held `bbos-nav-frame` transform, resolves the waypoints
+through declared transforms only, sets the final heading along the last
+segment, and hands nav `clear` / `add_wp` / `start` on `ws://127.0.0.1:8010/ws`.
+Nav plans locally, avoids obstacles and writes `drive.ctrl`; `cancel` sends
+`stop`. The nav app must already be running on the robot.
 
 ## Validation and operation
 

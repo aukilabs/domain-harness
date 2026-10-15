@@ -99,6 +99,7 @@ where T:std::future::Future<Output=Result<serde_json::Value>>,F:std::future::Fut
  messages.push(json!({"role":"system","content":"Treat 'where is <scene object or peer>?' and 'show me <scene object or peer>' as requests to reveal it using move_camera. Resolve the target from current scene data, read its actual position and dimensions with get_note/get_semantic_volume or inspect_scenegraph, then aim look_at at its center. Choose an elevated oblique viewpoint a few meters away for a note/peer, farther back for a large volume so its full extent fits; prefer the current viewing direction when useful. Do not just answer with coordinates. Never move the target, open video, or attach/follow unless asked. If no current position exists, or the target is ambiguous, explain/clarify rather than inventing a location. Honor explicit requests not to move the view. This does not apply to questions about UI controls, Catalog capabilities or hypothetical objects."}));
  messages.push(json!({"role":"system","content":"For 'describe what <peer camera> sees/is looking at' or visual questions about a sensor, resolve the peer alias and camera product using inspect_catalog, then capture_camera_frame. Choose the best matching advertised camera (e.g. left wrist), never invent an ID. Do not raycast, create notes, move/attach the viewpoint or open PiP for a description. You cannot describe its contents until the image is obtained; unavailable capture means report that, not guess from names or scene geometry."}));
  messages.push(json!({"role":"system","content":"Peer location: inventory and inspect_scenegraph contain discovery metadata, NOT current positions. Resolve the exact requested peer ID from names/aliases, then call get_peer_pose(peer_id). It uses the same generic live-pose resolver as the viewer and returns position, orientation, scene frame, freshness and capture provenance, or a specific failure. Read only the peers needed for this request. Never infer a position from connected status or old chat coordinates. For 'where is <peer>?' use the returned location.position as move_camera.look_at and choose a nearby elevated viewpoint without asking permission or offering POV attachment. Report stale/lost/unavailable calibration rather than inventing coordinates."}));
+ if requests_navigation(&latest_instruction){messages.push(json!({"role":"system","content":"Robot navigation: call navigate_robot_to with a note's exact ID from CURRENT inventory (kind note) or explicit XYZ (kind position). Home plans the route on the scene map and the robot's own navigation drives it. Call stop_robot to stop it. Never compute coordinates. Report the result."}));}
  if requests_pointing(&latest_instruction){messages.push(json!({"role":"system","content":"Robot pointing: call point_robot_at with the target's exact ID from CURRENT inventory (kind note, volume or peer) or explicit XYZ (kind position). Home resolves the position and asks the robot through the point_at operable it advertises in its Catalog. Never compute coordinates. Report the robot's result, including whether its arm moved."}));}
  let mut no_tool_retries=0;
  for _ in 0..8 {
@@ -189,8 +190,9 @@ where T:std::future::Future<Output=Result<serde_json::Value>>,F:std::future::Fut
  Ok(outcome.finish(&model,"The model did not finish all requested steps."))
 }
 /// Peer operations whose receipt comes from the robot, not from Home's scene store.
-fn is_robot_action(name:&str)->bool {name=="point_robot_at"}
+fn is_robot_action(name:&str)->bool {matches!(name,"point_robot_at"|"navigate_robot_to"|"stop_robot")}
 pub fn requests_pointing(text:&str)->bool {["point","points","pointing","aim","aiming"].iter().any(|w|crate::scene_tools::mentions_name(text,w))}
+pub fn requests_navigation(text:&str)->bool {["go","drive","navigate","move","send","stop","come"].iter().any(|w|crate::scene_tools::mentions_name(text,w))}
 fn is_ui_action(name:&str)->bool {matches!(name,"open_camera_pip"|"move_camera"|"attach_camera"|"detach_camera")}
 fn uses_captured_view(name:&str)->bool {matches!(name,"get_volume_corners"|"point_inside_volume"|"offset_point"|"create_note_at_volume_corner"|"create_note_relative_to_view")}
 fn is_scene_edit(name:&str)->bool {
@@ -251,7 +253,7 @@ impl ChatOutcome {
 fn error_target(tool:&str,args:&serde_json::Value)->serde_json::Value {
  // Argument corrections may change values, but success for peer A must not
  // erase a failure for peer B. Keep identity separate from mutable values.
- let keys:&[&str]=if tool=="enable_scene_tools" {&["category"]}else if matches!(tool,"create_note"|"create_note_relative_to_view"|"create_note_at_volume_corner"|"create_volume") {&["name","reference_id","volume_id"]}else if tool=="point_robot_at" {&["robot","target"]}else{&["id","peer_id","product_id","volume_id","reference_id","frame_id"]};
+ let keys:&[&str]=if tool=="enable_scene_tools" {&["category"]}else if matches!(tool,"create_note"|"create_note_relative_to_view"|"create_note_at_volume_corner"|"create_volume") {&["name","reference_id","volume_id"]}else if matches!(tool,"point_robot_at"|"navigate_robot_to") {&["robot","target"]}else if tool=="stop_robot" {&["robot"]}else{&["id","peer_id","product_id","volume_id","reference_id","frame_id"]};
  let mut target=json!({});
  for key in keys {if let Some(value)=args.get(*key){target[*key]=value.clone();}}
  target
@@ -270,6 +272,8 @@ fn tools()->serde_json::Value {
  all.push(crate::view_camera::tool());
  all.extend(crate::view_camera::attach_tools());
  all.push(crate::peer_locations::tool());
+ all.push(json!({"type":"function","function":{"name":"navigate_robot_to","description":"Send a robot that advertises a navigate operable in its Catalog to a place in the selected scene. Home plans the route on the scene map from the robot's current position and the robot's own navigation drives it, avoiding obstacles. kind=note with exact id, or kind=position with explicit XYZ metres on the floor. Omit robot when only one robot can navigate, else pass its exact peer_id or alias.","parameters":{"type":"object","properties":{"robot":{"type":"string"},"target":{"type":"object","properties":{"kind":{"type":"string","enum":["note","position"]},"id":{"type":"string"},"position":{"type":"array","items":{"type":"number"},"minItems":3,"maxItems":3}},"required":["kind"],"additionalProperties":false}},"required":["target"],"additionalProperties":false}}}));
+ all.push(json!({"type":"function","function":{"name":"stop_robot","description":"Stop a robot's navigation now. Omit robot when only one robot can navigate.","parameters":{"type":"object","properties":{"robot":{"type":"string"}},"additionalProperties":false}}}));
  all.push(json!({"type":"function","function":{"name":"point_robot_at","description":"Ask a robot that advertises a point_at operable in its Catalog to point at a target in the selected scene. Home resolves the position: kind=note or volume with exact id, kind=peer with exact peer_id (its live location), or kind=position with explicit XYZ metres. Omit robot when only one robot can point, else pass its exact peer_id or alias. The robot reports whether it accepted and whether its arm moved.","parameters":{"type":"object","properties":{"robot":{"type":"string"},"target":{"type":"object","properties":{"kind":{"type":"string","enum":["note","volume","peer","position"]},"id":{"type":"string"},"position":{"type":"array","items":{"type":"number"},"minItems":3,"maxItems":3}},"required":["kind"],"additionalProperties":false}},"required":["target"],"additionalProperties":false}}}));
  all.push(json!({"type":"function","function":{"name":"enable_scene_tools","description":"Enable a whole related tool group immediately. Previously enabled tools remain available. This only exposes tools; it does not execute them. Optional operation validates an exact name in the group for compatibility.","parameters":{"type":"object","properties":{"category":{"type":"string","enum":["notes","volumes","peers","voxels","geometry","robots"]},"operation":{"type":"string"}},"required":["category"],"additionalProperties":false}}}));
  // A fixed schema union bounds the prompt and makes category order irrelevant.
@@ -294,7 +298,7 @@ fn in_tool_category(name:&str,category:&str)->bool {
   "peers"=>name=="set_peer_alias",
   "voxels"=>name=="clear_voxels",
   "geometry"=>geometry_tool(name),
-  "robots"=>name=="point_robot_at",
+  "robots"=>matches!(name,"point_robot_at"|"navigate_robot_to"|"stop_robot"),
   _=>false,
  }
 }
@@ -350,7 +354,7 @@ fn selected_tools(text:&str,snapshot:&serde_json::Value)->serde_json::Value {
  if notes&&(!peers||explicit_notes) {merge_tools(&mut selected,&category_tools("notes"));}
  if volumes&&(!peers||explicit_volumes) {merge_tools(&mut selected,&category_tools("volumes"));}
  if mentions(&["voxel","voxels"]) {merge_tools(&mut selected,&category_tools("voxels"));}
- if requests_pointing(&text) {merge_tools(&mut selected,&category_tools("robots"));}
+ if requests_pointing(&text)||requests_navigation(&text) {merge_tools(&mut selected,&category_tools("robots"));}
  if mentions(&["raycast","looking","pixel","corner","closer","toward","towards","away","left of","right of","behind","in front of"]) {
   merge_tools(&mut selected,&category_tools("geometry"));
  }
@@ -427,7 +431,7 @@ mod loop_tests;
   for category in ["robots","voxels","peers","volumes","notes","geometry","notes"] {enable_tools(category,None,&mut reverse).unwrap();}
   assert_eq!(forward,reverse);
   assert_eq!(forward,tools());
-  assert_eq!(forward.as_array().unwrap().len(),37);
+  assert_eq!(forward.as_array().unwrap().len(),39);
   assert!(serde_json::to_vec(&forward).unwrap().len()<32*1024);
  }
  #[test] fn explicit_operation_enable_keeps_previous_geometry_and_related_edits() {
