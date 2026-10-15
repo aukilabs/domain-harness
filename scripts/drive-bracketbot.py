@@ -61,7 +61,9 @@ def main():
     def write(target, value):
         with target.buf() as buffer:
             buffer['twist'] = np.array(value, dtype=np.float32)
-            buffer['twist_torque'] = np.zeros(2, dtype=np.float32)
+            # Older BBOS also has a feed-forward torque; newer BBOS's drive_ctrl is twist only.
+            if 'twist_torque' in buffer.dtype.names:
+                buffer['twist_torque'] = np.zeros(2, dtype=np.float32)
 
     def release():
         nonlocal writer

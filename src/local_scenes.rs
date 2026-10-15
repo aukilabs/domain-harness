@@ -19,6 +19,11 @@ pub struct LocalScenes {
     pub(crate) directory: std::path::PathBuf,
     pub(crate) mobile_views: std::sync::Mutex<BTreeMap<String, Value>>,
     pub(crate) phone_presence: std::sync::Mutex<BTreeMap<String, std::sync::Arc<std::sync::Mutex<crate::mobile_pose::Presence>>>>,
+    /// Each scene's joystick relay, so Home's own viewer drives through the
+    /// same board, single-driver rule and push stream as a phone.
+    pub(crate) drives: std::sync::Mutex<BTreeMap<String, auki_components::Operable<crate::mobile_drive::Command, bool>>>,
+    /// Each scene's route planner, so Home can plan a robot's way as its own peer.
+    pub(crate) planners: std::sync::Mutex<BTreeMap<String, auki_components::Operable<crate::scene_navigation::RouteRequest, crate::scene_navigation::Route>>>,
     /// Registry-declared robots per scene frame, kept by `registry_robots::serve`.
     pub registry_robots: crate::registry_robots::Entries,
 }
@@ -98,6 +103,30 @@ fn valid_id(id: &str) -> bool {
 }
 
 impl LocalScenes {
+    /// Plan a route in `id` as `caller` (Home's own peer), through the scene's
+    /// `plan` Operable: the same planner, map and shared-route rules as any peer.
+    pub fn plan_route(&self, id: &str, caller: &str, request: crate::scene_navigation::RouteRequest) -> Result<crate::scene_navigation::Route> {
+        let planner = self.planners.lock().map_err(|_| anyhow!("Route planner unavailable"))?
+            .get(id).cloned().ok_or_else(|| anyhow!("This scene has no route planner"))?;
+        let context = auki_components::InvocationContext {
+            invocation_id: uuid::Uuid::new_v4().to_string(),
+            caller_peer_id: caller.into(),
+            caller_component_id: "home-navigation".into(),
+        };
+        Ok(planner.invoke(context, request).map_err(|e| anyhow!("{e}"))?.result)
+    }
+    /// Send one stick command for `id`'s relay as `driver` (Home's own peer).
+    /// The robot, not Home, decides whether this driver may move it.
+    pub fn drive(&self, id: &str, driver: &str, command: crate::mobile_drive::Command) -> Result<bool> {
+        let relay = self.drives.lock().map_err(|_| anyhow!("Drive relay unavailable"))?
+            .get(id).cloned().ok_or_else(|| anyhow!("This scene has no drive relay"))?;
+        let context = auki_components::InvocationContext {
+            invocation_id: uuid::Uuid::new_v4().to_string(),
+            caller_peer_id: driver.into(),
+            caller_component_id: "home-viewer".into(),
+        };
+        Ok(relay.invoke(context, command).map_err(|e| anyhow!("{e}"))?.result)
+    }
     pub fn load(directory: &Path) -> Result<Self> {
         std::fs::create_dir_all(directory)?;
         let settings = Settings::load(directory)?;
@@ -182,6 +211,8 @@ impl LocalScenes {
             directory: directory.into(),
             mobile_views: Default::default(),
             phone_presence: Default::default(),
+            drives: Default::default(),
+            planners: Default::default(),
             registry_robots: Default::default(),
         })
     }

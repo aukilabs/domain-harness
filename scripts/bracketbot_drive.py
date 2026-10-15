@@ -7,11 +7,13 @@ a stop.
 """
 import math
 
-# The limits bbapps/teleop.py uses for held keys: forward on both wheels, and
-# the per-wheel difference for a turn in place. Wheels never exceed MAX_WHEEL.
-MAX_FORWARD_MPS = 0.20
-MAX_TURN_WHEEL_MPS = 0.15
-MAX_WHEEL_MPS = 0.28
+# Full-stick limits: forward on both wheels, and the per-wheel difference for a
+# turn in place; wheels never exceed MAX_WHEEL. Forward is BBOS's declared
+# max_linear_vel (0.3 m/s); the base daemon itself clamps to 0.4 m/s and
+# 1.0 rad/s. (bbapps/teleop.py used 0.20 / 0.15 / 0.28.)
+MAX_FORWARD_MPS = 0.30
+MAX_TURN_WHEEL_MPS = 0.20
+MAX_WHEEL_MPS = 0.40
 # Total age budget: Home dwell, request round trip, the runner's cache interval
 # and this controller's own loop. Measured on robot 0184, one read from Home
 # takes 130-390 ms, so 400 ms discarded nearly every command. This bound only

@@ -81,6 +81,7 @@ pub mod mobile_geometry;
 
 pub mod mobile_depth;
 pub mod mobile_depth_image;
+pub mod drive_contract;
 pub mod mobile_drive;
 pub mod mobile_calibration;
 pub mod onboarding;
@@ -110,6 +111,8 @@ pub mod scene_routes;
 pub mod scene_navigation;
 
 pub mod robot_runner;
+pub mod navigate;
+pub mod robot_navigation;
 pub mod robot_pointing;
 pub mod point_at;
 pub mod chatbot;

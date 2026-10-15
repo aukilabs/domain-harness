@@ -12,12 +12,15 @@ with --execute does a planned request then move the arm: "moving", "holding",
 "returning", then "done" or "fault". Without --execute no arm writer is opened.
 
 A move takes the arm's writers (never displacing another writer), enables at
-the current pose, eases to sides HOME, swings the straight arm forward, aims,
-holds, eases back to HOME and closes the writers so BBOS's idle policy takes
-over again. SIGTERM during a move or hold returns to HOME first. Stop
-quest_teleop / mimic / view_arms --control first. No base or gripper commands.
+the current pose and points the way quest_teleop moves the arm
+(bracketbot_quest_point): it eases to BBOS's own cfg.home, then the hand
+glides to the pointing pose through hybrid_ik, holds, retraces the same path
+back to where it started and closes the writers so BBOS's idle policy takes
+over again. SIGTERM during a move or hold retraces first. Stop quest_teleop /
+mimic / view_arms --control first. No base or gripper commands.
 """
 import argparse
+import collections
 import contextlib
 import json
 import math
@@ -30,10 +33,18 @@ import uuid
 
 import numpy as np
 
+# One path sample per tick. A joint further than FOLLOW_TURNS from every
+# command of the last FOLLOW_LAG_S stops the move: the arm board filters
+# setpoints itself, and its elbow measured ~0.2 s behind on 0181.
 RATE_HZ = 50
-MOVE_SECONDS = 4.
-AIM_SECONDS = 2.5
+FOLLOW_TURNS = .08
+FOLLOW_LAG_S = .3
 HOLD_SECONDS = 3.
+# The factory driver stops publishing state for >=0.5 s while enabling; hold
+# at least this long, then until state is fresh again, at most the maximum.
+ENABLE_SETTLE_SECONDS = .5
+ENABLE_SETTLE_MAX_SECONDS = 2.
+REST_SETTLE_SECONDS = .5
 # BBOS trips a motor after 15 s above 50 C; a move heats the mast lift, so a
 # request is refused at plan time with this much headroom left.
 TEMP_LIMIT_C = 50.
@@ -58,21 +69,48 @@ def parse_request(line):
 
 
 def kinematics(cfg):
+    """fk, solve and reset on BBOS's hybrid_ik, in motor turns.
+
+    solve(pos, xyzw, like) keeps `like`'s gripper, which IK does not drive.
+    """
     def fk(q):
         pos, quat = cfg.ik.fk(list(cfg.q2urdf(np.asarray(q, float).copy())[:7]))
         return np.asarray(pos, float), np.asarray(quat, float)
-    return fk
+
+    def solve(pos, quat, like):
+        joints = cfg.ik.solve(list(map(float, pos)), list(map(float, quat)))
+        if joints is None or len(joints) < 7:
+            return None
+        urdf = cfg.q2urdf(np.asarray(like, float).copy())
+        urdf[:7] = joints[:7]
+        return np.asarray(cfg.urdf2q(urdf), float)
+
+    def reset(q):
+        cfg.ik.reset(list(cfg.q2urdf(np.asarray(q, float).copy())[:7]))
+    return fk, solve, reset
 
 
-def measured_limits(cfg, name):
-    path = Path(cfg.urdf_path).parent.parent.parent/name/'ranges.calibration.json'
-    if not path.exists():
-        raise RuntimeError(f'{name} is not range-calibrated; run its calibrate.py first')
-    ranges = json.loads(path.read_text())
-    lower = np.minimum(ranges['cal_min'], ranges['cal_max'])
-    upper = np.maximum(ranges['cal_min'], ranges['cal_max'])
+def measured_limits(cfg, name, state=None):
+    """The arm's measured joint limits, in motor turns.
+
+    Newer BBOS keeps the calibration in the arm board's flash and republishes
+    each joint's two calibrated extremes as cal_min/cal_max in every
+    <arm>.state record; older BBOS wrote them to ranges.calibration.json. The
+    named extremes are not ordered, so the limits are their min and max.
+    """
+    if state is not None and 'cal_min' in (getattr(getattr(state, 'dtype', None), 'names', None) or ()):
+        low, high = np.asarray(state['cal_min'], float), np.asarray(state['cal_max'], float)
+    else:
+        path = Path(cfg.urdf_path).parent.parent.parent/name/'ranges.calibration.json'
+        if not path.exists():
+            raise RuntimeError(f'{name} is not range-calibrated; run its calibrate.py first')
+        ranges = json.loads(path.read_text())
+        low, high = np.asarray(ranges['cal_min'], float), np.asarray(ranges['cal_max'], float)
+    lower, upper = np.minimum(low, high), np.maximum(low, high)
     if not np.isfinite(lower[:7]).all() or not np.isfinite(upper[:7]).all():
         raise RuntimeError(f'{name} has no finite measured limits')
+    if np.any(upper[:7]-lower[:7] <= 0):
+        raise RuntimeError(f'{name} has a joint with no calibrated travel; recalibrate it')
     return lower, upper
 
 
@@ -93,7 +131,9 @@ class Arms:
         for name in ('arm_left', 'arm_right'):
             cfg = Config(name)
             cfg.ik.init()
-            self.arms[name] = dict(cfg=cfg, fk=kinematics(cfg), limits=measured_limits(cfg, name),
+            fk, solve, reset = kinematics(cfg)
+            self.arms[name] = dict(cfg=cfg, fk=fk, solve=solve, reset=reset,
+                                   home=np.asarray(cfg.home, float),
                                    state=stack.enter_context(Reader(name+'.state', keeptime=False)))
         self.imu = stack.enter_context(Reader('imu.orientation', keeptime=False))
         self.battery = stack.enter_context(Reader('drive.status', keeptime=False))
@@ -129,8 +169,11 @@ class Arms:
         hot = int(np.argmax(d['temp']))
         if d['temp'][hot] >= temp_limit:
             raise ArmProtection('hot', f"{joints[hot]} at {d['temp'][hot]:.0f} C (limit {temp_limit:.0f} C)")
-        limits = np.asarray(arm['cfg'].hard_current_limit, float)*.8
-        over = np.flatnonzero(np.abs(d['current']) >= limits)
+        # Older BBOS declares a per-joint current limit; newer BBOS declares none
+        # (its board firmware and safety daemon own protection). Never invent one.
+        declared = getattr(arm['cfg'], 'hard_current_limit', None)
+        limits = None if declared is None else np.asarray(declared, float)*.8
+        over = np.flatnonzero(np.abs(d['current']) >= limits) if limits is not None else np.array([], int)
         if over.size:
             i = int(over[0])
             raise ArmProtection('current', f"{joints[i]} drawing {abs(d['current'][i]):.1f} A (limit {limits[i]:.1f} A)")
@@ -138,85 +181,115 @@ class Arms:
 
 
 def plan(arms, name, target):
-    """Checked joint targets for one request; raises ValueError to refuse it."""
-    from bracketbot_point import HOME, check_path, plan_point_at
+    """Checked joint samples for one request; raises ValueError to refuse it."""
+    from bracketbot_quest_point import plan_point_at
     arm = arms.arms[name]
-    fk, (lower, upper) = arm['fk'], arm['limits']
     state = arms.healthy(name, temp_limit=TEMP_LIMIT_C-PLAN_TEMP_MARGIN_C)
+    # Read with every plan, so a recalibration is honoured without a restart.
+    lower, upper = measured_limits(arm['cfg'], name, state)
     if np.max(np.abs(state['vel'])) > .02:
         raise ValueError('arm is moving')
     start = state['pos'].astype(float).copy()
-    home = HOME[name].copy()
-    home[7] = start[7]  # the gripper stays as found
-    check_path(fk, start, home, name)
-    forward, aimed, report = plan_point_at(fk, home, lower, upper, name, target)
-    forward[7] = aimed[7] = start[7]
-    return start, home, forward, aimed, report
+    samples, report = plan_point_at(arm['fk'], lambda pos, quat: arm['solve'](pos, quat, start), arm['reset'],
+                                    start, arm['home'], target, lower, upper, name, RATE_HZ)
+    return start, samples, report
+
+
+def following_error(pos, commands):
+    """Per arm joint, how far `pos` is outside the span of `commands`."""
+    span = np.asarray(commands, float)[:, :7]
+    pos = np.asarray(pos, float)[:7]
+    return np.maximum(np.maximum(span.min(axis=0)-pos, pos-span.max(axis=0)), 0.)
 
 
 def execute(arms, name, poses, stopped, emit):
-    """Move through HOME, forward and aimed, hold, and return. Raises on a fault."""
+    """Follow the path out, hold, and retrace it. Raises on a fault."""
     from bbos import Type, Writer
-    start, home, forward, aimed = poses
+    start, samples = poses
+    failure = None
     with contextlib.ExitStack() as stack:
-        # Exclusive, ordinary priority only; a held topic raises instead of waiting.
-        writers = {kind: stack.enter_context(Writer(f'{name}.{kind}', Type('arm_'+kind), keeptime=False))
-                   for kind in ('ctrl', 'torque')}
-        command = start.copy()
+        # bbos.Writer.__exit__ prints and then swallows any exception, which
+        # would report a fault as done; catch it here and raise it once closed.
+        try:
+            # Exclusive, ordinary priority only; a held topic raises instead of waiting.
+            writers = {kind: stack.enter_context(Writer(f'{name}.{kind}', Type('arm_'+kind), keeptime=False))
+                       for kind in ('ctrl', 'torque')}
+            move(arms, name, writers, start, samples, stopped, emit)
+        except Exception as e:
+            failure = e
+    if failure is not None:
+        raise failure
 
-        def publish(goal, enable=True, arm_max_age=.25):
-            for kind in writers:
-                with (Path('/dev/shm')/f'{name}.{kind}').open('rb') as f:
-                    f.seek(8)
-                    if int.from_bytes(f.read(4), 'little') != os.getpid():
-                        raise RuntimeError('control preempted; yielding without reacquiring')
-            d = arms.healthy(name, arm_max_age)
-            if enable and np.max(np.abs(d['pos'][:7]-command[:7])) > .08:
-                raise RuntimeError('arm failed to follow command; yielding to factory controller')
-            with writers['ctrl'].buf() as b:
-                b['pos'] = goal; b['vel'] = 0; b['tau'] = 0; b['alpha'] = 0
-            with writers['torque'].buf() as b:
-                for field in b.dtype.names:
-                    if field != 'timestamp': b[field] = 0
-                b['enable'][:7] = enable
-                b['enable'][0] = True  # preserve the factory idle mast hold
-            command[:] = goal
-            return d
 
-        def move(goal, seconds, honor_stop):
-            from bracketbot_point import smootherstep
-            initial = command.copy()
-            # Mast travel sets the pace (arm-control.md: 2.5 s per 0.35 turns).
-            seconds = max(seconds, 2.5*abs(goal[0]-initial[0])/.35)
-            began = time.monotonic()
-            while True:
-                t = (time.monotonic()-began)/seconds
-                publish(initial+smootherstep(t)*(goal-initial))
-                if t >= 1 or honor_stop and stopped():
-                    return not (honor_stop and stopped())
-                time.sleep(1/RATE_HZ)
+def move(arms, name, writers, start, samples, stopped, emit):
+    """The move itself, on writers this process holds."""
+    from bracketbot_capture import timestamp
+    command = start.copy()
+    recent = collections.deque([(time.monotonic(), start.copy())])
 
-        def hold(goal, seconds, honor_stop=True):
-            until = time.monotonic()+seconds
-            while time.monotonic() < until and not (honor_stop and stopped()):
-                publish(goal); time.sleep(1/RATE_HZ)
+    def publish(goal, enable=True, arm_max_age=.25):
+        for kind in writers:
+            with (Path('/dev/shm')/f'{name}.{kind}').open('rb') as f:
+                f.seek(8)
+                if int.from_bytes(f.read(4), 'little') != os.getpid():
+                    raise RuntimeError('control preempted; yielding without reacquiring')
+        d = arms.healthy(name, arm_max_age)
+        lag = following_error(d['pos'], [q for _, q in recent])
+        if enable and np.max(lag) > FOLLOW_TURNS:
+            j = int(np.argmax(lag))
+            raise RuntimeError(f"arm failed to follow command ({arms.arms[name]['cfg'].joint_names[j]} at "
+                               f"{d['pos'][j]:+.3f} turns, commanded {command[j]:+.3f}); "
+                               'yielding to factory controller')
+        with writers['ctrl'].buf() as b:
+            b['pos'] = goal; b['vel'] = 0; b['tau'] = 0; b['alpha'] = 0
+        with writers['torque'].buf() as b:
+            for field in b.dtype.names:
+                if field != 'timestamp': b[field] = 0
+            b['enable'][:7] = enable
+            b['enable'][0] = True  # preserve the factory idle mast hold
+        command[:] = goal
+        now = time.monotonic()
+        recent.append((now, goal.copy()))
+        while len(recent) > 1 and now-recent[1][0] > FOLLOW_LAG_S:
+            recent.popleft()
+        return d
 
-        # Flush the current pose, then enable at it. The factory driver stops
-        # publishing state for >=0.5 s while switching modes; hold through it.
-        publish(start, enable=False)
-        time.sleep(.02)
-        until = time.monotonic()+2
-        while time.monotonic() < until:
-            publish(start, arm_max_age=2.); time.sleep(1/RATE_HZ)
-        emit('moving')
-        if move(home, MOVE_SECONDS, True) and move(forward, MOVE_SECONDS, True) and move(aimed, AIM_SECONDS, True):
-            d = publish(aimed)
-            emit('holding', measured_hand_m=arms.arms[name]['fk'](d['pos'].astype(float))[0].tolist())
-            hold(aimed, HOLD_SECONDS)
-        emit('returning')
-        move(forward, AIM_SECONDS, False)
-        move(home, MOVE_SECONDS, False)
-        hold(home, 1., False)
+    def follow(path, honor_stop):
+        """Play `path` at RATE_HZ by the clock; returns how many samples were played."""
+        began = time.monotonic()
+        while True:
+            i = min(int((time.monotonic()-began)*RATE_HZ), len(path)-1)
+            publish(path[i])
+            if i == len(path)-1 or honor_stop and stopped():
+                return i+1
+            time.sleep(1/RATE_HZ)
+
+    def hold(goal, seconds, honor_stop=True):
+        until = time.monotonic()+seconds
+        while time.monotonic() < until and not (honor_stop and stopped()):
+            publish(goal); time.sleep(1/RATE_HZ)
+
+    # Flush the current pose, then enable at it. The factory driver stops
+    # publishing state for >=0.5 s while switching modes; hold through it.
+    publish(start, enable=False)
+    time.sleep(.02)
+    began = time.monotonic()
+    while True:
+        d = publish(start, arm_max_age=2.)
+        settled = time.monotonic()-began
+        fresh = (time.time_ns()-timestamp(d))/1e9 <= .1
+        if settled >= ENABLE_SETTLE_MAX_SECONDS or settled >= ENABLE_SETTLE_SECONDS and fresh:
+            break
+        time.sleep(1/RATE_HZ)
+    emit('moving')
+    played = follow(samples, True)
+    if played == len(samples) and not stopped():
+        d = publish(samples[-1])
+        emit('holding', measured_hand_m=arms.arms[name]['fk'](d['pos'].astype(float))[0].tolist())
+        hold(samples[-1], HOLD_SECONDS)
+    emit('returning')
+    follow([*samples[:played-1][::-1], start], False)
+    hold(start, REST_SETTLE_SECONDS, False)
 
 
 def main():
@@ -242,7 +315,7 @@ def main():
             try:
                 request_id, name, target = parse_request(line)
                 *poses, report = plan(arms, name, target)
-            except (ValueError, RuntimeError) as e:
+            except Exception as e:  # Any planning failure refuses this request; nothing has moved.
                 code = getattr(e, 'code', 'unreachable' if isinstance(e, ValueError) else 'other')
                 emit('rejected', reason=str(e), code=code)
                 continue

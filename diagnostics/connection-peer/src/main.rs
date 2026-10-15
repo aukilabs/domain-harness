@@ -8,6 +8,9 @@ mod diagnostic_log;
 #[path = "../../../src/camera_frame.rs"]
 mod camera_frame;
 mod depth;
+mod drive;
+#[path = "../../../src/drive_contract.rs"]
+mod drive_contract;
 #[path = "../../../src/component_enabled.rs"]
 mod component_enabled;
 #[path = "../../../src/depth_points.rs"]
@@ -17,6 +20,9 @@ mod compact_pose;
 #[path = "../../../src/fisheye.rs"]
 mod fisheye;
 mod home;
+mod nav;
+#[path = "../../../src/navigate.rs"]
+mod navigate;
 #[path = "../../../src/point_at.rs"]
 mod point_at;
 mod pointer;
@@ -96,17 +102,26 @@ fn read<T: serde::de::DeserializeOwned>(path: &str) -> Result<T> {
 async fn main() -> Result<()> {
     let _logging = diagnostic_log::start()?;
     let args: Vec<_> = std::env::args().collect();
+    let options = args.get(5..).unwrap_or_default();
+    let usage = "usage: auki-connection-diagnostic PEER_CONFIG HOME_CONNECTION DIAGNOSTIC_IDENTITY [--poses|--portals|--points|--check-home] [--arm-plan|--arm-motion] [--drive] [--navigate]";
     ensure!(
         args.len() == 4
             || (args.len() == 5
                 && matches!(args[4].as_str(), "--poses" | "--portals" | "--points" | "--check-home"))
-            || (args.len() == 6
+            || (args.len() >= 6
                 && matches!(args[4].as_str(), "--poses" | "--portals" | "--points")
-                && matches!(args[5].as_str(), "--arm-plan" | "--arm-motion")),
-        "usage: auki-connection-diagnostic PEER_CONFIG HOME_CONNECTION DIAGNOSTIC_IDENTITY [--poses|--portals|--points|--check-home] [--arm-plan|--arm-motion]"
+                && options.iter().all(|o| matches!(o.as_str(), "--arm-plan" | "--arm-motion" | "--drive" | "--navigate"))
+                && options.iter().filter(|o| o.starts_with("--arm-")).count() <= 1
+                && options.iter().filter(|o| *o == "--drive").count() <= 1
+                && options.iter().filter(|o| *o == "--navigate").count() <= 1),
+        "{usage}"
     );
     // point_at plans with the arm adapter (--arm-plan) and moves (--arm-motion).
-    let arm = args.get(5).map(|v| v == "--arm-motion");
+    let arm = options.iter().find(|o| o.starts_with("--arm-")).map(|v| v == "--arm-motion");
+    // Teleop: Home's own peer drives the base through its scene's drive relay.
+    let drive = options.iter().any(|o| o == "--drive");
+    // Navigation: Home's own peer sends waypoints the BBOS nav app drives.
+    let navigate = options.iter().any(|o| o == "--navigate");
     let check_home = args.get(4).is_some_and(|v| v == "--check-home");
     let publish_poses = args.len() >= 5 && !check_home;
     let points = args.get(4).is_some_and(|v| v == "--points");
@@ -121,6 +136,9 @@ async fn main() -> Result<()> {
         home.schema == "spatial-harness.home-connection/v1",
         "unknown Home profile"
     );
+    let drive_scene = drive
+        .then(|| drive::scene_id(&home.frame).map(str::to_owned).context("Driving needs a scene-specific Home connection profile"))
+        .transpose()?;
     ensure!(home.domain_id == config.domain_id, "Domain mismatch");
     ensure!(
         !home.routes.is_empty() && home.routes.len() <= 16,
@@ -211,14 +229,20 @@ async fn main() -> Result<()> {
     let (pointing_tx, mut pointing_rx) = tokio::sync::mpsc::unbounded_channel::<arm::Reply>();
     let mut pointing_arm: Option<(String, String)> = None;
     let mut pointing_open = true;
+    if let Some(p) = &publisher {
+        known.lock().unwrap().insert(
+            &[&p.contract.from_frame, &p.contract.to_frame],
+            pointer::Transform { contract: p.compact(), product: p.product() },
+        );
+    }
+    let _navigator = match (&publisher, navigate) {
+        (Some(p), true) => Some(nav::Navigator::mount(p, known.clone(), home.peer_id.clone())?),
+        _ => None,
+    };
+    // With navigation, Home's point_at may turn the robot to face a target first.
     let _pointer = match &publisher {
-        Some(p) => {
-            known.lock().unwrap().insert(
-                &[&p.contract.from_frame, &p.contract.to_frame],
-                pointer::Transform { contract: p.compact(), product: p.product() },
-            );
-            Some(pointer::Pointer::mount(p, known.clone(), arm, pointing_tx)?)
-        }
+        Some(p) => Some(pointer::Pointer::mount(p, known.clone(), arm, pointing_tx,
+            _navigator.as_ref().map(|n| n.turner()))?),
         None => None,
     };
     let mut input = tokio::io::BufReader::new(tokio::io::stdin()).lines();
@@ -319,6 +343,23 @@ async fn main() -> Result<()> {
     // A robot that sees a phone's onboarding code places itself from the phone's marker.
     let onboarding_task = portals.then(|| tokio::spawn(onboard::run(client.clone(), home.clone())));
     let (tx, rx) = tokio::sync::watch::channel(None::<Instant>);
+    // An essential helper that exits ends this run; the controller that started
+    // it (bracketbot_slam_led_diagnostic.py) restarts it, which respawns them all.
+    let mut failure: Option<String> = None;
+    let mut drive_task = match drive_scene {
+        Some(scene) => {
+            let helper = drive::Helper::start(&home.peer_id)?;
+            let task = tokio::spawn(drive::follow(
+                ComponentProtocolClient::new(peer.protocols()),
+                expected,
+                routes.clone(),
+                scene,
+                peer.peer_id().to_string(),
+            ));
+            Some((task, helper))
+        }
+        None => None,
+    };
     let requests = tokio::spawn(async move {
         let mut revision = None;
         loop {
@@ -436,6 +477,16 @@ async fn main() -> Result<()> {
             _ = terminate.recv() => break,
             _ = peer.wait_stopped() => break,
             _ = tick.tick() => {
+                let gone = if _pointer.as_ref().is_some_and(|p| p.arm_gone()) { Some("Arm adapter") }
+                    else if _navigator.as_ref().is_some_and(|n| n.gone()) { Some("Nav adapter") }
+                    else if drive_task.as_mut().is_some_and(|(_, helper)| helper.exited()) { Some("Drive helper") }
+                    else { None };
+                if let Some(which) = gone {
+                    let message = format!("{which} exited; stopping so the controller restarts this diagnostic");
+                    crate::diagnostic_log!("{message}");
+                    failure = Some(message);
+                    break;
+                }
                 if let (Some(publisher),Some(camera),Some(home))=(&publisher,&camera_publisher,home_rx.borrow().clone()) {
                     if alignment.as_ref().is_some_and(|a|a.target!=(&home.frame).into()) {alignment=None;}
                     if alignment.is_none() {
@@ -456,6 +507,11 @@ async fn main() -> Result<()> {
     }
     println!("disconnected");
     requests.abort();
+    if let Some((task, helper)) = drive_task {
+        task.abort();
+        let _ = task.await;
+        drop(helper);
+    }
     if let Some(task) = onboarding_task { task.abort(); }
     drop(alignment);
     if let Some(task) = home_task {
@@ -479,5 +535,8 @@ async fn main() -> Result<()> {
     let result = peer.shutdown().await;
     bootstrap.session().close().await;
     result?;
+    if let Some(failure) = failure {
+        anyhow::bail!(failure);
+    }
     Ok(())
 }

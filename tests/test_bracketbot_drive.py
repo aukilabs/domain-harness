@@ -23,13 +23,13 @@ class DrivePolicy(unittest.TestCase):
     def test_forward_and_turn_use_teleop_limits_at_half_speed(self):
         (v, w), reason = drive(packet(forward=1))
         self.assertIsNone(reason)
-        self.assertAlmostEqual(v, 0.10)
+        self.assertAlmostEqual(v, 0.15)
         self.assertEqual(w, 0)
         (v, w), reason = drive(packet(turn=1))
         self.assertAlmostEqual(v, 0)
-        self.assertAlmostEqual(w, 0.075 / R)  # left: right wheel faster
+        self.assertAlmostEqual(w, 0.10 / R)  # left: right wheel faster
         (v, w), _ = drive(packet(forward=1), scale=1.0)
-        self.assertAlmostEqual(v, 0.20)
+        self.assertAlmostEqual(v, 0.30)
 
     def test_wheels_never_exceed_the_limit(self):
         for forward, turn in ((1, 1), (1, -1), (-1, 1), (-1, -1)):

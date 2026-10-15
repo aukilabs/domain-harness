@@ -647,6 +647,8 @@ impl Publisher {
             },
         )?;
         drive.expose()?;
+        scenes.drives.lock().map_err(|_| anyhow!("Drive relay unavailable"))?
+            .insert(id.into(), drive_update.clone());
         endpoint.export_operable(&drive_update)?;
         endpoint.export_operable(&drive_snapshot)?;
         components.push(drive);
@@ -744,8 +746,10 @@ impl Publisher {
         let (path_scenes,path_scene,path_frame)=(scenes.clone(),id.to_owned(),paths_frame.clone());
         let paths_publisher=crate::scene_paths::Publisher::mount(runtime,endpoint,id,&owner,&paths_frame,crate::model::clock_ref(&clock),
             move |path,stroke| path_scenes.paths.change(&path_scene,&path_frame,path,stroke))?;
-        components.push(crate::scene_navigation::mount(runtime, endpoint, id, &paths_frame, crate::model::clock_ref(&clock),
-            NavigationWorld { state: state.clone(), scenes: scenes.clone(), scene: id.into(), frame: paths_frame.clone(), started })?);
+        let (navigation, planner) = crate::scene_navigation::mount(runtime, endpoint, id, &paths_frame, crate::model::clock_ref(&clock),
+            NavigationWorld { state: state.clone(), scenes: scenes.clone(), scene: id.into(), frame: paths_frame.clone(), started })?;
+        scenes.planners.lock().map_err(|_| anyhow!("Route planner unavailable"))?.insert(id.into(), planner);
+        components.push(navigation);
         let mut publisher = Self {
             id: id.into(),
             reference,

@@ -34,6 +34,7 @@ struct AppState {
     previews: tokio::sync::mpsc::Sender<spatial_home::sensor_preview::Request>,
     controls: tokio::sync::mpsc::Sender<spatial_home::component_control::Request>,
     pointing: tokio::sync::mpsc::Sender<spatial_home::robot_pointing::Invoke>,
+    navigation: tokio::sync::mpsc::Sender<spatial_home::robot_navigation::Invoke>,
     store: Arc<Mutex<Store>>,
     changes: tokio::sync::watch::Sender<()>,
     peer: tokio::sync::watch::Receiver<Value>,
@@ -502,6 +503,13 @@ async fn local_snapshot(
     Ok(Json(serde_json::to_value(snapshot).map_err(anyhow::Error::from)?))
 }
 // Reset is an explicit, snapshot-checked write, never part of normal startup.
+/// The viewer's keyboard joystick: one stick command for a robot in this
+/// scene, sent through the scene's drive relay as Home's own peer.
+async fn drive_local(State(s):State<Shared>,headers:HeaderMap,axum::extract::Path(id):axum::extract::Path<String>,Json(command):Json<spatial_home::mobile_drive::Command>)->ApiResult{
+    local_write(&headers)?;
+    let home=s.peer.borrow()["connection"]["peer_id"].as_str().map(str::to_owned).ok_or_else(||anyhow::anyhow!("Home P2P peer is not ready"))?;
+    Ok(Json(json!({"accepted":s.local_scenes.drive(&id,&home,command)?})))
+}
 async fn reset_local_mapping(State(s):State<Shared>,headers:HeaderMap,axum::extract::Path(id):axum::extract::Path<String>,Json(expected):Json<auki_scenegraph::MapSnapshot>)->ApiResult{
     local_write(&headers)?;
     expected.validate().map_err(anyhow::Error::from)?;
@@ -1080,6 +1088,70 @@ async fn point_robot_at(s:&Shared,key:&str,frame:&str,args:Value)->anyhow::Resul
                     accepted.distance_m,accepted.bearing_deg.abs(),accepted.elevation_deg),
                     "robot_peer_id":candidate.peer_id,"result":accepted}))
 }
+/// Send a robot somewhere in a local scene: Home finds where the robot stands,
+/// plans a route on the scene map as Home's own peer (shared, so the viewer
+/// draws it), and hands the waypoints to the `navigate` operable the robot
+/// advertises. The robot's own navigation stack drives and avoids obstacles.
+async fn navigate_robot(s:&Shared,key:&str,frame:&str,args:Value)->anyhow::Result<Value> {
+    #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Target {kind:String,#[serde(default)] id:Option<String>,#[serde(default)] position:Option<[f64;3]>}
+    #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Go {#[serde(default)] robot:Option<String>,target:Target}
+    let a:Go=serde_json::from_value(args)?;
+    let network=spatial_home::peer_aliases::network(s.peer.borrow().clone())?;
+    let candidate=spatial_home::robot_navigation::select(&network,a.robot.as_deref())?;
+    let robot=network["peers"].as_array().and_then(|peers|peers.iter().find(|p|p["peer_id"]==candidate.peer_id.as_str()))
+        .and_then(|p|p["alias"].as_str().or(p["name"].as_str())).unwrap_or(&candidate.peer_id).to_owned();
+    let to=match a.target.kind.as_str() {
+        "note"=>spatial_home::scene_navigation::Place::Note(a.target.id.filter(|v|!v.is_empty()).ok_or_else(||anyhow::anyhow!("target.id is required for kind note"))?),
+        "position"=>spatial_home::scene_navigation::Place::Point(a.target.position.ok_or_else(||anyhow::anyhow!("target.position is required for kind position"))?),
+        _=>anyhow::bail!("target.kind must be note or position"),
+    };
+    // Where the robot stands now, from the same registry-backed resolver as get_peer_pose.
+    let raw=s.peer.borrow().clone();
+    let pose=spatial_home::peer_locations::get(&s.previews,&raw,json!({"peer_id":candidate.peer_id}),frame).await
+        .map_err(|e|anyhow::anyhow!("No current pose for {robot} in this scene: {e}"))?;
+    let from:[f64;3]=serde_json::from_value(pose["location"]["position"].clone())?;
+    let home_peer=s.peer.borrow()["connection"]["peer_id"].as_str().map(str::to_owned).ok_or_else(||anyhow::anyhow!("Home P2P peer is not ready"))?;
+    // A Bracketbot is 0.4 m wide and about 1.6 m tall.
+    let route=s.local_scenes.plan_route(key,&home_peer,spatial_home::scene_navigation::RouteRequest{frame:frame.into(),
+        from:spatial_home::scene_navigation::Place::Point(from),to,agent:Some(spatial_home::scene_navigation::Agent{radius_m:0.25,height_m:1.6}),share:Some(true)})?;
+    anyhow::ensure!(route.status!=spatial_home::scene_navigation::Status::Unreachable,"The scene map shows no way for {robot} to get there");
+    let points=route.path.as_ref().and_then(|p|p.segments.first()).cloned().ok_or_else(||anyhow::anyhow!("{robot} is already there"))?;
+    let waypoints=spatial_home::robot_navigation::waypoints(&points,0.25)?;
+    let scene_frame=spatial_home::conventions::registry(&home_peer,frame)?;
+    let instruction=spatial_home::navigate::Navigate{request_id:uuid::Uuid::new_v4().to_string(),
+        frame:spatial_home::compact_pose::FrameRef::from(&scene_frame),waypoints};
+    let (reply,receive)=tokio::sync::oneshot::channel();
+    s.navigation.try_send(spatial_home::robot_navigation::Invoke{candidate:candidate.clone(),request:spatial_home::robot_navigation::Request::Navigate(instruction,reply)})
+        .map_err(|_|anyhow::anyhow!("Home P2P is not running, or another robot request is pending"))?;
+    let accepted=receive.await.map_err(|_|anyhow::anyhow!("Robot navigation request was dropped"))??;
+    let known=match route.status {spatial_home::scene_navigation::Status::Direct=>" The map shows nothing in the way, but part of the floor is unseen.",_=>""};
+    Ok(json!({"summary":format!("{robot} is on its way: {:.1} m route, {} waypoint(s).{known} Its own navigation avoids obstacles and stops on arrival.",
+        route.length_m,accepted.waypoints_nav.len()),"robot_peer_id":candidate.peer_id,"route":route,"result":accepted}))
+}
+/// Stop a robot's navigation through its `cancel` operable.
+async fn stop_robot(s:&Shared,args:Value)->anyhow::Result<Value> {
+    #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Stop {#[serde(default)] robot:Option<String>}
+    let a:Stop=serde_json::from_value(args)?;
+    let network=spatial_home::peer_aliases::network(s.peer.borrow().clone())?;
+    let candidate=spatial_home::robot_navigation::select(&network,a.robot.as_deref())?;
+    let (reply,receive)=tokio::sync::oneshot::channel();
+    let cancel=spatial_home::navigate::Cancel{request_id:uuid::Uuid::new_v4().to_string()};
+    s.navigation.try_send(spatial_home::robot_navigation::Invoke{candidate:candidate.clone(),request:spatial_home::robot_navigation::Request::Cancel(cancel,reply)})
+        .map_err(|_|anyhow::anyhow!("Home P2P is not running, or another robot request is pending"))?;
+    let stopped=receive.await.map_err(|_|anyhow::anyhow!("Robot stop request was dropped"))??;
+    Ok(json!({"summary":if stopped.stopped{"The robot's navigation stopped."}else{"The robot had nothing to stop."},"robot_peer_id":candidate.peer_id,"result":stopped}))
+}
+/// The viewer's "Send robot here" / "Send robot to note".
+async fn navigate_robot_local(State(s):State<Shared>,headers:HeaderMap,axum::extract::Path(id):axum::extract::Path<String>,Json(args):Json<Value>)->ApiResult{
+    local_write(&headers)?;
+    let (key,frame)=volume_context(&s,&format!("local:{id}"))?;
+    Ok(Json(navigate_robot(&s,&key,&frame,args).await?))
+}
+/// The viewer's "Stop robot".
+async fn stop_robot_local(State(s):State<Shared>,headers:HeaderMap,Json(args):Json<Value>)->ApiResult{
+    local_write(&headers)?;
+    Ok(Json(stop_robot(&s,args).await?))
+}
 async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Json<spatial_home::chatbot::Request>)->ApiResult {
     local_write(&headers)?;
     let (key,frame)=volume_context(&s,&request.scene)?;
@@ -1138,6 +1210,8 @@ async fn scene_tool(s:Shared,context:std::sync::Arc<SceneToolContext>,name:Strin
         let network=s.peer.borrow().clone();
         if name=="get_peer_pose" {return spatial_home::peer_locations::get(&s.previews,&network,args,&frame).await;}
         if name=="point_robot_at" {return point_robot_at(&s,&key,&frame,args).await;}
+        if name=="navigate_robot_to" {return navigate_robot(&s,&key,&frame,args).await;}
+        if name=="stop_robot" {return stop_robot(&s,args).await;}
         let ray=if name=="raycast_peer_camera"{Some(spatial_home::chat_camera::geometry(&s.previews,&network,args.clone(),&frame).await?)}else{None};
         let reference=args["reference_id"].as_str().unwrap_or("");
         let peer_id=if name=="point_relative_to_peer"{args["peer_id"].as_str()}else if name=="create_note_relative_to_view"&&(args["reference_kind"]=="peer"||reference.starts_with("phone-name:")||reference.starts_with("robot-name:")){Some(reference.strip_prefix("phone-name:").or_else(||reference.strip_prefix("robot-name:")).unwrap_or(reference))}else{None};
@@ -1411,6 +1485,7 @@ async fn main() -> anyhow::Result<()> {
     let (preview_tx, preview_rx) = tokio::sync::mpsc::channel(4);
     let (control_tx, control_rx) = tokio::sync::mpsc::channel(4);
     let (pointing_tx, pointing_rx) = tokio::sync::mpsc::channel(4);
+    let (navigation_tx, navigation_rx) = tokio::sync::mpsc::channel(4);
     let occupancy = spatial_home::robot_occupancy::Cache::default();
     let robot_states = spatial_home::robot_states::RobotStates::default();
     let ar_frames = spatial_home::ar_preview::Frames::default();
@@ -1498,6 +1573,7 @@ async fn main() -> anyhow::Result<()> {
             preview_rx,
             control_rx,
             pointing_rx,
+            navigation_rx,
             occupancy.clone(),
             robot_states.clone(),
             ar_frames.clone(),
@@ -1523,6 +1599,7 @@ async fn main() -> anyhow::Result<()> {
         previews: preview_tx,
         controls: control_tx,
         pointing: pointing_tx,
+        navigation: navigation_tx,
         store,
         changes,
         peer: peer_rx,
@@ -1618,6 +1695,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/local-scenes/{id}", get(local_scene))
         .route("/api/local-scenes/{id}/snapshot", get(local_snapshot))
         .route("/api/local-scenes/{id}/reset-mapping", post(reset_local_mapping))
+        .route("/api/local-scenes/{id}/drive", post(drive_local))
+        .route("/api/local-scenes/{id}/navigate-robot", post(navigate_robot_local))
+        .route("/api/robots/stop", post(stop_robot_local))
         .route("/api/local-scenes/{id}/presence", get(local_presence))
         .route("/api/phone-local-scene", get(phone_local_scene))
         .route("/api/domain-scene", get(domain_scene))
