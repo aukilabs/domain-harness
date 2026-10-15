@@ -69,6 +69,7 @@ fn view() -> Viewer {
         screen_right: [1., 0., 0.],
         camera_position: Some([12., 4., 13.]),
         camera_target: None,
+        focus_point: None,
     }
 }
 #[test]

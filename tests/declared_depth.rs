@@ -252,10 +252,10 @@ async fn run(actual_publisher: bool, extra_mount: bool, packed: bool) -> Result<
         };
         let camera_component = products.runtime.component(ComponentSpec::new("ar-test-camera")
             .observable(ObservableContract { name:"rgb".into(), datatype:VideoFrame::DATATYPE.into(),
-                schema:"auki.video-frame/v1".into(), access:vec![ObservationAccess::FollowNew], exposure:Exposure::Cluster }))?;
+                schema:spatial_home::camera_frame::SCHEMA.into(), access:vec![ObservationAccess::FollowNew], exposure:Exposure::Cluster }))?;
         let camera: ConfiguredObservable<VideoFrame> = camera_component.configured_observable(
             ConfiguredObservableSpec::new("rgb","camera",pc.clock.clone(),PayloadContract::Camera(CameraPayloadContract {
-                datatype:VideoFrame::DATATYPE.into(),schema:"auki.video-frame/v1".into(),encoding:"jpeg".into(),
+                datatype:VideoFrame::DATATYPE.into(),schema:spatial_home::camera_frame::SCHEMA.into(),encoding:"jpeg".into(),
                 width:640,height:480,nominal_frame_rate_hz:Some(10),observes:"visible_light".into()
             })).in_registered_frame(auki_registry::FrameRegistryEntry::opengl(&phone,&pc.from_frame.id)))?;
         camera_component.expose()?;
@@ -264,8 +264,10 @@ async fn run(actual_publisher: bool, extra_mount: bool, packed: bool) -> Result<
             |o|Ok(Some(CatalogProductMetadata{schema:"test.camera/v1".into(),source_sequence:o.sequence,
                 value:serde_json::json!({"calibration":{"K":[100.,0.,320.,0.,100.,240.,0.,0.,1.],"D":[],
                     "distortion_model":"none","width":640,"height":480}})})))?;
-        products.endpoint.export_product(&camera_capture.product())?;
-        camera.publish(100,std::sync::Arc::new(VideoFrame{width:640,height:480,encoding:"jpeg".into(),bytes:vec![1,2,3].into()}))?;
+        products.endpoint.export_product_with_encoder(&camera_capture.product(),spatial_home::camera_frame::encoder())?;
+        // A real picture: the binary codec checks JPEG dimensions against the frame.
+        let mut jpeg=vec![];image::codecs::jpeg::JpegEncoder::new(&mut jpeg).encode_image(&image::GrayImage::new(640,480))?;
+        camera.publish(100,std::sync::Arc::new(VideoFrame{width:640,height:480,encoding:"jpeg".into(),bytes:jpeg.into()}))?;
         let routes = pair
             .b
             .listen_addresses()
@@ -286,9 +288,10 @@ async fn run(actual_publisher: bool, extra_mount: bool, packed: bool) -> Result<
         let sensors=spatial_home::sensor_preview::camera_sensors(&std::collections::BTreeMap::from([(phone.clone(),row.clone())]));
         assert_eq!(sensors.len(),1);
         let client=auki_component_protocol::ComponentProtocolClient::new(pair.a.protocols());
-        let frames=client.observations_exact::<VideoFrame>(pair.b.peer_id(),row["catalog_route"].as_str().unwrap().parse()?,auki_component_protocol::ObservationRequest{
+        let frames=client.observations_exact_with_decoder::<VideoFrame>(pair.b.peer_id(),row["catalog_route"].as_str().unwrap().parse()?,auki_component_protocol::ObservationRequest{
             product:camera_capture.product().manifest.reference(),
-            selection:auki_component_protocol::ObservationSelection::LatestExisting}).await?;
+            selection:auki_component_protocol::ObservationSelection::LatestExisting},
+            spatial_home::camera_frame::decoder(spatial_home::camera_frame::SCHEMA)?).await?;
         let (catalog_tx, rx) =
             tokio::sync::watch::channel(std::collections::BTreeMap::from([(phone, row.clone())]));
         let stop = tokio_util::sync::CancellationToken::new();

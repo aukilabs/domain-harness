@@ -259,6 +259,17 @@ impl ComponentProtocolEndpoint {
     {
         let reference = product.reference();
         self.validate_product_export(&reference)?;
+        // Local change (domain-harness): pictures never travel as JSON. A camera
+        // Product exported with the default JSON encoder is refused here, at
+        // the one place every peer exports through, so the mistake cannot ship.
+        if encoder.encoding() == "application/json"
+            && matches!(product.producer.payload, auki_components::PayloadContract::Camera(_))
+        {
+            return Err(ComponentProtocolError::Export(format!(
+                "Product {} is a camera: export it with a binary encoder, not JSON",
+                reference.product_id
+            )));
+        }
         let exported = product.clone();
         let query_encoder = encoder.clone();
         let handler: Arc<ProductHandler> = Arc::new(move |selection| {
