@@ -88,7 +88,10 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
    h.button.style.visibility=opacity<.05?'hidden':'';
    // Only clearly visible handles take the pointer and focus, with a little hysteresis.
    const live=h.live?opacity>.55:opacity>.65;if(live!==h.live){h.live=live;h.button.style.pointerEvents=live?'':'none';h.button.inert=!live;}
-   if(mounting&&opacity>.05&&!matchMedia('(prefers-reduced-motion: reduce)').matches)h.button.animate([{scale:.4},{scale:1}],{duration:280,delay:rank(h)*20,easing:'cubic-bezier(.34,1.56,.64,1)',fill:'backwards'});
+   // Spring in where they stand: scale the plate and icon, never the button, whose transform carries its position
+   // (a scale on the button would scale that translate too and fly it in from the corner).
+   if(mounting&&opacity>.05&&!matchMedia('(prefers-reduced-motion: reduce)').matches){const grow={duration:280,delay:rank(h)*20,easing:'cubic-bezier(.34,1.56,.64,1)',fill:'backwards'};
+    h.button.animate([{scale:.4,opacity:0},{scale:1,opacity:1}],{...grow,pseudoElement:'::before'});h.button.querySelector('svg')?.animate([{scale:.4,opacity:0},{scale:1,opacity:1}],grow);}
    if(h.kind==='move'){const pill=1-smooth(55,70,S);zoomPill.hidden=pill<.05;zoomPill.style.opacity=String(pill);zoomPill.style.transform=`translate(${x}px,${y+28}px) translate(-50%,0)`;zoomPill.inert=pill<.6;}
   }
  }
