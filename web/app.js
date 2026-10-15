@@ -1786,8 +1786,9 @@ function capabilityRow(peer,kind,entry,catalog,openedTechnical){
   if(ack){if(enabled===ack.enabled||stateProduct?.metadata?.source_sequence>ack.sequence)componentControlResults.delete(key);else enabled=ack.enabled;}
   const toggle=document.createElement('button');toggle.type='button';toggle.className='switch';toggle.setAttribute('role','switch');toggle.setAttribute('aria-label',humanize(id));toggle.dataset.focusKey='switch:'+peer.peer_id+':'+id;
   const status=document.createElement('span');status.className='capability-status';status.setAttribute('role','status');
-  // The switch shows on/off; the status text is only shown for waiting and error states.
-  const paint=()=>{toggle.setAttribute('aria-checked',String(enabled===true));status.textContent=typeof enabled==='boolean'?(enabled?'Enabled':'Disabled'):'Waiting for state';status.classList.toggle('visually-hidden',typeof enabled==='boolean');};paint();
+  // The switch shows on/off (dimmed while its state is unknown); the status text is for screen readers, and only an
+  // error shows.
+  const paint=()=>{toggle.setAttribute('aria-checked',String(enabled===true));status.textContent=typeof enabled==='boolean'?(enabled?'Enabled':'Disabled'):'Waiting for state';status.classList.add('visually-hidden');};paint();
   toggle.disabled=typeof enabled!=='boolean'||peer.catalog_status!=='ready'||!!peer.catalog_cached;
   toggle.onclick=async()=>{
    componentControlPending=true;toggle.disabled=true;status.textContent='Applying…';
@@ -2112,10 +2113,10 @@ async function renderFiducials(focusKey=null){
  const formActions=document.createElement('div');formActions.className='card-actions';if(catalog.fiducials.length)formActions.append(cancel);formActions.append(generate);
  form.append(familyField,idField,size.field,measureExplainer(),formActions,message);
  form.addEventListener('keydown',e=>{if(e.key==='Escape'&&catalog.fiducials.length){e.stopPropagation();cancel.click();}});
- form.onsubmit=async event=>{event.preventDefault();generate.disabled=true;message.textContent='Generating…';
+ form.onsubmit=async event=>{event.preventDefault();generate.disabled=true;message.classList.add('visually-hidden');message.textContent='Generating…';
   try{const marker=await api('/api/fiducials',{family:family.value,id:id.value===''?null:Number(id.value),side_length_m:Number(size.input.value)/1000});
    createdFiducialKey=marker.key;fiducialCreateOpen=false;expandedFiducials.add(marker.key);await renderFiducials(marker.key);toast(`${marker.family_label} · ${marker.id} created`);
-  }catch(e){message.textContent=e.message;generate.disabled=false;}};
+  }catch(e){message.textContent=e.message;message.classList.remove('visually-hidden');generate.disabled=false;}};
  tagsBody.append(form);
  if(!catalog.fiducials.length){tagsBody.append(emptyState('No tags yet. Generate a marker, print it at 100%, then measure the black square.'));return;}
  // Tags grouped by family, newest first.

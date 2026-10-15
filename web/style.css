@@ -1046,6 +1046,9 @@ select.form-control{appearance:none;-webkit-appearance:none;padding-right:30px;b
 .card-head .card-title.mono-id{font-size:14px}
 .card-head~.inspector-parent,.card-head~.inspector-position,.card-head~small{display:block;margin-left:44px}
 .card-head~.inspector-position{margin-top:2px}
+/* A rename field stays under the head at full width (only a plain title joins it), so the lines after it align with
+   the name rather than the icon column. */
+.card-head~.card-title-input~.inspector-position{margin-left:0}
 .card-head~small{margin-top:2px;font-size:12px;line-height:16px;color:var(--nav-muted)}
 .card-head+.form-status:empty{display:none}
 /* Facts: label/value rows with hairlines, used by scene picks and technical details alike. */
@@ -1064,23 +1067,23 @@ select.form-control{appearance:none;-webkit-appearance:none;padding-right:30px;b
 .location-warning[hidden]{display:none}
 /* Footer: actions pinned to the bottom of the card, same in every mode. */
 .selection>.card-actions,.selection .note-card-form>.card-actions,.selection .volume-form>.card-actions,.selection>.card-confirm{position:sticky;bottom:-16px;z-index:1;margin:16px -16px -16px;padding:12px 16px;border-top:1px solid var(--nav-line);background:color-mix(in srgb,var(--nav-panel) 96%,transparent);border-radius:0 0 16px 16px}
-/* Delete confirm takes over the footer rather than nesting a box in the body. */
-.selection .card-confirm{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:6px 12px;border-top-color:color-mix(in srgb,#dc2626 30%,transparent);background:color-mix(in srgb,color-mix(in srgb,#dc2626 5%,var(--nav-panel)) 96%,transparent);animation:confirm-in .34s cubic-bezier(.3,1.25,.5,1)}
+/* Delete confirm takes over the footer rather than nesting a box in the body: the question across the full width,
+   the buttons beneath it on the right, then any status. The footer itself stays put (it is sticky and translucent,
+   so sliding or fading it showed the card through it and bounced its edge); only its contents ease in. */
+.selection .card-confirm{display:grid;grid-template-columns:minmax(0,1fr);gap:10px;border:0;border-top:1px solid color-mix(in srgb,#dc2626 30%,transparent);background:color-mix(in srgb,color-mix(in srgb,#dc2626 5%,var(--nav-panel)) 96%,transparent)}
+.selection .card-confirm>*{animation:confirm-in .18s ease-out both}
 .selection .card-confirm>p{margin:0;font-size:12px;line-height:16px;color:#b91c1c}
 :root:not([data-theme="light"]) .selection .card-confirm>p{color:#fca5a5}
-.selection .card-confirm .card-actions{position:static;margin:0;padding:0;border:0;background:none}
+.selection .card-confirm .card-actions{position:static;justify-content:flex-end;margin:0;padding:0;border:0;background:none}
 .selection .card-confirm .form-status:empty{display:none}
-.selection .card-confirm .form-status{grid-column:1/-1;margin:0}
-@keyframes confirm-in{from{opacity:0;transform:translateY(8px)}}
+.selection .card-confirm .form-status{margin:0}
+@keyframes confirm-in{from{opacity:0;transform:translateY(3px)}}
 /* Body rhythm */
 .selection .card-description{margin-top:14px}
 .selection .technical-details{margin-top:14px;padding-top:12px;border-top:1px solid var(--nav-line)}
 .selection .note-photo,.selection .card-photo{margin-top:14px}
 .volume-form .form-control:not(textarea){height:36px;font-size:13px}
-@media(prefers-reduced-motion:reduce){.selection .card-confirm{animation:none}}
-/* Confirm footer: the question gets the full width, buttons sit beneath it on the right. */
-.selection .card-confirm{grid-template-columns:minmax(0,1fr)}
-.selection .card-confirm .card-actions{justify-content:flex-end}
+@media(prefers-reduced-motion:reduce){.selection .card-confirm>*{animation:none}}
 /* Positions wrap rather than truncate in facts rows. */
 .selection .card-facts dd>span.mono-id{white-space:normal;overflow:visible;text-overflow:clip}
 /* Volume handles: glass pucks with a violet ring, matching the Volumes section. Hover lifts them like the
