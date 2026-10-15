@@ -273,6 +273,18 @@ struct ViewerScreen: View {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 4) { peer.stopOnboarding() }
             }
         }
+        .overlay(alignment: .topLeading) {
+            // At a glance, clock-sized at the top left of the safe area: is Home
+            // connected, and is this phone placed in the scene.
+            HStack(spacing: 6) {
+                StatusIcon(symbol: "house", on: peer.state == "live",
+                           label: peer.state == "live" ? "Connected to Home" : "Not connected to Home")
+                StatusIcon(symbol: "qrcode", on: controller.calibrated,
+                           label: controller.calibrated ? "Calibrated to the scene" : "Not calibrated: scan a Portal")
+            }
+            .padding(.leading, 12).padding(.top, 2)
+            .allowsHitTesting(false)
+        }
         .overlay(alignment: .top) {
             // Home is watching this screen: say so, on the screen it sees.
             if screen.sharing {
@@ -417,6 +429,29 @@ struct ViewerScreen: View {
 enum CrayonTool { case surface, spray, erase }
 
 /// The drawing tools, shown under the draw button while drawing is on.
+/// A solid symbol when something is working, an outline with a line through it when not.
+struct StatusIcon: View {
+    let symbol: String
+    let on: Bool
+    let label: String
+    /// The solid form, when the symbol has one ("qrcode" is solid already).
+    var solid: String { symbol == "house" ? "house.fill" : symbol }
+    var body: some View {
+        Image(systemName: on ? solid : symbol)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(on ? Color.white : Theme.accent)
+            .overlay {
+                if !on {
+                    Capsule().fill(Theme.accent).frame(width: 1.5, height: 18).rotationEffect(.degrees(-45))
+                }
+            }
+            .frame(width: 18, height: 18)
+            // Readable over any camera picture.
+            .shadow(color: .black.opacity(0.6), radius: 2)
+            .accessibilityLabel(label)
+    }
+}
+
 struct CrayonTools: View {
     @ObservedObject var controller: ViewerController
     @State private var sizing = false
