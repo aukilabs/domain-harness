@@ -62,9 +62,6 @@ struct McKennaIntro: View {
                 }
             }
             .padding(.bottom, 6)
-            PermissionRow(symbol: "rectangle.dashed.badge.record", title: "Screen recording",
-                          detail: "So Home can see this screen when someone opens it. iOS asks again on every launch.",
-                          state: permissions.screen) { permissions.askScreen(screen) }
             PermissionRow(symbol: "camera.fill", title: "Camera",
                           detail: "To read Portals and see the room in AR.",
                           state: permissions.camera) { permissions.askCamera() }
@@ -77,6 +74,9 @@ struct McKennaIntro: View {
             PermissionRow(symbol: "wifi", title: "Local network",
                           detail: "To reach Home directly. iOS asks the first time this phone finds Home.",
                           state: .automatic) {}
+            PermissionRow(symbol: "rectangle.dashed.badge.record", title: "Screen recording",
+                          detail: "So Home can see this screen. iOS asks for this one every time McKenna opens.",
+                          state: permissions.screen) { permissions.askScreen(screen) }
             Spacer()
             Button(action: finish) {
                 Text(permissions.allAnswered ? "Continue" : "Continue anyway")
