@@ -59,6 +59,7 @@ pub struct Arm {
     child: Child,
     stdin: Mutex<Option<ChildStdin>>,
     waiting: Waiting,
+    gone: Arc<std::sync::atomic::AtomicBool>,
     _component: Component,
     _capture: BufferProductCapture<Update>,
 }
@@ -91,6 +92,8 @@ impl Arm {
         let (first_tx, first_rx) = mpsc::channel();
         let waiting: Waiting = Arc::default();
         let replies = waiting.clone();
+        let gone = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ended = gone.clone();
         std::thread::spawn(move || {
             let _ = first_tx.send(lines.next());
             for line in lines {
@@ -113,6 +116,7 @@ impl Arm {
                 }
             }
             replies.lock().unwrap().clear();
+            ended.store(true, std::sync::atomic::Ordering::Relaxed);
             finished(None);
         });
         let started = (|| -> Result<_> {
@@ -205,11 +209,16 @@ impl Arm {
             child,
             stdin: Mutex::new(stdin),
             waiting,
+            gone,
             _component: component,
             _capture: capture,
         })
     }
 
+    /// The adapter process has exited.
+    pub fn gone(&self) -> bool {
+        self.gone.load(std::sync::atomic::Ordering::Relaxed)
+    }
     /// Ask the adapter to plan (and, if it executes, perform) one request.
     /// Returns its "planned" or "rejected" reply.
     pub fn plan(&self, request_id: &str, arm: ArmChoice, target_arm_base: [f64; 3]) -> Result<Reply> {

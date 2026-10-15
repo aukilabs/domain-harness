@@ -83,6 +83,15 @@ segment, and hands nav `clear` / `add_wp` / `start` on `ws://127.0.0.1:8010/ws`.
 Nav plans locally, avoids obstacles and writes `drive.ctrl`; `cancel` sends
 `stop`. The nav app must already be running on the robot.
 
+## Recovery
+
+The LED controller (`scripts/bracketbot_slam_led_diagnostic.py`) restarts the
+peer whenever it exits, after 2, 4, 8, 16, 32 then 60 s (reset after a run of
+a minute or more). The peer exits on purpose when BBOS restarts SLAM (a new
+writer is a new pose session, so it starts a fresh one) and when an essential
+helper (arm, nav or drive) exits, so a restart respawns them all. Camera, depth
+and robot-state helpers degrade without stopping the peer.
+
 ## Validation and operation
 
 ```sh

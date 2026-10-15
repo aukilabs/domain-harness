@@ -268,6 +268,10 @@ pub struct Pointer {
     _arm: Option<Arc<crate::arm::Arm>>,
 }
 impl Pointer {
+    /// The arm adapter this pointer moves through has exited.
+    pub fn arm_gone(&self) -> bool {
+        self._arm.as_ref().is_some_and(|a| a.gone())
+    }
     /// `arm` is None to resolve only, or Some(execute) to plan with the arm
     /// adapter and, when `execute`, move.
     pub fn mount(p: &crate::poses::Publisher, known: Arc<Mutex<Frames>>, arm: Option<bool>,

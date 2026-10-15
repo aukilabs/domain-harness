@@ -311,7 +311,10 @@ async fn main() -> Result<()> {
     let mut alignment_error = String::new();
     let client = ComponentProtocolClient::new(peer.protocols());
     let (tx, rx) = tokio::sync::watch::channel(None::<Instant>);
-    let drive_task = match drive_scene {
+    // An essential helper that exits ends this run; the controller that started
+    // it (bracketbot_slam_led_diagnostic.py) restarts it, which respawns them all.
+    let mut failure: Option<String> = None;
+    let mut drive_task = match drive_scene {
         Some(scene) => {
             let helper = drive::Helper::start(&home.peer_id)?;
             let task = tokio::spawn(drive::follow(
@@ -441,6 +444,16 @@ async fn main() -> Result<()> {
             _ = terminate.recv() => break,
             _ = peer.wait_stopped() => break,
             _ = tick.tick() => {
+                let gone = if _pointer.as_ref().is_some_and(|p| p.arm_gone()) { Some("Arm adapter") }
+                    else if _navigator.as_ref().is_some_and(|n| n.gone()) { Some("Nav adapter") }
+                    else if drive_task.as_mut().is_some_and(|(_, helper)| helper.exited()) { Some("Drive helper") }
+                    else { None };
+                if let Some(which) = gone {
+                    let message = format!("{which} exited; stopping so the controller restarts this diagnostic");
+                    crate::diagnostic_log!("{message}");
+                    failure = Some(message);
+                    break;
+                }
                 if let (Some(publisher),Some(camera),Some(home))=(&publisher,&camera_publisher,home_rx.borrow().clone()) {
                     if alignment.as_ref().is_some_and(|a|a.target!=(&home.frame).into()) {alignment=None;}
                     if alignment.is_none() {
@@ -488,5 +501,8 @@ async fn main() -> Result<()> {
     let result = peer.shutdown().await;
     bootstrap.session().close().await;
     result?;
+    if let Some(failure) = failure {
+        anyhow::bail!(failure);
+    }
     Ok(())
 }
