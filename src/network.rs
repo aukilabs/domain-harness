@@ -681,6 +681,7 @@ pub async fn serve_scene(
                     &publisher.runtime, &publisher.endpoint,
                     clock_ref(&publisher.clock), publisher.started,
                 )?;
+                let mut traffic = crate::peer_traffic::Publisher::mount(&publisher.runtime, &publisher.endpoint, &publisher.clock, publisher.started)?;
                 let mut local_mobile = crate::local_mobile::Publisher::mount_all(
                     &publisher.runtime, &publisher.endpoint, local_scenes.clone(),
                     publisher.clock.clone(), publisher.started,
@@ -722,6 +723,7 @@ pub async fn serve_scene(
                     }
                     if let Some(mapper) = &mut occupancy_mapper { mapper.tick()?; }
                     for scene in &mut local_mobile { scene.tick()?; }
+                    traffic.tick()?;
                     let mut connection = HomeConnection::current(&running.peer)?;
                     if !local_scenes.reference_enabled {
                         let id = local_scenes.preferred_id().or_else(||local_scenes.snapshots.keys().next().map(|id|format!("local:{id}")))
