@@ -862,7 +862,7 @@ function decorateCard(card){
  if(!card.querySelector(':scope>.inspector-close')){const close=document.createElement('button');close.type='button';close.className='inspector-close';close.setAttribute('aria-label','Close inspector');close.append(icon(icons.close));close.onclick=closeCard;card.prepend(close);}
  const chip=card.querySelector('.inspector-kind');if(!chip||chip.closest('.card-head'))return;
  const [,accent,path]=CARD_KINDS.find(([pattern])=>pattern.test(chip.textContent));
- const head=document.createElement('div');head.className='card-head';const tile=document.createElement('span');tile.className='card-tile';tile.dataset.accent=accent;tile.append(icon(path,16));
+ const head=document.createElement('div');head.className='card-head';const tile=document.createElement('span');tile.className='card-tile';tile.dataset.accent=accent;tile.append(icon(path,16));card.dataset.accent=accent;
  const text=document.createElement('div');text.className='card-head-text';const title=chip.nextElementSibling?.matches('strong')?chip.nextElementSibling:null;
  chip.replaceWith(head);chip.className='card-kind';text.append(chip);
  if(title){title.classList.add('card-title');title.id='card-title';text.append(title);}
@@ -1219,8 +1219,8 @@ function createNoteCard({request,error,portal=false}={}){
  const portalSelect=document.createElement('select');portalSelect.id='note-portal';portalSelect.className='form-control mono-id';portalField.append(portalLabel,portalSelect);
  const heightField=document.createElement('div');heightField.className='form-field';
  const heightLabel=document.createElement('label');heightLabel.className='form-label';heightLabel.textContent='Height above portal';heightLabel.htmlFor='note-height';
- const height=document.createElement('input');height.id='note-height';height.type='number';height.step='0.1';height.min='-100';height.max='100';height.value='1.0';height.className='form-control';
- const step=(delta,label)=>{const button=actionButton(label);button.setAttribute('aria-label',(delta>0?'Raise':'Lower')+' by 10 cm');button.onclick=()=>{height.value=(Math.round((Number(height.value)+delta)*10)/10).toFixed(1);describe();};return button;};
+ const height=document.createElement('input');height.id='note-height';height.type='number';height.step='0.1';height.min='-100';height.max='100';height.value='1.0';height.className='form-control';height.inputMode='decimal';
+ const step=(delta,label)=>{const button=actionButton(label);button.setAttribute('aria-label',(delta>0?'Raise':'Lower')+' by 10 cm');button.onclick=()=>{height.value=(Math.round((Number(height.value)+delta)*10)/10).toFixed(1);height.dispatchEvent(new Event('input',{bubbles:true}));};return button;};
  const stepper=document.createElement('div');stepper.className='stepper';const unit=document.createElement('span');unit.textContent='m';unit.className='stepper-unit';
  stepper.append(step(-.1,'−'),height,unit,step(.1,'+'));heightField.append(heightLabel,stepper);
  portalRegion.append(portalField,heightField);portalRegion.hidden=!usePortal;
@@ -1939,7 +1939,7 @@ async function renderFiducials(focusKey=null){
  const familyField=document.createElement('div');familyField.className='form-field';const familyLabel=document.createElement('label');familyLabel.className='form-label';familyLabel.textContent='Tag family';
  const family=document.createElement('select');family.id='fiducial-family';family.className='form-control';familyLabel.htmlFor=family.id;for(const item of catalog.families)family.add(new Option(item.label,item.id));familyField.append(familyLabel,family);
  const idField=document.createElement('div');idField.className='form-field';const idLabel=document.createElement('label');idLabel.className='form-label';idLabel.textContent='Marker ID (optional)';
- const id=document.createElement('input');id.id='fiducial-id';id.className='form-control';id.type='number';id.min='0';id.step='1';id.placeholder='Next available';idLabel.htmlFor=id.id;idField.append(idLabel,id);
+ const id=document.createElement('input');id.id='fiducial-id';id.className='form-control';id.type='text';id.inputMode='numeric';id.pattern='\\d*';id.autocomplete='off';id.placeholder='Next available';idLabel.htmlFor=id.id;idField.append(idLabel,id);
  const size=mmField('Printed marker size (mm)','fiducial-size','150');size.input.required=true;
  const helper=document.createElement('small');helper.className='form-helper';helper.textContent='Size of the black square on paper';size.field.append(helper);
  const message=document.createElement('p');message.className='form-status';message.setAttribute('role','status');

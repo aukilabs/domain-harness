@@ -130,7 +130,6 @@ h3{font-size:13px;font-weight:600;letter-spacing:0;margin:8px 0 5px;color:var(--
 #sensor-close{background:transparent;border:0;color:#ffffff99;font-size:18px}
 #sensor-stage{position:relative;overflow:hidden;aspect-ratio:16/9}
 .sensor-presentation{position:absolute;left:0;top:0;width:100%;transform-origin:0 0}
-.sensor-orientation{width:auto;max-width:85px;font-size:11px;padding:2px}
 #sensor-image{display:block;width:100%;aspect-ratio:16/9;object-fit:contain;background:#09090b}
 #sensor-ar-overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
 #sensor-feed-status,#sensor-ar-status{font-size:10px;padding:6px 8px;color:#9da6b8}
@@ -1075,7 +1074,7 @@ select.form-control{appearance:none;-webkit-appearance:none;padding-right:30px;b
 .selection .card-description{margin-top:14px}
 .selection .technical-details{margin-top:14px;padding-top:12px;border-top:1px solid var(--nav-line)}
 .selection .note-photo,.selection .card-photo{margin-top:14px}
-.volume-form .form-control{height:36px;font-size:13px}
+.volume-form .form-control:not(textarea){height:36px;font-size:13px}
 @media(prefers-reduced-motion:reduce){.selection .card-confirm{animation:none}}
 /* Confirm footer: the question gets the full width, buttons sit beneath it on the right. */
 .selection .card-confirm{grid-template-columns:minmax(0,1fr)}
@@ -1139,7 +1138,6 @@ select.form-control{appearance:none;-webkit-appearance:none;padding-right:30px;b
 #sensor-pip .ar-toggle .switch-input{width:30px!important;height:18px!important}
 #sensor-pip .ar-toggle .switch-input::after{width:14px;height:14px}
 #sensor-pip .ar-toggle .switch-input:checked::after{transform:translateX(12px)}
-#sensor-pip .sensor-orientation{width:auto;height:28px;margin:0;padding:0 24px 0 8px;border:0;border-radius:8px;background:var(--glass-fill) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 12 12' fill='none' stroke='%2371717a' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5'/%3E%3C/svg%3E") no-repeat right 7px center;box-shadow:inset 0 0 0 1px var(--glass-rim);color:var(--nav-text);font:500 12px system-ui;appearance:none;-webkit-appearance:none;cursor:pointer}
 #sensor-pip #sensor-close{position:static;flex-shrink:0;width:28px;height:28px;color:var(--nav-muted)}
 #sensor-pip #sensor-stage{border-radius:10px;background:#09090b;box-shadow:inset 0 0 0 1px rgba(0,0,0,.06)}
 #sensor-pip #sensor-image{background:#09090b}
@@ -1316,3 +1314,172 @@ html.booted body{animation:boot-in .3s ease}
 .rail-tooltip.spot-tip[data-side="left"]::after{left:auto;right:-4px}
 @keyframes spot-tip-in{from{opacity:0;translate:var(--tip-from,0 0)}}
 @media(prefers-reduced-motion:reduce){.rail-tooltip.spot-tip{animation:none}.spot-menu .spot-ask .agent-orb,.spot-menu .spot-lift{transition:none;transform:none!important}}
+
+/* Form controls: one field system for text, number, select, textarea and range. Fields are glass with a rim and
+   inset, focus draws the shared halo, numbers never show native spinners, and dropdowns open a glass picker
+   (appearance: base-select; other browsers keep the on-brand trigger with the system popup). */
+:root{
+ --field-h:36px;--field-h-sm:28px;--field-r:10px;--field-r-sm:8px;--field-px:12px;
+ --field-fill:rgba(255,255,255,.04);--field-fill-hover:rgba(255,255,255,.06);--field-fill-focus:rgba(255,255,255,.07);
+ --field-rim:rgba(255,255,255,.09);--field-rim-hover:rgba(255,255,255,.18);
+ --field-inset:inset 0 1px 2px rgba(0,0,0,.28);
+ --field-text:#f4f4f5;--field-placeholder:#8b8b94;--field-icon:#a1a1aa;--field-disabled:#71717a;
+ --field-invalid:#f87171;--field-halo:color-mix(in srgb,var(--focus) 24%,transparent);
+ --control-on:#3b82f6;--track:rgba(255,255,255,.12);
+ --picker-glass:color-mix(in srgb,#1c1c20 84%,transparent);--picker-rim:rgba(255,255,255,.1);
+ --picker-shadow:0 18px 40px -12px rgba(0,0,0,.7),0 2px 6px rgba(0,0,0,.35);
+ --thumb:linear-gradient(160deg,#fafafa 0%,#e4e4e7 60%,#d4d4d8 100%);
+ --chevron:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5'/%3E%3C/svg%3E");
+ --check:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 9.5 7 13l7.5-8'/%3E%3C/svg%3E");
+}
+:root[data-theme="light"]{
+ --field-fill:rgba(255,255,255,.62);--field-fill-hover:rgba(255,255,255,.85);--field-fill-focus:#fff;
+ --field-rim:rgba(24,24,27,.1);--field-rim-hover:rgba(24,24,27,.22);
+ --field-inset:inset 0 1px 2px rgba(24,24,27,.06);
+ --field-text:#18181b;--field-placeholder:#71717a;--field-icon:#71717a;--field-disabled:#a1a1aa;
+ --field-invalid:#dc2626;--field-halo:color-mix(in srgb,var(--focus) 20%,transparent);
+ --control-on:#2563eb;--track:rgba(24,24,27,.1);
+ --picker-glass:color-mix(in srgb,#fafafa 84%,transparent);--picker-rim:rgba(255,255,255,.75);
+ --picker-shadow:0 18px 40px -12px rgba(24,24,27,.32),0 2px 6px rgba(24,24,27,.08),inset 0 0 0 .5px rgba(24,24,27,.08);
+ --thumb:linear-gradient(160deg,#ffffff 0%,#f4f4f5 55%,#e4e4e7 100%);
+}
+
+/* ---- Text-like fields ---------------------------------------------------- */
+:is(.form-control,.search-field input){
+ box-sizing:border-box;width:100%;height:var(--field-h);margin:0;padding:0 var(--field-px);
+ border:1px solid var(--field-rim);border-radius:var(--field-r);
+ background-color:var(--field-fill);box-shadow:var(--field-inset);
+ color:var(--field-text);font:inherit;font-size:13px;font-weight:400;line-height:20px;
+ caret-color:var(--focus);
+ transition:border-color .15s ease,background-color .15s ease,box-shadow .22s var(--ease-out);
+}
+.search-field input{padding:0 36px}
+:is(.form-control,.search-field input):hover:not(:focus,:disabled){border-color:var(--field-rim-hover);background-color:var(--field-fill-hover)}
+:is(input.form-control,textarea.form-control,.search-field input):focus,select.form-control:is(:focus-visible,:open){
+ outline:none;border-color:var(--focus);background-color:var(--field-fill-focus);
+ box-shadow:var(--field-inset),0 0 0 3px var(--field-halo);animation:field-focus .28s var(--ease-out);
+}
+select.form-control:focus:not(:focus-visible,:open){outline:none}
+@keyframes field-focus{from{box-shadow:var(--field-inset),0 0 0 7px transparent}}
+:is(.form-control,.search-field input)::placeholder{color:var(--field-placeholder);opacity:1}
+.form-control:is([aria-invalid="true"],:user-invalid){border-color:var(--field-invalid)}
+.form-control:is([aria-invalid="true"],:user-invalid):focus{box-shadow:var(--field-inset),0 0 0 3px color-mix(in srgb,var(--field-invalid) 22%,transparent)}
+.form-control:disabled{opacity:1;background-color:transparent;box-shadow:none;border-color:var(--field-rim);color:var(--field-disabled);cursor:not-allowed}
+.form-control:disabled::placeholder{color:var(--field-disabled)}
+.form-control.mono-id{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;font-variant-numeric:slashed-zero}
+.field-sm{height:var(--field-h-sm);padding:0 8px;border-radius:var(--field-r-sm);font-size:12px;font-weight:500}
+
+/* Textarea: grows with content between 96 and 240px; no native resize grip. */
+textarea.form-control{height:auto;min-height:96px;max-height:240px;padding:8px var(--field-px);resize:none;field-sizing:content;
+ overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--field-rim-hover) transparent}
+@supports not (field-sizing:content){textarea.form-control{resize:vertical}}
+.volume-form .form-control:not(textarea){height:var(--field-h)}
+
+/* Search: the clear button stays inside the field (the tactile rule made it position:relative). */
+.search-field .search-clear{position:absolute;top:4px;right:4px}
+.search-field>svg{color:var(--field-icon)}
+
+/* ---- Numbers: no native spinners anywhere -------------------------------- */
+input[type="number"]{-moz-appearance:textfield;appearance:textfield;font-variant-numeric:tabular-nums}
+input[type="number"]::-webkit-inner-spin-button,input[type="number"]::-webkit-outer-spin-button{-webkit-appearance:none;appearance:none;margin:0}
+.unit-field .form-control{padding-right:32px}
+.unit-suffix{top:auto;right:12px;bottom:0;height:var(--field-h);display:flex;align-items:center;font-size:12px;line-height:1;color:var(--field-placeholder)}
+/* Stepper: one field-shaped group, buttons inside (same shape as the 2D floor control). */
+.stepper{display:flex;align-items:center;gap:2px;height:var(--field-h);padding:3px;border:1px solid var(--field-rim);border-radius:var(--field-r);
+ background:var(--field-fill);box-shadow:var(--field-inset);transition:border-color .15s ease,box-shadow .22s var(--ease-out)}
+.stepper:hover:not(:focus-within){border-color:var(--field-rim-hover)}
+.stepper:focus-within{border-color:var(--focus);box-shadow:var(--field-inset),0 0 0 3px var(--field-halo)}
+.stepper .form-control{flex:1;min-width:0;height:28px;padding:0 2px;border:0;background:transparent;box-shadow:none;text-align:right;animation:none}
+.stepper .form-control:is(:hover,:focus){border:0;background:transparent;box-shadow:none}
+.stepper-unit{padding:0 6px 0 2px;font-size:13px;color:var(--field-placeholder)}
+.stepper .btn{flex:none;width:28px;height:28px;padding:0;border-color:transparent;border-radius:7px;font-size:16px}
+.stepper .btn:not(:hover,:focus-visible){background:transparent;box-shadow:none}
+.map2d-floor:focus-within{box-shadow:inset 0 0 0 1px var(--focus),0 0 0 3px var(--field-halo)}
+.map2d-floor input:focus-visible{outline:none}
+
+/* ---- Select: styled native trigger; fully custom popup where supported --- */
+select.form-control{appearance:none;-webkit-appearance:none;padding-right:34px;cursor:pointer;
+ background-image:var(--chevron-fallback);background-repeat:no-repeat;background-position:right 12px center;background-size:12px}
+:root{--chevron-fallback:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%23a1a1aa' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5'/%3E%3C/svg%3E")}
+:root[data-theme="light"]{--chevron-fallback:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%2371717a' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5'/%3E%3C/svg%3E")}
+select.form-control.field-sm{padding-right:26px;background-position:right 8px center;background-size:10px}
+select.form-control option{background:var(--nav-panel);color:var(--field-text)} /* fallback popups in dark mode */
+#sensor-pip select.sensor-orientation{width:auto;margin:0;font-family:inherit}
+
+@supports (appearance:base-select){
+ select.form-control,select.form-control::picker(select){appearance:base-select}
+ select.form-control:not([size],[multiple]){display:flex;align-items:center;gap:8px;padding:0 10px 0 var(--field-px);background-image:none}
+ select.form-control.field-sm{padding:0 6px 0 8px;gap:6px}
+ select.form-control::picker-icon{content:"";flex:none;width:12px;height:12px;margin-left:auto;background:var(--field-icon);
+  -webkit-mask:var(--chevron) center/12px no-repeat;mask:var(--chevron) center/12px no-repeat;transition:rotate .32s var(--ease-spring)}
+ select.form-control.field-sm::picker-icon{width:10px;height:10px;-webkit-mask-size:10px;mask-size:10px}
+ select.form-control:open::picker-icon{rotate:180deg}
+ select.form-control::picker(select){
+  box-sizing:border-box;min-inline-size:anchor-size(inline);max-block-size:min(320px,50vh);margin-block:6px;padding:4px;
+  overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--field-rim-hover) transparent;
+  border:1px solid var(--picker-rim);border-radius:12px;background:var(--picker-glass);
+  -webkit-backdrop-filter:blur(20px) saturate(1.4);backdrop-filter:blur(20px) saturate(1.4);box-shadow:var(--picker-shadow);
+  color:var(--field-text);transform-origin:50% 0;
+  transition:opacity .16s var(--ease-out),scale .34s var(--ease-spring),translate .34s var(--ease-spring),display .34s allow-discrete,overlay .34s allow-discrete}
+ select.form-control:not(:open)::picker(select){opacity:0;scale:.97;translate:0 -4px;transition-duration:.12s}
+ @starting-style{select.form-control:open::picker(select){opacity:0;scale:.94;translate:0 -6px}}
+ select.form-control option{display:flex;align-items:center;gap:8px;min-block-size:32px;padding:0 8px 0 10px;border-radius:8px;
+  background:transparent;color:var(--field-text);font-size:13px;font-weight:400;cursor:pointer;outline:none;
+  transition:background-color .12s ease,box-shadow .12s ease}
+ select.form-control option:is(:hover,:focus-visible){background:radial-gradient(circle at var(--light-x,35%) var(--light-y,30%),var(--plate-light),transparent 60%),var(--brush),var(--plate-hover);box-shadow:var(--plate-shadow),var(--plate-rim)}
+ select.form-control option:focus-visible{box-shadow:var(--plate-shadow),var(--plate-rim),inset 0 0 0 1px color-mix(in srgb,var(--focus) 55%,transparent)}
+ select.form-control option:checked{font-weight:500}
+ select.form-control option::checkmark{content:"";order:1;flex:none;width:14px;height:14px;margin-left:auto;background:var(--tab-ink,var(--control-on));
+  -webkit-mask:var(--check) center/14px no-repeat;mask:var(--check) center/14px no-repeat}
+ select.form-control option:disabled{color:var(--field-disabled);cursor:default;background:none;box-shadow:none}
+ select.form-control optgroup{padding:0;margin:0;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--nav-muted)}
+ select.form-control optgroup+optgroup{margin-top:4px;padding-top:4px;border-top:1px solid var(--field-rim)}
+ select.form-control optgroup legend{padding:8px 10px 4px}
+ select.form-control optgroup option{letter-spacing:0;text-transform:none}
+ select.form-control.mono-id option{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
+}
+@media(prefers-reduced-motion:reduce){
+ select.form-control::picker(select),select.form-control::picker-icon{transition:none}
+ :is(.form-control,.search-field input){animation:none!important}
+}
+@media(prefers-reduced-transparency:reduce){select.form-control::picker(select){-webkit-backdrop-filter:none;backdrop-filter:none;background:var(--nav-panel)}}
+
+/* ---- Listbox (select[size]): pose log ----------------------------------- */
+select.form-control[size]{display:block;height:auto;max-height:240px;padding:4px;background-image:none;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--field-rim-hover) transparent;
+ font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
+select.form-control[size] option{display:block;min-block-size:0;padding:6px 8px;border-radius:6px;color:var(--field-text);font:inherit;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+select.form-control[size] option::checkmark{display:none}
+select.form-control[size] option:checked{background:color-mix(in srgb,var(--tab,var(--control-on)) 18%,transparent);color:var(--field-text)}
+select.form-control[size]:focus{animation:none}
+
+/* ---- Range -------------------------------------------------------------- */
+.range-row input[type="range"]{--thumb-size:18px;height:24px;margin:0 0 8px;background:transparent;appearance:none;-webkit-appearance:none;cursor:pointer}
+.range-row input[type="range"]::-webkit-slider-runnable-track{height:6px;border-radius:999px;
+ background:linear-gradient(90deg,var(--control-on) var(--fill,50%),var(--track) var(--fill,50%));box-shadow:inset 0 1px 1px rgba(0,0,0,.18)}
+.range-row input[type="range"]::-moz-range-track{height:6px;border-radius:999px;background:var(--track);box-shadow:inset 0 1px 1px rgba(0,0,0,.18)}
+.range-row input[type="range"]::-moz-range-progress{height:6px;border-radius:999px;background:var(--control-on)}
+.range-row input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;width:var(--thumb-size);height:var(--thumb-size);margin-top:-6px;border:0;border-radius:50%;
+ background:radial-gradient(circle at 35% 30%,rgba(255,255,255,.9),transparent 60%),var(--thumb);
+ box-shadow:inset 0 1px 0 rgba(255,255,255,.9),inset 0 -1px 0 rgba(24,24,27,.12),0 2px 6px -1px rgba(0,0,0,.35),0 0 0 .5px rgba(24,24,27,.18);
+ transition:transform .3s var(--ease-spring),box-shadow .15s ease}
+.range-row input[type="range"]::-moz-range-thumb{width:var(--thumb-size);height:var(--thumb-size);border:0;border-radius:50%;background:var(--thumb);
+ box-shadow:inset 0 1px 0 rgba(255,255,255,.9),0 2px 6px -1px rgba(0,0,0,.35),0 0 0 .5px rgba(24,24,27,.18);transition:transform .3s var(--ease-spring)}
+.range-row input[type="range"]:hover::-webkit-slider-thumb{transform:scale(1.1)}
+.range-row input[type="range"]:active::-webkit-slider-thumb{transform:scale(1.18)}
+.range-row input[type="range"]:hover::-moz-range-thumb{transform:scale(1.1)}
+.range-row input[type="range"]:active::-moz-range-thumb{transform:scale(1.18)}
+.range-row input[type="range"]:focus-visible{outline:none}
+.range-row input[type="range"]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 2px var(--nav-panel),0 0 0 4px var(--focus),0 2px 6px -1px rgba(0,0,0,.35)}
+.range-row input[type="range"]:focus-visible::-moz-range-thumb{box-shadow:0 0 0 2px var(--nav-panel),0 0 0 4px var(--focus)}
+@media(prefers-reduced-motion:reduce){.range-row input[type="range"]::-webkit-slider-thumb,.range-row input[type="range"]::-moz-range-thumb{transition:none;transform:none!important}}
+
+/* ---- One-off fields brought onto the same tokens ------------------------ */
+#scene-chat-input::placeholder{color:var(--field-placeholder);opacity:1}
+.card-title-input:hover{background:var(--field-fill);border-color:var(--field-rim)}
+.card-title-input:focus{background:var(--field-fill-focus);border-color:var(--focus);box-shadow:0 0 0 3px var(--field-halo)}
+.placement-banner .placement-name{height:28px;border-radius:var(--field-r-sm);transition:border-color .15s ease,background-color .15s ease}
+.placement-banner .placement-name:focus{border-color:#93c5fd;box-shadow:0 0 0 3px rgba(147,197,253,.25)}
+/* Pose inspector: grouped actions, a styled log listbox and readable values. */
+.pose-inspector{display:grid;gap:8px}
+.pose-actions{display:flex;flex-wrap:wrap;gap:6px}
+.pose-values{margin:0;font-size:11.5px;line-height:1.5;color:var(--text-2);white-space:pre-wrap;overflow-wrap:anywhere}

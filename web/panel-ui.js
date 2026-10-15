@@ -128,7 +128,8 @@ export function formField({label,id=`field-${++fieldCount}`,multiline=false,max,
  field.append(name,input);
  if(max){const counter=element('span','form-counter');counter.id=id+'-count';const from=Math.min(max-20,Math.round(max*.9));
   const sync=()=>{const near=input.value.length>=from;counter.hidden=!near;counter.textContent=`${input.value.length.toLocaleString()}/${max.toLocaleString()}`;if(near)input.setAttribute('aria-describedby',counter.id);else input.removeAttribute('aria-describedby');};input.addEventListener('input',sync);sync();field.append(counter);}
- if(multiline){const grow=()=>{input.style.height='auto';input.style.height=Math.min(240,Math.max(96,input.scrollHeight+2))+'px';};input.addEventListener('input',grow);requestAnimationFrame(grow);}
+ // Textareas size to their content in CSS (field-sizing); older browsers grow here instead.
+ if(multiline&&!CSS.supports('field-sizing','content')){const grow=()=>{input.style.height='auto';input.style.height=Math.min(240,Math.max(96,input.scrollHeight+2))+'px';};input.addEventListener('input',grow);requestAnimationFrame(grow);}
  return {field,input};
 }
 

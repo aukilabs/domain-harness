@@ -11,7 +11,7 @@ export function nativePixel(x,y,width,height,rotation){
 export function createVideoPresentation(stage,heading,onChange=()=>{}){
  const layer=document.createElement('div');layer.className='sensor-presentation';
  layer.append(...stage.childNodes);stage.append(layer);
- const select=document.createElement('select');select.setAttribute('aria-label','Camera display orientation');select.className='sensor-orientation';
+ const select=document.createElement('select');select.setAttribute('aria-label','Camera display orientation');select.className='sensor-orientation form-control field-sm';
  for(const [value,text] of [['auto','Auto ↻'],['0','0°'],['90','90° ↻'],['180','180°'],['270','270° ↻']])select.add(new Option(text,value));
  heading.insertBefore(select,heading.querySelector('#sensor-close'));
  let key='',width=16,height=9,auto=0,rotation=0,candidate=null,confirmations=0,source='unavailable';

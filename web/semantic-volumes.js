@@ -111,7 +111,7 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
   const grid=document.createElement('div');grid.className='volume-grid';
   for(const [name,short,full,unit] of entries){
    const field=document.createElement('label');field.className='unit-field';const caption=document.createElement('span');caption.className='unit-caption';caption.textContent=short;caption.hidden=!short;caption.setAttribute('aria-hidden','true');
-   const input=document.createElement('input');input.className='form-control';input.type='number';input.name=name;input.required=true;input.step='any';input.setAttribute('aria-label',full);
+   const input=document.createElement('input');input.className='form-control';input.type='number';input.inputMode='decimal';input.name=name;input.required=true;input.step='any';input.setAttribute('aria-label',full);
    input.min=['width','depth','height'].includes(name)?'.01':name==='yaw'?'-360':'-100000';input.max=name==='yaw'?'360':['width','depth','height'].includes(name)?'10000':'100000';
    input.addEventListener('input',()=>{delete input.dataset.exact;});
    const suffix=document.createElement('span');suffix.className='unit-suffix';suffix.textContent=unit;suffix.setAttribute('aria-hidden','true');
