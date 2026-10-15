@@ -513,8 +513,9 @@ function build(data){flatSpritesAge=Infinity;
  $('project').disabled=busy||!data.voxels.length;$('replay').disabled=busy||!data.sources.iphone;
  if(noteCardMode!=='view'){}else if(selectedSpatialNode){const {kind,id}=selectedSpatialNode;const node=data.landmarks?.[kind==='anchor'?'anchors':'landmarks']?.[id];if(node)showSpatialSelection(kind,node);else{selectedSpatialNode=null;$('selection').hidden=true;}}
  else if(selectedPathId){const path=data.paths?.items.find(p=>p.id===selectedPathId);if(path){if($('selection').dataset.pathId!==path.id)showPathSelection(path);}else{selectedPathId=null;crayon.select(null);$('selection').hidden=true;}}else if(selectedNoteId){const note=(data.notes||[]).find(n=>n.id===selectedNoteId);if(note){if($('selection').dataset.noteId!==note.id)showNoteSelection(note);}else{selectedNoteId=null;$('selection').hidden=true;}}else $('selection').hidden=true;
- updateMapUI();if(data.occupancy_tiles){$('empty').hidden=data.occupancy_tiles.length>0;$('voxel-count').textContent=data.occupancy_tiles.length.toLocaleString();}if(first)fit();revealScene();
+ // The new scene's bounds (and orbit leash) go in before it's framed, or the old scene's leash clamps the fit.
  setContentBounds(data);
+ updateMapUI();if(data.occupancy_tiles){$('empty').hidden=data.occupancy_tiles.length>0;$('voxel-count').textContent=data.occupancy_tiles.length.toLocaleString();}if(first)fit();revealScene();
 }
 function pathLength(path){let total=0;for(const segment of path.segments)for(let i=1;i<segment.length;i++)total+=Math.hypot(...segment[i].map((v,k)=>v-segment[i-1][k]));return total;}
 function pathSwatch(path,size=12){const swatch=document.createElement('span');swatch.className='path-swatch';swatch.style.setProperty('--swatch',path.color||'#2563eb');swatch.style.width=swatch.style.height=size+'px';return swatch;}
