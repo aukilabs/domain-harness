@@ -28,8 +28,8 @@ struct ViewerScreen: View {
     @State private var driveSelection: String?
     @AppStorage("panelTab") private var panelTab = "map"
     @AppStorage("panelOpen") private var panelOpen = true
-    /// Off by default: most people only need the Components bar.
-    @AppStorage("showDetails") private var showDetails = false
+    /// On by default, so every phone opens with the scene panel; the logo button folds it away.
+    @AppStorage("showDetails") private var showDetails = true
     @State private var promptedForLogin = false
     @State private var showMessages = false
     /// The panel for leaving a note, surface or box. Out of the way until asked for.
