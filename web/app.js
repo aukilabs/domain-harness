@@ -1549,7 +1549,10 @@ function renderDeviceDetail(peer,feeds,openedTechnical){
  const catalog=peer.catalog||{};
  const poses=(catalog.products||[]).filter(p=>p.metadata?.schema==='spatial-harness.compact-pose-contract/v1');
  if(poses.length){const location=document.createElement('section');location.setAttribute('aria-label','Pose logs');location.append(sectionHeader('Location'));
-  for(const product of poses){const button=actionButton('Pose log · '+humanize(product.manifest.product_id),{onClick:()=>inspectPose(peer.peer_id,product,deviceName(peer)+' / '+product.manifest.product_id)});location.append(button);}
+  // Product IDs are long ("frame transform:phone ar:<uuid>"): the kind is the title and the rest a truncated meta line.
+  for(const product of poses){const id=product.manifest.product_id,[kind,...rest]=id.split(':');
+   const row=listRow({title:humanize(kind),meta:rest.join(':')||id,tile:icons.pin,label:'Pose log · '+humanize(id),onSelect:()=>inspectPose(peer.peer_id,product,deviceName(peer)+' / '+id)});
+   row.classList.add('pose-log-row');row.title=id;row.dataset.focusKey='pose:'+id;location.append(row);}
   view.append(location);}
  // Capabilities: components with the products they make; raw manifests behind Technical details.
  const components=catalog.components||[],products=catalog.products||[];
