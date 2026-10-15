@@ -1554,3 +1554,5 @@ select.form-control[size]:focus{animation:none}
 .scene-label[data-kind].hovered{z-index:4}.scene-label[data-kind].selected{z-index:5}
 /* Labels under the open right-click ring fade out rather than flicker through its glass. */
 .scene-label.masked .label-form{opacity:0!important;transition:opacity .12s ease!important}
+/* Volume handles sit below the panels and the card (which they used to paint over). */
+.volume-handles{z-index:5}

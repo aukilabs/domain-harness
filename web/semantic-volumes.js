@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { icons, icon, sectionHeader, listRow, actionButton, markSelected } from './panel-ui.js';
 
 // Semantic boxes are independent of transient voxel and robot-occupancy layers.
-export function createSemanticVolumes({scene, camera, renderer, controls, panel, api, label, clear, openPanel, inspector, toast=()=>{}, flyTo=null, priorityPickObjects=()=>[], labels=null, priorityHit=()=>null}) {
+export function createSemanticVolumes({scene, camera, renderer, controls, panel, api, label, clear, openPanel, inspector, toast=()=>{}, flyTo=null, priorityPickObjects=()=>[], labels=null, priorityHit=()=>null, safeArea=null}) {
  const group=new THREE.Group(),preview=new THREE.Group();scene.add(group,preview);
  let context=null,items=[],draft=null,editing=null,drawing=false,start=null,press=null,pending=false,signature='',resize=null,conflicted=false;
  const handleLayer=document.createElement('div');handleLayer.className='volume-handles';renderer.domElement.parentElement.append(handleLayer);
@@ -65,7 +65,7 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
   if(h.axis===1)return [localPoint(v,[0,v.size[1]/2,0]),new THREE.Vector3(0,1,0)];
   return [localPoint(v,[0,0,-v.size[2]/2]),axisVector(2,v.yaw).multiplyScalar(-1)];
  }
- let shownDraft=null;
+ let shownDraft=null,area=null,areaAt=0;
  function tick(){
   // Handles stay up while a change saves, so releasing a drag doesn't flash them out, and can be dragged again at once.
   const visible=draft&&context?.editable&&!drawing&&preview.visible;
@@ -76,13 +76,16 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
   let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
   for(const sx of [-1,1])for(const sy of [-1,1])for(const sz of [-1,1]){const c=screen(localPoint(draft,[sx*draft.size[0]/2,sy*draft.size[1]/2,sz*draft.size[2]/2]));minX=Math.min(minX,c.x);maxX=Math.max(maxX,c.x);minY=Math.min(minY,c.y);maxY=Math.max(maxY,c.y);}
   const S=Math.sqrt(Math.max(0,(maxX-minX)*(maxY-minY))),centre={x:(minX+maxX)/2,y:(minY+maxY)/2};
+  // Handles never sit over the panels, bars or the inspector card (where one once covered Delete).
+  const now=performance.now();if(safeArea&&(!area||now-areaAt>250)){area=safeArea();areaAt=now;}
+  const inside=(x,y)=>!area||(x+parent.left>area.left&&x+parent.left<area.right&&y+parent.top>area.top&&y+parent.top<area.bottom);
   const right=new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld,0).multiplyScalar(.5),placed=[],mounting=shownDraft!==draft.id;shownDraft=draft.id;
   for(const h of [...handles].sort((a,b)=>rank(a)-rank(b))){
    const [world,normal]=anchor(draft,h),at=screen(world);let x=at.x,y=at.y,opacity=h.kind==='move'?1:h.kind==='resize'&&h.axis===1?smooth(70,100,S):smooth(110,170,S);
    if(normal){const tip=screen(world.clone().addScaledVector(normal,.5)),side=screen(world.clone().add(right)),dx=tip.x-x,dy=tip.y-y,length=Math.hypot(dx,dy),metre=Math.hypot(side.x-x,side.y-y)||1;
     if(length>1e-3){x+=dx/length*26;y+=dy/length*26;}if(h.kind==='resize')opacity*=smooth(.25,.45,length/metre);}
    else{const dx=x-centre.x,dy=y-centre.y,length=Math.hypot(dx,dy)||1;x+=dx/length*24;y+=dy/length*24;}
-   if(!at.on)opacity=0;
+   if(!at.on||!inside(x,y))opacity=0;
    for(const q of placed)if(q.opacity>.05)opacity*=smooth(28,40,Math.hypot(q.x-x,q.y-y));
    const active=resize?.h===h;if(active)opacity=1;placed.push({x,y,opacity});
    h.button.hidden=false;h.button.classList.toggle('active',active);

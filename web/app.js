@@ -405,7 +405,7 @@ const volumeInspector={element:$('selection'),
   const close=document.createElement('button');close.type='button';close.className='inspector-close';close.setAttribute('aria-label','Close inspector');close.append(icon(icons.close));close.onclick=closeCard;
   card.replaceChildren(close,...nodes);card.hidden=false;noteCardMode='volume';},
  close(){if(noteCardMode==='volume'){noteCardMode='view';$('selection').hidden=true;}}};
-const semanticVolumes=createSemanticVolumes({scene,camera,renderer,controls,panel:panelBodies.volumes,api,label,labels:sceneLabels,priorityHit:labelHit,clear,openPanel,inspector:volumeInspector,toast,flyTo:(position,target)=>cameraPan.start(position,target),priorityPickObjects:()=>crayon.objects()});
+const semanticVolumes=createSemanticVolumes({scene,camera,renderer,controls,panel:panelBodies.volumes,api,label,labels:sceneLabels,priorityHit:labelHit,safeArea:()=>sceneSafeArea(),clear,openPanel,inspector:volumeInspector,toast,flyTo:(position,target)=>cameraPan.start(position,target),priorityPickObjects:()=>crayon.objects()});
 // The volume tool draws on the 3D floor, so it can't start while the 2D plan is open.
 $('volume-draw').addEventListener('click',e=>{if(map2D.isActive())e.stopImmediatePropagation();},true);
 $('map-select').addEventListener('change',()=>{semanticVolumes.reset();try{localStorage.setItem('home.lastScene',$('map-select').value);}catch{}});
@@ -1023,15 +1023,18 @@ function applyWheelZoom(now){
 function updateFog(){const end=THREE.MathUtils.clamp(6.4*camera.position.distanceTo(controls.target),50,camera.far*.92);scene.fog.near=end*.5;scene.fog.far=end;}
 let cameraFlying=false;
 const contentLocator=createContentLocator({camera,renderer,fog:()=>scene.fog,blocked:()=>cameraFlying||map2D.isActive()||attachedCamera.isActive()||!current,
- safeArea:()=>{const r=renderer.domElement.getBoundingClientRect(),area={left:r.left+72,top:r.top+68,right:r.right-16,bottom:r.bottom-80};
-  const aside=document.querySelector('.shell>aside');if(aside&&!document.querySelector('.shell')?.classList.contains('panel-collapsed'))area.left=Math.max(area.left,aside.getBoundingClientRect().right+8);
-  const bar=document.querySelector('.agent-bar')?.getBoundingClientRect();if(bar&&bar.height>64)area.bottom=Math.min(area.bottom,bar.top-8);
-  const card=$('selection');if(card&&!card.hidden)area.right=Math.min(area.right,card.getBoundingClientRect().left-8);
-  return area;},
+ safeArea:sceneSafeArea,
  // Back to the content: same heading, a downward tilt between 35° and 60°, far enough to see all of it.
  fly:(centre,radius)=>{const distance=THREE.MathUtils.clamp(radius*2.4,6,60),offset=camera.position.clone().sub(controls.target),flat=new THREE.Vector3(offset.x,0,offset.z);
   if(flat.lengthSq()<1e-6)flat.set(0,0,1);flat.normalize();const tilt=THREE.MathUtils.degToRad(THREE.MathUtils.clamp(THREE.MathUtils.radToDeg(Math.asin(Math.min(1,Math.max(-1,offset.y/(offset.length()||1))))),35,60));
   if(attachedCamera.isActive())attachedCamera.detach();cameraPan.start(centre.clone().add(flat.multiplyScalar(Math.cos(tilt)*distance)).add(new THREE.Vector3(0,Math.sin(tilt)*distance,0)),centre);}});
+// The free part of the 3D view in client px: the canvas minus the rail, the open panel, the top and bottom bars and
+// the inspector card. The locator and the volume handles stay inside it.
+function sceneSafeArea(){const r=renderer.domElement.getBoundingClientRect(),area={left:r.left+72,top:r.top+68,right:r.right-16,bottom:r.bottom-80};
+ const aside=document.querySelector('.shell>aside');if(aside&&!document.querySelector('.shell')?.classList.contains('panel-collapsed'))area.left=Math.max(area.left,aside.getBoundingClientRect().right+8);
+ const bar=document.querySelector('.agent-bar')?.getBoundingClientRect();if(bar&&bar.height>64)area.bottom=Math.min(area.bottom,bar.top-8);
+ const card=$('selection');if(card&&!card.hidden)area.right=Math.min(area.right,card.getBoundingClientRect().left-8);
+ return area;}
 function setContentBounds(data){
  scene.updateMatrixWorld();const box=new THREE.Box3();for(const g of [groups.voxels,groups.portals,groups.objects])box.expandByObject(g);
  for(const n of data.notes||[])if(n.position)box.expandByPoint(new THREE.Vector3(...n.position));
