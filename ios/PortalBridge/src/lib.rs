@@ -664,7 +664,7 @@ pub unsafe extern "C" fn spatial_mobile_onboarding_frame(luma: *const u8, length
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spatial_mobile_onboarding_qr(value: *const c_char) -> *mut c_char {
     std::panic::catch_unwind(|| answer((|| {
-        let (width, modules) = spatial_home::onboarding::qr_modules(&unsafe { text(value, 4096) }?).map_err(failed)?;
+        let (width, modules) = spatial_home::mobile_onboarding::qr_modules(&unsafe { text(value, 4096) }?).map_err(failed)?;
         Ok(serde_json::json!({"width": width, "modules": modules.iter().map(|d| if *d { '1' } else { '0' }).collect::<String>()}))
     })())).unwrap_or(std::ptr::null_mut())
 }

@@ -82,6 +82,7 @@ pub mod mobile_depth_image;
 pub mod mobile_drive;
 pub mod mobile_calibration;
 pub mod onboarding;
+pub mod square_pose;
 pub mod mobile_onboarding;
 
 pub mod fiducials;
