@@ -314,21 +314,17 @@ struct ViewerScreen: View {
             controller.messages.keep(id)
             controller.showMessageResult("Home did not delete that message: \(result.detail)")
         }
-        .overlay {
-            // McKenna opens every launch: the full intro and permissions list the
-            // first time, a quick mark after that. The camera waits for it.
-            if showIntro {
-                McKennaIntro(mode: introDone ? .quick : .firstBoot, screen: screen) {
-                    introDone = true
-                    showIntro = false
-                    beginCapture()
-                }
-                // Gone at once, and never catching a tap once hidden: a fading copy
-                // left on top (its compass redraws every frame) swallowed every tap.
-                .allowsHitTesting(showIntro)
-                .onAppear { print("[intro] shown") }
-                .onDisappear { print("[intro] gone") }
+        // McKenna opens every launch: the full intro and permissions list the first
+        // time, a quick mark after that. Its own full-screen layer, which iOS removes
+        // completely when it closes; drawn over the app it could linger and eat taps.
+        .fullScreenCover(isPresented: $showIntro) {
+            McKennaIntro(mode: introDone ? .quick : .firstBoot, screen: screen) {
+                introDone = true
+                showIntro = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { beginCapture() }
             }
+            .onAppear { print("[intro] shown") }
+            .onDisappear { print("[intro] gone") }
         }
         .onAppear {
             peer.onMap = { controller.load($0) }
