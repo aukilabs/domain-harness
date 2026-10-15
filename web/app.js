@@ -1825,7 +1825,7 @@ function spotTool(label,face,accent,run,disabledReason=''){
  const hit=document.createElement('span'),lift=document.createElement('span'),plate=document.createElement('span'),glyph=document.createElement('span');hit.className='spot-hit';lift.className='spot-lift';plate.className='spot-plate';lift.append(plate);glyph.className='rail-face';glyph.append(typeof face==='string'?icon(face,20):face);button.append(hit,lift,glyph);
  // The ring has done its job once a tool starts there; only Ask keeps it, until the question is sent.
  button.onclick=()=>{if(disabledReason)return;const at=spot;closeSpotMenu();run(at);};return button;}
-function closeSpotMenu(clearMarker=true){if(spotMenu.hidden||spotMenu.dataset.closing)return;clearTimeout(spotTipTimer);spotTip.hidden=true;spot=null;if(clearMarker&&!chatFocus)spotMarker.visible=false;
+function closeSpotMenu(clearMarker=true){if(spotMenu.hidden||spotMenu.dataset.closing)return;sceneLabels.setMask(null);clearTimeout(spotTipTimer);spotTip.hidden=true;spot=null;if(clearMarker&&!chatFocus)spotMarker.visible=false;
  if(matchMedia('(prefers-reduced-motion: reduce)').matches){spotMenu.hidden=true;return;}
  // A quick scale-down into the spot; the menu ignores the pointer while it goes.
  spotMenu.dataset.closing='true';spotMenu.getAnimations({subtree:true}).forEach(a=>a.cancel());
@@ -1853,7 +1853,7 @@ function openSpotMenu(e){
  spotMenu.replaceChildren(...tools);spotMenu.getAnimations({subtree:true}).forEach(a=>a.cancel());delete spotMenu.dataset.closing;spotMenu.hidden=false;
  // Centred on the cursor, shifted inward near an edge so the whole ring stays on screen.
  const half=SPOT_SIZE/2,x=Math.min(Math.max(half+8,e.clientX),innerWidth-half-8),y=Math.min(Math.max(half+8,e.clientY),innerHeight-half-8);
- spotMenu.style.left=x-half+'px';spotMenu.style.top=y-half+'px';
+ spotMenu.style.left=x-half+'px';spotMenu.style.top=y-half+'px';sceneLabels.setMask({x,y,radius:half+6});sceneLabels.setHover(null);
  // Tools fly out under a resting cursor: hints wait until they have landed.
  clearTimeout(spotMenu.settle);delete spotMenu.dataset.opening;
  if(!matchMedia('(prefers-reduced-motion: reduce)').matches){
