@@ -40,6 +40,23 @@ pub struct CanonicalScene {
 impl auki_components::ContractType for CanonicalScene {
     const DATATYPE: &'static str = SCENE_SCHEMA;
 }
+impl CanonicalScene {
+    /// The same scene without its voxel checkpoint bytes, for a header that
+    /// carries them separately in binary.
+    pub fn without_checkpoint(&self) -> Self {
+        Self {
+            schema: self.schema.clone(), sdk_revision: self.sdk_revision.clone(),
+            authority_peer_id: self.authority_peer_id.clone(), frame: self.frame.clone(),
+            publication_clock: self.publication_clock.clone(), portals: self.portals.clone(),
+            voxels: auki_voxel_map::VoxelSnapshot {
+                definition: self.voxels.definition.clone(), checkpoint: Vec::new(),
+                integrated_observations: self.voxels.integrated_observations,
+                latest_observation: self.voxels.latest_observation.clone(),
+            },
+            objects: self.objects.clone(), registries: self.registries.clone(),
+        }
+    }
+}
 
 impl CanonicalScene {
     pub fn validate(&self, expected_peer: &str) -> Result<()> {

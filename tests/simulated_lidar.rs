@@ -56,7 +56,7 @@ async fn lidar_subscription_does_not_activate_camera() -> Result<()> {
         .find(|p| p.manifest.product_id == PRODUCT)
         .unwrap();
     let mut subscription = client
-        .subscribe_product_exact(
+        .subscribe_product_exact_with_decoder(
             pair.b.peer_id(),
             route,
             ProductReference {
@@ -67,6 +67,7 @@ async fn lidar_subscription_does_not_activate_camera() -> Result<()> {
             ObservationStart::NewOnly,
             BufferLimits::entries(1),
             |s: &Scan| s.ranges_m.len() * 8,
+            spatial_home::simulated_lidar::decoder()?,
         )
         .await?;
     assert!(lidar.demanded(&camera.endpoint));

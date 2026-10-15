@@ -71,3 +71,41 @@ fn camera_limits_distinguish_overlay_metadata_from_image_bytes() {
     assert!(browser_packet(&metadata,&[1]).unwrap_err().to_string().contains("overlay metadata"));
     assert!(browser_packet(&serde_json::json!({}),&vec![0;MAX_BYTES+1]).unwrap_err().to_string().contains("image exceeds"));
 }
+
+#[allow(dead_code)] mod support;
+
+/// Every peer exports through the same endpoint, so this is where a camera
+/// Product sent as JSON is stopped, whoever wrote it.
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+async fn a_camera_product_cannot_be_exported_as_json()->anyhow::Result<()> {
+    use auki_components::*;
+    let pair=support::LocalPair::start().await?;
+    let result=async {
+        let owner=pair.a.peer_id().to_string();
+        let runtime=ComponentRuntime::new(owner.clone());
+        let endpoint=auki_component_protocol::ComponentProtocolEndpoint::mount(pair.a.protocols(),runtime.clone())?;
+        let clock=spatial_home::model::clock_ref(&spatial_home::model::clock_entry(&owner,"s"));
+        let mut captures=vec![];
+        for (name,schema) in [("legacy",LEGACY_SCHEMA),("binary",SCHEMA)] {
+            let component=runtime.component(ComponentSpec::new(name).observable(ObservableContract{name:"frames".into(),
+                datatype:<VideoFrame as ContractType>::DATATYPE.into(),schema:schema.into(),
+                access:vec![ObservationAccess::FollowNew],exposure:Exposure::Cluster}))?;
+            let output=component.configured_observable::<VideoFrame>(ConfiguredObservableSpec::new("frames",name,clock.clone(),
+                PayloadContract::Camera(CameraPayloadContract{datatype:<VideoFrame as ContractType>::DATATYPE.into(),schema:schema.into(),
+                    encoding:"jpeg".into(),width:64,height:64,nominal_frame_rate_hz:Some(5),observes:"test".into()}))
+                .in_registered_frame(auki_registry::FrameRegistryEntry::ros_optical(&owner,name)))?;
+            component.expose()?;
+            let capture=runtime.capture_buffer(name,&output,BufferLimits::entries(1),|f:&VideoFrame|f.bytes.len())?;
+            captures.push((component,capture));
+        }
+        let error=endpoint.export_product(&captures[0].1.product()).unwrap_err();
+        assert!(error.to_string().contains("binary encoder"),"{error}");
+        assert!(endpoint.export_product(&captures[1].1.product()).is_err(),"the JSON encoder is refused whatever the schema says");
+        endpoint.export_product_with_encoder(&captures[1].1.product(),encoder())?;
+        drop(captures);
+        endpoint.close().await?;
+        Ok::<(),anyhow::Error>(())
+    }.await;
+    pair.shutdown().await?;
+    result
+}

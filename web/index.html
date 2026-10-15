@@ -2,12 +2,23 @@
 <html lang="en">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Spatial Harness · Home</title>
+<title>McKenna</title>
+<link rel="icon" type="image/svg+xml" href="/brand/mckenna-favicon.svg">
+<script>try{if(localStorage.getItem('spatial-theme')==='light')document.documentElement.dataset.theme='light';}catch{}</script>
 <link rel="stylesheet" href="/style.css">
 <script type="importmap">{"imports":{"three":"/vendor/three.module.js","three/addons/controls/OrbitControls.js":"/vendor/OrbitControls.js","three/addons/loaders/GLTFLoader.js":"/vendor/GLTFLoader.js","three/addons/loaders/DRACOLoader.js":"/vendor/DRACOLoader.js","/utils/BufferGeometryUtils.js":"/vendor/BufferGeometryUtils.js"}}</script>
 </head>
 <body>
-<header><a class="brand" href="/" aria-label="Spatial Harness home"><span class="brand-mark">⌘</span> spatial<span class="brand-light">harness</span></a><div class="breadcrumb">Workspace <span>/</span> Home Server</div><div class="connection"><i></i><span id="connection">Connecting</span></div></header>
+<header class="app-header">
+<div class="connection" role="status"><i></i><span id="connection">Connecting</span></div>
+<button id="user-menu-button" class="user-menu-button" type="button" popovertarget="user-menu" aria-haspopup="dialog"><img src="/brand/nils-pihl.jpg" alt="" width="28" height="28"><span>Nils Pihl</span><svg class="user-menu-chevron" aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 6.5 8 10l3.5-3.5"/></svg></button>
+<div id="user-menu" class="user-menu" popover aria-label="Account">
+<div class="user-menu-identity"><img src="/brand/nils-pihl.jpg" alt="" width="40" height="40"><div><strong>Nils Pihl</strong><small>CEO, Auki Labs</small></div></div>
+<section class="user-menu-section" id="user-menu-server" aria-labelledby="user-menu-server-title"><h3 id="user-menu-server-title">Home server</h3></section>
+<div class="user-menu-section" role="group" aria-labelledby="user-menu-theme-title"><h3 id="user-menu-theme-title">Appearance</h3><div class="theme-switch"><button type="button" data-theme-choice="light" aria-pressed="false">Light</button><button type="button" data-theme-choice="dark" aria-pressed="false">Dark</button></div></div>
+<div class="user-menu-section user-menu-links"><a href="/api/snapshots" target="_blank" rel="noopener" data-snapshot-link>Inspect SDK snapshots <span aria-hidden="true">↗</span></a><a href="/api/snapshots" download="scenegraph.json" data-snapshot-link>Export snapshot <span aria-hidden="true">↓</span></a></div>
+</div>
+</header>
 <div class="shell">
 <aside>
 <h1>Home Server<span class="title-dot">.</span></h1>
@@ -42,33 +53,37 @@
 <main>
 <div class="page-heading"><div><div class="eyebrow">SPATIAL WORKSPACE / 01</div><h2>The shared scene</h2></div><a class="export" href="/api/snapshots" download="scenegraph.json">↓ Export snapshot</a></div>
 <section class="viewport" aria-label="Interactive 3D scene">
-<div id="canvas"></div>
+<div id="canvas" class="scene-loading"></div>
 <div class="viewport-heading"><span class="live-dot"></span><strong id="scene-title">Domain portals</strong><small>Y up · meters</small></div>
 <div class="view-controls"><button id="crayon" title="Draw shared 3D paths" aria-pressed="false">✎ Crayon</button><button id="fit" title="Reset camera view" aria-label="Reset camera view">⌂</button><button id="demo-view" title="Focus synthetic scene" aria-label="Focus synthetic scene">⌖</button><button id="top" title="Switch to 2D mode" aria-label="Switch to 2D mode" aria-pressed="false">2D</button></div>
-<div class="empty" id="empty"><span class="empty-icon">⌗</span><h3>Waiting for measured geometry</h3><p>Runner scans will build voxel geometry here.</p></div>
-<section id="sensor-pip" aria-label="Sensor picture-in-picture" hidden><div class="sensor-pip-heading"><strong id="sensor-title"></strong><label class="ar-toggle" title="Overlay Home live voxels and text notes on this camera"><input type="checkbox" id="sensor-ar">AR</label><button id="sensor-close" aria-label="Close sensor preview">×</button></div><div id="sensor-stage"><canvas id="sensor-image"></canvas><canvas id="sensor-ar-overlay" aria-label="Home voxel and text AR overlay" hidden></canvas></div><div id="sensor-ar-status" role="status" hidden></div><div id="sensor-feed-status" role="status">Waiting for a frame…</div></section>
+<div class="empty" id="empty" hidden><span class="empty-icon">⌗</span><h3>Waiting for measured geometry</h3><p>Runner scans will build voxel geometry here.</p></div>
+<section id="sensor-pip" aria-label="Sensor picture-in-picture" hidden><div class="sensor-pip-heading"><span class="sensor-pip-tile" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 5.5 12 3l1.5 5L3 10.5ZM13 6l3.5-1v4.5L13.5 9M7 9.5v4.5H3"/></svg></span><strong id="sensor-title"></strong><label class="ar-toggle" title="Overlay Home live voxels and text notes on this camera"><input type="checkbox" id="sensor-ar" class="switch-input" role="switch"><span>AR</span></label><button id="sensor-close" class="inspector-close" type="button" aria-label="Close sensor preview"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4.5 4.5l9 9M13.5 4.5l-9 9"/></svg></button></div><div id="sensor-stage"><canvas id="sensor-image"></canvas><canvas id="sensor-ar-overlay" aria-label="Home voxel and text AR overlay" hidden></canvas></div><div id="sensor-ar-status" role="status" hidden></div><div id="sensor-feed-status" role="status">Waiting for a frame…</div></section>
 <div class="selection" id="selection" hidden></div>
-<section class="scene-chat" aria-label="Scene assistant">
+<section class="scene-chat agent-bar" aria-label="Scene tools and assistant">
+<div class="agent-sheet" id="agent-sheet" role="region" aria-label="Conversation with the scene assistant">
+<header class="agent-sheet-head"><div><h2>Scene assistant</h2><p>Qwen · runs on this laptop</p></div><button id="agent-new" class="agent-icon-button" type="button" aria-label="New conversation" data-tip="New conversation"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 15l1-4 7.5-7.5 3 3L7 14ZM10 5l3 3"/></svg></button></header>
 <div id="scene-chat-history" class="scene-chat-history" role="log" aria-label="Conversation" hidden></div>
-<div class="scene-chat-caption"><span class="scene-chat-dot"></span><span>Scene assistant</span><span class="scene-chat-local">On your laptop</span></div>
+<p id="scene-chat-status" role="status">Local Qwen · inspect scene and edit volume descriptions</p>
+</div>
+<div class="agent-shell">
+<div class="agent-tools" role="toolbar" aria-label="Scene tools"></div>
+<span class="agent-divider" aria-hidden="true"></span>
+<button id="agent-toggle" class="agent-ask" type="button" aria-expanded="false" aria-controls="agent-sheet" aria-label="Ask the scene assistant" data-tip="Ask the scene assistant" data-shortcut="/"><span class="agent-orb" aria-hidden="true"></span><span class="agent-ask-label">Ask</span><kbd class="agent-ask-key" aria-hidden="true">/</kbd></button>
 <form id="scene-chat-form" class="scene-chat-form">
 <label class="scene-chat-label" for="scene-chat-input">Message your scene assistant</label>
-<input id="scene-chat-input" type="text" autocomplete="off" maxlength="4000" placeholder="Tell your space what matters…">
-<button type="submit" aria-label="Send message" title="Send message">↑</button>
-<button id="scene-chat-toggle" class="scene-chat-toggle" type="button" aria-label="Hide conversation" aria-controls="scene-chat-history" aria-expanded="true" title="Hide conversation">⌄</button>
+<input id="scene-chat-input" type="text" autocomplete="off" maxlength="4000" placeholder="Ask about this scene…">
+<button type="submit" class="agent-send" aria-label="Send message" data-tip="Send"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14.5v-11M4.5 8 9 3.5 13.5 8"/></svg></button>
 </form>
-<p id="scene-chat-status" role="status">Local Qwen · inspect scene and edit volume descriptions</p>
+<div class="agent-shell-actions">
+<button id="scene-chat-toggle" class="agent-icon-button scene-chat-toggle" type="button" aria-label="Hide conversation" aria-controls="agent-sheet" aria-expanded="true"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 11 9 6.5l4.5 4.5"/></svg></button>
+<button id="agent-close" class="agent-icon-button" type="button" aria-label="Close assistant" data-tip="Close" data-shortcut="Esc"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 4.5l9 9M13.5 4.5l-9 9"/></svg></button>
+</div>
+</div>
 </section>
-<div class="viewport-footer"><span>Drag to orbit <b>·</b> Scroll to zoom <b>·</b> Click to inspect</span><span><i class="axis x">X</i><i class="axis y">Y</i><i class="axis z">Z</i></span></div>
 </section>
 <div class="stats"><div><span>OCCUPIED VOXELS</span><strong id="voxel-count">0</strong><small>10 cm resolution</small></div><div><span>OBSERVATIONS</span><strong id="observation-count">0</strong><small>Integrated across peers</small></div><div><span>SEMANTIC OBJECTS</span><strong id="object-count">0</strong><small>Positioned by raycast</small></div><div><span>MAP AUTHORITY</span><strong class="authority"><span id="map-authority">Home Server</span> <i>●</i></strong><small>Persisted by map owner</small></div></div>
 <section class="flow"><div class="flow-heading"><span class="eyebrow">FROM PIXELS TO PLACE</span><span class="subtle">First working slice</span></div><div class="flow-steps"><div><span class="step">01</span><div><strong>Observe</strong><p>Shared measured observations</p></div></div><span class="arrow">→</span><div><span class="step">02</span><div><strong>Build</strong><p>Independent Home and runner maps</p></div></div><span class="arrow">→</span><div><span class="step">03</span><div><strong>Understand</strong><p>A screen detection gets a 3D position</p></div></div></div></section>
 </main>
 </div>
-<dialog id="label-dialog" aria-labelledby="label-dialog-title">
-<form id="label-dialog-form" class="note-form"><h3 id="label-dialog-title">New note</h3><p id="label-dialog-status" role="status"></p>
-<label for="label-dialog-text">Title</label><input id="label-dialog-text" maxlength="120" autocomplete="off" required placeholder="Note title">
-<div id="label-note-fields"></div>
-<div class="label-actions"><button id="label-dialog-cancel" type="button">Cancel</button><button id="label-dialog-save" type="submit">Save label</button></div></form></dialog>
 <script type="module" src="/app.js"></script>
 </body></html>

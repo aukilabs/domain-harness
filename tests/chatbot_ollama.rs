@@ -3,7 +3,7 @@
 async fn geometry_inset_and_toward_viewer_feed_move_note()->anyhow::Result<()> {
  use serde_json::json;use spatial_home::{scene_geometry,semantic_volumes::Volume,chatbot::Viewer};
  let volume=Volume{id:"office-id".into(),title:"office".into(),description:"".into(),semantic_type:"region".into(),center:[0.,1.,0.],size:[10.,2.,10.],yaw:0.};
- let viewer=Viewer{frame:"frame".into(),mode:"3d".into(),screen_right:[1.,0.,0.],camera_position:Some([5.,2.,5.]),camera_target:None};
+ let viewer=Viewer{frame:"frame".into(),mode:"3d".into(),screen_right:[1.,0.,0.],camera_position:Some([5.,2.,5.]),camera_target:None,focus_point:None};
  for instruction in ["move the fancy car note one meter inside the farthest corner of the office","move the fancy car note one meter closer to me while staying on the ground"]{
   let note=json!({"id":"car-id","name":"fancy car","text":"fancy car","position":[0,0,0],"description":"keep this"});let mut calculated=None::<serde_json::Value>;let mut moved=false;
   let result=spatial_home::chatbot::chat(spatial_home::chatbot::Request{viewer:Some(viewer.clone()),scene:"local:synthetic".into(),messages:vec![spatial_home::chatbot::Message{role:"user".into(),content:instruction.into()}]},|name,args|match name{

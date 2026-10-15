@@ -1,15 +1,12 @@
 import * as THREE from 'three';
+import { icons, icon, sectionHeader, listRow, actionButton, markSelected } from './panel-ui.js';
 
 // Semantic boxes are independent of transient voxel and robot-occupancy layers.
-export function createSemanticVolumes({scene, camera, renderer, controls, panel, api, label, clear, openPanel, priorityPickObjects=()=>[]}) {
+export function createSemanticVolumes({scene, camera, renderer, controls, panel, api, label, clear, openPanel, inspector, toast=()=>{}, flyTo=null, priorityPickObjects=()=>[]}) {
  const group=new THREE.Group(),preview=new THREE.Group();scene.add(group,preview);
  let context=null,items=[],draft=null,editing=null,drawing=false,start=null,press=null,pending=false,signature='',resize=null,conflicted=false;
  const handleLayer=document.createElement('div');handleLayer.className='volume-handles';renderer.domElement.parentElement.append(handleLayer);
  const leaders=document.createElementNS('http://www.w3.org/2000/svg','svg');leaders.classList.add('volume-handle-leaders');handleLayer.append(leaders);
- const toolbar=document.createElement('nav');toolbar.className='volume-tool-bar';toolbar.setAttribute('aria-label','Volume editing tools');toolbar.innerHTML='<button type="button" class="volume-select-tool" aria-pressed="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m4 3 7 18 2-8 8-2Z"/></svg>Select</button><button type="button" class="volume-create-tool" aria-pressed="false"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m3 6 9-4 9 4-9 4ZM3 6v12l9 4 9-4V6M12 10v12M18 2v6M15 5h6"/></svg>Create volume</button>';
- renderer.domElement.parentElement.append(toolbar);
- toolbar.querySelector('.volume-select-tool').onclick=()=>{if(drawing)cancel();else endDrawing();message('Select a volume to edit it in the scene.');};
- toolbar.querySelector('.volume-create-tool').onclick=()=>{openPanel('volumes');$('volume-draw').click();};
  const handles=[];
  // Handle roles, glyphs, colors and rail layout follow Peyote's
  // AxisRailHandle, handle-icons and OutlineHandles (meter-based Home adapter).
@@ -26,7 +23,7 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
   const {axis,sign,kind,name}=descriptor;
   const button=document.createElement('button');button.type='button';button.className='volume-resize-handle';button.dataset.axis=String(axis);button.dataset.kind=kind;button.dataset.sign=String(sign);
   button.setAttribute('aria-label',name);button.title=kind==='rotate'?'Rotate around the opposite corner · Shift snaps to 15°':kind==='move'?'Move along the ground · Shift snaps to 10 cm':`Resize ${['width','height','depth'][axis]} · Shift snaps to 10 cm`;button.innerHTML=handleIcon(descriptor.icon);button.hidden=true;handleLayer.append(button);
-  const leader=document.createElementNS('http://www.w3.org/2000/svg','line');leader.setAttribute('stroke','#3b82f6');leader.setAttribute('stroke-width','1');leader.setAttribute('opacity','.65');leaders.append(leader);
+  const leader=document.createElementNS('http://www.w3.org/2000/svg','line');leader.setAttribute('class','volume-leader');leaders.append(leader);
   const handle={...descriptor,button,leader};handles.push(handle);
   button.addEventListener('pointerdown',e=>startResize(e,handle));
   button.addEventListener('pointermove',moveResize);
@@ -38,10 +35,11 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
  function handleIcon(icon){
   function arrow(dx,dy){const l=Math.hypot(dx,dy);dx/=l;dy/=l;const x=dx*12,y=dy*12;return [[-x,-y,x,y],[x,y,x-dx*5.4-dy*3.9,y-dy*5.4+dx*3.9],[x,y,x-dx*5.4+dy*3.9,y-dy*5.4-dx*3.9],[-x,-y,-x+dx*5.4-dy*3.9,-y+dy*5.4+dx*3.9],[-x,-y,-x+dx*5.4+dy*3.9,-y+dy*5.4-dx*3.9]];}
   let segments=icon==='move'?[...arrow(1,0),...arrow(0,1)]:icon==='vertical'?arrow(0,1):icon==='depth'?arrow(.707,-.707):arrow(1,0);
-  if(icon.startsWith('rotate')){const direction=icon==='rotate-left'?-1:1,start=direction<0?-.25:Math.PI+.25,sweep=direction*Math.PI*1.45;segments=[];let x=Math.cos(start)*9,y=Math.sin(start)*9;for(let i=1;i<=16;i++){const a=start+sweep*i/16,nx=Math.cos(a)*9,ny=Math.sin(a)*9;segments.push([x,y,nx,ny]);x=nx;y=ny;}let dx=direction*.75,dy=.35,len=Math.hypot(dx,dy);dx/=len;dy/=len;segments.push([x,y,x-dx*5.4-dy*3.9,y-dy*5.4+dx*3.9],[x,y,x-dx*5.4+dy*3.9,y-dy*5.4-dx*3.9]);}
+  // Rotate uses a standard circular arrow: counter-clockwise on the left corner, clockwise on the right.
+  if(icon.startsWith('rotate')){const d=icon==='rotate-left'?'M3.5 12a8.5 8.5 0 1 0 2.6-6.1L3.5 8.5M3.5 3.5v5h5':'M20.5 12a8.5 8.5 0 1 1-2.6-6.1l2.6 2.6M20.5 3.5v5h-5';
+   return `<svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="${d}" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;}
   const d=segments.map(([x,y,u,v])=>`M${x} ${y}L${u} ${v}`).join('');
-  const rail=icon==='move'||icon.startsWith('rotate')?'M-23 0H23M0-23V23':icon==='vertical'?'M0-24V24':icon==='depth'?'M-17 17L17-17':'M-24 0H24';
-  return `<svg width="48" height="48" viewBox="-36 -36 72 72" aria-hidden="true"><path d="${rail}" stroke="currentColor" stroke-width="4.5" opacity=".7"/><circle r="24" fill="currentColor" opacity=".96"/><circle r="22.8" fill="none" class="handle-ring" stroke-width="2.3"/><path d="${d}" fill="none" stroke="#27272a" stroke-width="6.6" opacity=".58" stroke-linecap="round"/><path d="${d}" fill="none" stroke="#f8fafc" stroke-width="3.1" stroke-linecap="round"/></svg>`;
+  return `<svg width="22" height="22" viewBox="-17 -17 34 34" aria-hidden="true"><path d="${d}" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
  }
  function axisVector(axis,yaw){return new THREE.Vector3(...[0,1,2].map(i=>i===axis?1:0)).applyAxisAngle(new THREE.Vector3(0,1,0),yaw);}
  function localPoint(v,point){return new THREE.Vector3(...point).applyAxisAngle(new THREE.Vector3(0,1,0),v.yaw).add(new THREE.Vector3(...v.center));}
@@ -57,7 +55,8 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
   if(!visible){for(const h of handles){h.button.hidden=true;h.leader.setAttribute('visibility','hidden');}return;}
   const rect=renderer.domElement.getBoundingClientRect(),parent=handleLayer.parentElement.getBoundingClientRect();
   leaders.setAttribute('viewBox',`0 0 ${parent.width} ${parent.height}`);const placed=[];
-  for(const h of handles){h.button.hidden=!visible;if(!visible)continue;const p=facePoint(draft,h).project(camera);h.button.hidden=p.z< -1||p.z>1||Math.abs(p.x)>1||Math.abs(p.y)>1;
+  const a=facePoint(draft,handles[0]).project(camera),b=facePoint(draft,handles[1]).project(camera),compact=Math.hypot((a.x-b.x)*rect.width/2,(a.y-b.y)*rect.height/2)<120;
+  for(const h of handles){h.button.hidden=!visible;if(!visible)continue;const p=facePoint(draft,h).project(camera);h.button.hidden=p.z< -1||p.z>1||Math.abs(p.x)>1||Math.abs(p.y)>1||(compact&&resize?.h!==h&&h.kind!=='move'&&!(h.kind==='resize'&&h.axis===1));
    h.button.classList.toggle('active',resize?.h===h);
    const x=rect.left-parent.left+(p.x+1)*rect.width/2,y=rect.top-parent.top+(1-p.y)*rect.height/2;let offset=0;
    if(!h.button.hidden){while(placed.some(q=>Math.hypot(q.x-x,q.y-y-offset)<52))offset-=52;if(y+offset<26){offset=0;while(placed.some(q=>Math.hypot(q.x-x,q.y-y-offset)<52))offset+=52;}placed.push({x,y:y+offset});}
@@ -92,46 +91,135 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
   let delta=p.sub(resize.point).dot(resize.axis)*h.sign;if(e.shiftKey)delta=Math.round(delta*10)/10;resizeFace(original,h,delta);
  }
  function stopResize(restore=false){if(!resize)return;const r=resize;resize=null;if(restore){draft=r.original;fill(draft);draw();}if(r.h.button.hasPointerCapture(r.pointerId))r.h.button.releasePointerCapture(r.pointerId);controls.enabled=true;tick();}
- function finishResize(e){if(!resize||e.pointerId!==resize.pointerId)return;moveResize(e);stopResize();if(editing)persist(false,true);else message('Volume adjusted. Add a title and save to create it.');}
- panel.innerHTML='<p class="panel-hint">Named regions saved in the selected Home scene. Dimensions are in meters.</p><div class="volume-actions"><button id="volume-new" type="button">New box</button><button id="volume-draw" type="button">Draw box</button></div><label class="volume-layer"><input id="volume-visible" type="checkbox" checked> Show volumes</label><p id="volume-status" class="panel-hint" role="status"></p><div id="volume-list"></div><form id="volume-form" class="note-form" hidden><label>Title<input name="title" maxlength="120" required></label><label>Description<textarea name="description" maxlength="10000"></textarea></label><div class="volume-grid"></div><div class="volume-actions"><button type="submit">Save volume</button><button id="volume-cancel" type="button">Cancel</button><button id="volume-delete" type="button">Delete</button></div></form>';
- const $=id=>panel.querySelector('#'+id),form=$('volume-form'),status=$('volume-status'),list=$('volume-list');
- const fields=[['x','Center X'],['z','Center Z'],['base','Base elevation'],['width','Width'],['depth','Depth'],['height','Height'],['yaw','Rotation (degrees)']];
- for(const [name,title] of fields){const l=document.createElement('label');l.textContent=title;const input=document.createElement('input');input.type='number';input.name=name;input.required=true;input.step='any';input.min=['width','depth','height'].includes(name)?'.01':name==='yaw'?'-360':'-100000';input.max=name==='yaw'?'360':['width','depth','height'].includes(name)?'10000':'100000';l.append(input);form.querySelector('.volume-grid').append(l);}
- function message(text){status.textContent=text;}
- function editable(){return context?.editable && !pending;}
- function buttons(){for(const id of ['volume-new','volume-draw'])$(id).disabled=!editable();for(const b of form.querySelectorAll('button'))b.disabled=pending;toolbar.querySelector('.volume-create-tool').disabled=!editable();toolbar.querySelector('.volume-select-tool').disabled=pending;toolbar.querySelector('.volume-create-tool').setAttribute('aria-pressed',String(drawing));toolbar.querySelector('.volume-select-tool').setAttribute('aria-pressed',String(!drawing));}
- function mesh(volume,parent,selected=false){
-  const box=new THREE.Mesh(new THREE.BoxGeometry(1,1,1),new THREE.MeshBasicMaterial({color:selected?0xffb45c:0x61b4ef,transparent:true,opacity:selected?.2:.1,depthWrite:false,side:THREE.DoubleSide}));
-  box.position.fromArray(volume.center);box.scale.fromArray(volume.size);box.rotation.y=volume.yaw;box.userData.volume=volume;parent.add(box);
-  const outline=new THREE.LineSegments(new THREE.EdgesGeometry(box.geometry),new THREE.LineBasicMaterial({color:selected?0xffb45c:0x61b4ef}));outline.position.copy(box.position);outline.scale.copy(box.scale);outline.rotation.copy(box.rotation);parent.add(outline);
-  const title=label(volume.title||'New volume','#286f9e');title.position.set(volume.center[0],volume.center[1]+volume.size[1]/2+.15,volume.center[2]);parent.add(title);
+ function finishResize(e){if(!resize||e.pointerId!==resize.pointerId)return;moveResize(e);stopResize();if(editing&&cardMode==='view')persist(false,true);else message(editing?'Handle change pending · Save volume to keep it.':'Volume adjusted. Add a title and save to create it.');}
+ // Panel: create, show/hide, list. Detail and editing live in the inspector card.
+ const newVolume=actionButton('New volume',{variant:'primary',iconPath:icons.plus,id:'volume-draw'});
+ const reason=document.createElement('p');reason.className='panel-hint';
+ const status=document.createElement('p');status.id='volume-status';status.className='form-status';status.setAttribute('role','status');
+ const header=sectionHeader('Volumes',0);
+ const eye=document.createElement('button');eye.type='button';eye.id='volume-visible';eye.className='icon-toggle';eye.setAttribute('aria-pressed','true');eye.setAttribute('aria-label','Show volumes in scene');eye.title='Show volumes in scene';
+ eye.append(icon('M1.5 9s2.7-5.5 7.5-5.5S16.5 9 16.5 9s-2.7 5.5-7.5 5.5S1.5 9 1.5 9ZM9 11.2a2.2 2.2 0 1 0 0-4.4 2.2 2.2 0 0 0 0 4.4'));header.append(eye);
+ const list=document.createElement('div');list.id='volume-list';list.className='list-group';
+ const actions=document.createElement('div');actions.className='panel-actions single';actions.append(newVolume);
+ panel.replaceChildren(actions,reason,status,header,list);
+ // Form fields keep full accessible names; visible labels stay short to fit a 3-column grid.
+ const form=document.createElement('form');form.id='volume-form';form.className='volume-form';form.noValidate=false;form.hidden=true;
+ form.innerHTML='<div class="form-field"><label class="form-label" for="volume-title">Title</label><input class="form-control" id="volume-title" name="title" maxlength="120" required autocomplete="off"></div><div class="form-field"><label class="form-label" for="volume-description">Description</label><textarea class="form-control" id="volume-description" name="description" maxlength="10000" placeholder="Optional details"></textarea></div>';
+ const groups=[['Size',[['width','W','Width','m'],['depth','D','Depth','m'],['height','H','Height','m']]],['Position',[['x','X','Center X','m'],['z','Z','Center Z','m'],['base','Base','Base elevation','m']]],['Rotation',[['yaw','','Rotation (degrees)','°']]]];
+ for(const [legend,entries] of groups){
+  const set=document.createElement('fieldset');set.className='volume-fieldset';const title=document.createElement('legend');title.className='form-label';title.textContent=legend;set.append(title);
+  const grid=document.createElement('div');grid.className='volume-grid';
+  for(const [name,short,full,unit] of entries){
+   const field=document.createElement('label');field.className='unit-field';const caption=document.createElement('span');caption.className='unit-caption';caption.textContent=short;caption.hidden=!short;caption.setAttribute('aria-hidden','true');
+   const input=document.createElement('input');input.className='form-control';input.type='number';input.name=name;input.required=true;input.step='any';input.setAttribute('aria-label',full);
+   input.min=['width','depth','height'].includes(name)?'.01':name==='yaw'?'-360':'-100000';input.max=name==='yaw'?'360':['width','depth','height'].includes(name)?'10000':'100000';
+   input.addEventListener('input',()=>{delete input.dataset.exact;});
+   const suffix=document.createElement('span');suffix.className='unit-suffix';suffix.textContent=unit;suffix.setAttribute('aria-hidden','true');
+   field.append(caption,input,suffix);grid.append(field);
+  }
+  if(legend==='Rotation'){for(const delta of [-15,15]){const b=actionButton((delta>0?'+':'−')+'15°');b.setAttribute('aria-label',(delta>0?'Rotate +':'Rotate −')+'15 degrees');b.onclick=()=>{const input=form.elements.yaw;input.value=format(Number(input.value)+delta);delete input.dataset.exact;form.dispatchEvent(new Event('input'));};grid.append(b);}grid.classList.add('rotation');}
+  set.append(grid);form.append(set);
  }
- function draw(){clear(group);for(const v of items)if(!(draft&&v.id===editing))mesh(v,group,v.id===editing);clear(preview);if(draft)mesh(draft,preview,true);renderer.domElement.dataset.semanticVolumeCount=String(items.length);}
- function focus(v){const distance=Math.max(3,Math.max(...v.size)*2.2);controls.target.fromArray(v.center);camera.position.copy(controls.target).add(new THREE.Vector3(distance*.7,distance*.65,distance*.7));controls.update();}
- function showList(){list.replaceChildren();for(const v of items){const b=document.createElement('button');b.className='panel-row';b.type='button';b.dataset.volumeId=v.id;b.setAttribute('aria-pressed',String(v.id===editing));const title=document.createElement('strong');title.textContent=v.title;const d=document.createElement('small');d.textContent=v.description;b.append(title,d);b.onclick=()=>select(v);list.append(b);}if(!items.length){const p=document.createElement('p');p.className='panel-hint';p.textContent='No semantic volumes in this scene.';list.append(p);}}
- function fill(v){form.elements.title.value=v.title;form.elements.description.value=v.description;const values={x:v.center[0],z:v.center[2],base:v.center[1]-v.size[1]/2,width:v.size[0],height:v.size[1],depth:v.size[2],yaw:v.yaw*180/Math.PI};for(const [name,n] of Object.entries(values))form.elements[name].value=String(n);}
- function values(){const n=name=>Number(form.elements[name].value);return {id:editing||'',title:form.elements.title.value.trim(),description:form.elements.description.value,semantic_type:draft?.semantic_type||'region',center:[n('x'),n('base')+n('height')/2,n('z')],size:[n('width'),n('height'),n('depth')],yaw:n('yaw')*Math.PI/180};}
- function endDrawing(){stopResize();drawing=false;start=null;controls.enabled=true;renderer.domElement.style.cursor='';tick();buttons();}
- function cancel(){endDrawing();draft=null;editing=null;conflicted=false;form.hidden=true;draw();showList();buttons();}
- function select(v){if(pending)return;cancel();openPanel('volumes');editing=v.id;draft=context?.editable?structuredClone(v):null;fill(v);form.hidden=false;for(const input of form.querySelectorAll('input,textarea'))input.disabled=!context?.editable;form.querySelector('.volume-actions').hidden=!context?.editable;$('volume-delete').hidden=false;message(context?.editable?'Blue handles move, resize and rotate. Changes save when you release a handle.':'Published volume · read-only');draw();showList();}
- function begin(){if(!editable())return;cancel();draft={id:'',title:'',description:'',center:[controls.target.x,1,controls.target.z],size:[1,2,.6],yaw:0};for(const input of form.querySelectorAll('input,textarea'))input.disabled=false;form.querySelector('.volume-actions').hidden=false;fill(draft);form.hidden=false;$('volume-delete').hidden=true;draw();message('Use the scene handles to position and size the volume, then save.');}
- $('volume-new').onclick=begin;
- $('volume-draw').onclick=()=>{if(!editable())return;if(drawing){cancel();message('Creation cancelled.');return;}begin();drawing=true;start=null;controls.enabled=false;const target=controls.target.clone(),distance=Math.max(3,camera.position.distanceTo(target));camera.position.copy(target).add(new THREE.Vector3(0,distance,.001));controls.update();renderer.domElement.style.cursor='crosshair';buttons();message('Drag the front edge on the ground. Shift locks it to X or Z. Escape cancels creation.');};
- $('volume-cancel').onclick=()=>{if(!pending){cancel();message('Cancelled.');}};
- $('volume-visible').onchange=()=>{group.visible=preview.visible=$('volume-visible').checked;};
+ const cancelButton=actionButton('Cancel',{id:'volume-cancel'}),saveButton=actionButton('Save volume',{variant:'primary',type:'submit'});
+ const formActions=document.createElement('div');formActions.className='card-actions';formActions.append(cancelButton,saveButton);form.append(formActions);
+ const $=id=>id==='volume-form'?form:document.getElementById(id);
+ let cardMode=null,openedFromKeyboard=false;
+ const format=n=>String(Number(Number(n).toFixed(4)));
+ function message(text){status.textContent=text;}
+ function alertInCard(text){if(!cardMode)return;inspector.element.querySelector('.card-alert')?.remove();const box=document.createElement('p');box.className='card-alert';box.setAttribute('role','alert');box.textContent=text;inspector.element.querySelector('.inspector-kind')?.after(box);}
+ function editable(){return context?.editable && !pending;}
+ function buttons(){newVolume.disabled=!editable();newVolume.setAttribute('aria-pressed',String(drawing));for(const b of form.querySelectorAll('button'))b.disabled=pending;reason.hidden=!!context?.editable;reason.textContent=context?.editable?'':'Select a local Home scene to create volumes.';}
+ function mesh(volume,parent,selected=false,isDraft=false){
+  // Volumes often stand on the floor, coplanar with the grid: offset the faces and lift the drawing by a few
+  // millimetres (display only, the stored volume is unchanged) so the floor face and edges never z-fight.
+  const box=new THREE.Mesh(new THREE.BoxGeometry(1,1,1),new THREE.MeshBasicMaterial({color:0x7c3aed,transparent:true,opacity:selected?.16:.08,depthWrite:false,side:THREE.DoubleSide,polygonOffset:true,polygonOffsetFactor:-2,polygonOffsetUnits:-2}));
+  box.position.fromArray(volume.center);box.position.y+=.004;box.scale.fromArray(volume.size);box.rotation.y=volume.yaw;box.userData.volume=volume;parent.add(box);
+  const edges=new THREE.EdgesGeometry(box.geometry),material=isDraft?new THREE.LineDashedMaterial({color:0x7c3aed,dashSize:.04,gapSize:.03}):new THREE.LineBasicMaterial({color:0x7c3aed,transparent:!selected,opacity:selected?1:.4});
+  const outline=new THREE.LineSegments(edges,material);outline.position.copy(box.position);outline.scale.copy(box.scale);outline.rotation.copy(box.rotation);if(isDraft)outline.computeLineDistances();parent.add(outline);
+  const title=label(volume.title||'New volume','#6d28d9');title.scale.multiplyScalar(1.6);title.position.set(volume.center[0],volume.center[1]+volume.size[1]/2+.2,volume.center[2]);parent.add(title);
+ }
+ function draw(){clear(group);for(const v of items)if(!(draft&&v.id===editing))mesh(v,group,v.id===editing);clear(preview);if(draft)mesh(draft,preview,true,!editing);renderer.domElement.dataset.semanticVolumeCount=String(items.length);}
+ function focus(v){const distance=Math.max(3,Math.max(...v.size)*2.2),target=new THREE.Vector3(...v.center),position=target.clone().add(new THREE.Vector3(distance*.7,distance*.65,distance*.7));
+  if(flyTo)flyTo(position,target);else{controls.target.copy(target);camera.position.copy(position);controls.update();}}
+ const dimensions=v=>`${format(v.size[0].toFixed(1))} × ${format(v.size[2].toFixed(1))} m floor · ${format(v.size[1].toFixed(1))} m tall`;
+ function showList(){
+  list.replaceChildren();header.querySelector('.count-pill').textContent=String(items.length);
+  const focused=list.contains(document.activeElement)?document.activeElement.dataset.volumeId:null;
+  for(const v of items){
+   const row=listRow({title:v.title,meta:(v.description||'').split('\n')[0]||dimensions(v),tile:icon('M2 5l7-3 7 3v8l-7 3-7-3ZM2 5l7 3 7-3M9 8v8',16),accent:'violet',onSelect:e=>{openedFromKeyboard=e?.detail===0;select(v);}});
+   row.dataset.volumeId=v.id;if(v.id===editing)markSelected(row,'volumes',v.id);list.append(row);
+  }
+  if(!items.length){const p=document.createElement('p');p.className='empty-state';p.textContent='No semantic volumes in this scene.';list.append(p);}
+  if(focused)list.querySelector(`[data-volume-id="${CSS.escape(focused)}"]`)?.focus();
+ }
+ function fill(v){form.elements.title.value=v.title;form.elements.description.value=v.description;const values={x:v.center[0],z:v.center[2],base:v.center[1]-v.size[1]/2,width:v.size[0],height:v.size[1],depth:v.size[2],yaw:v.yaw*180/Math.PI};for(const [name,n] of Object.entries(values)){form.elements[name].value=format(n);form.elements[name].dataset.exact=String(n);}}
+ // Untouched fields keep their exact stored value; only edited fields use the displayed number.
+ function values(){const n=name=>{const input=form.elements[name];return Number(input.dataset.exact??input.value);};return {id:editing||'',title:form.elements.title.value.trim(),description:form.elements.description.value,semantic_type:draft?.semantic_type||'region',center:[n('x'),n('base')+n('height')/2,n('z')],size:[n('width'),n('height'),n('depth')],yaw:n('yaw')*Math.PI/180};}
+ // Inspector card: view, edit, create and delete-confirm.
+ function renderCard(mode){
+  cardMode=mode;const v=mode==='create'?draft:items.find(x=>x.id===editing)||draft;if(!v)return;
+  const nodes=[];const chip=document.createElement('span');chip.className='inspector-kind';chip.textContent=mode==='create'?'New volume':mode==='edit'?'Edit volume':'Volume';nodes.push(chip);
+  if(mode==='view'){
+   // An editable volume is renamed in place: click the name, type, Enter or click away saves.
+   if(context?.editable){const title=document.createElement('input');title.className='card-title-input';title.value=v.title;title.maxLength=120;title.setAttribute('aria-label','Volume name');title.title='Click to rename';
+    const commit=()=>{const name=title.value.trim();if(!name||name===v.title||pending||!draft){title.value=v.title;return;}draft.title=name;form.elements.title.value=name;persist(false,true);};
+    title.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();title.blur();}else if(e.key==='Escape'){e.preventDefault();e.stopPropagation();title.value=v.title;title.blur();}};
+    title.onblur=commit;nodes.push(title);}
+   else{const title=document.createElement('strong');title.textContent=v.title;nodes.push(title);}
+   const summary=document.createElement('div');summary.className='inspector-position is-text';summary.textContent=`${dimensions(v)} · ${format((v.yaw*180/Math.PI).toFixed(0))}°`;nodes.push(summary);
+   if(v.description){const d=document.createElement('p');d.className='card-description';d.textContent=v.description;nodes.push(d);}
+   if(context?.editable){const hint=document.createElement('p');hint.className='card-hint';hint.textContent='Drag the handles to move, resize or rotate. Changes save when you let go.';nodes.push(hint);
+    const row=document.createElement('div');row.className='card-actions';row.append(actionButton('Delete',{variant:'danger-ghost',onClick:confirmDelete}),actionButton('Edit',{onClick:()=>renderCard('edit')}));nodes.push(row);}
+   else{const lock=document.createElement('p');lock.className='card-readonly';lock.append(icon(icons.lock,14),document.createTextNode('Read-only · Published volume'));nodes.push(lock);}
+   form.hidden=true;nodes.push(form);
+  }else{if(mode==='edit'){const hint=document.createElement('p');hint.className='card-hint';hint.textContent='Dragging the handles updates these values. Nothing changes until you save.';nodes.push(hint);}form.hidden=false;nodes.push(form);for(const input of form.querySelectorAll('input,textarea'))input.disabled=false;}
+  inspector.open(nodes);
+  if(mode==='view'&&openedFromKeyboard){const t=inspector.element.querySelector('.card-title,:scope>strong');if(t){t.tabIndex=-1;t.focus();}}
+  if(mode!=='view')requestAnimationFrame(()=>form.elements.title.focus());
+ }
+ function confirmDelete(){
+  const v=items.find(x=>x.id===editing);if(!v)return;cardMode='confirm';
+  const row=inspector.element.querySelector('.card-actions');const box=document.createElement('div');box.className='card-confirm';box.setAttribute('role','group');box.setAttribute('aria-label','Confirm delete');
+  const question=document.createElement('p');question.textContent=`Delete “${v.title}”? This can’t be undone.`;
+  const keep=actionButton('Cancel',{onClick:()=>renderCard('view')}),remove=actionButton('Delete volume',{variant:'danger',onClick:()=>persist(true)});
+  const buttonsRow=document.createElement('div');buttonsRow.className='card-actions';buttonsRow.append(keep,remove);box.append(question,buttonsRow);
+  box.addEventListener('keydown',e=>{if(e.key==='Escape'){e.stopPropagation();renderCard('view');}});
+  row.replaceWith(box);keep.focus();
+ }
+ function endDrawing(){stopResize();drawing=false;start=null;controls.enabled=true;renderer.domElement.style.cursor='';banner.hidden=true;tick();buttons();}
+ // Resets editing state. `fromInspector` means the card was already closed by the app.
+ function cancel(fromInspector=false){endDrawing();draft=null;editing=null;conflicted=false;form.hidden=true;const open=cardMode;cardMode=null;if(open&&!fromInspector)inspector.close();draw();showList();buttons();}
+ function select(v){if(pending)return;cancel();openPanel('volumes');editing=v.id;draft=context?.editable?structuredClone(v):null;fill(v);focus(v);renderCard('view');message('');draw();showList();}
+ function begin(at=[controls.target.x,0,controls.target.z],title=''){if(!editable())return;cancel();draft={id:'',title,description:'',center:[at[0],1,at[2]],size:[2,2,1.2],yaw:0};fill(draft);focus(draft);draw();renderCard('create');message('');}
+ // Draw mode: drag the front edge on the ground; a banner explains and offers the keyboard path.
+ const banner=document.createElement('div');banner.className='placement-banner';banner.setAttribute('role','status');banner.hidden=true;
+ banner.innerHTML='<span>Drag on the floor to draw the front edge · Shift locks axis</span><kbd>Esc</kbd>';
+ // The name is typed first, as soon as New volume is clicked; drawing the edge comes after.
+ const nameField=document.createElement('input');nameField.className='placement-name';nameField.type='text';nameField.placeholder='Name this volume';nameField.setAttribute('aria-label','Volume name');nameField.maxLength=120;
+ nameField.oninput=()=>{form.elements.title.value=nameField.value;if(draft)draft.title=nameField.value;};
+ nameField.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();const name=nameField.value;cancel();begin(undefined,name);}};
+ banner.append(nameField);
+ banner.append(actionButton('Place a default box instead',{variant:'on-dark',onClick:()=>{const name=nameField.value;cancel();begin(undefined,name);}}),actionButton('Cancel',{variant:'on-dark',onClick:()=>{cancel();message('Creation cancelled.');newVolume.focus();}}));
+ renderer.domElement.parentElement.append(banner);
+ newVolume.onclick=()=>{if(!editable())return;if(drawing){cancel();message('Creation cancelled.');return;}cancel();draft={id:'',title:'',description:'',center:[controls.target.x,1,controls.target.z],size:[1,2,.6],yaw:0};fill(draft);drawing=true;start=null;controls.enabled=false;/* Drawing works on the floor from any angle, so the view stays where it is. */renderer.domElement.style.cursor='crosshair';banner.hidden=false;nameField.value='';requestAnimationFrame(()=>nameField.focus({preventScroll:true}));buttons();message('');};
+ cancelButton.onclick=()=>{if(pending)return;if(cardMode==='edit'){const v=items.find(x=>x.id===editing);if(v){draft=structuredClone(v);fill(v);draw();}renderCard('view');message('');}else{cancel();message('Cancelled.');newVolume.focus();}};
+ eye.onclick=()=>{const on=eye.getAttribute('aria-pressed')!=='true';eye.setAttribute('aria-pressed',String(on));group.visible=preview.visible=on;tick();};
  form.oninput=()=>{if(draft&&!pending){const v=values();if([...v.center,...v.size,v.yaw].every(Number.isFinite)&&v.size.every(n=>n>=.01)){draft=v;draw();}}};
+ form.addEventListener('keydown',e=>{if(e.key==='Escape'&&!resize&&!drawing){e.preventDefault();e.stopPropagation();cancelButton.click();}});
  function url(id){return '/api/semantic-volumes'+(id?'/'+encodeURIComponent(id):'')+'?scene='+encodeURIComponent(context.map);}
  async function persist(remove=false,keepSelection=false){
   if(!editable()||!draft)return;
-  if(conflicted){message('This volume changed elsewhere while you were editing. Copy your edits, then reselect the volume to reload before saving.');return;}
-  const selected=context,identifier=editing,body={frame:selected.frame,volume:remove?null:values()};
+  if(conflicted){const text='This volume changed elsewhere while you were editing. Copy your edits, then reselect the volume to reload before saving.';message(text);alertInCard(text);return;}
+  const selected=context,identifier=editing,body={frame:selected.frame,volume:remove?null:values()},before=new Set(items.map(v=>v.id));
   pending=true;buttons();endDrawing();message('Saving…');
-  try {const response=await api(url(identifier),body,remove?'DELETE':identifier?'PATCH':'POST');if(context!==selected)return;items=response.items;signature=JSON.stringify(response);if(keepSelection){draft=structuredClone(items.find(v=>v.id===identifier));fill(draft);draw();showList();}else cancel();message(remove?'Volume deleted.':'Volume saved in this scene.');}
-  catch(e){if(context===selected)message(e.message);}
+  try {const response=await api(url(identifier),body,remove?'DELETE':identifier?'PATCH':'POST');if(context!==selected)return;items=response.items;signature=JSON.stringify(response);
+   const saved=remove?null:(identifier?items.find(v=>v.id===identifier):items.find(v=>!before.has(v.id)))||null;
+   if(saved){editing=saved.id;draft=structuredClone(saved);fill(saved);draw();showList();if(!(keepSelection&&cardMode==='edit'))renderCard('view');}else cancel();
+   message(remove?'Volume deleted.':'Volume saved in this scene.');toast(remove?`Deleted “${body.volume?.title||'volume'}”`:'Volume saved');}
+  catch(e){if(context===selected){message(e.message);alertInCard(e.message);}}
   finally{if(context===selected){pending=false;buttons();}}
  }
  form.onsubmit=e=>{e.preventDefault();if(form.reportValidity())persist();};
- $('volume-delete').onclick=()=>{if(editing&&confirm('Delete this semantic volume?'))persist(true);};
  function groundPoint(e){const rect=renderer.domElement.getBoundingClientRect(),ray=new THREE.Raycaster();ray.setFromCamera(new THREE.Vector2((e.clientX-rect.left)/rect.width*2-1,-(e.clientY-rect.top)/rect.height*2+1),camera);return ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,1,0),-Number(form.elements.base.value)),new THREE.Vector3());}
  function footprint(p,shift=false){
   if(shift){if(Math.abs(p.x-start.x)>=Math.abs(p.z-start.z))p.z=start.z;else p.x=start.x;}
@@ -141,7 +229,7 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
  const canvas=renderer.domElement;
  canvas.addEventListener('pointerdown',e=>{press=[e.clientX,e.clientY];if(!drawing||e.button!==0)return;e.stopImmediatePropagation();e.preventDefault();start=groundPoint(e);if(start)canvas.setPointerCapture(e.pointerId);},true);
  canvas.addEventListener('pointermove',e=>{if(!drawing)return;e.stopImmediatePropagation();if(start){const p=groundPoint(e);if(p)footprint(p,e.shiftKey);}},true);
- canvas.addEventListener('pointerup',e=>{if(drawing){e.stopImmediatePropagation();e.preventDefault();if(start){const p=groundPoint(e);if(p)footprint(p,e.shiftKey);if(canvas.hasPointerCapture(e.pointerId))canvas.releasePointerCapture(e.pointerId);if(!p||p.distanceTo(start)<.3){start=null;message('Drag a front edge at least 30 cm long.');return;}endDrawing();message('Front edge ready. Add a title and use the handles to adjust the volume.');focus(draft);form.elements.title.focus();}return;}
+ canvas.addEventListener('pointerup',e=>{if(drawing){e.stopImmediatePropagation();e.preventDefault();if(start){const p=groundPoint(e);if(p)footprint(p,e.shiftKey);if(canvas.hasPointerCapture(e.pointerId))canvas.releasePointerCapture(e.pointerId);if(!p||p.distanceTo(start)<.3){start=null;message('Drag a front edge at least 30 cm long.');return;}endDrawing();message('Front edge ready. Add a title and use the handles to adjust the volume.');focus(draft);renderCard('create');}return;}
   if(pending||e.button!==0||!press||Math.hypot(e.clientX-press[0],e.clientY-press[1])>4||!group.visible)return;
   const r=canvas.getBoundingClientRect(),ray=new THREE.Raycaster();ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),camera);
   // Notes are drawn through translucent volumes. Let the normal scene picker
@@ -151,8 +239,8 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
   const hit=ray.intersectObjects([...group.children,...preview.children]).find(h=>h.object.userData.volume);if(hit){e.semanticVolume=true;select(hit.object.userData.volume);}
  },true);
  canvas.addEventListener('pointercancel',()=>{if(drawing){cancel();message('Creation cancelled.');}});
- document.addEventListener('keydown',e=>{if(e.key==='Escape'&&resize){stopResize(true);message('Edit cancelled.');}else if(e.key==='Escape'&&drawing){cancel();message('Creation cancelled.');}});
- return {tick,pick(ray){if(drawing||resize||!group.visible)return null;return ray.intersectObjects([...group.children,...preview.children]).find(h=>h.object.userData.volume);},update(map,data){const editable=map.startsWith('local:')||map==='demo';if(!context||context.map!==map||context.frame!==data?.frame){context={map,frame:data?.frame,editable};pending=false;items=[];cancel();signature='';message(editable?'Create a box or drag its footprint in the viewer.':'Select a local Home scene to create volumes.');}const collection=data?.semantic_volumes;const next=JSON.stringify(collection||null);if(next!==signature){signature=next;const previous=items.find(v=>v.id===editing);items=collection?.frame===data.frame?collection.items:[];const remote=items.find(v=>v.id===editing);if(editing&&!pending&&!resize){if(!remote){cancel();message('This volume was deleted elsewhere.');}else if(draft&&previous){const merged=mergeVolumeDraft(previous,values(),remote);draft=merged.draft;conflicted=conflicted||merged.conflicts.length>0;fill(draft);if(conflicted)message('Conflicting edits: '+merged.conflicts.join(', ')+'. Copy your edits and reselect the volume before saving.');}else if(!draft)fill(remote);}draw();showList();}buttons();},reset(){context=null;items=[];pending=false;cancel();buttons();message('Loading selected scene…');}};
+ document.addEventListener('keydown',e=>{if(e.key!=='Escape')return;if(resize){e.stopImmediatePropagation();e.preventDefault();stopResize(true);message('Edit cancelled.');}else if(drawing){e.stopImmediatePropagation();e.preventDefault();cancel();message('Creation cancelled.');newVolume.focus();}},true);
+ return {tick,beginAt:point=>begin(point),closed(){if(cardMode)cancel(true);},pick(ray){if(drawing||resize||!group.visible)return null;return ray.intersectObjects([...group.children,...preview.children]).find(h=>h.object.userData.volume);},update(map,data){const editable=map.startsWith('local:')||map==='demo';if(!context||context.map!==map||context.frame!==data?.frame){context={map,frame:data?.frame,editable};pending=false;items=[];cancel();signature='';message('');}const collection=data?.semantic_volumes;const next=JSON.stringify(collection||null);if(next!==signature){signature=next;const previous=items.find(v=>v.id===editing);items=collection?.frame===data.frame?collection.items:[];const remote=items.find(v=>v.id===editing);if(editing&&!pending&&!resize){if(!remote){cancel();message('This volume was deleted elsewhere.');}else if(draft&&previous){const merged=mergeVolumeDraft(previous,values(),remote);draft=merged.draft;conflicted=conflicted||merged.conflicts.length>0;fill(draft);if(conflicted)message('Conflicting edits: '+merged.conflicts.join(', ')+'. Copy your edits and reselect the volume before saving.');}else if(!draft)fill(remote);}draw();showList();}buttons();},reset(){context=null;items=[];pending=false;cancel();buttons();message('Loading selected scene…');}};
 }
 
 // Refresh untouched fields while retaining unsaved edits; never silently overwrite a conflict.

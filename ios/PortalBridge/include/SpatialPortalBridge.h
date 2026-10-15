@@ -32,6 +32,13 @@ void spatial_mobile_depth_image(uint64_t timestamp, const char *session, uint32_
 char *spatial_mobile_calibrate(const uint8_t *luma, size_t length, const char *capture);
 int32_t spatial_mobile_annotate(const char *request);
 int32_t spatial_mobile_change_note(const char *request);
+char *spatial_mobile_onboarding_screen(const char *model);
+char *spatial_mobile_onboarding_host(const char *request);
+char *spatial_mobile_onboarding_parse(const char *scanned);
+char *spatial_mobile_onboarding_join(const char *scanned);
+void spatial_mobile_onboarding_stop(void);
+char *spatial_mobile_onboarding_qr(const char *text);
+int32_t spatial_mobile_onboarding_frame(const uint8_t *luma, size_t length, const char *frame);
 void spatial_mobile_string_free(char *value);
 #ifdef __cplusplus
 }

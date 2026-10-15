@@ -26,7 +26,7 @@ impl Camera {
             ComponentSpec::new("simulator-rgb-camera").observable(ObservableContract {
                 name: "frames".into(),
                 datatype: VideoFrame::DATATYPE.into(),
-                schema: "auki.video-frame/v1".into(),
+                schema: crate::camera_frame::SCHEMA.into(),
                 access: vec![ObservationAccess::FollowNew],
                 exposure: Exposure::Cluster,
             }),
@@ -40,7 +40,7 @@ impl Camera {
                 crate::model::clock_ref(&clock),
                 PayloadContract::Camera(CameraPayloadContract {
                     datatype: VideoFrame::DATATYPE.into(),
-                    schema: "auki.video-frame/v1".into(),
+                    schema: crate::camera_frame::SCHEMA.into(),
                     encoding: "jpeg".into(),
                     width: WIDTH,
                     height: HEIGHT,
@@ -66,7 +66,7 @@ impl Camera {
             |frame: &VideoFrame| frame.bytes.len(),
         )?;
         let endpoint = ComponentProtocolEndpoint::mount(peer.protocols(), runtime.clone())?;
-        endpoint.export_product(&capture.product())?;
+        endpoint.export_product_with_encoder(&capture.product(), crate::camera_frame::encoder())?;
         Ok(Self {
             runtime,
             endpoint,

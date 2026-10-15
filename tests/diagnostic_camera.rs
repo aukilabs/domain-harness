@@ -10,6 +10,14 @@ mod fisheye {pub use spatial_home::fisheye::*;}
 struct Home {schema:String,domain_id:String,peer_id:String,routes:Vec<String>,frame:String,product_id:String}
 #[allow(dead_code)] #[path="../diagnostics/connection-peer/src/poses.rs"] mod poses;
 #[allow(dead_code)] #[path="../diagnostics/connection-peer/src/camera.rs"] mod camera;
+// The camera and alignment modules hand their transforms to the pointer as
+// this type; the pointer itself (arm motion) is not part of these tests.
+#[allow(dead_code)] mod pointer {
+    pub struct Transform {
+        pub contract: crate::compact_pose::Contract,
+        pub product: auki_components::RetainedProduct<crate::compact_pose::Update>,
+    }
+}
 
 #[tokio::test(flavor="multi_thread",worker_threads=4)]
 async fn diagnostic_jpeg_reaches_generic_home_preview_unchanged()->anyhow::Result<()> {
