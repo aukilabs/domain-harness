@@ -980,10 +980,39 @@ function keepSpriteSizes(amount){
   obj.scale.copy(base).multiplyScalar(perspective00*((1-amount)*depth+amount)/p00);
  }
 }
+// Smooth wheel zoom: a wheel notch eases in over ~70 ms instead of cutting 5% in one frame (trackpads and pinches,
+// already smooth, apply on the next frame). Same scale per notch as OrbitControls, and the same zoom-to-cursor: the
+// camera dollies along the ray through the cursor, then the target is re-derived as OrbitControls does. Wheels over
+// the canvas or the label, handle and locator layers above it land here; OrbitControls' own wheel never fires.
+let wheelZoom=0,wheelTau=0,wheelAt=null,wheelLast=0;
+renderer.domElement.parentElement.addEventListener('wheel',e=>{
+ if(!(e.target===renderer.domElement||e.target.closest?.('.scene-labels,.volume-handles,.content-locator')))return;
+ if(!controls.enabled||!controls.enableZoom||controls.state!==-1||attachedCamera.isActive()||map2D.isActive())return;
+ e.preventDefault();e.stopPropagation();cameraPan.cancel();
+ const delta=e.deltaY*([1,16,100][e.deltaMode]??1)*(e.ctrlKey?10:1);
+ wheelZoom+=Math.sign(delta)*Math.log(1/.95)*controls.zoomSpeed*Math.abs(delta)*.01;
+ wheelTau=e.deltaMode!==0||(Math.abs(e.deltaY)>=50&&!e.ctrlKey)?70:0;wheelAt=[e.clientX,e.clientY];
+},{capture:true,passive:false});
+renderer.domElement.addEventListener('pointerdown',()=>{wheelZoom=0;},true);
+$('map-select').addEventListener('change',()=>{wheelZoom=0;});
+const wheelRay=new THREE.Vector3(),wheelView=new THREE.Vector3(),wheelPlane=new THREE.Plane(),wheelHit=new THREE.Vector3();
+function applyWheelZoom(now){
+ if(!wheelZoom){wheelLast=0;return;}
+ const dt=Math.min(64,wheelLast?now-wheelLast:16);wheelLast=now;
+ const step=wheelTau?wheelZoom*(1-Math.exp(-dt/wheelTau)):wheelZoom;wheelZoom=Math.abs(wheelZoom-step)<1e-4?0:wheelZoom-step;
+ const before=camera.position.distanceTo(controls.target),after=THREE.MathUtils.clamp(before*Math.exp(step),controls.minDistance,controls.maxDistance);
+ if(Math.abs(after-before)<1e-6){wheelZoom=0;return;}
+ const r=renderer.domElement.getBoundingClientRect();
+ wheelRay.set((wheelAt[0]-r.left)/r.width*2-1,1-(wheelAt[1]-r.top)/r.height*2,.5).unproject(camera).sub(camera.position).normalize();
+ camera.position.addScaledVector(wheelRay,before-after);camera.updateMatrixWorld();
+ wheelView.set(0,0,-1).transformDirection(camera.matrixWorld);
+ if(Math.abs(camera.up.dot(wheelView))<Math.cos(THREE.MathUtils.degToRad(70)))camera.lookAt(controls.target);
+ else{wheelPlane.setFromNormalAndCoplanarPoint(camera.up,controls.target);if(new THREE.Ray(camera.position,wheelView).intersectPlane(wheelPlane,wheelHit))controls.target.copy(wheelHit);}
+}
 // The camera never goes beneath the grid. Orbiting is limited to above the horizon, but views the assistant sets
 // (and detaching an attached camera) lift that limit, so the floor is also held here, every frame.
 function keepAboveGrid(){if(attachedCamera.isActive()||map2D.isActive())return;const floor=grid.position.y+.05;if(camera.position.y<floor)camera.position.y=floor;}
-renderer.setAnimationLoop(now=>{easeViewOffset();if(!cameraPan.tick(now)&&!attachedCamera.isActive())controls.update();keepAboveGrid();ghostCamera.tick(now);if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);updateFlatten();
+renderer.setAnimationLoop(now=>{easeViewOffset();if(!cameraPan.tick(now)&&!attachedCamera.isActive()){applyWheelZoom(now);controls.update();}else wheelZoom=0;keepAboveGrid();ghostCamera.tick(now);if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);updateFlatten();
  // Volume handles are HTML placed from this frame's camera: settle its matrices and projection first so they never trail a glide.
  camera.updateMatrixWorld();semanticVolumes.tick();sceneLabels.setSelected(selectedNoteId?'note:'+selectedNoteId:null);sceneLabels.tick(now);renderer.render(scene,camera);});
 refresh().catch(e=>{$('notice').textContent=e.message;$('notice').classList.add('error');});setInterval(()=>{if(!busy)refresh().catch(()=>{});},500);
