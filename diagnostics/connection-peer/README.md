@@ -29,9 +29,13 @@ argument opts in to the local arm adapter, `scripts/diagnostic-arm.py`:
 - `--arm-plan`: the adapter plans each request against the live arm (measured
   joint limits, current pose, feedback health) and refuses what it cannot
   reach. It opens no arm writer and never moves anything.
-- `--arm-motion`: a planned request then moves. The arm eases to sides HOME,
-  swings straight forward, aims its finger axis at the target, holds 3 s and
-  returns, then releases its writers to BBOS. It refuses to take an arm another
+- `--arm-motion`: a planned request then moves, the way Quest teleop
+  (`bbapps/quest_teleop`) moves the arm: it eases to BBOS's own `cfg.home`,
+  then the hand glides to a pointing pose (fingers on the target) through
+  BBOS's `hybrid_ik`, one solve per tick, speed-capped. It holds 3 s, retraces
+  the same path back to where it started, then releases its writers to BBOS.
+  The whole path is solved and checked (joint limits, joint speed, the clear
+  envelope, the final aim) before anything moves. It refuses to take an arm another
   writer holds, and yields on stale feedback, tilt, low battery, temperature or
   current margins, or a following error. Clear the space in front of the robot.
 

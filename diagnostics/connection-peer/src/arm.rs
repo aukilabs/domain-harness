@@ -18,7 +18,7 @@ use std::{
 };
 
 pub const MOUNT: &str = "bbos-arm-mount";
-/// A move is HOME, forward, aim, hold and back; it finishes well inside this.
+/// A move is ready, point, hold and retrace (a few seconds each way); it finishes well inside this.
 pub const MOTION_TIMEOUT: Duration = Duration::from_secs(60);
 const PLAN_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -254,7 +254,7 @@ impl Arm {
 impl Drop for Arm {
     fn drop(&mut self) {
         // Closing stdin ends the adapter after any move in progress has
-        // returned the arm to HOME; never kill it mid-move unless it hangs.
+        // returned the arm to where it started; never kill it mid-move unless it hangs.
         self.stdin.lock().unwrap().take();
         let until = Instant::now() + MOTION_TIMEOUT;
         while Instant::now() < until {
