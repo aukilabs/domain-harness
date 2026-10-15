@@ -1274,18 +1274,26 @@ html.booted body{animation:boot-in .3s ease}
 :root[data-theme="light"] .capability-card{background:rgba(255,255,255,.6);box-shadow:inset 0 0 0 1px var(--glass-rim),0 1px 2px rgba(24,24,27,.04)}
 #device-detail .capability-card .capability{padding:10px 0}
 #device-detail .capability-card .capability .list-row-title{font-size:13.5px;font-weight:500}
-/* Right-click spot menu as a donut: a glass ring centred on the spot, split into four wedges by a hairline
-   cross, a tool on each diagonal, and a small hollow centre the floor marker shows through. Earlier .spot-menu rules set the bar; these replace them. */
-.spot-menu{--hole:18px;--divider:rgba(24,24,27,.1);display:block;width:152px;height:152px;padding:0;border:0;border-radius:50%;background:none;-webkit-backdrop-filter:none;backdrop-filter:none;box-shadow:0 18px 40px -14px rgba(24,24,27,.32),0 2px 6px rgba(24,24,27,.06);transform-origin:50% 50%}
+/* Right-click spot menu as a donut: a glass ring centred on the spot, split into four wedges by hairlines
+   across the middle 60% of the band, a tool on each diagonal, and a small hollow centre the floor marker shows through. Earlier .spot-menu rules set the bar; these replace them. */
+.spot-menu{--hole:18px;--band:calc(76px - var(--hole));--divider:rgba(24,24,27,.1);display:block;width:152px;height:152px;padding:0;border:0;border-radius:50%;background:none;-webkit-backdrop-filter:none;backdrop-filter:none;box-shadow:0 18px 40px -14px rgba(24,24,27,.32),0 2px 6px rgba(24,24,27,.06);transform-origin:50% 50%}
 :root:not([data-theme="light"]) .spot-menu{box-shadow:0 18px 40px -14px rgba(0,0,0,.6)}
 .spot-menu[data-closing]{pointer-events:none}
 .spot-menu:focus{outline:none!important;animation:none!important}
 :root:not([data-theme="light"]) .spot-menu{--divider:rgba(255,255,255,.1)}
-.spot-menu::before{content:"";position:absolute;inset:0;border-radius:50%;background:linear-gradient(var(--divider),var(--divider)) center/1px 100% no-repeat,linear-gradient(var(--divider),var(--divider)) center/100% 1px no-repeat,color-mix(in srgb,var(--nav-panel) 88%,transparent);-webkit-backdrop-filter:blur(24px) saturate(1.3);backdrop-filter:blur(24px) saturate(1.3);box-shadow:inset 0 0 0 1px rgba(255,255,255,.6);-webkit-mask:radial-gradient(circle,transparent calc(var(--hole) - .5px),#000 calc(var(--hole) + .5px));mask:radial-gradient(circle,transparent calc(var(--hole) - .5px),#000 calc(var(--hole) + .5px))}
+.spot-menu::before{content:"";position:absolute;inset:0;border-radius:50%;background:linear-gradient(transparent calc(var(--band)*.2),var(--divider) 0 calc(var(--band)*.8),transparent 0 calc(100% - var(--band)*.8),var(--divider) 0 calc(100% - var(--band)*.2),transparent 0) center/1px 100% no-repeat,linear-gradient(90deg,transparent calc(var(--band)*.2),var(--divider) 0 calc(var(--band)*.8),transparent 0 calc(100% - var(--band)*.8),var(--divider) 0 calc(100% - var(--band)*.2),transparent 0) center/100% 1px no-repeat,color-mix(in srgb,var(--nav-panel) 88%,transparent);-webkit-backdrop-filter:blur(24px) saturate(1.3);backdrop-filter:blur(24px) saturate(1.3);box-shadow:inset 0 0 0 1px rgba(255,255,255,.6);-webkit-mask:radial-gradient(circle,transparent calc(var(--hole) - .5px),#000 calc(var(--hole) + .5px));mask:radial-gradient(circle,transparent calc(var(--hole) - .5px),#000 calc(var(--hole) + .5px))}
 .spot-menu::after{content:"";position:absolute;left:50%;top:50%;width:calc(var(--hole)*2);height:calc(var(--hole)*2);margin:calc(var(--hole)*-1) 0 0 calc(var(--hole)*-1);border-radius:50%;box-shadow:0 0 0 1px var(--glass-rim),inset 0 2px 5px rgba(24,24,27,.12);pointer-events:none}
 :root:not([data-theme="light"]) .spot-menu::before{box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)}
 :root:not([data-theme="light"]) .spot-menu::after{box-shadow:0 0 0 1px rgba(255,255,255,.08),inset 0 2px 5px rgba(0,0,0,.35)}
-.spot-menu .agent-tool{position:absolute;z-index:1;left:calc(50% + var(--x) - 21px);top:calc(50% + var(--y) - 21px)}
+/* Each tool is a whole quarter of the ring (clip-path set from app.js), so the wedge is what lights up. */
+.spot-menu .agent-tool{position:absolute;z-index:1;inset:0;width:auto;height:auto;border-radius:0;transition:background .15s ease}
+.spot-menu .agent-tool .rail-face{position:absolute;left:calc(50% + var(--x) - 20px);top:calc(50% + var(--y) - 20px);background:none!important;box-shadow:none!important}
+.spot-menu .agent-tool .rail-glint{display:none}
+.spot-menu .agent-tool:not([aria-disabled="true"]):is(:hover,:focus-visible){background:radial-gradient(90px circle at var(--spot-x,50%) var(--spot-y,50%),rgba(255,255,255,.9),transparent 70%),rgba(24,24,27,.075)}
+:root:not([data-theme="light"]) .spot-menu .agent-tool:not([aria-disabled="true"]):is(:hover,:focus-visible){background:radial-gradient(90px circle at var(--spot-x,50%) var(--spot-y,50%),rgba(255,255,255,.1),transparent 70%),rgba(255,255,255,.06)}
+.spot-menu .agent-tool:focus-visible .rail-face{outline:0!important}
+.spot-menu .agent-tool:focus-visible{background:color-mix(in srgb,var(--focus) 16%,transparent)!important}
+.spot-menu .agent-tool:not([aria-disabled="true"]):active{background:color-mix(in srgb,var(--tab) 18%,transparent)}
 .spot-menu .agent-tool:not([aria-disabled="true"]):is(:hover,:focus-visible) .rail-face svg{color:var(--tab-ink)}
 .spot-menu .spot-ask .agent-orb{transition:transform .3s var(--ease-spring)}
 .spot-menu .spot-ask:is(:hover,:focus-visible) .agent-orb{transform:translateZ(6px) scale(1.1)}

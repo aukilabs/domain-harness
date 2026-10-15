@@ -1713,7 +1713,10 @@ spotMarker.rotation.x=-Math.PI/2;spotMarker.renderOrder=-1;spotMarker.visible=fa
 // reachable from the keyboard; arrow keys step around the ring (roving tabindex).
 const spotMenu=document.createElement('div');spotMenu.className='spot-menu';spotMenu.hidden=true;spotMenu.setAttribute('role','menu');spotMenu.setAttribute('aria-label','Tools at this spot');spotMenu.tabIndex=-1;document.body.append(spotMenu);
 // Clockwise from the top right: [place, x, y, the side its hint opens on].
-const SPOT_PLACES=[['top-right',1,-1,'right'],['bottom-right',1,1,'right'],['bottom-left',-1,1,'left'],['top-left',-1,-1,'left']],SPOT_RADIUS=50,SPOT_SIZE=152;
+const SPOT_PLACES=[['top-right',1,-1,'right'],['bottom-right',1,1,'right'],['bottom-left',-1,1,'left'],['top-left',-1,-1,'left']],SPOT_RADIUS=50,SPOT_SIZE=152,SPOT_HOLE=18;
+// Each tool is one quarter of the ring (its hit area and hover fill), with a hairline gap to its neighbours.
+function spotWedge(qx,qy){const c=SPOT_SIZE/2,outer=c-.5,inner=SPOT_HOLE+1,gap=1,along=r=>Math.sqrt(r*r-gap*gap),at=(x,y)=>`${(c+x).toFixed(2)} ${(c+y).toFixed(2)}`,sweep=qx*qy<0?1:0;
+ return `path('M${at(gap*qx,along(outer)*qy)} A${outer} ${outer} 0 0 ${sweep} ${at(along(outer)*qx,gap*qy)} L${at(along(inner)*qx,gap*qy)} A${inner} ${inner} 0 0 ${1-sweep} ${at(gap*qx,along(inner)*qy)} Z')`;}
 let spot=null,rightStart=null;
 function spotTool(label,face,accent,run,disabledReason=''){
  const button=document.createElement('button');button.type='button';button.className='agent-tool';button.dataset.accent=accent;button.setAttribute('role','menuitem');button.setAttribute('aria-label',label);button.tabIndex=-1;
@@ -1742,7 +1745,7 @@ function openSpotMenu(e){
   spotTool('Ask about this spot',orb,'zinc')];
  const ask=tools[3];ask.classList.add('spot-ask');ask.onclick=()=>{chatFocus=spot.point.toArray().map(n=>Math.round(n*1000)/1000);closeSpotMenu(false);agentBar.open();};
  const offset=v=>Math.round(v*SPOT_RADIUS*Math.SQRT1_2);
- tools.forEach((tool,i)=>{const [place,dx,dy,side]=SPOT_PLACES[i];tool.dataset.place=place;tool.dataset.side=side;tool.style.setProperty('--x',offset(dx)+'px');tool.style.setProperty('--y',offset(dy)+'px');});
+ tools.forEach((tool,i)=>{const [place,dx,dy,side]=SPOT_PLACES[i];tool.dataset.place=place;tool.dataset.side=side;tool.style.setProperty('--x',offset(dx)+'px');tool.style.setProperty('--y',offset(dy)+'px');tool.style.clipPath=spotWedge(dx,dy);});
  spotMenu.replaceChildren(...tools);spotMenu.getAnimations({subtree:true}).forEach(a=>a.cancel());delete spotMenu.dataset.closing;spotMenu.hidden=false;
  // Centred on the cursor, shifted inward near an edge so the whole ring stays on screen.
  const half=SPOT_SIZE/2,x=Math.min(Math.max(half+8,e.clientX),innerWidth-half-8),y=Math.min(Math.max(half+8,e.clientY),innerHeight-half-8);
@@ -1752,7 +1755,7 @@ function openSpotMenu(e){
  if(!matchMedia('(prefers-reduced-motion: reduce)').matches){
   const spring='cubic-bezier(.34,1.56,.64,1)';spotMenu.dataset.opening='true';spotMenu.settle=setTimeout(()=>delete spotMenu.dataset.opening,620);
   spotMenu.animate([{opacity:0,transform:'scale(.4)'},{opacity:1,transform:'none'}],{duration:380,easing:spring});
-  tools.forEach((tool,i)=>{const [,dx,dy]=SPOT_PLACES[i];tool.animate([{opacity:0,transform:`translate(${-offset(dx)}px,${-offset(dy)}px) scale(.3)`},{opacity:1,transform:'none'}],{duration:420,delay:50+i*45,easing:spring,fill:'backwards'});});
+  tools.forEach((tool,i)=>tool.animate([{opacity:0,transform:'scale(.5)'},{opacity:1,transform:'none'}],{duration:420,delay:50+i*45,easing:spring,fill:'backwards'}));
  }
  // The menu takes focus, not a tool: nothing looks selected until the pointer or an arrow key picks one.
  spotMenu.focus({preventScroll:true});
@@ -1762,8 +1765,9 @@ const spotTip=document.createElement('div');spotTip.className='rail-tooltip spot
 let spotTipTimer=0;
 function showSpotTip(button){
  spotTip.textContent=button.dataset.tip;spotTip.dataset.side=button.dataset.side;spotTip.hidden=false;
- const box=button.getBoundingClientRect(),tip=spotTip.getBoundingClientRect(),side=button.dataset.side,gap=10;
- const x=side==='left'?box.left-gap-tip.width:side==='right'?box.right+gap:box.left+(box.width-tip.width)/2,y=side==='top'?box.top-gap-tip.height:side==='bottom'?box.bottom+gap:box.top+(box.height-tip.height)/2;
+ // Level with the tool's icon, just outside the ring on its side.
+ const ring=spotMenu.getBoundingClientRect(),box=button.querySelector('.rail-face').getBoundingClientRect(),tip=spotTip.getBoundingClientRect(),gap=10;
+ const x=button.dataset.side==='left'?ring.left-gap-tip.width:ring.right+gap,y=box.top+(box.height-tip.height)/2;
  spotTip.style.left=Math.min(Math.max(8,x),innerWidth-tip.width-8)+'px';spotTip.style.top=Math.min(Math.max(8,y),innerHeight-tip.height-8)+'px';}
 spotMenu.addEventListener('pointerover',e=>{const button=e.target.closest('[data-tip]');if(!button||spotMenu.dataset.opening)return;clearTimeout(spotTipTimer);spotTipTimer=setTimeout(()=>showSpotTip(button),spotTip.hidden?120:0);});
 spotMenu.addEventListener('pointerout',e=>{if(!e.relatedTarget?.closest?.('.spot-menu [data-tip]')){clearTimeout(spotTipTimer);spotTip.hidden=true;}});
