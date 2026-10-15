@@ -121,11 +121,19 @@ export function createSceneLabels({camera,controls,renderer,parent=renderer.domE
   return null;
  }
 
+ // The zoom measure's distance: to the nearest label in view, the largest one on screen. Not the orbit target, which
+ // can rest just ahead of a camera sunk low with labels far off across the floor. With none in view, the target.
+ function nearestInView(){
+  let nearest=Infinity;
+  for(const label of labels.values()){if(!shown(label.item.anchor))continue;label.item.anchor.getWorldPosition(at);point.copy(at).project(camera);
+   if(point.z>-1&&point.z<1&&Math.abs(point.x)<=1.1&&Math.abs(point.y)<=1.1)nearest=Math.min(nearest,camera.position.distanceTo(at));}
+  return nearest<Infinity?nearest:camera.position.distanceTo(controls.target);
+ }
  function tick(now=performance.now()){
   layer.hidden=hidden();if(layer.hidden)return;
   // The layer fills the canvas's host, so the host rect the app measured this frame stands in for it.
   const shared=rects();canvasRect=shared?.canvas||renderer.domElement.getBoundingClientRect();host=shared?.host||layer.getBoundingClientRect();
-  const distance=camera.position.distanceTo(controls.target),mpp=2*distance*Math.tan(THREE.MathUtils.degToRad(camera.fov/2))/Math.max(1,canvasRect.height);
+  const distance=nearestInView(),mpp=2*distance*Math.tan(THREE.MathUtils.degToRad(camera.fov/2))/Math.max(1,canvasRect.height);
   const nextTier=zoomTier(mpp,tier);if(nextTier!==tier){tier=nextTier;dirty=true;}
   // Positions snap to device pixels once the view has been still for 100 ms; while it moves they stay sub-pixel.
   if(!lastWorld.equals(camera.matrixWorld)||!lastProjection.equals(camera.projectionMatrix)||lastSize!==canvasRect.width+canvasRect.height*1e5){lastWorld.copy(camera.matrixWorld);lastProjection.copy(camera.projectionMatrix);lastSize=canvasRect.width+canvasRect.height*1e5;restSince=now;}const still=now-restSince>100;moving=!still;

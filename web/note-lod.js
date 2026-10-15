@@ -1,6 +1,6 @@
 // Zoom tiers and note clusters for the scene labels: pure logic, no DOM or three.js.
-// The tier comes from one measure for the whole scene, metres per CSS pixel at the orbit target, so every label
-// changes form together. Tier 0 shows text, 1 pins and tile-only volume chips, 2 note clusters. Each step has ±5%
+// The tier comes from one measure for the whole scene, metres per CSS pixel at the nearest label in view (else the
+// orbit target), so every label changes form together. Tier 0 shows text, 1 pins and tile-only volume chips, 2 note clusters. Each step has ±5%
 // hysteresis, wider than one 5% wheel notch, so a single notch back and forth never flaps.
 export const TIERS=[{up:.026,down:.0235},{up:.048,down:.0435}];
 export function zoomTier(mpp,previous=0){
