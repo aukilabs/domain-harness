@@ -228,11 +228,18 @@ wire layout and coordinated producer/consumer rollout requirements.
 Any pose mode (`--poses`, `--portals`, `--points`) also starts
 `scripts/diagnostic-robot-state.py`, which reads BBOS arm states and
 `drive.status` from shared memory (no motor commands) and writes local stdout IPC.
-It feeds two Products, both declaring the body they belong to in
+It feeds three Products, each declaring the body it belongs to in
 `spatial-harness.robot-body/v1` metadata (`src/robot_state.rs` in Home):
 
 - `bbos-joints`: URDF joint positions from each arm's own `q2urdf`, 5 Hz.
-- `bbos-health`: per-joint motor temperature and current, and the battery, 1 Hz.
+- `bbos-health`: per-joint motor temperature and current, 1 Hz.
+- `bbos-battery`: the battery from `drive.status`, whenever it updates.
+
+Each observation is one source at that source's own BBOS capture time: one arm's
+state, or one `drive.status` reading. Two arms are never merged under one
+timestamp, and nothing is stamped with the time it was read; Home merges the
+arms by joint name. `bbos-pointing` carries each arm-adapter phase at the time
+`diagnostic-arm.py` reported it, on the same clock.
 
 The declaration names the body model (`bracketbot`) and pins its root to the
 exact `bbos-base` frame reference and `bbos-capture` clock of `bbos-pose`, so a

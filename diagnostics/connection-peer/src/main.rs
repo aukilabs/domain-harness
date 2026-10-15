@@ -438,8 +438,10 @@ async fn main() -> Result<()> {
                 }
                 if let Some(p)=publisher.as_ref() {
                     let result=(|| {
+                        // Published at the time the phase happened, never when it arrived here.
+                        let at=reply.timestamp_ns.ok_or_else(||anyhow::anyhow!("Arm adapter phase {} has no time",reply.phase))?;
                         if body_publisher.is_none(){body_publisher=Some(body::Body::mount(p)?);}
-                        body_publisher.as_mut().unwrap().publish_pointing(robot_state::Pointing {
+                        body_publisher.as_mut().unwrap().publish_pointing(at,robot_state::Pointing {
                             request_id,phase:reply.phase,arm,reason:reply.reason,code:reply.code})
                     })();
                     if let Err(e)=result {eprintln!("Pointing status publish failed: {e}");}

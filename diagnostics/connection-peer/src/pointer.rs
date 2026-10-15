@@ -356,6 +356,7 @@ impl Shared {
                     executes: None,
                     arm: None,
                     code: Some("unreachable".into()),
+                    timestamp_ns: Some(now_ns()),
                 });
             }
         }

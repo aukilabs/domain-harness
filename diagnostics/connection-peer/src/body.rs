@@ -1,23 +1,30 @@
-//! Bracketbot body state: `bbos-joints`, `bbos-health` and `bbos-pointing`, each
-//! declaring the body model rooted at the published pose's base frame, on the pose clock.
+//! Bracketbot body state: `bbos-joints`, `bbos-health`, `bbos-battery` and
+//! `bbos-pointing`, each declaring the body model rooted at the published pose's
+//! base frame, on the pose clock. Every observation is stamped with the capture
+//! time of what it holds: one arm's state, the battery, or a pointing phase.
 use anyhow::{Result, ensure};
 use auki_components::*;
 use serde::Deserialize;
 use std::sync::Arc;
-use crate::robot_state::{Battery, BodyContract, Health, JointHealth, Joints, Pointing, HEALTH_SCHEMA, JOINTS_SCHEMA, METADATA, POINTING_SCHEMA};
+use crate::robot_state::{Battery, BodyContract, Health, JointHealth, Joints, Pointing, BATTERY_SCHEMA, HEALTH_SCHEMA, JOINTS_SCHEMA, METADATA, POINTING_SCHEMA};
 use std::collections::BTreeMap;
 
 /// The URDF the Home viewer serves for this body.
 const MODEL: &str = "bracketbot";
 const JOINTS: &str = "bbos-joints";
 const HEALTH: &str = "bbos-health";
+const BATTERY: &str = "bbos-battery";
 const POINTING: &str = "bbos-pointing";
 
 #[derive(Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Sample {
+    /// One arm's positions, at its BBOS arm-state capture time.
     Joints { timestamp_ns: u64, positions: BTreeMap<String, f64> },
-    Health { timestamp_ns: u64, #[serde(default)] joints: BTreeMap<String, JointHealth>, battery: Option<Battery> },
+    /// One arm's motor readings, at its BBOS arm-state capture time.
+    Health { timestamp_ns: u64, joints: BTreeMap<String, JointHealth> },
+    /// The battery, at its BBOS `drive.status` capture time.
+    Battery { timestamp_ns: u64, battery: Battery },
 }
 
 pub fn start() -> (tokio::task::JoinHandle<()>, tokio::sync::mpsc::Receiver<Sample>) {
@@ -86,6 +93,7 @@ impl<T: ContractType + Send + Sync + 'static> Stream<T> {
 pub struct Body {
     joints: Stream<Joints>,
     health: Stream<Health>,
+    battery: Stream<Battery>,
     pointing: Stream<Pointing>,
 }
 impl Body {
@@ -95,7 +103,8 @@ impl Body {
         body.validate()?;
         Ok(Self {
             joints: stream(p, &body, JOINTS, JOINTS_SCHEMA, "urdf_joint_positions")?,
-            health: stream(p, &body, HEALTH, HEALTH_SCHEMA, "motor_and_battery_health")?,
+            health: stream(p, &body, HEALTH, HEALTH_SCHEMA, "motor_health")?,
+            battery: stream(p, &body, BATTERY, BATTERY_SCHEMA, "battery")?,
             pointing: stream(p, &body, POINTING, POINTING_SCHEMA, "pointing_request_status")?,
         })
     }
@@ -106,27 +115,32 @@ impl Body {
                 joints.validate()?;
                 self.joints.publish(timestamp_ns, joints)
             }
-            Sample::Health {timestamp_ns, joints, battery} => {
-                let health = Health {joints, battery};
+            Sample::Health {timestamp_ns, joints} => {
+                let health = Health {joints, battery: None};
                 health.validate()?;
                 self.health.publish(timestamp_ns, health)
             }
+            Sample::Battery {timestamp_ns, battery} => {
+                battery.validate()?;
+                self.battery.publish(timestamp_ns, battery)
+            }
         }
     }
-    /// The latest pointing phase, stamped now on the capture clock (UTC ns).
-    pub fn publish_pointing(&mut self, pointing: Pointing) -> Result<()> {
+    /// A pointing phase at the time it happened, on the capture clock (UTC ns
+    /// on this robot). A phase no later than the last one is refused, not restamped.
+    pub fn publish_pointing(&mut self, timestamp_ns: u64, pointing: Pointing) -> Result<()> {
         pointing.validate()?;
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos() as u64;
-        // Phases can share a nanosecond; keep every one, in order.
-        let timestamp_ns = now.max(self.pointing.last + 1);
+        ensure!(timestamp_ns > self.pointing.last, "Pointing phase {} is not after the previous one", pointing.phase);
         self.pointing.publish(timestamp_ns, pointing)
     }
     pub fn close(self, p: &crate::poses::Publisher) -> Result<()> {
         p.endpoint.unexport_product(JOINTS);
         p.endpoint.unexport_product(HEALTH);
+        p.endpoint.unexport_product(BATTERY);
         p.endpoint.unexport_product(POINTING);
         self.joints.capture.delete()?;
         self.health.capture.delete()?;
+        self.battery.capture.delete()?;
         self.pointing.capture.delete()?;
         Ok(())
     }
@@ -139,9 +153,12 @@ mod tests {
     fn helper_lines_parse_into_typed_state() {
         let joints: Sample = serde_json::from_str(r#"{"kind":"joints","timestamp_ns":5,"positions":{"left_shoulder":0.5}}"#).unwrap();
         assert!(matches!(joints, Sample::Joints {timestamp_ns: 5, ..}));
-        let health: Sample = serde_json::from_str(r#"{"kind":"health","timestamp_ns":6,"joints":{"left_shoulder":{"temperature_c":41.0,"current_a":0.2}},"battery":null}"#).unwrap();
-        let Sample::Health {joints, battery, ..} = health else { panic!() };
-        Health {joints, battery}.validate().unwrap();
-        assert!(serde_json::from_str::<Sample>(r#"{"kind":"health","timestamp_ns":6,"joints":{},"battery":null,"extra":1}"#).is_err());
+        let health: Sample = serde_json::from_str(r#"{"kind":"health","timestamp_ns":6,"joints":{"left_shoulder":{"temperature_c":41.0,"current_a":0.2}}}"#).unwrap();
+        let Sample::Health {joints, ..} = health else { panic!() };
+        Health {joints, battery: None}.validate().unwrap();
+        // The battery has its own capture time, so it never rides in a health sample.
+        assert!(serde_json::from_str::<Sample>(r#"{"kind":"health","timestamp_ns":6,"joints":{},"battery":null}"#).is_err());
+        let battery: Sample = serde_json::from_str(r#"{"kind":"battery","timestamp_ns":7,"battery":{"voltage":18.5,"percent":90.0}}"#).unwrap();
+        assert!(matches!(battery, Sample::Battery {timestamp_ns: 7, ..}));
     }
 }

@@ -1028,6 +1028,12 @@ function declaredGlyphPose(entry){
 }
 // Body state is shown only while fresh; Home reports its own receipt age.
 const freshState=(value,ms)=>value&&value.age_ms<ms?value.state:null;
+// Motor health with the battery, which robots publish on its own (drive.status
+// updates slowly, so a reading stays for 35 s); older runners put it in health.
+function bodyHealth(body){
+ const health=freshState(body.health,5000),battery=freshState(body.battery,35000);
+ return health||battery?{...health,...(battery?{battery}:{})}:null;
+}
 function glyphFor(key,name){
  let glyph=robots.get(key);
  if(!glyph){
@@ -1130,7 +1136,7 @@ async function refreshRunner(){
    let pose;try{pose=declaredGlyphPose(r);}catch(e){console.warn('Robot body not drawn:',e.message);continue;}
    const age=r.received_age_ms+performance.now()-r.receivedAt;
    entries.push({key:'body:'+r.peer_id,name:r.name,state:{status:age<2000?'live':'stale',pose,model:r.body.model,
-    joints:freshState(r.body.joints,3000)?.positions,health:freshState(r.body.health,5000),
+    joints:freshState(r.body.joints,3000)?.positions,health:bodyHealth(r.body),
     pointing:freshState(r.body.pointing,20000)}});
   }
   if(!entries.length){hideRobots();$('runner-status').textContent='No robot aligned to this scene';return;}
