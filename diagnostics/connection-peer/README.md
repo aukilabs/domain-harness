@@ -56,6 +56,33 @@ BBOS, start SLAM or load maps, and commands no motors unless `--arm-motion` is
 given (see `point_at` above). Dynamic camera mounts are rejected;
 they require timestamped extrinsics rather than a held calibration.
 
+## Onboarding from a phone (`--portals`)
+
+The detector hands onboarding codes (an invitation QR, a session's `ONB:`
+marker) to `src/onboard.rs` in-process; they are never published, since an
+invitation may hold a Wi-Fi password. On an invitation for this runner's Home
+(same Home peer and scene frame), the robot:
+
+1. joins the invitation's Wi-Fi if it is not already on it, with
+   `sudo -n nmcli dev wifi connect …` (arguments without a shell; the
+   previous network is kept on failure). This needs a sudoers entry for
+   exactly that command for the runner's user; without it the join fails and
+   says so;
+2. names itself in Home with the alias (Home's `name` operation, bound to
+   this Peer ID);
+3. asks the phone to show its 50 mm marker, and times the phone's capture
+   clock against this one (BBOS stamps camera frames with wall-clock
+   nanoseconds) over 16 authenticated exchanges;
+4. for each sighting of the marker, undistorts its corners with the head
+   camera's fisheye model, solves the 50 mm square, asks the phone where the
+   marker was in the scene at that instant, and hands the alignment worker
+   "where this camera was in the scene";
+5. the alignment worker composes that with the capture-time base pose and the
+   head extrinsic, and publishes the held transform into the scene once five
+   sightings agree within 2 cm / 2° — the same Product a Portal alignment uses.
+
+An invitation for a different Home is refused (restart with that profile).
+
 ## Validation and operation
 
 ```sh
@@ -145,3 +172,30 @@ and three-edge cloud integration; `tests/test_diagnostic_depth.py` checks the
 BBOS adapter without a robot. Deployment and live sensor verification are separate.
 See [compact point-cloud contract](../../docs/point-cloud-binary.md) for the
 wire layout and coordinated producer/consumer rollout requirements.
+
+# Robot body state
+
+Any pose mode (`--poses`, `--portals`, `--points`) also starts
+`scripts/diagnostic-robot-state.py`, which reads BBOS arm states and
+`drive.status` from shared memory (no motor commands) and writes local stdout IPC.
+It feeds two Products, both declaring the body they belong to in
+`spatial-harness.robot-body/v1` metadata (`src/robot_state.rs` in Home):
+
+- `bbos-joints`: URDF joint positions from each arm's own `q2urdf`, 5 Hz.
+- `bbos-health`: per-joint motor temperature and current, and the battery, 1 Hz.
+
+The declaration names the body model (`bracketbot`) and pins its root to the
+exact `bbos-base` frame reference and `bbos-capture` clock of `bbos-pose`, so a
+reader draws the model wherever that pose places the base. Output IDs bind the
+declaration. A missing arm or battery leaves the rest running; if the helper
+fails, poses, camera and alignment continue without body state.
+
+Home follows these Products from discovered Catalogs (`src/robot_states.rs`,
+`GET /api/robot-states`), reporting its own receipt age instead of comparing
+clocks. The viewer draws a peer as its URDF model, with live joints and health
+badges, when its registry pose's `from_frame` equals a declared base frame; the
+turn from the URDF's ROS body axes into the base frame is read from that frame's
+declared Registry axes.
+
+`tests/diagnostic_body.rs` runs this module against Home's follower over
+authenticated loopback peers.

@@ -603,6 +603,12 @@ pub async fn serve(
             let presentation=if let Some((_,value))=preview.presentation.as_ref().filter(|(sequence,_)|*sequence==o.sequence) {value.clone()}else if let Some(row)=row {
                 crate::video_presentation::resolve(&client,sensor,&row,&observations.producer,o.timestamp_ns).await
             }else{json!({"source":"unavailable","detail":"Peer catalog unavailable"})};
+            // A missed lookup (slow Wi-Fi, a pose not yet arrived) keeps the last upright
+            // angle this camera had, rather than telling the page to show it sideways.
+            let presentation=if presentation["rotation_clockwise_deg"].is_u64() {presentation}
+                else if let Some(last)=preview.presentation.as_ref().map(|(_,v)|v).filter(|v|v["rotation_clockwise_deg"].is_u64()) {
+                    let mut kept=last.clone();kept["kept_after"]=presentation["detail"].clone();kept
+                } else {presentation};
             preview.presentation=Some((o.sequence,presentation.clone()));
             if request.ar || request.follow || (request.pick && sensor.ar_supported) {
                 if request.follow {ensure!(request.expected_manifest.as_deref()==Some(sensor.reference.manifest_hash.as_str()),"Camera Product changed; attach again");}

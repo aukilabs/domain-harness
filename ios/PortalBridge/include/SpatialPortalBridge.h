@@ -7,6 +7,7 @@ extern "C" {
 /// The commit the bridge was built from. Owned by the bridge; never freed.
 const char *spatial_bridge_source(void);
 int32_t spatial_mobile_start(const char *profile, const char *email, const char *password, const char *identity_path);
+void spatial_mobile_set_lan_address(const char *ipv4);
 int32_t spatial_mobile_start_app(const char *profile, const char *key, const char *secret, const char *identity_path);
 char *spatial_mobile_poll(void);
 void spatial_mobile_stop(void);
@@ -32,6 +33,14 @@ void spatial_mobile_depth_image(uint64_t timestamp, const char *session, uint32_
 char *spatial_mobile_calibrate(const uint8_t *luma, size_t length, const char *capture);
 int32_t spatial_mobile_annotate(const char *request);
 int32_t spatial_mobile_change_note(const char *request);
+char *spatial_mobile_onboarding_screen(const char *model);
+char *spatial_mobile_onboarding_host(const char *request);
+char *spatial_mobile_onboarding_parse(const char *scanned);
+char *spatial_mobile_onboarding_join(const char *scanned);
+void spatial_mobile_onboarding_stop(void);
+char *spatial_mobile_onboarding_qr(const char *text);
+int32_t spatial_mobile_onboarding_frame(const uint8_t *luma, size_t length, const char *frame);
+char *spatial_mobile_voxels(void);
 void spatial_mobile_string_free(char *value);
 #ifdef __cplusplus
 }

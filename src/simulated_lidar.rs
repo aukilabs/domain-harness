@@ -28,6 +28,44 @@ pub struct Scan {
 impl ContractType for Scan {
     const DATATYPE: &'static str = SCHEMA;
 }
+
+/// The scan on the wire: never JSON. "SLD1", capture time (u64), world
+/// position (3 × f32) and rotation (4 × f32), then ROWS × COLUMNS ranges as
+/// f32, NaN for no return. Little endian.
+pub const ENCODING: &str = "spatial-harness.simulated-lidar-packed/v1";
+const HEADER: usize = 4 + 8 + 7 * 4;
+pub fn pack(scan: &Scan) -> Result<Vec<u8>> {
+    scan.validate()?;
+    let mut bytes = Vec::with_capacity(HEADER + scan.ranges_m.len() * 4);
+    bytes.extend_from_slice(b"SLD1");
+    bytes.extend_from_slice(&scan.timestamp_ns.to_le_bytes());
+    for v in scan.world_position.iter().chain(&scan.world_rotation_xyzw) {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    for range in &scan.ranges_m {
+        bytes.extend_from_slice(&range.unwrap_or(f32::NAN).to_le_bytes());
+    }
+    Ok(bytes)
+}
+pub fn unpack(bytes: &[u8]) -> Result<Scan> {
+    ensure!(bytes.len() == HEADER + COLUMNS * ROWS * 4 && &bytes[..4] == b"SLD1", "Invalid LiDAR scan packet");
+    let f = |at: usize| f32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+    let scan = Scan {
+        timestamp_ns: u64::from_le_bytes(bytes[4..12].try_into().unwrap()),
+        world_position: std::array::from_fn(|i| f(12 + i * 4)),
+        world_rotation_xyzw: std::array::from_fn(|i| f(24 + i * 4)),
+        ranges_m: (0..COLUMNS * ROWS).map(|i| Some(f(HEADER + i * 4)).filter(|r| !r.is_nan())).collect(),
+    };
+    scan.validate()?;
+    Ok(scan)
+}
+pub fn encoder() -> auki_component_protocol::ObservationEncoder<Scan> {
+    auki_component_protocol::ObservationEncoder::new(ENCODING, |s| pack(s).map_err(|e| e.to_string()))
+        .expect("static LiDAR codec")
+}
+pub fn decoder() -> Result<auki_component_protocol::ObservationDecoder<Scan>> {
+    Ok(auki_component_protocol::ObservationDecoder::new(ENCODING, |b| unpack(b).map_err(|e| e.to_string()))?)
+}
 impl Scan {
     pub fn validate(&self) -> Result<()> {
         ensure!(
@@ -136,13 +174,13 @@ impl Lidar {
         component.expose()?;
         let capture = runtime.capture_buffer_with_metadata(PRODUCT, &output,
             BufferLimits { max_entries:Some(1), max_bytes:Some(MAX_BYTES), target_duration:None },
-            |s: &Scan| serde_json::to_vec(s).map_or(usize::MAX, |v| v.len()),
+            |s: &Scan| HEADER + s.ranges_m.len() * 4,
             |o| Ok(Some(CatalogProductMetadata {
                 schema:"spatial.simulated-lidar-model/v1".into(), source_sequence:o.sequence,
                 value:serde_json::json!({"horizontal_fov_deg":120,"vertical_fov_deg":30,"columns":COLUMNS,"rows":ROWS,"min_range_m":0.1,"max_range_m":10,"rate_hz":10,"mount_translation_m":[0,0.65,-0.28],"axes":"x right, y up, -z forward","pose":"simulator ground truth, unaligned","sampling":"instantaneous first surface hit; no noise or rolling scan"}),
             }))
         )?;
-        endpoint.export_product(&capture.product())?;
+        endpoint.export_product_with_encoder(&capture.product(), encoder())?;
         Ok(Self {
             local_consumers: Arc::new(AtomicUsize::new(0)),
             output,

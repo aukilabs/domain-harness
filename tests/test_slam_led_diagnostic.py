@@ -43,6 +43,18 @@ class StatusTests(unittest.TestCase):
         self.assertTrue(diagnostic.status(None, 0, 10).startswith('unknown'))
         self.assertTrue(diagnostic.status(dict(vo_lost=True), 0, 4).startswith('unknown'))
 
+    def test_pointing_alert_blinks_then_ends(self):
+        self.assertEqual(diagnostic.alert_color('hot', 0), [255, 0, 0])
+        self.assertEqual(diagnostic.alert_color('hot', .3), [0, 0, 0])
+        self.assertEqual(diagnostic.alert_color('unreachable', 0), [255, 140, 0])
+        self.assertEqual(diagnostic.alert_color('anything', .1), [255, 0, 0])
+        self.assertIsNone(diagnostic.alert_color('hot', diagnostic.ALERT_SECONDS+.1))
+
+    def test_every_alert_code_has_words_and_none_reach_a_shell(self):
+        for code in ('hot', 'current', 'unreachable'):
+            self.assertIn(code, diagnostic.ALERT_SPEECH)
+        self.assertTrue(all(isinstance(t, str) and t for t in diagnostic.ALERT_SPEECH.values()))
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -16,7 +16,7 @@ targets:
         SWIFT_VERSION: '5.0'
         TARGETED_DEVICE_FAMILY: '1'
         GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_CFBundleDisplayName: Annotator
+        INFOPLIST_KEY_CFBundleDisplayName: McKenna
         INFOPLIST_KEY_NSCameraUsageDescription: Scan a Portal to display Home's scenegraph in augmented reality.
         INFOPLIST_KEY_NSLocalNetworkUsageDescription: Connect directly to Home to receive its live Portal scenegraph.
         INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: Find north and this phone's GPS position once at launch, to place Home's map on the Earth.

@@ -121,8 +121,13 @@ impl Sensor {
     pub fn mount(
         runtime: &ComponentRuntime,
         endpoint: &ComponentProtocolEndpoint,
-        spec: SensorSpec,
+        mut spec: SensorSpec,
     ) -> Result<Self> {
+        // Pictures go out in the binary camera codec, never as JSON, whatever
+        // schema the local sensor source declared for its input.
+        if let PayloadContract::Camera(c) = &mut spec.payload && c.schema == crate::camera_frame::LEGACY_SCHEMA {
+            c.schema = crate::camera_frame::SCHEMA.into();
+        }
         if spec.id.is_empty()
             || spec
                 .frame_definition
@@ -230,7 +235,7 @@ impl Sensor {
                         },
                     )
                     .map_err(err)?;
-                endpoint.export_product(&capture.product()).map_err(err)?;
+                endpoint.export_product_with_encoder(&capture.product(), crate::camera_frame::encoder()).map_err(err)?;
                 SensorOutput::Camera(observable, capture)
             }
             PayloadContract::Structured(c) if c.datatype == auki_odometry::PoseUpdate::DATATYPE => {

@@ -3,7 +3,7 @@
 async fn geometry_inset_and_toward_viewer_feed_move_note()->anyhow::Result<()> {
  use serde_json::json;use spatial_home::{scene_geometry,semantic_volumes::Volume,chatbot::Viewer};
  let volume=Volume{id:"office-id".into(),title:"office".into(),description:"".into(),semantic_type:"region".into(),center:[0.,1.,0.],size:[10.,2.,10.],yaw:0.};
- let viewer=Viewer{frame:"frame".into(),mode:"3d".into(),screen_right:[1.,0.,0.],camera_position:Some([5.,2.,5.]),camera_target:None};
+ let viewer=Viewer{frame:"frame".into(),mode:"3d".into(),screen_right:[1.,0.,0.],camera_position:Some([5.,2.,5.]),camera_target:None,focus_point:None};
  for instruction in ["move the fancy car note one meter inside the farthest corner of the office","move the fancy car note one meter closer to me while staying on the ground"]{
   let note=json!({"id":"car-id","name":"fancy car","text":"fancy car","position":[0,0,0],"description":"keep this"});let mut calculated=None::<serde_json::Value>;let mut moved=false;
   let result=spatial_home::chatbot::chat(spatial_home::chatbot::Request{viewer:Some(viewer.clone()),scene:"local:synthetic".into(),messages:vec![spatial_home::chatbot::Message{role:"user".into(),content:instruction.into()}]},|name,args|match name{
@@ -327,4 +327,65 @@ async fn live_peer_distance_is_answered_without_scene_edits()->anyhow::Result<()
   _=>anyhow::bail!("Read-only question must not move a view, open video or edit scene"),
  }).await?;
  assert!(read_pose,"{result}");assert!(result["changes"].as_array().unwrap().is_empty());assert!(result.get("ui_actions").is_none());assert!(result["reply"].as_str().unwrap().contains("10"),"{result}");Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires local Ollama with configured Qwen model; synthetic scene only"]
+async fn compact_portal_answers_inspect_geometry_without_asking_permission()->anyhow::Result<()> {
+ use serde_json::json;
+ let anchors=vec![
+  json!({"portal_id":"F26ZSPXNEO7","side_length_m":0.15,"pose_in_map":{"translation":[0.3693203283,0.8207559185,0.7757327196],"rotation_wxyz":[1,0,0,0]}}),
+  json!({"portal_id":"HNY3JGNLRAE","side_length_m":0.15,"pose_in_map":{"translation":[-0.2388248047,0.7565669492,-1.2124883859],"rotation_wxyz":[1,0,0,0]}}),
+  json!({"portal_id":"NV16FWJ9G2X","side_length_m":0.15,"pose_in_map":{"translation":[0,0,0],"rotation_wxyz":[1,0,0,0]}}),
+ ];
+ let volume=json!({"id":"kitchen-id","title":"Kitchen","center":[0.3693203283,0.8207559185,0.7757327196],"size":[0.4,0.4,0.4],"yaw":0.7});
+ for question in ["Is there a portal in the Kitchen?","Which two portals are closest to each other?"] {
+  let mut reads=0;
+  let result=spatial_home::chatbot::chat(spatial_home::chatbot::Request{viewer:None,scene:"local:fixture".into(),messages:vec![spatial_home::chatbot::Message{role:"user".into(),content:question.into()}]},|name,args|match name {
+   "inspect_scenegraph"=>{reads+=1;Ok(json!({"frame":"fixture","notes":[],"peers":[],"anchors":anchors,"semantic_volumes":{"items":[volume]}}))},
+   "get_semantic_volume"=>{anyhow::ensure!(args["id"]=="kitchen-id","Wrong room");Ok(volume.clone())},
+   _=>anyhow::bail!("Read-only fixture: unexpected tool {name}"),
+  }).await?;
+  println!("{question}\n{result}");
+  let reply=result["reply"].as_str().unwrap();
+  assert!(reply.chars().count()<=400&&!reply.contains('\n'),"{result}");
+  assert_eq!(result["status"],"finished","{result}");assert_eq!(result["changes"],json!([]));assert!(result.get("ui_actions").is_none());
+  // The controller's initial scene read already supplies portal poses and room
+  // bounds. Do not require Qwen to repeat that authoritative read unnecessarily.
+  assert!(reads>=1,"Must inspect current scene, not ask permission: {result}");
+  if question.contains("closest") {
+   assert!(reply.contains("F26ZSPXNEO7")&&reply.contains("NV16FWJ9G2X"),"{result}");
+   assert!(reply.contains("1.19")||result["explanation"].as_str().is_some_and(|s|s.contains("1.19")),"{result}");
+   assert!(result["explanation"].as_str().is_some_and(|s|!s.is_empty()),"{result}");
+  }else{
+   assert!(reply.to_lowercase().contains("yes"),"{result}");
+   // A yes/no answer need not put a long portal ID in the collapsed reply.
+   assert!(reply.contains("F26ZSPXNEO7")||result["explanation"].as_str().is_some_and(|s|s.contains("F26ZSPXNEO7")),"{result}");
+  }
+ }
+ Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires local Ollama with configured Qwen model; synthetic scene only"]
+async fn compact_room_distance_keeps_workings_in_explanation()->anyhow::Result<()> {
+ use serde_json::json;
+ let office=json!({"id":"office-id","title":"Office","center":[0.9273417710154062,1.001342533070337,-0.5146317276380917],"size":[3,2,3],"yaw":0});
+ let lounge=json!({"id":"lounge-id","title":"Lounge","center":[10.989869775659805,1.0,-0.19685971698956406],"size":[4,2,4],"yaw":0});
+ let result=spatial_home::chatbot::chat(spatial_home::chatbot::Request{viewer:None,scene:"local:fixture".into(),messages:vec![spatial_home::chatbot::Message{role:"user".into(),content:"How far is the office from the lounge?".into()}]},|name,args|match name {
+  "inspect_scenegraph"=>Ok(json!({"frame":"fixture","notes":[],"peers":[],"anchors":[],"semantic_volumes":{"items":[office,lounge]}})),
+  "get_semantic_volume"=>match args["id"].as_str(){Some("office-id")=>Ok(office.clone()),Some("lounge-id")=>Ok(lounge.clone()),_=>anyhow::bail!("Unknown fixture volume")},
+  _=>anyhow::bail!("Read-only fixture: unexpected tool {name}"),
+ }).await?;
+ println!("{result}");
+ let reply=result["reply"].as_str().unwrap();
+ assert!(reply.chars().count()<=200&&!reply.contains('\n'),"{result}");
+ // Permit natural rounding (e.g. 10.1 m); exact decimal wording is not the
+ // contract. The distance must still agree with the supplied geometry.
+ let expected=(10.989869775659805_f64-0.9273417710154062).hypot(1.0-1.001342533070337).hypot(-0.19685971698956406+0.5146317276380917);
+ assert!(reply.split(|c:char|!c.is_ascii_digit()&&c!='.').filter_map(|s|s.parse::<f64>().ok()).any(|n|(n-expected).abs()<0.1),"{result}");
+ assert!(!reply.contains("sqrt")&&!reply.contains('Δ')&&!reply.contains('['),"{result}");
+ assert!(result["explanation"].as_str().is_some_and(|s|!s.is_empty()),"{result}");
+ assert_eq!(result["status"],"finished","{result}");assert_eq!(result["changes"],json!([]));assert!(result.get("ui_actions").is_none());
+ Ok(())
 }

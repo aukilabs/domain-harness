@@ -56,6 +56,12 @@ export function chatResultPresentation(result, browser) {
     if (typeof error?.error !== 'string' || reply.includes(error.error)) continue;
     parts.push(`Home tool ${error.tool || 'operation'} failed: ${error.error}`);
   }
+  // Saved summaries stay visible, including when a later browser action fails.
+  // Raw saved-object JSON belongs in the expandable explanation, not the reply.
+  for (const change of changes) {
+    const summary = change.summary || 'Saved scene change.';
+    if (!parts.some(part => part.includes(summary))) parts.push(summary);
+  }
   parts.push(...actionMessages);
   const content = parts.filter(Boolean).join('\n\n') || 'Home returned no reply.';
   const saved = changes.map(change => {
@@ -63,41 +69,40 @@ export function chatResultPresentation(result, browser) {
       : change.after !== undefined ? JSON.stringify(change.after, null, 2) : '';
     return [change.summary || 'Saved scene change.', after].filter(Boolean).join('\n');
   }).join('\n\n');
-  const noChanges = !changes.length && !actionMessages.length ? '\n\nNo scene changes were saved.' : '';
+  const explanation = browser?.failure
+    ? (typeof result.camera_explanation === 'string' ? result.camera_explanation : '')
+    : (typeof result.explanation === 'string' ? result.explanation : '');
+  const details = [explanation.trim(), saved].filter(Boolean).join('\n\n');
   const state = changes.length ? `saved ${changes.length} change${changes.length === 1 ? '' : 's'} confirmed by Home` : 'no scene changes saved';
   const failed = browser?.failure || errors.length || ['partial', 'incomplete'].includes(result.status);
   const completion = failed ? (changes.length || browser?.applied?.length || description ? 'partial completion' : 'incomplete') : '';
   return {
     content,
-    display_content: content + (saved ? '\n\n' + saved : noChanges),
+    display_content: content,
+    explanation: details,
     // `finished` means the server loop ended, not that every user intent was
     // satisfied or that requested browser effects have rendered successfully.
-    status: `${result.model || 'Qwen'} · ${state}` + (completion ? ' · ' + completion : '') + (actionMessages.length ? ' · ' + actionMessages.join(' ') : ''),
+    status: `${result.source === 'command' ? 'Home · direct command' : result.model || 'Qwen'} · ${state}` + (completion ? ' · ' + completion : '') + (actionMessages.length ? ' · ' + actionMessages.join(' ') : ''),
   };
 }
 
-export function moveMapCamera(action, {scene, frame, camera, controls, map2D}) {
+export function moveMapCamera(action, {scene, frame, camera, controls, map2D, cameraPan, beforeMove = () => {}}) {
   if (action.type !== 'move_camera' || action.scene !== scene || action.frame !== frame)
     throw Error('Selected scene changed; ask again in the current scene');
   const vector = v => Array.isArray(v) && v.length === 3 && v.every(n => Number.isFinite(n) && Math.abs(n) <= 10000);
   if (!vector(action.position) || !vector(action.look_at)) throw Error('Invalid camera coordinates');
   const distance = Math.hypot(...action.position.map((n, i) => n - action.look_at[i]));
   if (distance < .01 || distance > 60) throw Error('Invalid camera target distance');
+  // Validate before detaching a followed sensor or changing the current view.
+  beforeMove();
   if (map2D.isActive()) map2D.toggle();
-  // Flush pending orbit damping before installing the requested view, so an old
-  // drag cannot pull it away on the following animation frame.
-  const damping = controls.enableDamping;
-  controls.enableDamping = false;
-  controls.update();
   controls.minDistance = .01;
   controls.maxDistance = 60;
   controls.minPolarAngle = 0;
   controls.maxPolarAngle = Math.PI;
   camera.up.set(0, 1, 0);
-  camera.position.fromArray(action.position);
-  controls.target.fromArray(action.look_at);
-  controls.update();
-  camera.updateMatrixWorld();
-  controls.enableDamping = damping;
-  return 'Map camera moved.';
+  // Share double-click's easing, damping flush, retargeting and input cancellation.
+  // Build separate destinations: never mutate the live camera before the flight.
+  cameraPan.start(camera.position.clone().fromArray(action.position), controls.target.clone().fromArray(action.look_at));
+  return 'Map camera moving.';
 }

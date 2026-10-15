@@ -37,6 +37,10 @@ pub struct Reply {
     pub reason: Option<String>,
     #[serde(default)]
     pub executes: Option<bool>,
+    #[serde(default)]
+    pub arm: Option<String>,
+    #[serde(default)]
+    pub code: Option<String>,
 }
 impl Reply {
     /// The request no longer holds the arm.
@@ -67,6 +71,7 @@ impl Arm {
         p: &crate::poses::Publisher,
         execute: bool,
         finished: impl Fn(Option<&str>) + Send + 'static,
+        reports: tokio::sync::mpsc::UnboundedSender<Reply>,
     ) -> Result<Self> {
         let mut command = Command::new("python3");
         command.args(["scripts/bracketbot-python.py", "scripts/diagnostic-arm.py"]);
@@ -95,6 +100,9 @@ impl Arm {
                     continue;
                 };
                 crate::diagnostic_log!("Arm adapter: {line}");
+                if reply.request_id.is_some() {
+                    let _ = reports.send(reply.clone());
+                }
                 if let Some(id) = &reply.request_id {
                     if let Some(tx) = replies.lock().unwrap().get(id) {
                         let _ = tx.send(reply.clone());
@@ -255,7 +263,7 @@ impl Drop for Arm {
 mod tests {
     use super::*;
     fn reply(phase: &str, executes: Option<bool>) -> Reply {
-        Reply { request_id: Some("r".into()), phase: phase.into(), reason: None, executes }
+        Reply { request_id: Some("r".into()), phase: phase.into(), reason: None, executes, arm: None, code: None }
     }
     #[test]
     fn a_request_holds_the_arm_until_its_move_ends() {

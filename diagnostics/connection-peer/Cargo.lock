@@ -273,6 +273,7 @@ dependencies = [
  "anyhow",
  "auki-component-protocol",
  "auki-components",
+ "auki-geometry",
  "auki-odometry",
  "auki-protocols",
  "auki-qr-detector",

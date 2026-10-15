@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, io::Write, path::Path, time::Instant};
 
 pub struct LocalScenes {
+    pub reference_enabled: bool,
     pub note_editors: std::sync::Mutex<BTreeMap<String, crate::local_mobile::NoteEditor>>,
     pub volumes: crate::semantic_volumes::Storage,
     pub paths: crate::scene_paths::Storage,
@@ -18,6 +19,55 @@ pub struct LocalScenes {
     pub(crate) directory: std::path::PathBuf,
     pub(crate) mobile_views: std::sync::Mutex<BTreeMap<String, Value>>,
     pub(crate) phone_presence: std::sync::Mutex<BTreeMap<String, std::sync::Arc<std::sync::Mutex<crate::mobile_pose::Presence>>>>,
+    /// Registry-declared robots per scene frame, kept by `registry_robots::serve`.
+    pub registry_robots: crate::registry_robots::Entries,
+}
+
+/// Instance-local lifecycle choices. Built-in templates must not resurrect a
+/// deleted scene. Read only at startup, before mounting any scene Products.
+#[derive(Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Settings {
+    #[serde(default)]
+    delete_reference: bool,
+    #[serde(default)]
+    deleted: std::collections::BTreeSet<String>,
+    #[serde(default)]
+    names: BTreeMap<String, String>,
+}
+impl Settings {
+    fn load(directory: &Path) -> Result<Self> {
+        let path = directory.join(".settings/catalog.json");
+        if !path.exists() { return Ok(Self::default()); }
+        ensure!(std::fs::metadata(&path)?.len() <= 32 * 1024, "Scene settings exceed bounds");
+        let settings: Self = serde_json::from_slice(&std::fs::read(path)?)?;
+        ensure!(settings.deleted.len() <= 128 && settings.names.len() <= 128, "Too many scene settings");
+        ensure!(settings.deleted.iter().all(|id| valid_id(id)), "Invalid deleted scene ID");
+        for (id, name) in &settings.names {
+            ensure!(valid_id(id) && !settings.deleted.contains(id), "Invalid renamed scene ID");
+            ensure!(!name.trim().is_empty() && name.len() <= 120 && !name.chars().any(char::is_control), "Invalid scene name");
+        }
+        Ok(settings)
+    }
+
+    fn archive_deleted(&self, directory: &Path) -> Result<()> {
+        for id in &self.deleted {
+            // Exact scene-owned targets only; never archive Home's identity or
+            // the enclosing data directory. A completed move is restart-safe.
+            for relative in [format!("{id}.json"), format!("mobile-notes/{id}.json"),
+                format!("semantic-volumes/{id}.json"), format!("paths/{id}.json"),
+                format!(".origin-resets/{id}.pending")] {
+                let from = directory.join(&relative);
+                if !from.exists() { continue; }
+                let to = directory.join(".deleted").join(&relative);
+                ensure!(!to.exists(), "Deleted scene backup already exists: {relative}");
+                std::fs::create_dir_all(to.parent().unwrap())?;
+                std::fs::rename(from, &to)?;
+                std::fs::File::open(to.parent().unwrap())?.sync_all()?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Stable physical-origin identity, not a coordinate-convention alias.
@@ -50,10 +100,13 @@ fn valid_id(id: &str) -> bool {
 impl LocalScenes {
     pub fn load(directory: &Path) -> Result<Self> {
         std::fs::create_dir_all(directory)?;
+        let settings = Settings::load(directory)?;
+        settings.archive_deleted(directory)?;
         crate::origin_reset::apply_pending(directory)?;
         // Independent local scenes start uncalibrated. Historical origin entries
         // identify configured scenes, but their short codes are never seeded.
         for env in &crate::environments::CATALOG.environments {
+            if settings.deleted.contains(&env.id) { continue; }
             let Some(_legacy_origin) = &env.origin else {
                 continue;
             };
@@ -96,8 +149,18 @@ impl LocalScenes {
                 entry.metadata()?.len() <= 8 * 1024 * 1024 && snapshots.len() < 128,
                 "Local scene collection exceeds bounds"
             );
-            let snapshot: MapSnapshot = serde_json::from_slice(&std::fs::read(entry.path())?)?;
+            let mut snapshot: MapSnapshot = serde_json::from_slice(&std::fs::read(entry.path())?)?;
             snapshot.validate()?;
+            if settings.deleted.contains(&snapshot.scenegraph.map.map_id) { continue; }
+            if let Some(name) = settings.names.get(&snapshot.scenegraph.map.map_id) {
+                if snapshot.scenegraph.map.name.as_ref() != Some(name) {
+                    snapshot.scenegraph.map.name = Some(name.clone());
+                    // Rebuild USD too; editing the JSON name alone invalidates
+                    // the SDK snapshot. Frame identity and anchors are unchanged.
+                    snapshot = MapSnapshot::new(snapshot.scenegraph)?;
+                    crate::model::persist(&entry.path(), &snapshot)?;
+                }
+            }
             let id = &snapshot.scenegraph.map.map_id;
             ensure!(valid_id(id), "Invalid saved scene ID");
             ensure!(
@@ -111,6 +174,7 @@ impl LocalScenes {
             );
         }
         Ok(Self {
+            reference_enabled: !settings.delete_reference,
             note_editors: Default::default(),
             volumes: crate::semantic_volumes::Storage::new(directory.join("semantic-volumes")),
             paths: crate::scene_paths::Storage::new(directory.join("paths")),
@@ -118,6 +182,7 @@ impl LocalScenes {
             directory: directory.into(),
             mobile_views: Default::default(),
             phone_presence: Default::default(),
+            registry_robots: Default::default(),
         })
     }
     /// Read live presence independently of the 1 Hz voxel/scene publication.

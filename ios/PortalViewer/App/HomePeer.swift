@@ -168,7 +168,60 @@ final class HomePeer: ObservableObject {
         routeAnswers[id] = done
         DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in self?.routeAnswers.removeValue(forKey: id)?(nil) }
     }
+    // MARK: Onboarding (onboarding.md)
+    /// The onboarding this phone hosts or takes part in, as the bridge reports it.
+    @Published private(set) var onboarding: OnboardingState?
+    /// A scanned invitation waiting for this phone to reach the invitation's Home.
+    private var pendingInvitation: String?
+    private var switchingTo: Data?
+    /// Start showing the way into this phone's scene. Answers the invitation QR text.
+    func hostOnboarding(_ request: [String: Any]) -> Result<String, ViewerError> {
+        guard let data = try? JSONSerialization.data(withJSONObject: request),
+              let json = String(data: data, encoding: .utf8) else { return .failure(ViewerError("Invalid onboarding request")) }
+        return Onboarding.call { json.withCString { spatial_mobile_onboarding_host($0) } }.flatMap { value in
+            guard let text = value["invitation"] as? String else { return .failure(ViewerError("No invitation")) }
+            return .success(text)
+        }
+    }
+    func stopOnboarding() {
+        pendingInvitation = nil
+        spatial_mobile_onboarding_stop()
+    }
+    /// An invitation QR seen during normal scanning. Joins its Home first if
+    /// this phone is on another one. Repeat scans of one session do nothing.
+    func handleInvitation(_ text: String) {
+        guard pendingInvitation != text else { return }
+        guard case .success(let value) = Onboarding.call({ text.withCString { spatial_mobile_onboarding_parse($0) } }),
+              let home = value["home"] as? [String: Any], let peerID = home["peer_id"] as? String,
+              let frame = home["frame"] as? String,
+              let homeData = try? JSONSerialization.data(withJSONObject: home) else { return }
+        if profile?.peer_id == peerID && profile?.frame == frame && state == "live" {
+            join(text)
+            return
+        }
+        print("[onboarding] Invitation for \(frame); connecting to that Home first")
+        pendingInvitation = text
+        if running {
+            if profile?.peer_id != peerID || profile?.frame != frame { switchingTo = homeData; disconnect() }
+        } else {
+            do { try pair(homeData); connect() } catch { pendingInvitation = nil; detail = error.localizedDescription }
+        }
+    }
+    private func joinPending() {
+        guard let text = pendingInvitation else { return }
+        pendingInvitation = nil
+        join(text)
+    }
+    private func join(_ text: String) {
+        switch Onboarding.call({ text.withCString { spatial_mobile_onboarding_join($0) } }) {
+        case .success(let value): if value["started"] as? Bool == true { print("[onboarding] Joining") }
+        case .failure(let error): print("[onboarding] Not joined: \(error.message)")
+        }
+    }
+
     var onMap: ((PortalMap) -> Void)?
+    /// Voxel chunks that changed, as the bridge hands them over.
+    var onVoxels: ((Data) -> Void)?
     /// Home's answer to a new-Portal report, for the user to see.
     var onPortalResult: ((String) -> Void)?
     private var portalDetail = ""
@@ -233,6 +286,12 @@ final class HomePeer: ObservableObject {
             }
             let (first, second) = app.map { ($0.key, $0.secret) } ?? (email, password)
             print("[bridge] built from \(String(cString: spatial_bridge_source()))")
+            // Home dials this phone directly at its Wi-Fi address; the relay stays as a fallback.
+            if let address = Self.wifiAddress() {
+                address.withCString { spatial_mobile_set_lan_address($0) }
+            } else {
+                spatial_mobile_set_lan_address(nil)
+            }
             let start = app == nil ? spatial_mobile_start : spatial_mobile_start_app
             let accepted = profileJSON.withCString { profile in
                 first.withCString { first in
@@ -256,6 +315,24 @@ final class HomePeer: ObservableObject {
                 Task { @MainActor in self?.poll() }
             }
         } catch { password = ""; appSecret = ""; detail = error.localizedDescription; state = "error" }
+    }
+
+    /// This phone's Wi-Fi IPv4 address, if it is on Wi-Fi.
+    static func wifiAddress() -> String? {
+        var list: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&list) == 0, let first = list else { return nil }
+        defer { freeifaddrs(list) }
+        for entry in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            let interface = entry.pointee
+            guard String(cString: interface.ifa_name) == "en0", let address = interface.ifa_addr,
+                  address.pointee.sa_family == UInt8(AF_INET) else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            if getnameinfo(address, socklen_t(address.pointee.sa_len), &host, socklen_t(host.count),
+                           nil, 0, NI_NUMERICHOST) == 0 {
+                return String(cString: host)
+            }
+        }
+        return nil
     }
 
     func disconnect(background: Bool = false) {
@@ -284,6 +361,7 @@ final class HomePeer: ObservableObject {
         let local_detail: String?
         let route: RouteAnswer?
         let paths: [PathAnswer]?
+        let onboarding: OnboardingState?
     }
     private struct PathAnswer: Decodable {
         let id: String
@@ -296,6 +374,11 @@ final class HomePeer: ObservableObject {
         let error: String?
     }
     private func poll() {
+        if let voxels = spatial_mobile_voxels() {
+            let data = Data(String(cString: voxels).utf8)
+            spatial_mobile_string_free(voxels)
+            onVoxels?(data)
+        }
         guard let pointer = spatial_mobile_poll() else { return }
         defer { spatial_mobile_string_free(pointer) }
         do {
@@ -319,17 +402,29 @@ final class HomePeer: ObservableObject {
                         done(answer.route)
                     }
                     annotationResult = response.update.annotation
+                    if onboarding != response.update.onboarding {
+                        if let o = response.update.onboarding, o.detail != onboarding?.detail || o.stage != onboarding?.stage {
+                            print("[onboarding] \(o.role) \(o.stage ?? "starting") · \(o.detail)")
+                        }
+                        onboarding = response.update.onboarding
+                    }
                     // A peer started after the phone aligned has not been told where it is.
                     if response.update.state == "live", state != "live", let placement { publishPlacement(placement) }
                     state = response.update.state
                     detail = response.update.detail
                     if let portals = response.update.portals { onMap?(portals) }
+                    if state == "live" { joinPending() }
                 }
             }
             if response.finished {
                 state = response.update.state; detail = response.update.detail
                 running = false; timer?.invalidate(); timer = nil
                 endBackgroundTask()
+                if let switching = switchingTo {
+                    // An invitation for another Home: pair with it, then join once live.
+                    switchingTo = nil
+                    do { try pair(switching); connect() } catch { pendingInvitation = nil; detail = error.localizedDescription }
+                }
             }
         } catch {
             spatial_mobile_stop()

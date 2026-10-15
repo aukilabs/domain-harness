@@ -99,7 +99,7 @@ test('successful browser requests retain their actual waiting state', () => {
   });
   assert.match(presentation.content, /waiting for live frames/);
   assert.doesNotMatch(presentation.display_content, /No scene changes were saved/);
-  assert.match(chatResultPresentation({reply: 'Read only.', changes: []}, null).display_content, /No scene changes were saved/);
+  assert.equal(chatResultPresentation({reply: 'Read only.', changes: []}, null).display_content, 'Read only.');
 });
 
 test('failed PiP preserves independent visual answers, server errors, and saved receipts', () => {
@@ -129,4 +129,18 @@ test('structured visual answers and errors do not duplicate complete reply text'
   assert.equal(presentation.content.split(error).length - 1, 1);
   const finished = chatResultPresentation({reply: 'I need more information.', changes: [], status: 'finished'}, null);
   assert.doesNotMatch(finished.status, /completed|complete|finished/);
+});
+
+test('short answers keep explanations separate and saved summaries visible', () => {
+  const result = chatResultPresentation({reply:'The closest pair is A and B, 1.19 m apart.', explanation:'Compared all three pairs.', changes:[]}, null);
+  assert.equal(result.display_content, 'The closest pair is A and B, 1.19 m apart.');
+  assert.equal(result.explanation, 'Compared all three pairs.');
+  const saved = chatResultPresentation({reply:'Created note cheese.', explanation:'', changes:[{summary:'Created note cheese.',after:{id:'cheese'}}]}, null);
+  assert.equal(saved.display_content, 'Created note cheese.');
+  assert.match(saved.explanation, /"id": "cheese"/);
+  const failed = chatResultPresentation({reply:'Opened.', explanation:'The camera is working.', changes:[]}, {
+    applied:[],failure:{type:'open_camera_pip',message:'Peer unavailable'},skipped:0,
+  });
+  assert.equal(failed.explanation, '');
+  assert.match(failed.display_content, /Peer unavailable/);
 });

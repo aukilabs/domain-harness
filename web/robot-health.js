@@ -7,9 +7,11 @@ import * as THREE from 'three';
 
 // BBOS drops a motor's torque after 15 s above 50 C (sustained_temp_limit).
 const TEMP_COOL_C = 35, TEMP_WARM_C = 42, TEMP_LIMIT_C = 50;
+// Joints at or below this get no badge; a badge appears once its motor warms past it.
+const SHOW_ABOVE_C = 30;
 const CURRENT_FULL_A = 3;
 // Above the head, in the model's ROS body frame (+Z up); the model is ~1.57 m.
-const BATTERY_HEIGHT_M = 1.82;
+const BATTERY_HEIGHT_M = 1.70;
 
 const COOL = new THREE.Color('#22c55e'), WARM = new THREE.Color('#f59e0b'), HOT = new THREE.Color('#ef4444');
 
@@ -23,12 +25,13 @@ export function batteryColor(percent) {
  return percent >= 50 ? '#22c55e' : percent >= 20 ? '#f59e0b' : '#ef4444';
 }
 
+// Overlays are depth-tested: geometry in front of one hides it.
 function sprite(width, height, scale, center) {
  const canvas = document.createElement('canvas');
  canvas.width = width; canvas.height = height;
  const texture = new THREE.CanvasTexture(canvas);
  texture.colorSpace = THREE.SRGBColorSpace;
- const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false }));
+ const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false }));
  s.scale.set(scale * width / height, scale, 1);
  s.center.copy(center);
  s.renderOrder = 20;
@@ -99,17 +102,19 @@ function dispose(s) { s.parent?.remove(s); s.material.map.dispose(); s.material.
 // badges keep their joint's height but are pushed apart vertically, with a
 // leader line back to the joint, so stacked wrist joints stay readable.
 const COLUMN_Y_M = 0.36, BADGE_SPACING_M = 0.085;
+// Share of the way from each joint out to its column the badge sits at.
+const COLUMN_REACH = 0.5;
 const sideOf = name => /^(l|left)/.test(name) ? 1 : -1;
 
 function dot(color) {
- const s = new THREE.Mesh(new THREE.SphereGeometry(0.018, 16, 12), new THREE.MeshBasicMaterial({ color, depthTest: false }));
+ const s = new THREE.Mesh(new THREE.SphereGeometry(0.018, 16, 12), new THREE.MeshBasicMaterial({ color }));
  s.renderOrder = 19;
  return s;
 }
 
 function leader() {
  const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]),
-  new THREE.LineBasicMaterial({ transparent: true, opacity: 0.8, depthTest: false }));
+  new THREE.LineBasicMaterial({ transparent: true, opacity: 0.8, depthWrite: false }));
  line.renderOrder = 18;
  return line;
 }
@@ -120,13 +125,14 @@ function remove(entry) {
 }
 
 // Show `health` ({joints: {name: {temperature_c, current_a}}, battery: {voltage,
-// percent}}) on the glyph's URDF model; null hides it. Joints the model lacks
-// are skipped, and markers for joints no longer reported are removed.
+// percent}}) on the glyph's URDF model; null hides it. Joints the model lacks or
+// at or below SHOW_ABOVE_C are skipped, and markers for joints no longer shown are removed.
 export function applyRobotHealth(glyph, health) {
  glyph.healthMarkers ??= new Map();
  const robot = glyph.robot;
  const joints = robot ? Object.fromEntries(Object.entries(health?.joints || {}).filter(([name, v]) =>
-  robot.anchor(name) && Number.isFinite(v?.temperature_c) && Number.isFinite(v?.current_a))) : {};
+  robot.anchor(name) && Number.isFinite(v?.temperature_c) && Number.isFinite(v?.current_a)
+  && v.temperature_c > SHOW_ABOVE_C)) : {};
  for (const [name, entry] of glyph.healthMarkers) {
   if (!(name in joints) || entry.dot.parent !== robot?.anchor(name)) { remove(entry); glyph.healthMarkers.delete(name); }
  }
@@ -148,7 +154,7 @@ export function applyRobotHealth(glyph, health) {
     }
     const z = Math.min(at.z, lowest - BADGE_SPACING_M);
     lowest = z;
-    entry.badge.position.set(at.x, side * COLUMN_Y_M, z);
+    entry.badge.position.set(at.x, at.y + (side * COLUMN_Y_M - at.y) * COLUMN_REACH, z);
     entry.line.geometry.setFromPoints([at, entry.badge.position]);
     entry.dot.material.color.copy(color);
     entry.line.material.color.copy(color);
@@ -167,4 +173,43 @@ export function applyRobotHealth(glyph, health) {
   glyph.group.add(glyph.batteryBadge);
  }
  drawBattery(glyph.batteryBadge, battery.percent, battery.voltage);
+}
+
+// The latest pointing request above the battery: blue while the arm works,
+// red with the robot's own reason when it refused or stopped.
+const POINTING_TEXT = {planned: 'Pointing: planned', moving: 'Pointing…', holding: 'Pointing', returning: 'Pointing: returning', done: 'Pointing: done'};
+function drawPointing(s, pointing) {
+ const failed = pointing.phase === 'rejected' || pointing.phase === 'fault';
+ const title = failed ? (pointing.phase === 'fault' ? 'Pointing stopped' : 'Pointing refused') : (POINTING_TEXT[pointing.phase] || pointing.phase);
+ const detail = failed ? (pointing.reason || pointing.code || '') : (pointing.arm || '').replace('arm_', '') + (pointing.arm ? ' arm' : '');
+ const key = `${title}|${detail}`;
+ if (s.userData.key === key) return;
+ s.userData.key = key;
+ const canvas = s.material.map.image, ctx = canvas.getContext('2d');
+ ctx.clearRect(0, 0, canvas.width, canvas.height);
+ pill(ctx, 2, 4, canvas.width - 4, canvas.height - 8);
+ ctx.fillStyle = failed ? '#ef4444' : '#38bdf8';
+ ctx.beginPath(); ctx.arc(34, canvas.height / 2, 14, 0, Math.PI * 2); ctx.fill();
+ ctx.textBaseline = 'middle';
+ ctx.fillStyle = failed ? '#fca5a5' : '#e0f2fe'; ctx.font = '700 28px system-ui, sans-serif';
+ ctx.fillText(title, 62, canvas.height / 2 - 14);
+ ctx.fillStyle = '#cbd5e1'; ctx.font = '500 22px system-ui, sans-serif';
+ let text = detail;
+ while (text.length > 4 && ctx.measureText(text).width > canvas.width - 80) text = text.slice(0, -2);
+ ctx.fillText(text === detail ? text : text + '…', 62, canvas.height / 2 + 16);
+ s.material.map.needsUpdate = true;
+}
+
+// Show `pointing` ({request_id, phase, arm, reason, code}) on the glyph's model; null hides it.
+export function applyPointingStatus(glyph, pointing) {
+ if (!glyph.robot || !pointing?.phase) {
+  if (glyph.pointingBadge) { dispose(glyph.pointingBadge); glyph.pointingBadge = null; }
+  return;
+ }
+ if (!glyph.pointingBadge) {
+  glyph.pointingBadge = sprite(480, 96, 0.11, new THREE.Vector2(0.5, 0));
+  glyph.pointingBadge.position.set(0, 0, BATTERY_HEIGHT_M + 0.13);
+  glyph.group.add(glyph.pointingBadge);
+ }
+ drawPointing(glyph.pointingBadge, pointing);
 }
