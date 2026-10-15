@@ -4,6 +4,8 @@
 //! no axis guess. With an arm adapter the target then goes through the
 //! declared arm mount into the arm IK frame, and the adapter plans and moves;
 //! without one the request is resolved and accepted only.
+//! With a turner, a target behind the robot or off to a side the arm cannot
+//! reach makes the robot turn in place to face it first, for its Home peer only.
 use crate::compact_pose::{Contract, FrameRef, Lifetime, Update};
 use crate::point_at::*;
 use anyhow::{Context, Result, bail, ensure};
@@ -23,6 +25,9 @@ const MOTION_ALLOWANCE: Duration = Duration::from_secs(8);
 const MAX_SAMPLE_AGE_NS: u64 = 800_000_000;
 const MIN_DISTANCE_M: f64 = 0.3;
 const MAX_DISTANCE_M: f64 = 30.;
+/// Turning helps only a target this far off the robot's forward axis; nearer
+/// ahead an unreachable target is out of reach for other reasons.
+const MIN_TURN_BEARING_DEG: f64 = 15.;
 
 pub struct Transform {
     pub contract: Contract,
@@ -164,8 +169,29 @@ pub fn chain(
     Ok((pose, used))
 }
 
-/// Resolve `request` into `base` through the transforms in `known`.
+/// Resolve `request` into `base` through the transforms in `known`; the
+/// target must be ahead of the robot.
 pub fn resolve(
+    request: &PointAt,
+    known: &Frames,
+    base: &FrameRef,
+    clock: &ClockReference,
+    session: &str,
+    now: u64,
+) -> Result<PointAtAccepted> {
+    let accepted = locate(request, known, base, clock, session, now)?;
+    let forward = accepted.point_in_base[1];
+    ensure!(forward > 0., "Target is behind the robot (forward {forward:.2} m); turn the robot first");
+    Ok(accepted)
+}
+
+/// Whether turning to face the target could make it pointable.
+pub fn turning_helps(accepted: &PointAtAccepted) -> bool {
+    accepted.point_in_base[1] <= 0. || accepted.bearing_deg.abs() > MIN_TURN_BEARING_DEG
+}
+
+/// `resolve` without the ahead rule.
+fn locate(
     request: &PointAt,
     known: &Frames,
     base: &FrameRef,
@@ -214,7 +240,6 @@ pub fn resolve(
         (MIN_DISTANCE_M..=MAX_DISTANCE_M).contains(&distance),
         "Target is {distance:.2} m from the robot; must be {MIN_DISTANCE_M}..{MAX_DISTANCE_M} m"
     );
-    ensure!(y > 0., "Target is behind the robot (forward {y:.2} m); turn the robot first");
     let arm = match request.arm {
         ArmChoice::Auto if x > 0. => ArmChoice::Right,
         ArmChoice::Auto => ArmChoice::Left,
@@ -266,20 +291,103 @@ pub struct Pointer {
     _component: Component,
     _operation: Operable<PointAt, PointAtAccepted>,
     _arm: Option<Arc<crate::arm::Arm>>,
+    turning: Arc<Turning>,
 }
+
+/// The one turn-then-point a request may have running, owned by the Pointer.
+#[derive(Default)]
+struct Turning {
+    stop: std::sync::atomic::AtomicBool,
+    thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+/// What resolving and the turn-then-point thread share.
+#[derive(Clone)]
+struct Shared {
+    known: Arc<Mutex<Frames>>,
+    base: FrameRef,
+    clock: ClockReference,
+    session: String,
+    busy: Arc<Mutex<Busy>>,
+    reports: tokio::sync::mpsc::UnboundedSender<crate::arm::Reply>,
+}
+impl Shared {
+    /// A base-frame point through the arm's declared mount.
+    fn in_arm(&self, known: &Frames, arm: &crate::arm::Arm, point_in_base: [f64; 3], now: u64) -> Result<([f64; 3], Vec<Used>)> {
+        let (arm_from_base, used) =
+            chain(known, &self.base, &arm.transform.contract.from_frame, &self.clock, &self.session, now)?;
+        Ok((through(&arm_from_base, point_in_base)?, used))
+    }
+    fn release(&self, request_id: &str) {
+        if let Ok(mut busy) = self.busy.lock() {
+            busy.release(Some(request_id));
+        }
+    }
+    /// Turn to face the target, then resolve it afresh and point with `side`.
+    fn turn_then_point(&self, turner: &crate::nav::Turner, arm: &crate::arm::Arm, request: &PointAt,
+        side: ArmChoice, stop: &std::sync::atomic::AtomicBool) {
+        let mut adapter_answered = false;
+        let outcome = (|| -> Result<()> {
+            turner.face(&request.request_id, &request.frame, request.point, stop)?;
+            let target = {
+                let known = self.known.lock().map_err(|_| anyhow::anyhow!("Frames unavailable"))?;
+                let now = now_ns();
+                // The base has turned: only its fresh pose places the target.
+                let accepted = resolve(request, &known, &self.base, &self.clock, &self.session, now)?;
+                self.in_arm(&known, arm, accepted.point_in_base, now)?.0
+            };
+            let reply = arm.plan(&request.request_id, side, target)?;
+            adapter_answered = true;
+            ensure!(reply.phase == "planned", "{}", reply.reason.unwrap_or_else(|| "Arm cannot point there".into()));
+            Ok(())
+        })();
+        if let Err(e) = outcome {
+            self.release(&request.request_id);
+            crate::diagnostic_log!("point_at {} after turning: {e:#}", request.request_id);
+            // The adapter reports its own refusals; report the rest the same way.
+            if !adapter_answered {
+                let _ = self.reports.send(crate::arm::Reply {
+                    request_id: Some(request.request_id.clone()),
+                    phase: "rejected".into(),
+                    reason: Some(format!("{e:#}")),
+                    executes: None,
+                    arm: None,
+                    code: Some("unreachable".into()),
+                });
+            }
+        }
+    }
+}
+
+impl Drop for Pointer {
+    fn drop(&mut self) {
+        // A turn in progress stops nav; never leave the thread behind.
+        self.turning.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(t) = self.turning.thread.lock().unwrap().take() {
+            let _ = t.join();
+        }
+    }
+}
+
 impl Pointer {
     /// The arm adapter this pointer moves through has exited.
     pub fn arm_gone(&self) -> bool {
         self._arm.as_ref().is_some_and(|a| a.gone())
     }
     /// `arm` is None to resolve only, or Some(execute) to plan with the arm
-    /// adapter and, when `execute`, move.
+    /// adapter and, when `execute`, move. With `turner` and a moving arm, the
+    /// turner's Home may have the robot turn to face a target first.
     pub fn mount(p: &crate::poses::Publisher, known: Arc<Mutex<Frames>>, arm: Option<bool>,
-        reports: tokio::sync::mpsc::UnboundedSender<crate::arm::Reply>) -> Result<Self> {
+        reports: tokio::sync::mpsc::UnboundedSender<crate::arm::Reply>,
+        turner: Option<crate::nav::Turner>) -> Result<Self> {
         let base: FrameRef = (&p.contract.from_frame).into();
         let clock = p.contract.clock.clone();
         let session = p.contract.session_id.clone();
         let busy = Arc::new(Mutex::new(Busy::default()));
+        let context = Shared {
+            known: known.clone(), base: base.clone(), clock: clock.clone(), session: session.clone(),
+            busy: busy.clone(), reports: reports.clone(),
+        };
         let arm = match arm {
             Some(execute) => {
                 let released = busy.clone();
@@ -297,6 +405,8 @@ impl Pointer {
             None => None,
         };
         let adapter = arm.clone();
+        let turning = Arc::new(Turning::default());
+        let running = turning.clone();
         let component = p.runtime.component(ComponentSpec::new(COMPONENT).operable(contract()))?;
         let operation = component.operable_ordered(
             OPERATION,
@@ -305,18 +415,24 @@ impl Pointer {
             |ctx| !ctx.caller_peer_id.is_empty(),
             move |ctx, request: PointAt| {
                 let rejected = |e: anyhow::Error| InvocationError::Rejected(format!("{e:#}"));
+                // Turning moves the base: only the paired Home, and only with a moving arm.
+                let turn = match (&turner, &adapter) {
+                    (Some(t), Some(a)) if a.executes && ctx.caller_peer_id == t.home => Some((t.clone(), a.clone())),
+                    _ => None,
+                };
                 let (mut accepted, in_arm) = {
                     let known = known.lock().map_err(|_| InvocationError::TargetUnavailable)?;
                     let now = now_ns();
-                    let accepted = resolve(&request, &known, &base, &clock, &session, now).map_err(rejected)?;
+                    let accepted = if turn.is_some() {
+                        locate(&request, &known, &base, &clock, &session, now)
+                    } else {
+                        resolve(&request, &known, &base, &clock, &session, now)
+                    }
+                    .map_err(rejected)?;
                     let in_arm = match &adapter {
-                        Some(arm) => {
-                            let to = &arm.transform.contract.from_frame;
-                            let (arm_from_base, used) =
-                                chain(&known, &base, to, &clock, &session, now).map_err(rejected)?;
-                            Some((through(&arm_from_base, accepted.point_in_base).map_err(rejected)?, used))
-                        }
-                        None => None,
+                        Some(arm) if accepted.point_in_base[1] > 0. =>
+                            Some(context.in_arm(&known, arm, accepted.point_in_base, now).map_err(rejected)?),
+                        _ => None,
                     };
                     (accepted, in_arm)
                 };
@@ -325,36 +441,65 @@ impl Pointer {
                     .map_err(|_| InvocationError::TargetUnavailable)?
                     .claim(&request.request_id, Instant::now(), window)
                     .map_err(rejected)?;
-                if let (Some(arm), Some((target, used))) = (&adapter, in_arm) {
-                    let planned = arm.plan(&request.request_id, accepted.arm, target);
-                    let release = || {
-                        if let Ok(mut busy) = busy.lock() {
-                            busy.release(Some(&request.request_id));
+                let mut turning_first = false;
+                if let Some(arm) = &adapter {
+                    let planned = match in_arm {
+                        Some((target, used)) => {
+                            accepted.resolved_from.extend(used);
+                            Some(arm.plan(&request.request_id, accepted.arm, target))
                         }
+                        None => None, // behind: only turning can help
                     };
                     match planned {
-                        Ok(reply) if reply.phase == "planned" => {
+                        Some(Ok(reply)) if reply.phase == "planned" => {
                             accepted.executes = reply.executes == Some(true) && arm.executes;
                             if !accepted.executes {
-                                release();
+                                context.release(&request.request_id);
                             }
                         }
-                        Ok(reply) => {
-                            release();
-                            return Err(rejected(anyhow::anyhow!(reply.reason.unwrap_or_else(|| "Arm cannot point there".into()))));
-                        }
-                        Err(e) => {
-                            release();
-                            return Err(rejected(e));
+                        outcome => {
+                            let unreachable = match &outcome {
+                                None => true,
+                                Some(Ok(reply)) => reply.code.as_deref() == Some("unreachable"),
+                                Some(Err(_)) => false,
+                            };
+                            let Some((turner, arm)) = turn.clone().filter(|_| unreachable && turning_helps(&accepted)) else {
+                                context.release(&request.request_id);
+                                return Err(match outcome {
+                                    Some(Err(e)) => rejected(e),
+                                    Some(Ok(reply)) => rejected(anyhow::anyhow!(reply.reason.unwrap_or_else(|| "Arm cannot point there".into()))),
+                                    None => rejected(anyhow::anyhow!("Target is behind the robot; turn the robot first")),
+                                });
+                            };
+                            // Turn, then point with the arm on the target's side now.
+                            let side = match request.arm {
+                                ArmChoice::Auto if accepted.point_in_base[0] > 0. => ArmChoice::Right,
+                                ArmChoice::Auto => ArmChoice::Left,
+                                chosen => chosen,
+                            };
+                            {
+                                let mut busy = busy.lock().map_err(|_| InvocationError::TargetUnavailable)?;
+                                busy.release(Some(&request.request_id));
+                                busy.claim(&request.request_id, Instant::now(), crate::nav::TURN_TIMEOUT + crate::arm::MOTION_TIMEOUT)
+                                    .map_err(rejected)?;
+                            }
+                            let mut thread = running.thread.lock().map_err(|_| InvocationError::TargetUnavailable)?;
+                            if let Some(previous) = thread.take() {
+                                let _ = previous.join(); // finished: its request released the busy claim
+                            }
+                            let (work, request, owner) = (context.clone(), request.clone(), running.clone());
+                            *thread = Some(std::thread::spawn(move || work.turn_then_point(&turner, &arm, &request, side, &owner.stop)));
+                            accepted.arm = side;
+                            accepted.executes = true;
+                            turning_first = true;
                         }
                     }
-                    accepted.resolved_from.extend(used);
                 }
                 crate::diagnostic_log!(
                     "point_at {} from {} in {}: {:?} arm, {:.2} m, bearing {:.0}°, elevation {:.0}° ({})",
                     accepted.request_id, ctx.caller_peer_id, accepted.frame.id, accepted.arm,
                     accepted.distance_m, accepted.bearing_deg, accepted.elevation_deg,
-                    if accepted.executes { "moving" } else { "not executed" }
+                    if turning_first { "turning to face it first" } else if accepted.executes { "moving" } else { "not executed" }
                 );
                 Ok(accepted)
             },
@@ -365,6 +510,7 @@ impl Pointer {
             _component: component,
             _operation: operation,
             _arm: arm,
+            turning,
         })
     }
 }
@@ -538,6 +684,21 @@ mod tests {
         for bad in [[0., -1., 1.], [0., 0.1, 0.], [0., 100., 0.], [f64::NAN, 1., 1.]] {
             assert!(run(&f, &request(&f.base, bad)).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn turning_is_considered_only_behind_or_well_off_to_a_side() {
+        let f = aligned();
+        let locate = |point| super::locate(&request(&f.base, point), &f.frames, &f.base, &clock(), "s", NOW).unwrap();
+        // Behind: refused by resolve, located for a turn.
+        assert!(run(&f, &request(&f.base, [0., -1., 1.])).is_err());
+        assert!(turning_helps(&locate([0., -1., 1.])));
+        // Off to the right at 45 deg: a turn could help.
+        assert!(turning_helps(&locate([1., 1., 1.])));
+        // Nearly ahead: a refusal there is not about direction.
+        assert!(!turning_helps(&locate([0.1, 2., 1.])));
+        // Distance rules still hold without the ahead rule.
+        assert!(super::locate(&request(&f.base, [0., -100., 0.]), &f.frames, &f.base, &clock(), "s", NOW).is_err());
     }
 
     #[test]

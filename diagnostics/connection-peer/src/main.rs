@@ -201,19 +201,21 @@ async fn main() -> Result<()> {
     let (pointing_tx, mut pointing_rx) = tokio::sync::mpsc::unbounded_channel::<arm::Reply>();
     let mut pointing_arm: Option<(String, String)> = None;
     let mut pointing_open = true;
-    let _pointer = match &publisher {
-        Some(p) => {
-            known.lock().unwrap().insert(
-                &[&p.contract.from_frame, &p.contract.to_frame],
-                pointer::Transform { contract: p.compact(), product: p.product() },
-            );
-            Some(pointer::Pointer::mount(p, known.clone(), arm, pointing_tx)?)
-        }
-        None => None,
-    };
+    if let Some(p) = &publisher {
+        known.lock().unwrap().insert(
+            &[&p.contract.from_frame, &p.contract.to_frame],
+            pointer::Transform { contract: p.compact(), product: p.product() },
+        );
+    }
     let _navigator = match (&publisher, navigate) {
         (Some(p), true) => Some(nav::Navigator::mount(p, known.clone(), home.peer_id.clone())?),
         _ => None,
+    };
+    // With navigation, Home's point_at may turn the robot to face a target first.
+    let _pointer = match &publisher {
+        Some(p) => Some(pointer::Pointer::mount(p, known.clone(), arm, pointing_tx,
+            _navigator.as_ref().map(|n| n.turner()))?),
+        None => None,
     };
     let mut input = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     let (camera_tx, mut camera_rx) =

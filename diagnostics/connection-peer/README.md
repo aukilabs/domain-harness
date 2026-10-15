@@ -35,7 +35,17 @@ argument opts in to the local arm adapter, `scripts/diagnostic-arm.py`:
   BBOS's `hybrid_ik`, one solve per tick, speed-capped. It holds 3 s, retraces
   the same path back to where it started, then releases its writers to BBOS.
   The whole path is solved and checked (joint limits, joint speed, the clear
-  envelope, the final aim) before anything moves. It refuses to take an arm another
+  envelope, the final aim) before anything moves.
+- With `--arm-motion` and `--navigate` together, a `point_at` from the robot's
+  own Home peer whose target is behind the robot, or that the arm refuses as
+  unreachable more than 15° off to a side, first turns the robot in place to
+  face the target: one BBOS nav goal at the robot's own position with that
+  heading, resolved through the published transforms like any goal. Once nav
+  reports arrival the target is resolved again from the fresh base pose and
+  pointed at with the arm on its original side. The Operable answers at once
+  (`executes: true`); a turn or plan that then fails is reported as a
+  `rejected` pointing status. Other callers get the old "turn the robot first"
+  refusal. Nav turns at its `HEADING_OMEGA` (0.15 rad/s by default). It refuses to take an arm another
   writer holds, and yields on stale feedback, tilt, low battery, temperature or
   current margins, or a following error. Clear the space in front of the robot.
 
