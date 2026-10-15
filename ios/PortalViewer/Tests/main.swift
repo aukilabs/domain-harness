@@ -92,6 +92,12 @@ originPairing["product_id"] = "local-scene:bb-lab:mobile"
 let originProfile = try HomeProfile.load(JSONSerialization.data(withJSONObject: originPairing))
 check(originProfile.sceneID == "bb-lab", "origin-named scene retained")
 check(originProfile.sceneLabel == "Bb Lab", "origin-named scene visible on phone")
+var epochPairing = originPairing
+epochPairing["frame"] = "local-scene:bb-lab:epoch-6f1c2a4e-0b7d-4c55-9a51-2f3e8d7b9c10"
+let epochProfile = try HomeProfile.load(JSONSerialization.data(withJSONObject: epochPairing))
+check(epochProfile.sceneID == "bb-lab", "epoch-named scene retained")
+epochPairing["frame"] = "local-scene:bb-lab:epoch-not-a-uuid"
+check((try? HomeProfile.load(JSONSerialization.data(withJSONObject: epochPairing))) == nil, "malformed epoch rejected")
 var badOrigin = originPairing; badOrigin["frame"] = "local-scene:BB_Lab:origin"
 check((try? HomeProfile.load(JSONSerialization.data(withJSONObject: badOrigin))) == nil, "invalid scene ID rejected")
 badOrigin = originPairing; badOrigin["product_id"] = "local-scene:nacs:mobile"
