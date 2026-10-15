@@ -40,6 +40,11 @@ pub struct PointAt {
     pub point: [f64; 3],
     #[serde(default)]
     pub arm: ArmChoice,
+    /// Drive these waypoints (in `frame`) first, end facing the target, then
+    /// point. Empty points from where the robot stands. Robots take a route
+    /// only from the Home they are paired with, as for `navigate`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub approach: Vec<[f64; 3]>,
 }
 impl ContractType for PointAt {
     const DATATYPE: &'static str = INSTRUCTION;

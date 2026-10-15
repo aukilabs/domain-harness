@@ -159,8 +159,13 @@ impl Goals {
     }
 }
 
-/// A turn in place takes at most this long (nav turns at 0.15 rad/s by default).
+/// A turn in place takes at most this long.
 pub const TURN_TIMEOUT: Duration = Duration::from_secs(45);
+/// Driving a route of `route_m` and then turning takes at most this long;
+/// nav's slow-downs near obstacles keep it well under its 0.25 m/s.
+pub fn allowance(route_m: f64) -> Duration {
+    TURN_TIMEOUT + Duration::from_secs_f64((route_m.max(0.) / 0.1).min(600.))
+}
 
 /// Turns the robot in place for the arm pointer: one nav goal at the robot's
 /// own position whose heading faces a point. Nav reaches a goal inside its
@@ -172,27 +177,42 @@ pub struct Turner {
     pub home: String,
 }
 impl Turner {
-    /// Face `point` in `frame`, resolved like a goal; returns the nav heading
-    /// once nav reports arrival. Stops nav and fails when `stop` is set.
-    pub fn face(&self, request_id: &str, frame: &FrameRef, point: [f64; 3],
+    /// Drive `approach` (waypoints in `frame`; empty to stay put) and end
+    /// facing `point` in `frame`, all resolved like a goal; returns the nav
+    /// heading once nav reports arrival. Stops nav and fails when `stop` is set.
+    pub fn face(&self, request_id: &str, frame: &FrameRef, approach: &[[f64; 3]], point: [f64; 3],
         stop: &std::sync::atomic::AtomicBool) -> Result<f64> {
         let g = &self.goals;
-        let (robot, target) = {
+        ensure!(approach.len() <= MAX_WAYPOINTS, "Send at most {MAX_WAYPOINTS} approach waypoints");
+        ensure!(approach.iter().flatten().all(|v| v.is_finite()), "Approach waypoints must be finite");
+        let (robot, points, target) = {
             let known = g.known.lock().map_err(|_| anyhow!("Frames unavailable"))?;
             let now = now_ns();
             let (nav_from_target, _) = chain(&known, frame, &g.nav, &g.clock, &g.session, now)?;
             let (nav_from_base, _) = chain(&known, &g.base, &g.nav, &g.clock, &g.session, now)?;
-            (through(&nav_from_base, [0.; 3])?, through(&nav_from_target, point)?)
+            let points = approach.iter().map(|p| through(&nav_from_target, *p).map(|q| [q[0], q[1]])).collect::<Result<Vec<_>>>()?;
+            (through(&nav_from_base, [0.; 3])?, points, through(&nav_from_target, point)?)
         };
-        ensure!((target[0] - robot[0]).hypot(target[1] - robot[1]) > 0.05, "Target is straight above or below the robot");
-        let h = heading([robot[0], robot[1]], [target[0], target[1]]);
+        let robot = [robot[0], robot[1]];
+        let end = points.last().copied().unwrap_or(robot);
+        ensure!((target[0] - end[0]).hypot(target[1] - end[1]) > 0.05, "Target is straight above or below where the robot would stand");
+        let h = heading(end, [target[0], target[1]]);
+        let route: f64 = std::iter::once(robot).chain(points.iter().copied()).collect::<Vec<_>>()
+            .windows(2).map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1])).sum();
+        let mut list: Vec<serde_json::Value> = points.iter().map(|p| serde_json::json!([p[0], p[1], null])).collect();
+        list.pop();
+        list.push(serde_json::json!([end[0], end[1], h]));
         let (tx, rx) = mpsc::channel();
         g.adapter.waiting.lock().unwrap().insert(request_id.into(), tx);
         let result = (|| {
-            g.adapter.send(&serde_json::json!({"op":"go","request_id":request_id,
-                "waypoints":[[robot[0], robot[1], h]]}))?;
-            crate::diagnostic_log!("point_at {request_id}: turning to face the target (nav heading {:.0}°)", h.to_degrees());
-            let until = Instant::now() + TURN_TIMEOUT;
+            g.adapter.send(&serde_json::json!({"op":"go","request_id":request_id,"waypoints":list}))?;
+            if points.is_empty() {
+                crate::diagnostic_log!("point_at {request_id}: turning to face the target (nav heading {:.0}°)", h.to_degrees());
+            } else {
+                crate::diagnostic_log!("point_at {request_id}: driving {route:.1} m over {} waypoint(s), then facing the target (nav heading {:.0}°)",
+                    points.len(), h.to_degrees());
+            }
+            let until = Instant::now() + allowance(route);
             loop {
                 let halt = |why: &str| {
                     let _ = g.stop(&uuid::Uuid::new_v4().to_string());

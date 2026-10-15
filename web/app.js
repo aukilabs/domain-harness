@@ -578,11 +578,13 @@ function cardActions(...buttons){const row=document.createElement('div');row.cla
 // Send the robot that advertises `navigate` to a place in this local scene.
 // Home plans the route on the scene map; the robot's own navigation drives it.
 async function sendRobot(target,status){status.textContent='Planning the route…';try{const r=await api(localSceneUrl()+'/navigate-robot',{target});status.textContent=r.summary;lastScene=null;}catch(error){status.textContent='Not sent · '+error.message;}}
+// Navigate & point: the robot drives to stand 1.5 m from the target, faces it and points.
+async function goAndPoint(target,status){status.textContent='Planning the approach…';try{const r=await api(localSceneUrl()+'/point-robot',{target,approach_m:1.5});status.textContent=r.summary;lastScene=null;}catch(error){status.textContent='Not sent · '+error.message;}}
 async function stopRobotNav(status){try{const r=await api('/api/robots/stop',{});status.textContent=r.summary;}catch(error){status.textContent='Not stopped · '+error.message;}}
 function robotGoControls(target){
  const box=document.createElement('div');box.setAttribute('aria-label','Robot navigation');
  const status=document.createElement('p');status.className='form-status';status.setAttribute('role','status');
- box.append(cardActions(actionButton('Send robot here',{onClick:()=>sendRobot(target,status)}),actionButton('Stop robot',{variant:'danger-ghost',onClick:()=>stopRobotNav(status)})),status);
+ box.append(cardActions(actionButton('Send robot here',{onClick:()=>sendRobot(target,status)}),actionButton('Navigate & point',{onClick:()=>goAndPoint(target,status)}),actionButton('Stop robot',{variant:'danger-ghost',onClick:()=>stopRobotNav(status)})),status);
  return box;
 }
 function showNoteSelection(note){

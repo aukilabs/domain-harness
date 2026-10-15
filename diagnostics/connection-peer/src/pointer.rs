@@ -5,7 +5,8 @@
 //! declared arm mount into the arm IK frame, and the adapter plans and moves;
 //! without one the request is resolved and accepted only.
 //! With a turner, a target behind the robot or off to a side the arm cannot
-//! reach makes the robot turn in place to face it first, for its Home peer only.
+//! reach makes the robot turn in place to face it first, and a request with an
+//! approach route drives it before facing and pointing; both for its Home only.
 use crate::compact_pose::{Contract, FrameRef, Lifetime, Update};
 use crate::point_at::*;
 use anyhow::{Context, Result, bail, ensure};
@@ -323,18 +324,20 @@ impl Shared {
             busy.release(Some(request_id));
         }
     }
-    /// Turn to face the target, then resolve it afresh and point with `side`.
+    /// Drive the request's approach (if any) and turn to face the target,
+    /// then resolve it afresh and point with `side` (Auto: the side it is on then).
     fn turn_then_point(&self, turner: &crate::nav::Turner, arm: &crate::arm::Arm, request: &PointAt,
         side: ArmChoice, stop: &std::sync::atomic::AtomicBool) {
         let mut adapter_answered = false;
         let outcome = (|| -> Result<()> {
-            turner.face(&request.request_id, &request.frame, request.point, stop)?;
-            let target = {
+            turner.face(&request.request_id, &request.frame, &request.approach, request.point, stop)?;
+            let (target, side) = {
                 let known = self.known.lock().map_err(|_| anyhow::anyhow!("Frames unavailable"))?;
                 let now = now_ns();
-                // The base has turned: only its fresh pose places the target.
+                // The base has moved: only its fresh pose places the target.
                 let accepted = resolve(request, &known, &self.base, &self.clock, &self.session, now)?;
-                self.in_arm(&known, arm, accepted.point_in_base, now)?.0
+                let side = if side == ArmChoice::Auto { accepted.arm } else { side };
+                (self.in_arm(&known, arm, accepted.point_in_base, now)?.0, side)
             };
             let reply = arm.plan(&request.request_id, side, target)?;
             adapter_answered = true;
@@ -420,6 +423,10 @@ impl Pointer {
                     (Some(t), Some(a)) if a.executes && ctx.caller_peer_id == t.home => Some((t.clone(), a.clone())),
                     _ => None,
                 };
+                if !request.approach.is_empty() && turn.is_none() {
+                    return Err(rejected(anyhow::anyhow!(
+                        "This robot takes an approach route only from its Home, with navigation and arm motion on")));
+                }
                 let (mut accepted, in_arm) = {
                     let known = known.lock().map_err(|_| InvocationError::TargetUnavailable)?;
                     let now = now_ns();
@@ -430,7 +437,7 @@ impl Pointer {
                     }
                     .map_err(rejected)?;
                     let in_arm = match &adapter {
-                        Some(arm) if accepted.point_in_base[1] > 0. =>
+                        Some(arm) if accepted.point_in_base[1] > 0. && request.approach.is_empty() =>
                             Some(context.in_arm(&known, arm, accepted.point_in_base, now).map_err(rejected)?),
                         _ => None,
                     };
@@ -441,14 +448,14 @@ impl Pointer {
                     .map_err(|_| InvocationError::TargetUnavailable)?
                     .claim(&request.request_id, Instant::now(), window)
                     .map_err(rejected)?;
-                let mut turning_first = false;
+                let mut turning_first = None;
                 if let Some(arm) = &adapter {
                     let planned = match in_arm {
                         Some((target, used)) => {
                             accepted.resolved_from.extend(used);
                             Some(arm.plan(&request.request_id, accepted.arm, target))
                         }
-                        None => None, // behind: only turning can help
+                        None => None, // behind, or driving first: plan on arrival
                     };
                     match planned {
                         Some(Ok(reply)) if reply.phase == "planned" => {
@@ -463,7 +470,8 @@ impl Pointer {
                                 Some(Ok(reply)) => reply.code.as_deref() == Some("unreachable"),
                                 Some(Err(_)) => false,
                             };
-                            let Some((turner, arm)) = turn.clone().filter(|_| unreachable && turning_helps(&accepted)) else {
+                            let approaching = !request.approach.is_empty();
+                            let Some((turner, arm)) = turn.clone().filter(|_| approaching || unreachable && turning_helps(&accepted)) else {
                                 context.release(&request.request_id);
                                 return Err(match outcome {
                                     Some(Err(e)) => rejected(e),
@@ -471,16 +479,21 @@ impl Pointer {
                                     None => rejected(anyhow::anyhow!("Target is behind the robot; turn the robot first")),
                                 });
                             };
-                            // Turn, then point with the arm on the target's side now.
+                            // Turn, then point with the arm on the target's side now; after
+                            // a drive, with the arm on its side on arrival.
                             let side = match request.arm {
+                                ArmChoice::Auto if approaching => ArmChoice::Auto,
                                 ArmChoice::Auto if accepted.point_in_base[0] > 0. => ArmChoice::Right,
                                 ArmChoice::Auto => ArmChoice::Left,
                                 chosen => chosen,
                             };
+                            let route = request.approach.windows(2).map(|w| {
+                                (0..3).map(|i| (w[1][i] - w[0][i]).powi(2)).sum::<f64>().sqrt()
+                            }).sum::<f64>() + if approaching { accepted.distance_m } else { 0. };
                             {
                                 let mut busy = busy.lock().map_err(|_| InvocationError::TargetUnavailable)?;
                                 busy.release(Some(&request.request_id));
-                                busy.claim(&request.request_id, Instant::now(), crate::nav::TURN_TIMEOUT + crate::arm::MOTION_TIMEOUT)
+                                busy.claim(&request.request_id, Instant::now(), crate::nav::allowance(route) + crate::arm::MOTION_TIMEOUT)
                                     .map_err(rejected)?;
                             }
                             let mut thread = running.thread.lock().map_err(|_| InvocationError::TargetUnavailable)?;
@@ -491,7 +504,7 @@ impl Pointer {
                             *thread = Some(std::thread::spawn(move || work.turn_then_point(&turner, &arm, &request, side, &owner.stop)));
                             accepted.arm = side;
                             accepted.executes = true;
-                            turning_first = true;
+                            turning_first = Some(if approaching { "driving to it first" } else { "turning to face it first" });
                         }
                     }
                 }
@@ -499,7 +512,7 @@ impl Pointer {
                     "point_at {} from {} in {}: {:?} arm, {:.2} m, bearing {:.0}°, elevation {:.0}° ({})",
                     accepted.request_id, ctx.caller_peer_id, accepted.frame.id, accepted.arm,
                     accepted.distance_m, accepted.bearing_deg, accepted.elevation_deg,
-                    if turning_first { "turning to face it first" } else if accepted.executes { "moving" } else { "not executed" }
+                    turning_first.unwrap_or(if accepted.executes { "moving" } else { "not executed" })
                 );
                 Ok(accepted)
             },
@@ -632,6 +645,7 @@ mod tests {
             frame: frame.clone(),
             point,
             arm: ArmChoice::Auto,
+            approach: vec![],
         }
     }
     fn run(f: &Fixture, r: &PointAt) -> Result<PointAtAccepted> {

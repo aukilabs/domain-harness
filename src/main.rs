@@ -1021,7 +1021,8 @@ async fn point_robot_at(s:&Shared,key:&str,frame:&str,args:Value)->anyhow::Resul
                 // Home resolves the target from current scene state and declares its frame;
                 // the robot then decides, through its own calibration, whether it can point.
                 #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Target {kind:String,#[serde(default)] id:Option<String>,#[serde(default)] position:Option<[f64;3]>}
-                #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Point {#[serde(default)] robot:Option<String>,target:Target}
+                // approach_m: drive to stand this far from the target first (navigate & point).
+                #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Point {#[serde(default)] robot:Option<String>,target:Target,#[serde(default)] approach_m:Option<f64>}
                 let a:Point=serde_json::from_value(args)?;
                 let network=spatial_home::peer_aliases::network(s.peer.borrow().clone())?;
                 let candidate=spatial_home::robot_pointing::select(&network,a.robot.as_deref())?;
@@ -1046,19 +1047,69 @@ async fn point_robot_at(s:&Shared,key:&str,frame:&str,args:Value)->anyhow::Resul
                 let home_peer=s.peer.borrow()["connection"]["peer_id"].as_str().map(str::to_owned).ok_or_else(||anyhow::anyhow!("Home P2P peer is not ready"))?;
                 let scene_frame=spatial_home::conventions::registry(&home_peer,frame)?;
                 anyhow::ensure!(position.iter().all(|v|v.is_finite()),"Target position must be finite");
-                let instruction=spatial_home::point_at::PointAt{request_id:uuid::Uuid::new_v4().to_string(),
-                    frame:spatial_home::compact_pose::FrameRef::from(&scene_frame),point:position,arm:Default::default()};
                 let robot=label_of(&candidate.peer_id);
+                let route=match a.approach_m {
+                    Some(standoff)=>approach_route(s,key,frame,&home_peer,&candidate.peer_id,&robot,position,standoff).await?,
+                    None=>None,
+                };
+                let approach=match &route {
+                    Some(route)=>spatial_home::robot_navigation::waypoints(&route.path.as_ref().and_then(|p|p.segments.first()).cloned().unwrap_or_default(),0.25)?,
+                    None=>vec![],
+                };
+                let instruction=spatial_home::point_at::PointAt{request_id:uuid::Uuid::new_v4().to_string(),
+                    frame:spatial_home::compact_pose::FrameRef::from(&scene_frame),point:position,arm:Default::default(),approach};
                 let (reply,receive)=tokio::sync::oneshot::channel();
                 s.pointing.try_send(spatial_home::robot_pointing::Invoke{candidate:candidate.clone(),instruction,reply})
                     .map_err(|_|anyhow::anyhow!("Home P2P is not running, or another robot request is pending"))?;
                 let accepted=receive.await.map_err(|_|anyhow::anyhow!("Robot pointing request was dropped"))??;
                 let target=label.map(|l|format!("\"{l}\"")).unwrap_or_else(||"the point".into());
                 let side=if accepted.bearing_deg>=0.{"left"}else{"right"};
+                if let (Some(route),Some(standoff))=(&route,a.approach_m) {
+                    return Ok(json!({"summary":format!("{robot} is driving {:.1} m to stand {standoff:.1} m from {target}, then will face it and point. Its own navigation avoids obstacles.",
+                        route.length_m),"robot_peer_id":candidate.peer_id,"route":route,"result":accepted}));
+                }
                 let motion=if accepted.executes{format!("Its {} arm is pointing for {:.0} s.",format!("{:?}",accepted.arm).to_lowercase(),accepted.hold_s)}else{"The arm did not move: arm motion is not enabled on the robot.".to_owned()};
                 Ok(json!({"summary":format!("{robot} accepted {target}: {:.2} m away, {:.0}\u{b0} to its {side}, {:.0}\u{b0} elevation. {motion}",
                     accepted.distance_m,accepted.bearing_deg.abs(),accepted.elevation_deg),
                     "robot_peer_id":candidate.peer_id,"result":accepted}))
+}
+/// A route on the scene map to a spot `standoff` m (horizontally) from
+/// `target`, for navigate & point; None when the robot already stands that
+/// close. Spots on the robot's side come first; one the map blocks is
+/// replaced by the shortest reachable spot around the target. The chosen
+/// route is shared, so the viewer draws it.
+#[allow(clippy::too_many_arguments)]
+async fn approach_route(s:&Shared,key:&str,frame:&str,home_peer:&str,robot_peer:&str,robot:&str,target:[f64;3],standoff:f64)
+    ->anyhow::Result<Option<spatial_home::scene_navigation::Route>> {
+    use spatial_home::scene_navigation::{Agent,Place,RouteRequest,Status};
+    anyhow::ensure!((0.5..=5.).contains(&standoff),"approach_m must be 0.5..5 m");
+    let network=spatial_home::peer_aliases::network(s.peer.borrow().clone())?;
+    // A robot that points must also navigate to drive there.
+    spatial_home::robot_navigation::select(&network,Some(robot_peer)).map_err(|e|anyhow::anyhow!("{robot} cannot drive there: {e}"))?;
+    let raw=s.peer.borrow().clone();
+    let pose=spatial_home::peer_locations::get(&s.previews,&raw,json!({"peer_id":robot_peer}),frame).await
+        .map_err(|e|anyhow::anyhow!("No current pose for {robot} in this scene: {e}"))?;
+    let from:[f64;3]=serde_json::from_value(pose["location"]["position"].clone())?;
+    // The scene frame is Y-up: the floor is x, z.
+    let (dx,dz)=(from[0]-target[0],from[2]-target[2]);
+    let away=dx.hypot(dz);
+    // Nav arrives within 0.25 m; closer than that, just face the target and point.
+    if away<=standoff+0.25 {return Ok(None);}
+    let base=dz.atan2(dx);
+    let plan=|spot:[f64;3],share:bool|s.local_scenes.plan_route(key,home_peer,RouteRequest{frame:frame.into(),
+        from:Place::Point(from),to:Place::Point(spot),agent:Some(Agent{radius_m:0.25,height_m:1.6}),share:Some(share)});
+    let mut best:Option<([f64;3],f64)>=None;
+    for offset in [0.,30.,-30.,60.,-60.,90.,-90.,135.,-135.,180.] {
+        let angle=base+f64::to_radians(offset);
+        let spot=[target[0]+standoff*angle.cos(),from[1],target[2]+standoff*angle.sin()];
+        let Ok(route)=plan(spot,false) else {continue};
+        if route.status==Status::Unreachable || route.path.is_none() {continue;}
+        // Straight ahead is preferred; around the target only when it is blocked.
+        if offset==0. {best=Some((spot,route.length_m));break;}
+        if best.is_none_or(|(_,length)|route.length_m<length) {best=Some((spot,route.length_m));}
+    }
+    let (spot,_)=best.ok_or_else(||anyhow::anyhow!("The scene map shows no free spot {standoff:.1} m from the target that {robot} can reach"))?;
+    Ok(Some(plan(spot,true)?))
 }
 /// Send a robot somewhere in a local scene: Home finds where the robot stands,
 /// plans a route on the scene map as Home's own peer (shared, so the viewer
@@ -1118,6 +1169,12 @@ async fn navigate_robot_local(State(s):State<Shared>,headers:HeaderMap,axum::ext
     local_write(&headers)?;
     let (key,frame)=volume_context(&s,&format!("local:{id}"))?;
     Ok(Json(navigate_robot(&s,&key,&frame,args).await?))
+}
+/// The viewer's "Navigate & point".
+async fn point_robot_local(State(s):State<Shared>,headers:HeaderMap,axum::extract::Path(id):axum::extract::Path<String>,Json(args):Json<Value>)->ApiResult{
+    local_write(&headers)?;
+    let (key,frame)=volume_context(&s,&format!("local:{id}"))?;
+    Ok(Json(point_robot_at(&s,&key,&frame,args).await?))
 }
 /// The viewer's "Stop robot".
 async fn stop_robot_local(State(s):State<Shared>,headers:HeaderMap,Json(args):Json<Value>)->ApiResult{
@@ -1606,6 +1663,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/local-scenes/{id}/reset-mapping", post(reset_local_mapping))
         .route("/api/local-scenes/{id}/drive", post(drive_local))
         .route("/api/local-scenes/{id}/navigate-robot", post(navigate_robot_local))
+        .route("/api/local-scenes/{id}/point-robot", post(point_robot_local))
         .route("/api/robots/stop", post(stop_robot_local))
         .route("/api/local-scenes/{id}/presence", get(local_presence))
         .route("/api/phone-local-scene", get(phone_local_scene))
