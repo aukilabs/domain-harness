@@ -7,6 +7,9 @@ import { zoomTier, clusterNotes } from './note-lod.js';
 // - Labels never take pointer events; the canvas keeps every click, drag and wheel, and asks hitTest().
 // - Stacking is fixed by kind and state, never by depth: volume chips, then pins and clusters, then bubbles,
 //   then the hovered label, then the selected one.
+// - Declutter: a text label (note bubble, volume chip) that would overlap a higher-priority label or any pin steps
+//   down, a bubble to its pin and a chip out of sight. While the view moves labels only step down (5 times a
+//   second); they come back once it settles, with 4 px of hysteresis, so nothing flickers while orbiting.
 // - Positions are written every frame straight from the anchors (no easing, so labels never swim); only the
 //   form inside a label transitions. Clusters merge and split by sliding their pins (JS-driven, 260 ms).
 // Items: {id, kind:'note'|'volume', anchor:Object3D, text, detail?, peer?, note?, volumeId?, hidden?}. The anchor's
@@ -21,7 +24,7 @@ const MERGE_MS=260,CLUSTER_DELAY_MS=180;
 export function createSceneLabels({camera,controls,renderer,parent=renderer.domElement.parentElement,hidden=()=>false,fog=()=>null}){
  const layer=document.createElement('div');layer.className='scene-labels';layer.setAttribute('aria-hidden','true');parent.append(layer);
  const sources=new Map(),labels=new Map(),clusters=new Map(),point=new THREE.Vector3(),at=new THREE.Vector3();
- let tier=0,selected=null,hovered=null,dirty=true,clusterCache=null,focus=null,lastView='',restSince=0,host=null,canvasRect=null;
+ let tier=0,selected=null,hovered=null,dirty=true,declutterAt=0,settled=false,clusterCache=null,focus=null,lastView='',restSince=0,host=null,canvasRect=null;
 
  function shown(anchor){if(!anchor.parent)return false;for(let o=anchor;o;o=o.parent)if(!o.visible)return false;return true;}
  function create(item){
@@ -53,6 +56,8 @@ export function createSceneLabels({camera,controls,renderer,parent=renderer.domE
   if(label.form===form)return;
   label.el.style.setProperty('--delay',Math.round(stagger(label))+'ms');label.form=form;label.el.dataset.form=form;
  }
+ const stepDown={bubble:'pin',chip:'hidden',tile:'hidden'};
+ function shownForm(label){return label.demoted&&stepDown[label.base]?stepDown[label.base]:label.base;}
  function clusterKey(members){return members.map(m=>m.id).join('|');}
  function decide(now){
   const notes=[...labels.values()].filter(l=>l.item.kind==='note'&&!l.item.hidden);
@@ -69,9 +74,10 @@ export function createSceneLabels({camera,controls,renderer,parent=renderer.domE
    else if(item.kind==='note')form=item.id===selected?'bubble':tier===0?'bubble':memberOf.has(item.id)?'merged':'pin';
    else form=tier===0?'chip':tier===1?'tile':'hidden';
    const was=label.form;
+   label.base=form;
    if(form==='merged'&&was!=='merged'){label.merge={start:now,dir:1,key:memberOf.get(item.id)};setForm(label,'pin');label.el.dataset.merging='';label.form='merged';continue;}
    if(was==='merged'&&form!=='merged'){const key=label.merge?.key||label.mergedInto;label.merge={start:now,dir:-1,key,centre:clusters.get(key)?.centre.clone()};label.form=form;label.el.dataset.form=form==='hidden'?'hidden':'pin';label.el.dataset.merging='';continue;}
-   setForm(label,form);
+   setForm(label,shownForm(label));
   }
   // Cluster pins: created when their members start merging, popping in once the pins arrive.
   const keep=new Set();
@@ -102,8 +108,8 @@ export function createSceneLabels({camera,controls,renderer,parent=renderer.domE
  const formNode={bubble:'.label-bubble',pin:'.label-pin',chip:'.label-chip',tile:'.label-tile-only'};
  function measure(label,form){if(!label.size[form]?.w){const node=label.el.querySelector(formNode[form]);label.size[form]={w:node.offsetWidth,h:node.offsetHeight};}return label.size[form];}
  // Client-space hit rects for the forms a click can land on (targets, not the animated opacity).
- function hitRect(label){
-  const x=label.x+host.left,y=label.y+host.top,form=label.form;
+ function hitRect(label,form=label.form){
+  const x=label.x+host.left,y=label.y+host.top;
   if(form==='bubble'){const s=measure(label,'bubble');return {left:x-s.w/2,right:x+s.w/2,top:y-s.h-6,bottom:y};}
   if(form==='pin')return {left:x-16,right:x+16,top:y-27,bottom:y+5};
   if(form==='chip'||form==='tile'){const s=measure(label,form);return {left:x-s.w/2,right:x+s.w/2,top:y-s.h,bottom:y};}
@@ -136,6 +142,26 @@ export function createSceneLabels({camera,controls,renderer,parent=renderer.domE
    label.rect=label.visible&&!label.merge&&!label.faint?hitRect(label):null;
   }
   for(const cluster of clusters.values())cluster.rect=cluster.visible&&!cluster.faint&&cluster.form==='cluster'?{left:cluster.x+host.left-16,right:cluster.x+host.left+16,top:cluster.y+host.top-29,bottom:cluster.y+host.top+3}:null;
+  // Declutter at 5 Hz while moving (step down only), and once when the view settles (steps back up allowed).
+  if(!still){settled=false;if(now-declutterAt>200){declutterAt=now;declutter(false);}}
+  else if(!settled){settled=true;declutterAt=now;declutter(true);}
+ }
+ function declutter(mayReturn){
+  const rank=label=>label.item.id===selected?1000:label.item.id===hovered?900:label.item.kind==='note'?(label.item.peer?90:100):50;
+  const near=label=>{label.item.anchor.getWorldPosition(at);return at.distanceTo(controls.target);};
+  const texts=[...labels.values()].filter(l=>l.visible&&!l.faint&&stepDown[l.base]).sort((a,b)=>rank(b)-rank(a)||near(a)-near(b)||(a.item.id<b.item.id?-1:1));
+  // Pins and clusters always stay; text labels may not cover them.
+  const taken=[...labels.values()].filter(l=>l.visible&&!l.faint&&l.base==='pin').map(l=>hitRect(l,'pin'));
+  for(const cluster of clusters.values())if(cluster.rect)taken.push(cluster.rect);
+  const overlaps=(r,pad)=>taken.some(q=>r.left-pad<q.right&&r.right+pad>q.left&&r.top-pad<q.bottom&&r.bottom+pad>q.top);
+  let changed=false;
+  for(const label of texts){
+   const full=hitRect(label,label.base),blocked=label.item.id!==selected&&overlaps(full,label.demoted?4:-4);
+   const demoted=blocked||(label.demoted&&!mayReturn);
+   if(demoted!==label.demoted){label.demoted=demoted;setForm(label,shownForm(label));changed=true;}
+   if(!label.demoted)taken.push(full);else if(label.base==='bubble')taken.push(hitRect(label,'pin'));
+  }
+  if(changed){let pins=0;for(const label of labels.values())if(label.form==='pin')pins++;renderer.domElement.dataset.notePinCount=String(pins);}
  }
 
  // Top-most first, in the fixed stacking order.
