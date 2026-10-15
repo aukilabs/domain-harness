@@ -1217,9 +1217,9 @@ body:has(.placement-banner:not([hidden])) .scene-notice{top:68px}
 .list-row-title,.list-row-meta{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* Device capabilities: the per-capability raw details stay invisible until opened (their closed summary was
    drawing a stray divider under every row), and rows are separated by one hairline between them. */
-.capability .capability-raw{margin:0;padding:0;border:0}
+.capability .capability-raw,#device-detail .capability .capability-raw{margin:0;padding:0;border:0}
 .capability .capability-raw:not([open]){height:0;overflow:hidden}
-.capability .capability-raw[open]{margin-top:6px}
+.capability .capability-raw[open],#device-detail .capability .capability-raw[open]{margin-top:6px}
 .capability+.capability{border-top:1px solid color-mix(in srgb,var(--nav-line) 70%,transparent)}
 /* Buttons: no border, so the hover plate's rim and shadow sit exactly on the button's edge instead of a pixel
    inside it. Secondary buttons draw their rim as an inset line; the top highlight is faint on dark glass. */
