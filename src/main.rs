@@ -22,6 +22,7 @@ struct RunnerView {
     state: tokio::sync::watch::Receiver<spatial_home::scene_mirror::RemoteScene>,
 }
 struct AppState {
+    traffic: Arc<spatial_home::traffic_history::Monitor>,
     local_scenes: Arc<spatial_home::local_scenes::LocalScenes>,
     simulation_disconnect: tokio_util::sync::CancellationToken,
     simulation:
@@ -758,6 +759,21 @@ async fn mapping_status(State(s): State<Shared>) -> ApiResult {
 async fn runner_pose(State(s): State<Shared>) -> ApiResult {
     Ok(Json(s.runner.borrow().view()))
 }
+#[derive(Deserialize)]
+struct TrafficQuery {peer_id:Option<String>}
+async fn network_traffic(State(s):State<Shared>,axum::extract::Query(query):axum::extract::Query<TrafficQuery>) -> ApiResult {
+    let diagnostics=if let Some(remote)=query.peer_id {
+        let _:auki_p2p::PeerId=remote.parse().map_err(anyhow::Error::from)?;
+        let owner=s.peer.borrow()["connection"]["peer_id"].as_str().map(str::to_owned);
+        let Some(owner)=owner else {return Ok(Json(json!({"available":false,"reason":"Home peer is not ready"})));};
+        let Some(value)=s.traffic.peer_snapshot(&owner,&remote) else {return Ok(Json(json!({"available":false,"observer_peer_id":owner,"remote_peer_id":remote,"reason":"No measured traffic for this peer in this launch"})));};
+        value
+    }else{s.traffic.snapshot()};
+    let mut value=serde_json::to_value(&diagnostics.current).map_err(anyhow::Error::from)?;
+    value["available"]=json!(true);
+    value["diagnostics"]=serde_json::to_value(diagnostics).map_err(anyhow::Error::from)?;
+    Ok(Json(value))
+}
 async fn peer_status(State(s): State<Shared>) -> ApiResult {
     if let Some(simulation) = &s.simulation {
         let state = simulation.borrow();
@@ -1436,6 +1452,7 @@ async fn main() -> anyhow::Result<()> {
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(std::path::Path::new("."));
     std::fs::create_dir_all(parent)?;
+    let traffic_path=data.with_extension("traffic-history.json");
     let lock_path = data.with_extension("lock");
     let fiducials = Mutex::new(spatial_home::fiducials::FiducialStore::load(
         spatial_home::fiducials::registry_path(&data),
@@ -1490,6 +1507,8 @@ async fn main() -> anyhow::Result<()> {
     let robot_states = spatial_home::robot_states::RobotStates::default();
     let ar_frames = spatial_home::ar_preview::Frames::default();
     let shutdown = tokio_util::sync::CancellationToken::new();
+    let traffic=Arc::new(spatial_home::traffic_history::Monitor::open(traffic_path));
+    let traffic_task=tokio::spawn(traffic.clone().run(shutdown.clone()));
     let simulation_disconnect = tokio_util::sync::CancellationToken::new();
     // Bind the UI before starting a remote peer, so a busy UI port cannot
     // leave a discovery registration or relay reservation alive.
@@ -1588,6 +1607,7 @@ async fn main() -> anyhow::Result<()> {
         async move { spatial_home::registry_robots::serve(scenes, states, network, previews, stop).await }
     });
     let state = Arc::new(AppState {
+        traffic,
         local_scenes,
         simulation_disconnect,
         simulation,
@@ -1655,6 +1675,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/vendor/{name}", get(vendor))
         .route("/robot-model.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/robot-model.js")) }))
+        .route("/network-traffic.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/network-traffic.js")) }))
         .route("/robot-health.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/robot-health.js")) }))
         .route("/robot/{*path}", get(robot_asset))
         .route("/brand/mckenna.svg", get(|| async { ([(header::CONTENT_TYPE, "image/svg+xml")], include_str!("../web/brand/mckenna.svg")) }))
@@ -1718,6 +1739,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/api/fiducials/{family}/{id}/print", get(fiducial_print))
         .route("/api/catalog", get(catalog))
+        .route("/api/network-traffic", get(network_traffic))
         .route("/api/peer", get(peer_status))
         .route("/api/peer-alias",post(set_peer_alias))
         .route("/api/runner-pose", get(runner_pose))
@@ -1749,6 +1771,7 @@ async fn main() -> anyhow::Result<()> {
         })
         .await;
     shutdown.cancel();
+    traffic_task.await?;
     if let Some(network) = network {
         network.await??;
     }

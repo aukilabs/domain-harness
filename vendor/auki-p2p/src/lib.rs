@@ -57,7 +57,7 @@ pub use application_protocol::{
     ApplicationProtocol, ApplicationProtocolSpec, AuthenticatedApplicationStream,
     APPLICATION_PROTOCOL_MAX_CONCURRENCY, APPLICATION_PROTOCOL_MAX_FRAME_BYTES,
 };
-pub use authenticated_stream::AuthenticatedStream;
+pub use authenticated_stream::{AuthenticatedStream, application_traffic_totals};
 pub use authentication::{AuthenticatedPeer, SessionRequirements};
 #[cfg(not(target_arch = "wasm32"))]
 pub use authority::{DomainAuthority, P2pCredentialError, P2pCredentialResult};
@@ -108,3 +108,6 @@ pub use token::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use transport::{IncomingAuthenticatedStreams, Node, RelayRouteHandle, RelayTransportEvent};
+
+mod traffic;
+pub use traffic::{PeerTraffic, peer_traffic_snapshot};

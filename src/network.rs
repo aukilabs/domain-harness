@@ -702,6 +702,7 @@ pub async fn serve_scene(
                     &publisher.runtime, &publisher.endpoint,
                     publisher.session_clock.clone(),
                 )?;
+                let mut traffic = crate::peer_traffic::Publisher::mount(&publisher.runtime, &publisher.endpoint, &publisher.clock, publisher.started)?;
                 let mut local_mobile = crate::local_mobile::Publisher::mount_all(
                     &publisher.runtime, &publisher.endpoint, local_scenes.clone(),
                     publisher.session_clock.clone(),
@@ -744,6 +745,7 @@ pub async fn serve_scene(
                     }
                     if let Some(mapper) = &mut occupancy_mapper { mapper.tick()?; }
                     for scene in &mut local_mobile { scene.tick()?; }
+                    traffic.tick()?;
                     let mut connection = HomeConnection::current(&running.peer)?;
                     if !local_scenes.reference_enabled {
                         let id = local_scenes.preferred_id().or_else(||local_scenes.snapshots.keys().next().map(|id|format!("local:{id}")))
@@ -900,7 +902,7 @@ pub async fn fetch_home_portals(peer: &AukiPeer, home: &HomeConnection) -> Resul
     let stop = tokio_util::sync::CancellationToken::new();
     let mut received = None;
     tokio::time::timeout(std::time::Duration::from_secs(45),
-        crate::mobile::receive_portals(peer, home, &stop, std::time::Duration::from_millis(50), |value| {
+        crate::mobile::receive_portals(peer, home, &stop, Some(std::time::Duration::from_millis(50)), |value| {
             received = Some(value);
             stop.cancel();
         })).await??;

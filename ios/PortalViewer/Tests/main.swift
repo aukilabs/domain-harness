@@ -1,3 +1,4 @@
+import SceneKit
 import Foundation
 import simd
 
@@ -401,3 +402,65 @@ check(robotNote.robot_pose?.health?.battery?.percent == 18 && robotNote.robot_po
       "robot health decodes from Home's label")
 check(deviceNote(0).robot_pose?.health == nil, "a robot without health still decodes")
 print("Robot health checks passed")
+
+// Retire entire scan groups based on returned map progress, never cell matching.
+var pendingScan = PendingVoxels()
+let pendingA = SIMD3<Int32>(0, 0, 0), pendingB = SIMD3<Int32>(1, 0, 0)
+func capturePending(_ points: [[Float]], frame: String = "scene-a", session: String = "session-a") {
+    pendingScan.capture(points: points, cameraToHome: matrix_identity_float4x4, frame: frame, session: session)
+}
+capturePending([[0.05, 0.05, 0.05], [0.15, 0.05, 0.05]])
+let overlay = PendingVoxelOverlay()
+overlay.update(pendingScan)
+check(overlay.root.geometry?.elements.first?.primitiveType == .line, "pending cubes are wireframes")
+check(overlay.root.geometry?.elements.first?.primitiveCount == 24, "two cubes have 24 edges")
+check(pendingScan.receivedMapUpdate(frame: "other").isEmpty && pendingScan.cells.count == 2, "unrelated frame cannot retire groups")
+check(pendingScan.receivedMapUpdate(frame: "scene-a").isEmpty && pendingScan.cells.count == 2, "first map update retains whole scan")
+capturePending([[0.25, 0.05, 0.05]])
+overlay.update(pendingScan)
+let retired = pendingScan.receivedMapUpdate(frame: "scene-a")
+check(retired == [pendingA, pendingB], "second update retires entire older scan without occupancy matching")
+check(pendingScan.cells.count == 1, "newer scan still awaits its second update")
+overlay.update(pendingScan, retired: retired)
+check(overlay.root.childNodes.count == 1 && overlay.root.childNodes[0].hasActions, "retired group fades as a batch")
+check(overlay.root.childNodes[0].geometry?.elements.first?.primitiveCount == 24, "whole retired group is in fade geometry")
+overlay.clear()
+check(overlay.root.childNodes.isEmpty, "reset cancels fading geometry")
+_ = pendingScan.receivedMapUpdate(frame: "scene-a")
+check(pendingScan.cells.isEmpty, "next update retires newer group")
+capturePending([[0.05, 0.05, 0.05]])
+_ = pendingScan.receivedMapUpdate(frame: "scene-a")
+capturePending([[0.05, 0.05, 0.05]])
+check(pendingScan.receivedMapUpdate(frame: "scene-a").isEmpty && pendingScan.cells.count == 1, "overlapping newer group retains its outline")
+capturePending([[0.15, 0.05, 0.05]], session: "new-session")
+check(Set(pendingScan.cells.keys) == [pendingB], "session reset discards old groups")
+check(pendingScan.receivedMapUpdate(frame: "scene-a").isEmpty, "session reset restarts progress count")
+pendingScan.clear()
+let manyPoints = (0..<(PendingVoxels.limit + 10)).map { [Float($0) * 0.1 + 0.05, Float(0.05), Float(0.05)] }
+capturePending(manyPoints)
+check(pendingScan.cells.count == PendingVoxels.limit, "oversized scan is bounded")
+capturePending([[0.05, 0.05, 0.05]])
+check(pendingScan.cells.count == 1, "memory pressure evicts whole oldest group")
+pendingScan.clear()
+var transform = matrix_identity_float4x4
+transform.columns.3 = SIMD4(-1, 2, 0, 1)
+pendingScan.capture(points: [[0.05, 0.05, 0.05], [Float.nan, 0, 0], [0]], cameraToHome: transform, frame: "scene-a", session: "a")
+check(Set(pendingScan.cells.keys) == [SIMD3<Int32>(-10, 20, 0)], "transform and invalid-point filtering preserved")
+print("Pending scan-group wireframe and fade tests passed")
+
+// Face winding and tangent basis must agree for the bevel normal map on all six sides.
+var surfaceMesh = VoxelSurface.Mesh()
+for (direction, corners, _) in VoxelChunks.faces {
+    let normal = SIMD3<Float>(direction)
+    check(simd_dot(simd_cross(corners[1] - corners[0], corners[3] - corners[0]), normal) > 0.99,
+          "voxel face UV tangent basis points outward")
+    surfaceMesh.append(base: .zero, size: 0.1, color: SIMD3(0.2, 0.4, 0.6), direction: direction, corners: corners)
+}
+let surfaceGeometry = surfaceMesh.geometry()
+check(surfaceGeometry.sources(for: .normal).first?.vectorCount == 24 &&
+      surfaceGeometry.sources(for: .tangent).first?.vectorCount == 24 &&
+      surfaceGeometry.sources(for: .texcoord).first?.vectorCount == 24, "PBR cube has complete per-face lighting attributes")
+check(surfaceGeometry.elements.first?.primitiveCount == 12, "normal-map bevel adds no triangles")
+check(VoxelSurface.material.normal.contents != nil && VoxelSurface.material.lightingModel == .physicallyBased,
+      "PBR material includes the shared bevel normal texture")
+print("Voxel PBR geometry checks passed")
