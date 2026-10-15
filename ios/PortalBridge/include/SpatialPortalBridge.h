@@ -39,6 +39,7 @@ char *spatial_mobile_onboarding_join(const char *scanned);
 void spatial_mobile_onboarding_stop(void);
 char *spatial_mobile_onboarding_qr(const char *text);
 int32_t spatial_mobile_onboarding_frame(const uint8_t *luma, size_t length, const char *frame);
+char *spatial_mobile_voxels(void);
 void spatial_mobile_string_free(char *value);
 #ifdef __cplusplus
 }

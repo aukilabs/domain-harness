@@ -403,23 +403,25 @@ async function refreshPhonePresence(){
   // Only peers with a sampled pose can be drawn as a body; skip the lookup without any.
   const posed=(fleetNetwork?.peers||[]).some(peer=>(peer.catalog?.products||[]).some(p=>p.metadata?.schema==='spatial-harness.compact-pose-contract/v1'));
   const declared=posed?(await api('/api/robot-states').catch(()=>({robots:[]}))).robots||[]:[];
-  for(const peer of fleetNetwork?.peers||[]){
-   if(activeMap!==map||current?.frame!==frame)return;
+  // Look every peer up at once: Home answers pose lookups one at a time, so a
+  // peer-by-peer loop made each pass longer than the freshness window.
+  await Promise.all((fleetNetwork?.peers||[]).map(async peer=>{
    const products=(peer.catalog?.products||[]).filter(p=>p.metadata?.schema==='spatial-harness.compact-pose-contract/v1'&&(p.metadata.value?.lifetime??'sampled')==='sampled');
-   if(!products.length)continue;
+   if(!products.length)return;
    const name=fleetNetwork?.aliases?.[peer.peer_id]||peer.name||peer.peer_id;
-   if(products.length!==1){errors.push(name+': ambiguous pose Products');continue;}
+   if(products.length!==1){errors.push(name+': ambiguous pose Products');return;}
    const product=products[0],q=new URLSearchParams({debug_pose:'true',sensor:peer.peer_id+'/'+product.manifest.product_id,expected_manifest:product.manifest_hash,home_frame:frame});
    try{const value=await api('/api/sensors?'+q),home=value.home_pose;
-    if(home?.frame!==frame||home.tracking?.status!=='valid'||value.stream!=='live')continue;
+    if(home?.frame!==frame||home.tracking?.status!=='valid'||value.stream!=='live')return;
     const p=home.tracking.pose,[x,y,z,w]=p.rotation_xyzw;
     const body=declared.find(r=>r.peer_id===peer.peer_id&&sameFrame(r.base_frame,product.metadata.value.from_frame));
     if(body){bodies.push({peer_id:peer.peer_id,name,received_age_ms:value.age_ms,receivedAt:performance.now(),body,
-     base_frame:value.resolved?.contract?.from_frame,pose:{translation:p.translation,rotation_xyzw:p.rotation_xyzw}});continue;}
+     base_frame:value.resolved?.contract?.from_frame,pose:{translation:p.translation,rotation_xyzw:p.rotation_xyzw}});return;}
     poses.push({receivedAt:performance.now(),peer_id:peer.peer_id,name,clock:{session_id:value.resolved.contract.session_id+':'+home.alignment_timestamp_ns},capture_timestamp_ns:value.timestamp_ns,received_age_ms:value.age_ms,
      pose:{to_frame_id:frame,translation:p.translation,rotation_wxyz:[w,x,y,z]}});
    }catch(e){errors.push(name+': '+e.message);}
-  }
+  }));
+  if(activeMap!==map||current?.frame!==frame)return;
   if(activeMap===map&&current?.frame===frame){declaredBodies={frame,entries:bodies};refreshRunner();}
   if(activeMap===map&&current?.frame===frame){const fresh=poses.map(p=>({...p,received_age_ms:p.received_age_ms+performance.now()-p.receivedAt})).filter(p=>p.received_age_ms<2000);phoneTrails.ingest(frame,fresh);homePoseStatus.textContent=errors.length?errors.join(' · '):fresh.length?plural(fresh.length,'phone')+' aligned to this Home scene':'';$('canvas').dataset.phonePoseStatus=errors.join('\n');}
  }catch{if(activeMap===map)phoneTrails.ingest(frame,[]);}finally{phonePresenceBusy=false;}
@@ -1009,7 +1011,8 @@ function glyphFor(key,name){
  }
  if(glyph.name!==name){
   if(glyph.tag){glyph.group.remove(glyph.tag);glyph.tag.material.map.dispose();glyph.tag.material.dispose();}
-  glyph.tag=label(name,glyph.color);glyph.tag.position.set(0,0,.6);glyph.group.add(glyph.tag);glyph.name=name;
+  // The same peer bubble phones carry, so every peer's name reads alike.
+  glyph.tag=createNoteBubble(name,{peer:true});glyph.tag.position.set(0,0,.6);glyph.group.add(glyph.tag);glyph.name=name;
  }
  return glyph;
 }
@@ -1030,7 +1033,9 @@ function renderRunners(entries){
  }
  entries.forEach((entry,i)=>{
   const glyph=glyphFor(entry.key,entry.name),state=entry.state;
-  glyph.tag.visible=activeMap!=='home-live'&&!isLocalScene();  // local scenes name robots with a note bubble
+  // Robots drawn from registry poses have no presence note bubble, so name them here;
+  // above the URDF's battery and pointing labels once the model has loaded.
+  glyph.tag.visible=activeMap!=='home-live';glyph.tag.position.z=glyph.robot?2.02:.6;
   glyph.state=state;glyph.group.visible=Boolean(state.pose)&&$('runner-layer').checked&&!usesBodyVolume(entry.key);
   if(state.pose){glyph.group.position.fromArray(state.pose.translation);glyph.group.quaternion.fromArray(state.pose.rotation_xyzw);}
   setGlyphModel(glyph,state.model||null);

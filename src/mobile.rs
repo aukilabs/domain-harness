@@ -222,6 +222,8 @@ pub struct MobileClient {
     origin_receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::scene_origin::Observation>>>,
     receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::mobile_notes::PlaceNote>>>,
     onboarding: crate::mobile_onboarding::Shared,
+    /// Home's voxels as this phone holds them, and the chunks to redraw.
+    voxels: Mutex<crate::voxel_delta::Mirror>,
     /// The connected Home and how other phones reach this one. None until connected.
     connection: Mutex<Option<(crate::network::HomeConnection, crate::onboarding::Host)>>,
     invitations: tokio::sync::watch::Sender<Option<crate::onboarding::Invitation>>,
@@ -241,6 +243,7 @@ impl Default for MobileClient {
         let (sightings, sighting_receiver) = tokio::sync::mpsc::channel(4);
         Self {
             onboarding: Default::default(),
+            voxels: Default::default(),
             connection: Mutex::new(None),
             invitations: tokio::sync::watch::channel(None).0,
             sightings,
@@ -459,6 +462,10 @@ impl MobileClient {
         });
         self.onboarding.touch();
         Ok(text)
+    }
+    /// The voxel chunks changed since the app last asked, with their cells.
+    pub fn take_voxels(&self) -> Option<serde_json::Value> {
+        self.voxels.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
     /// Stop hosting or joining. A joiner keeps any place it already found.
     pub fn stop_onboarding(&self) {
@@ -1093,6 +1100,10 @@ impl MobileClient {
                 let mut local_publisher = None;
                 let local_work = async {
                     let mut tick = tokio::time::interval(Duration::from_secs(1));
+                    // The map only grows (cells in the order first measured), so its
+                    // size says whether it changed. Unchanged, it goes every 5 s,
+                    // which keeps it inside Home's 10 s listing window.
+                    let mut sent: Option<(usize, Instant)> = None;
                     loop {
                         tick.tick().await;
                         let latest = self.local_map.borrow().clone();
@@ -1100,6 +1111,10 @@ impl MobileClient {
                             continue;
                         };
                         if received.elapsed() > Duration::from_secs(3) {
+                            continue;
+                        }
+                        let cells = sample.cells.len();
+                        if sent.is_some_and(|(count, at)| count == cells && at.elapsed() < Duration::from_secs(5)) {
                             continue;
                         }
                         let result = async {
@@ -1113,6 +1128,7 @@ impl MobileClient {
                             Ok::<(),anyhow::Error>(())
                         }
                         .await;
+                        if result.is_ok() { sent = Some((cells, Instant::now())); }
                         self.local_status(match result {
                             Ok(()) => "Local voxel map received by Home (unaligned)".into(),
                             Err(e) => format!("Local map: {e}"),
@@ -1139,6 +1155,7 @@ impl MobileClient {
                     _ = depth_work => Ok(()),
                     _ = join_work => Ok(()),
                     _ = self.follow_geometry(&peer, &home) => Ok(()),
+                    _ = self.follow_voxels(&peer, &home) => Ok(()),
                     result = self.follow(&peer, &home) => result,
                     _ = commands => Ok(()),
                 };
@@ -1185,6 +1202,26 @@ impl MobileClient {
             state.version += 1;
         }
     }
+    /// Home's voxels arrive as deltas on their own Product. A missed delta
+    /// ends the subscription; the next one starts from Home's last keyframe.
+    async fn follow_voxels(&self, peer: &AukiPeer, home: &HomeConnection) {
+        if home.local_scene_id().is_none() {
+            return std::future::pending().await;
+        }
+        loop {
+            let result = crate::local_mobile::receive_voxels(peer, home, &self.stop, |update| {
+                self.voxels.lock().unwrap_or_else(|e| e.into_inner()).apply(update)
+            }).await;
+            if self.stop.is_cancelled() {
+                return;
+            }
+            if let Err(error) = result {
+                self.local_status(format!("Voxels: {error}"));
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+
     async fn follow_geometry(&self, peer: &AukiPeer, home: &HomeConnection) {
         // Local scene Products already contain only their own geometry and notes.
         // Never subscribe to or overlay Xmart's separate legacy live map.

@@ -116,6 +116,16 @@ struct ViewerScreen: View {
                     .accessibilityValue(controller.voxelLook == .camera ? "Camera only"
                                         : controller.voxelLook == .voxels ? "Voxels only" : "Voxels over the camera")
                     .accessibilityHint("Changes what the camera view shows")
+                    // Show or hide the scene's volumes in AR.
+                    Button { controller.showVolumesInAR.toggle() } label: {
+                        Image(systemName: controller.showVolumesInAR ? "cube.fill" : "cube")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(controller.showVolumesInAR ? Theme.accent : Theme.dim)
+                            .frame(width: 36, height: 36).background(Theme.paper, in: Circle())
+                            .shadow(color: Theme.glow, radius: 4, y: 2)
+                    }
+                    .padding(.top, 10)
+                    .accessibilityLabel(controller.showVolumesInAR ? "Hide volumes" : "Show volumes")
                     // Draw on the scene with a finger, as Home's Crayon does.
                     Button { controller.drawing.toggle() } label: {
                         Image(systemName: "scribble.variable").font(.system(size: 16, weight: .semibold))
@@ -328,6 +338,7 @@ struct ViewerScreen: View {
         }
         .onAppear {
             peer.onMap = { controller.load($0) }
+            peer.onVoxels = { controller.applyVoxels($0) }
             controller.onPose = { peer.publishPose($0) }
             controller.onDepth = { peer.publishDepth($0) }
             controller.onPlacement = { peer.publishPlacement($0) }
@@ -1885,6 +1896,9 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private(set) var map: PortalMap?
     let view = ARSCNView(frame: .zero)
     private let root = SCNNode()
+    /// Home's voxels, kept across scene updates and redrawn a chunk at a time.
+    private let voxelChunks = VoxelChunks()
+    private var lastMiniMapVoxels = Date.distantPast
     private let visionQueue = DispatchQueue(label: "home.portal.vision")
     private var busy = false
     private var aligned = false { didSet { if calibrated != aligned { calibrated = aligned } } }
@@ -2189,14 +2203,18 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             }
         }
         self.map = map
+        // Voxels come separately, as deltas; the rest of the app reads them from the map as before.
+        if !voxelChunks.isEmpty, voxelChunks.frame == map.scenegraph.map.frame.id { self.map?.render?.voxels = voxelChunks.list() }
         if let scene = map.render, scene.frame == map.scenegraph.map.frame.id { recordMessages(scene) }
         miniMap = MiniMapData(map)
         trackedDevices = trails.record(map.render?.notes ?? [], frame: map.scenegraph.map.frame.id,
                                        ownFrame: "phone-camera:" + poseSession)
         // Everything is redrawn except the point still being carried: taking it out and putting it
         // back would restart its dust trail every time Home sends an update.
-        root.childNodes.filter { $0 !== floating && $0 !== crayonRoot && $0 !== guideRoot }.forEach { $0.removeFromParentNode() }
+        root.childNodes.filter { $0 !== floating && $0 !== crayonRoot && $0 !== guideRoot && $0 !== voxelChunks.root }.forEach { $0.removeFromParentNode() }
         if guideRoot.parent == nil { root.addChildNode(guideRoot) }
+        if voxelChunks.root.parent == nil { root.addChildNode(voxelChunks.root) }
+        voxelChunks.root.isHidden = !showVoxels
         let listed = Set(map.render?.paths?.items.map(\.id) ?? [])
         guideRoot.childNodes.filter { listed.contains($0.name ?? "") }.forEach { $0.removeFromParentNode() }
         // Home said it saved the way, yet no longer lists it: it restarted, or someone erased
@@ -2252,7 +2270,9 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 let color = UInt32(stroke.color.dropFirst(), radix: 16) ?? 0xffca55
                 let shade = UIColor(red: CGFloat((color >> 16) & 255)/255,
                     green: CGFloat((color >> 8) & 255)/255, blue: CGFloat(color & 255)/255, alpha: 1)
-                let material = Self.flowingMaterial(shade)
+                // Routes show which way they run; a drawing stays as it was drawn.
+                let route = stroke.title.hasPrefix("Way to ") || stroke.title.hasPrefix("Way from ")
+                let material = route ? Self.flowingMaterial(shade) : Self.crayonMaterial(shade)
                 for (index, segment) in stroke.segments.enumerated() {
                     let points = segment.filter { $0.count == 3 }.map { SIMD3<Float>($0[0], $0[1], $0[2]) }
                     guard let node = Self.pathNode(points, width: stroke.width_m, material: material,
@@ -2341,6 +2361,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
 
     private func renderScene(_ scene: RenderScene?) {
         guard let scene, scene.frame == map?.scenegraph.map.frame.id else { return }
+        // Voxels that arrive as deltas are drawn by voxelChunks, face by face.
+        if voxelChunks.isEmpty || voxelChunks.frame != scene.frame {
         // One indexed mesh per chunk avoids a SceneKit node for every voxel.
         let corners: [SIMD3<Float>] = [SIMD3(-1,-1,-1), SIMD3(1,-1,-1), SIMD3(1,1,-1), SIMD3(-1,1,-1),
                                        SIMD3(-1,-1,1), SIMD3(1,-1,1), SIMD3(1,1,1), SIMD3(-1,1,1)]
@@ -2396,6 +2418,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 second.name = "voxels"; second.isHidden = !showVoxels
                 root.addChildNode(second)
             }
+        }
         }
         for object in scene.objects { addLabel(object.label, at: object.position, color: Theme.uiAccent) }
         // Home's device labels stay plain; a person's note is a speech bubble.
@@ -2661,8 +2684,22 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             origin: [origin.x, origin.y, origin.z], direction: [direction.x, direction.y, direction.z])
     }
 
+    /// Changed voxel chunks from Home: redraw just those, and update the voxels the app reads.
+    func applyVoxels(_ data: Data) {
+        guard voxelChunks.apply(data) else { return }
+        if voxelChunks.root.parent == nil { root.addChildNode(voxelChunks.root) }
+        voxelChunks.root.isHidden = !showVoxels
+        guard let map, voxelChunks.frame == map.scenegraph.map.frame.id else { return }
+        self.map?.render?.voxels = voxelChunks.list()
+        // The mini map redraws from every voxel; a few times a minute is plenty.
+        if Date().timeIntervalSince(lastMiniMapVoxels) > 3, let current = self.map {
+            lastMiniMapVoxels = Date(); miniMap = MiniMapData(current)
+        }
+    }
+
     func clear() {
         clearPlacement()
+        voxelChunks.clear()
         map = nil
         miniMap = MiniMapData()
         trails = DeviceTrails(); trackedDevices = []
@@ -2752,18 +2789,22 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         return material
     }
 
-    /// A saved path's colour with a glow that runs along it the way it was drawn: a long
-    /// brightening tail and a sharp head, so even a still frame shows which way it goes.
+    /// A route's colour with a soft glow that runs along it the way it goes: a long
+    /// brightening tail and a sharp head, so even a still frame shows the direction.
     private static func flowingMaterial(_ color: UIColor) -> SCNMaterial {
         let material = crayonMaterial(color)
         material.diffuse.contents = glow(color)
         material.diffuse.wrapS = .repeat; material.diffuse.wrapT = .clamp
+        // Smoothed, so the bands do not shimmer on a thin line seen from afar.
+        material.diffuse.minificationFilter = .linear
+        material.diffuse.magnificationFilter = .linear
+        material.diffuse.mipFilter = .linear
         material.diffuse.contentsTransform = flowShift
         flowing.add(material.diffuse)
         return material
     }
     /// Metres between glows, and how fast they travel.
-    private static let flowTile: Float = 0.45, flowSpeed: Float = 0.7
+    private static let flowTile: Float = 0.8, flowSpeed: Float = 0.4
     private static let flowing = NSHashTable<SCNMaterialProperty>.weakObjects()
     private static var flowShift = SCNMatrix4MakeScale(1 / flowTile, 1, 1)
     /// Moves every path's glow on, from one clock, so a path rebuilt when Home's map
@@ -2778,7 +2819,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         if let tile = glowTiles[color] { return tile }
         var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
         color.getRed(&r, green: &g, blue: &b, alpha: &a)
-        let light = UIColor(red: r + (1 - r) * 0.75, green: g + (1 - g) * 0.75, blue: b + (1 - b) * 0.75, alpha: 1)
+        let light = UIColor(red: r + (1 - r) * 0.35, green: g + (1 - g) * 0.35, blue: b + (1 - b) * 0.35, alpha: 1)
         let tile = UIGraphicsImageRenderer(size: CGSize(width: 128, height: 4)).image { drawn in
             let colors = [color, color, light, light, color].map(\.cgColor) as CFArray
             let locations: [CGFloat] = [0, 0.3, 0.86, 0.92, 1]

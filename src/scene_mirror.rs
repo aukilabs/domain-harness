@@ -71,7 +71,8 @@ pub fn render_scene(s: &CanonicalScene) -> Result<Value> {
         crate::landmarks::from_registries(&s.registries, &s.frame)?.in_frame(&display)?;
     let notes = crate::notes::from_registries(&s.registries, &s.frame)?
         .in_frame(&s.voxels.definition.frame, &target)?;
-    let mut voxels = crate::model::occupied(&s.voxels)?;
+    // A phone's scene carries no voxel checkpoint: its voxels come as deltas.
+    let mut voxels = if s.voxels.checkpoint.is_empty() { Vec::new() } else { crate::model::occupied(&s.voxels)? };
     for v in &mut voxels {
         v.center = crate::conventions::point(v.center, &s.voxels.definition.frame, &target)?;
     }

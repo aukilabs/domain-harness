@@ -668,3 +668,16 @@ pub unsafe extern "C" fn spatial_mobile_onboarding_qr(value: *const c_char) -> *
         Ok(serde_json::json!({"width": width, "modules": modules.iter().map(|d| if *d { '1' } else { '0' }).collect::<String>()}))
     })())).unwrap_or(std::ptr::null_mut())
 }
+
+/// Voxel chunks changed since the last call, as JSON
+/// `{"frame","voxel_size","reset","chunk","chunks":[{"key":[x,y,z],"cells":[x,y,z,r,g,b,…]}]}`,
+/// or null when nothing changed. Cells are grid indices; colours sRGB bytes.
+#[unsafe(no_mangle)]
+pub extern "C" fn spatial_mobile_voxels() -> *mut c_char {
+    std::panic::catch_unwind(|| {
+        let Some(value) = CLIENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|c| c.take_voxels()) else {
+            return std::ptr::null_mut();
+        };
+        CString::new(value.to_string()).map_or(std::ptr::null_mut(), CString::into_raw)
+    }).unwrap_or(std::ptr::null_mut())
+}
