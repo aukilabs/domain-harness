@@ -36,6 +36,7 @@ struct AppState {
     controls: tokio::sync::mpsc::Sender<spatial_home::component_control::Request>,
     pointing: tokio::sync::mpsc::Sender<spatial_home::robot_pointing::Invoke>,
     navigation: tokio::sync::mpsc::Sender<spatial_home::robot_navigation::Invoke>,
+    greetings: Mutex<std::collections::BTreeMap<String, Greeting>>,
     store: Arc<Mutex<Store>>,
     changes: tokio::sync::watch::Sender<()>,
     peer: tokio::sync::watch::Receiver<Value>,
@@ -1060,6 +1061,17 @@ async fn robot_asset(axum::extract::Path(path): axum::extract::Path<String>) -> 
 }
 /// Resolve a chat pointing target from current scene state, declare its frame,
 /// and ask the robot through the `point_at` operable it advertises.
+/// The viewer's "Point here": one robot, one position in a local scene. Same
+/// resolution and `point_at` path as the chat tool, so the robot decides.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RobotPoint { scene: String, robot: String, position: [f64; 3] }
+async fn robot_point(State(s): State<Shared>, headers: HeaderMap, Json(request): Json<RobotPoint>) -> ApiResult {
+    local_write(&headers)?;
+    let (key, frame) = volume_context(&s, &request.scene)?;
+    let target = json!({"robot": request.robot, "target": {"kind": "position", "position": request.position}});
+    Ok(Json(point_robot_at(&s, &key, &frame, target).await?))
+}
 async fn point_robot_at(s:&Shared,key:&str,frame:&str,args:Value)->anyhow::Result<Value> {
 
                 // Home resolves the target from current scene state and declares its frame;
@@ -1161,7 +1173,8 @@ async fn approach_route(s:&Shared,key:&str,frame:&str,home_peer:&str,robot_peer:
 /// advertises. The robot's own navigation stack drives and avoids obstacles.
 async fn navigate_robot(s:&Shared,key:&str,frame:&str,args:Value)->anyhow::Result<Value> {
     #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Target {kind:String,#[serde(default)] id:Option<String>,#[serde(default)] position:Option<[f64;3]>}
-    #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Go {#[serde(default)] robot:Option<String>,target:Target}
+    // `preview` plans and shares the route without sending it, so a person can see it and confirm first.
+    #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Go {#[serde(default)] robot:Option<String>,target:Target,#[serde(default)] preview:bool}
     let a:Go=serde_json::from_value(args)?;
     let network=spatial_home::peer_aliases::network(s.peer.borrow().clone())?;
     let candidate=spatial_home::robot_navigation::select(&network,a.robot.as_deref())?;
@@ -1184,6 +1197,11 @@ async fn navigate_robot(s:&Shared,key:&str,frame:&str,args:Value)->anyhow::Resul
     anyhow::ensure!(route.status!=spatial_home::scene_navigation::Status::Unreachable,"The scene map shows no way for {robot} to get there");
     let points=route.path.as_ref().and_then(|p|p.segments.first()).cloned().ok_or_else(||anyhow::anyhow!("{robot} is already there"))?;
     let waypoints=spatial_home::robot_navigation::waypoints(&points,0.25)?;
+    let known=match route.status {spatial_home::scene_navigation::Status::Direct=>" The map shows nothing in the way, but part of the floor is unseen.",_=>""};
+    if a.preview {
+        return Ok(json!({"summary":format!("Route for {robot}: {:.1} m, {} waypoint(s).{known}",route.length_m,waypoints.len()),
+            "robot_peer_id":candidate.peer_id,"robot":robot,"route":route,"waypoints":waypoints.len(),"preview":true}));
+    }
     let scene_frame=spatial_home::conventions::registry(&home_peer,frame)?;
     let instruction=spatial_home::navigate::Navigate{request_id:uuid::Uuid::new_v4().to_string(),
         frame:spatial_home::compact_pose::FrameRef::from(&scene_frame),waypoints};
@@ -1191,7 +1209,6 @@ async fn navigate_robot(s:&Shared,key:&str,frame:&str,args:Value)->anyhow::Resul
     s.navigation.try_send(spatial_home::robot_navigation::Invoke{candidate:candidate.clone(),request:spatial_home::robot_navigation::Request::Navigate(instruction,reply)})
         .map_err(|_|anyhow::anyhow!("Home P2P is not running, or another robot request is pending"))?;
     let accepted=receive.await.map_err(|_|anyhow::anyhow!("Robot navigation request was dropped"))??;
-    let known=match route.status {spatial_home::scene_navigation::Status::Direct=>" The map shows nothing in the way, but part of the floor is unseen.",_=>""};
     Ok(json!({"summary":format!("{robot} is on its way: {:.1} m route, {} waypoint(s).{known} Its own navigation avoids obstacles and stops on arrival.",
         route.length_m,accepted.waypoints_nav.len()),"robot_peer_id":candidate.peer_id,"route":route,"result":accepted}))
 }
@@ -1224,6 +1241,133 @@ async fn point_robot_local(State(s):State<Shared>,headers:HeaderMap,axum::extrac
 async fn stop_robot_local(State(s):State<Shared>,headers:HeaderMap,Json(args):Json<Value>)->ApiResult{
     local_write(&headers)?;
     Ok(Json(stop_robot(&s,args).await?))
+}
+/// A robot's greeting job: Home follows a peer's live pose, sends the robot after
+/// them, and greets within reach (see `greet`). One per robot; `status` is shown.
+struct Greeting { id: String, stop: tokio_util::sync::CancellationToken, status: Value }
+/// How far short of the peer the route ends, inside `greet::REACH_M`.
+const GREET_STANDOFF_M: f64 = 0.7;
+fn peer_label(network:&Value,id:&str)->String{
+    network["peers"].as_array().and_then(|p|p.iter().find(|p|p["peer_id"]==id))
+        .and_then(|p|p["alias"].as_str().or(p["name"].as_str()).or(p["reported_name"].as_str())).unwrap_or(id).to_owned()
+}
+/// A peer's live position in a scene frame, from the same resolver as the viewer.
+async fn peer_position(s:&Shared,id:&str,frame:&str)->anyhow::Result<[f64;3]>{
+    let raw=s.peer.borrow().clone();
+    let value=spatial_home::peer_locations::read_peer(&s.previews,&raw,id,frame).await?;
+    Ok(serde_json::from_value(value["home_pose"]["tracking"]["pose"]["translation"].clone())?)
+}
+async fn start_greeting(s:&Shared,key:&str,frame:&str,robot:Option<&str>,peer:&str)->anyhow::Result<Value>{
+    let network=spatial_home::peer_aliases::network(s.peer.borrow().clone())?;
+    let navigator=spatial_home::robot_navigation::select(&network,robot)?;
+    let greeter=spatial_home::robot_pointing::select_for(&network,Some(&navigator.peer_id),&spatial_home::greet::contract(),"greet")?;
+    anyhow::ensure!(peer!=navigator.peer_id,"A robot can't go and greet itself");
+    let (robot_name,peer_name)=(peer_label(&network,&navigator.peer_id),peer_label(&network,peer));
+    peer_position(s,peer,frame).await.map_err(|e|anyhow::anyhow!("No current pose for {peer_name} in this scene: {e}"))?;
+    peer_position(s,&navigator.peer_id,frame).await.map_err(|e|anyhow::anyhow!("No current pose for {robot_name} in this scene: {e}"))?;
+    let (id,stop)=(uuid::Uuid::new_v4().to_string(),tokio_util::sync::CancellationToken::new());
+    {
+        let mut jobs=s.greetings.lock().map_err(|_|anyhow::anyhow!("Greetings unavailable"))?;
+        if let Some(old)=jobs.remove(&navigator.peer_id){old.stop.cancel();}
+        jobs.insert(navigator.peer_id.clone(),Greeting{id:id.clone(),stop:stop.clone(),status:json!({"robot_peer_id":navigator.peer_id,"robot":robot_name,
+            "peer_id":peer,"peer":peer_name,"phase":"approaching","detail":"Starting"})});
+    }
+    tokio::spawn(greeting_job(s.clone(),key.into(),frame.into(),id,navigator.peer_id.clone(),robot_name.clone(),peer.into(),peer_name.clone(),greeter,stop));
+    Ok(json!({"summary":format!("{robot_name} is on its way to {peer_name}. It stops within {} m and says hi.",spatial_home::greet::REACH_M),
+        "robot_peer_id":navigator.peer_id,"peer_id":peer}))
+}
+#[allow(clippy::too_many_arguments)]
+async fn greeting_job(s:Shared,key:String,frame:String,id:String,robot:String,robot_name:String,peer:String,peer_name:String,
+    greeter:spatial_home::robot_pointing::Candidate,stop:tokio_util::sync::CancellationToken){
+    let set=|phase:&str,detail:String|{
+        if let Ok(mut jobs)=s.greetings.lock(){if let Some(job)=jobs.get_mut(&robot).filter(|j|j.id==id){
+            job.status["phase"]=json!(phase);job.status["detail"]=json!(detail);}}
+    };
+    let started=std::time::Instant::now();
+    let (mut sent,mut failures):(Option<([f64;3],std::time::Instant)>,u32)=(None,0);
+    let outcome:Result<String,String>=loop {
+        if stop.is_cancelled(){break Err("Stopped".into());}
+        if started.elapsed()>std::time::Duration::from_secs(180){break Err(format!("Gave up: {peer_name} wasn't reached in 3 minutes"));}
+        match (peer_position(&s,&peer,&frame).await,peer_position(&s,&robot,&frame).await) {
+            (Ok(p),Ok(r))=>{
+                failures=0;
+                let d=(p[0]-r[0]).hypot(p[2]-r[2]);
+                if d<=spatial_home::greet::REACH_M {
+                    // Within reach: stop driving, then say hello.
+                    let _=stop_robot(&s,json!({"robot":robot})).await;
+                    set("greeting",format!("{d:.1} m from {peer_name}; saying hi"));
+                    let (reply,receive)=tokio::sync::oneshot::channel();
+                    let greet=spatial_home::greet::Greet{request_id:uuid::Uuid::new_v4().to_string(),name:Some(peer_name.clone())};
+                    if s.navigation.try_send(spatial_home::robot_navigation::Invoke{candidate:greeter.clone(),request:spatial_home::robot_navigation::Request::Greet(greet,reply)}).is_err(){
+                        break Err("Home P2P is not running, or another robot request is pending".into());
+                    }
+                    break match receive.await {
+                        Ok(Ok(accepted))=>Ok(format!("{robot_name} greeted {peer_name}: \u{201c}{}\u{201d}",accepted.text)),
+                        Ok(Err(e))=>Err(format!("{robot_name} reached {peer_name} but couldn't greet: {e}")),
+                        Err(_)=>Err("The greeting request was dropped".into()),
+                    };
+                }
+                let resend=sent.is_none_or(|(t,at)|(t[0]-p[0]).hypot(t[2]-p[2])>0.5||at.elapsed()>std::time::Duration::from_secs(8));
+                if resend {
+                    // Aim short of the peer, on the robot's side, so it never drives into them.
+                    let goal=[p[0]+(r[0]-p[0])/d*GREET_STANDOFF_M,r[1],p[2]+(r[2]-p[2])/d*GREET_STANDOFF_M];
+                    match navigate_robot(&s,&key,&frame,json!({"robot":robot,"target":{"kind":"position","position":goal}})).await {
+                        Ok(_)=>{sent=Some((p,std::time::Instant::now()));set("approaching",format!("{d:.1} m from {peer_name}; following"));}
+                        Err(e) if e.to_string().contains("already there")=>{sent=Some((p,std::time::Instant::now()));}
+                        Err(e)=>{failures+=1;set("approaching",format!("Route not sent: {e}"));}
+                    }
+                } else {set("approaching",format!("{d:.1} m from {peer_name}; following"));}
+            }
+            (Err(e),_)|(_,Err(e))=>{failures+=1;set("approaching",format!("Waiting for a live pose: {e}"));}
+        }
+        if failures>=15 {break Err("Gave up after repeated failures".into());}
+        tokio::select!{_=stop.cancelled()=>{},_=tokio::time::sleep(std::time::Duration::from_secs(1))=>{}}
+    };
+    if outcome.is_err() {let _=stop_robot(&s,json!({"robot":robot})).await;}
+    match outcome {Ok(done)=>set("greeted",done),Err(why)=>set(if why=="Stopped"{"stopped"}else{"failed"},why)}
+}
+/// The scene a greeting happens in: the first local scene the robot is placed in.
+async fn greeting_scene(s:&Shared,robot:&str)->anyhow::Result<(String,String)>{
+    for (key,snapshot) in &s.local_scenes.snapshots {
+        let frame=snapshot.scenegraph.map.frame.id.clone();
+        if peer_position(s,robot,&frame).await.is_ok(){return Ok((key.clone(),frame));}
+    }
+    anyhow::bail!("The robot is not placed in any local scene")
+}
+/// Home's `greet_peer` operable: a peer may ask a robot to come and greet them.
+async fn serve_greet_requests(s:Shared,mut requests:tokio::sync::mpsc::Receiver<spatial_home::peer_greeter::Request>){
+    while let Some(request)=requests.recv().await {
+        let s=s.clone();
+        tokio::spawn(async move {
+            let spatial_home::peer_greeter::Request{instruction,caller}=request;
+            let work=async {
+                anyhow::ensure!(caller==instruction.peer,"A peer may only ask to be greeted itself");
+                let network=spatial_home::peer_aliases::network(s.peer.borrow().clone())?;
+                let robot=spatial_home::robot_navigation::select(&network,instruction.robot.as_deref())?;
+                let (key,frame)=greeting_scene(&s,&robot.peer_id).await?;
+                start_greeting(&s,&key,&frame,Some(&robot.peer_id),&instruction.peer).await
+            };
+            if let Err(e)=work.await {eprintln!("greet_peer from {caller} refused: {e}");}
+        });
+    }
+}
+/// The viewer's "Go say hi".
+async fn greet_peer_local(State(s):State<Shared>,headers:HeaderMap,axum::extract::Path(id):axum::extract::Path<String>,Json(args):Json<Value>)->ApiResult{
+    local_write(&headers)?;
+    #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Go {#[serde(default)] robot:Option<String>,peer:String}
+    let a:Go=serde_json::from_value(args).map_err(anyhow::Error::from)?;
+    let (key,frame)=volume_context(&s,&format!("local:{id}"))?;
+    Ok(Json(start_greeting(&s,&key,&frame,a.robot.as_deref(),&a.peer).await?))
+}
+async fn greet_peer_stop(State(s):State<Shared>,headers:HeaderMap,Json(args):Json<Value>)->ApiResult{
+    local_write(&headers)?;
+    let robot=args["robot"].as_str().ok_or_else(||anyhow::anyhow!("Name the robot"))?.to_owned();
+    if let Some(job)=s.greetings.lock().map_err(|_|anyhow::anyhow!("Greetings unavailable"))?.get(&robot){job.stop.cancel();}
+    Ok(Json(stop_robot(&s,json!({"robot":robot})).await?))
+}
+async fn greet_peer_status(State(s):State<Shared>)->ApiResult{
+    let jobs=s.greetings.lock().map_err(|_|anyhow::anyhow!("Greetings unavailable"))?;
+    Ok(Json(json!({"greetings":jobs.values().map(|j|j.status.clone()).collect::<Vec<_>>()})))
 }
 async fn chat_message(State(s):State<Shared>,headers:HeaderMap,Json(request):Json<spatial_home::chatbot::Request>)->ApiResult {
     local_write(&headers)?;
@@ -1560,6 +1704,7 @@ async fn main() -> anyhow::Result<()> {
     let (control_tx, control_rx) = tokio::sync::mpsc::channel(4);
     let (pointing_tx, pointing_rx) = tokio::sync::mpsc::channel(4);
     let (navigation_tx, navigation_rx) = tokio::sync::mpsc::channel(4);
+    let (greet_tx, greet_rx) = tokio::sync::mpsc::channel(4);
     let occupancy = spatial_home::robot_occupancy::Cache::default();
     let robot_states = spatial_home::robot_states::RobotStates::default();
     let ar_frames = spatial_home::ar_preview::Frames::default();
@@ -1650,6 +1795,7 @@ async fn main() -> anyhow::Result<()> {
             control_rx,
             pointing_rx,
             navigation_rx,
+            greet_tx,
             occupancy.clone(),
             robot_states.clone(),
             ar_frames.clone(),
@@ -1677,6 +1823,7 @@ async fn main() -> anyhow::Result<()> {
         controls: control_tx,
         pointing: pointing_tx,
         navigation: navigation_tx,
+        greetings: Mutex::new(Default::default()),
         store,
         changes,
         peer: peer_rx,
@@ -1686,8 +1833,13 @@ async fn main() -> anyhow::Result<()> {
         home_live: home_live_rx,
         runners,
     });
+    tokio::spawn(serve_greet_requests(state.clone(),greet_rx));
     let app = Router::new()
         .route("/api/chat",post(chat_message))
+        .route("/api/robot-point", post(robot_point))
+        .route("/api/local-scenes/{id}/greet-peer", post(greet_peer_local))
+        .route("/api/greet-peer/stop", post(greet_peer_stop))
+        .route("/api/greet-peer", get(greet_peer_status))
         .route("/api/commands",get(get_commands).post(execute_command))
         .route("/slash-commands.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript")],include_str!("../web/slash-commands.js")) }))
         .route(
