@@ -43,8 +43,9 @@ final class ScreenShare: ObservableObject {
     func askFirst(_ done: @escaping (Bool) -> Void) {
         let recorder = RPScreenRecorder.shared()
         guard recorder.isAvailable else { done(false); return }
-        // Already allowed this launch (the intro asked): do not ask again.
+        // Already answered this launch (the intro asked): do not ask again.
         if running { done(true); return }
+        if declined { done(false); return }
         starting = true
         recorder.startCapture(handler: { [weak self] buffer, type, error in
             guard let self, error == nil, type == .video else { return }
@@ -53,12 +54,15 @@ final class ScreenShare: ObservableObject {
             DispatchQueue.main.async {
                 self?.starting = false
                 self?.running = error == nil
+                if error != nil { self?.declined = true }
                 done(error == nil)
             }
         })
     }
     /// The capture asked for at launch is running.
     private var running = false
+    /// Refused this launch: not asked again until the app next starts.
+    private var declined = false
     /// Touched only on `queue`: Home is watching, so pictures are sent.
     private var watched = false
 
