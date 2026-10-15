@@ -1045,8 +1045,9 @@ function setContentBounds(data){
 }
 // The camera never goes beneath the grid. Orbiting is limited to above the horizon, but views the assistant sets
 // (and detaching an attached camera) lift that limit, so the floor is also held here, every frame.
-function keepAboveGrid(){if(attachedCamera.isActive()||map2D.isActive())return;const floor=grid.position.y+.05;if(camera.position.y<floor)camera.position.y=floor;}
-renderer.setAnimationLoop(now=>{easeViewOffset();cameraFlying=cameraPan.tick(now);if(!cameraFlying&&!attachedCamera.isActive()){applyWheelZoom(now);controls.update();}else wheelZoom=0;keepAboveGrid();updateFog();ghostCamera.tick(now);if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);updateFlatten();
+// It runs last before drawing (after the ghost camera's own moves), and the orbit target can't sink below the floor either.
+function keepAboveGrid(){if(attachedCamera.isActive()||map2D.isActive())return;const floor=grid.position.y+.05;if(camera.position.y<floor)camera.position.y=floor;if(controls.target.y<grid.position.y)controls.target.y=grid.position.y;}
+renderer.setAnimationLoop(now=>{easeViewOffset();cameraFlying=cameraPan.tick(now);if(!cameraFlying&&!attachedCamera.isActive()){applyWheelZoom(now);controls.update();}else wheelZoom=0;ghostCamera.tick(now);keepAboveGrid();updateFog();if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);updateFlatten();
  // Volume handles are HTML placed from this frame's camera: settle its matrices and projection first so they never trail a glide.
  camera.updateMatrixWorld();semanticVolumes.tick();sceneLabels.setSelected(selectedNoteId?'note:'+selectedNoteId:null);sceneLabels.tick(now);contentLocator.tick(now);renderer.render(scene,camera);});
 refresh().catch(e=>{$('notice').textContent=e.message;$('notice').classList.add('error');});setInterval(()=>{if(!busy)refresh().catch(()=>{});},500);
