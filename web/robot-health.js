@@ -23,12 +23,13 @@ export function batteryColor(percent) {
  return percent >= 50 ? '#22c55e' : percent >= 20 ? '#f59e0b' : '#ef4444';
 }
 
+// Overlays are depth-tested: geometry in front of one hides it.
 function sprite(width, height, scale, center) {
  const canvas = document.createElement('canvas');
  canvas.width = width; canvas.height = height;
  const texture = new THREE.CanvasTexture(canvas);
  texture.colorSpace = THREE.SRGBColorSpace;
- const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false }));
+ const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false }));
  s.scale.set(scale * width / height, scale, 1);
  s.center.copy(center);
  s.renderOrder = 20;
@@ -104,14 +105,14 @@ const COLUMN_REACH = 0.5;
 const sideOf = name => /^(l|left)/.test(name) ? 1 : -1;
 
 function dot(color) {
- const s = new THREE.Mesh(new THREE.SphereGeometry(0.018, 16, 12), new THREE.MeshBasicMaterial({ color, depthTest: false }));
+ const s = new THREE.Mesh(new THREE.SphereGeometry(0.018, 16, 12), new THREE.MeshBasicMaterial({ color }));
  s.renderOrder = 19;
  return s;
 }
 
 function leader() {
  const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]),
-  new THREE.LineBasicMaterial({ transparent: true, opacity: 0.8, depthTest: false }));
+  new THREE.LineBasicMaterial({ transparent: true, opacity: 0.8, depthWrite: false }));
  line.renderOrder = 18;
  return line;
 }

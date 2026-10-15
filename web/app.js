@@ -1009,7 +1009,8 @@ function glyphFor(key,name){
  }
  if(glyph.name!==name){
   if(glyph.tag){glyph.group.remove(glyph.tag);glyph.tag.material.map.dispose();glyph.tag.material.dispose();}
-  glyph.tag=label(name,glyph.color);glyph.tag.position.set(0,0,.6);glyph.group.add(glyph.tag);glyph.name=name;
+  // The same peer bubble phones carry, so every peer's name reads alike.
+  glyph.tag=createNoteBubble(name,{peer:true});glyph.tag.position.set(0,0,.6);glyph.group.add(glyph.tag);glyph.name=name;
  }
  return glyph;
 }
@@ -1030,7 +1031,9 @@ function renderRunners(entries){
  }
  entries.forEach((entry,i)=>{
   const glyph=glyphFor(entry.key,entry.name),state=entry.state;
-  glyph.tag.visible=activeMap!=='home-live'&&!isLocalScene();  // local scenes name robots with a note bubble
+  // Robots drawn from registry poses have no presence note bubble, so name them here;
+  // above the URDF's battery and pointing labels once the model has loaded.
+  glyph.tag.visible=activeMap!=='home-live';glyph.tag.position.z=glyph.robot?2.02:.6;
   glyph.state=state;glyph.group.visible=Boolean(state.pose)&&$('runner-layer').checked&&!usesBodyVolume(entry.key);
   if(state.pose){glyph.group.position.fromArray(state.pose.translation);glyph.group.quaternion.fromArray(state.pose.rotation_xyzw);}
   setGlyphModel(glyph,state.model||null);
