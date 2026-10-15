@@ -193,7 +193,9 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
   if(!items.length){const p=document.createElement('p');p.className='empty-state';p.textContent='No semantic volumes in this scene.';list.append(p);}
   if(focused)list.querySelector(`[data-volume-id="${CSS.escape(focused)}"]`)?.focus();
  }
- function fill(v){form.elements.title.value=v.title;form.elements.description.value=v.description;const values={x:v.center[0],z:v.center[2],base:v.center[1]-v.size[1]/2,width:v.size[0],height:v.size[1],depth:v.size[2],yaw:v.yaw*180/Math.PI};for(const [name,n] of Object.entries(values)){form.elements[name].value=format(n);form.elements[name].dataset.exact=String(n);}}
+ let cardSummary=null;
+ // The card's size line follows the draft live (it used to keep the size the card opened with).
+ function fill(v){if(cardSummary?.isConnected)cardSummary.textContent=`${dimensions(v)} · ${format((v.yaw*180/Math.PI).toFixed(0))}°`;form.elements.title.value=v.title;form.elements.description.value=v.description;const values={x:v.center[0],z:v.center[2],base:v.center[1]-v.size[1]/2,width:v.size[0],height:v.size[1],depth:v.size[2],yaw:v.yaw*180/Math.PI};for(const [name,n] of Object.entries(values)){form.elements[name].value=format(n);form.elements[name].dataset.exact=String(n);}}
  // Untouched fields keep their exact stored value; only edited fields use the displayed number.
  function values(){const n=name=>{const input=form.elements[name];return Number(input.dataset.exact??input.value);};return {id:editing||'',title:form.elements.title.value.trim(),description:form.elements.description.value,semantic_type:draft?.semantic_type||'region',center:[n('x'),n('base')+n('height')/2,n('z')],size:[n('width'),n('height'),n('depth')],yaw:n('yaw')*Math.PI/180};}
  // Inspector card: view, edit, create and delete-confirm.
@@ -207,7 +209,7 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
     title.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();title.blur();}else if(e.key==='Escape'){e.preventDefault();e.stopPropagation();title.value=v.title;title.blur();}};
     title.onblur=commit;nodes.push(title);}
    else{const title=document.createElement('strong');title.textContent=v.title;nodes.push(title);}
-   const summary=document.createElement('div');summary.className='inspector-position is-text';summary.textContent=`${dimensions(v)} · ${format((v.yaw*180/Math.PI).toFixed(0))}°`;nodes.push(summary);
+   const summary=document.createElement('div');summary.className='inspector-position is-text';summary.textContent=`${dimensions(v)} · ${format((v.yaw*180/Math.PI).toFixed(0))}°`;nodes.push(summary);cardSummary=summary;
    if(v.description){const d=document.createElement('p');d.className='card-description';d.textContent=v.description;nodes.push(d);}
    if(context?.editable){const hint=document.createElement('p');hint.className='card-hint';hint.textContent='Drag the handles to move, resize or rotate. Changes save when you let go.';nodes.push(hint);
     const row=document.createElement('div');row.className='card-actions';row.append(actionButton('Delete',{variant:'danger-ghost',onClick:confirmDelete}),actionButton('Edit',{onClick:()=>renderCard('edit')}));nodes.push(row);}
