@@ -219,7 +219,7 @@ const cameraPan=createCameraPan({camera,controls});
 renderer.domElement.addEventListener('pointerdown',()=>cameraPan.cancel(),true);
 renderer.domElement.addEventListener('wheel',()=>cameraPan.cancel(),{capture:true,passive:true});
 for(const id of ['map-select','fit','top','demo-view'])$(id).addEventListener(id==='map-select'?'change':'click',()=>cameraPan.cancel(),true);
-const ghostCamera=createGhostCamera({camera,controls,canvas:renderer.domElement,enabled:()=>!map2D.isActive()&&!crayon?.isActive(),onMove:()=>{cameraPan.cancel();if(attachedCamera.isActive())attachedCamera.detach();
+const ghostCamera=createGhostCamera({camera,controls,canvas:renderer.domElement,enabled:()=>!map2D.isActive()&&!crayon?.isActive(),onMove:()=>{cameraPan.cancel();closeSpotMenu();if(attachedCamera.isActive())attachedCamera.detach();
  // The first time someone moves with the keyboard, show the whole scheme once.
  try{if(!localStorage.getItem('camera-keys-hint')){localStorage.setItem('camera-keys-hint','1');toast('WASD move · Space / Shift up and down · Q / E turn · drag to look around · right-drag to pan');}}catch{}}});
 let activeMap='demo',current=null,busy=false,refreshing=false,lastScene=null,selectable=[],selectedNoteId=null,selectedPathId=null,deletingPathId=null,deletingNoteId=null,selectedSpatialNode=null,spatialSignature='';
@@ -892,10 +892,12 @@ renderer.domElement.addEventListener('pointerup',e=>{
  if(!current||!pointerStart||Math.hypot(e.clientX-pointerStart[0],e.clientY-pointerStart[1])>4)return;
  if(placingNote){const target=placementTarget;stopNotePlacement();const box=renderer.domElement.getBoundingClientRect(),pick=new THREE.Raycaster();pick.setFromCamera(new THREE.Vector2((e.clientX-box.left)/box.width*2-1,1-(e.clientY-box.top)/box.height*2),camera);const request={source:'scene',frame:current.frame,origin:pick.ray.origin.toArray(),direction:pick.ray.direction.toArray()};if(target)target(request);else beginLabel(request);return;}
  const r=renderer.domElement.getBoundingClientRect(), ray=new THREE.Raycaster();ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),camera);
- // Labels first: a note opens its card, a cluster flies in. A legacy volume's chip falls through to the scene pick.
+ // Labels first: a note opens its card, a cluster flies in. Legacy volumes can't be selected, so a click on one
+ // of their chips does nothing (rather than clearing the selection and moving the spot cursor).
  const label=labelHit(e);
  if(label?.kind==='note'){showNoteSelection(label.note);return;}
  if(label?.kind==='note-cluster'){openCluster(label.centre);return;}
+ if(label?.kind==='volume')return;
  const hits=ray.intersectObjects([...selectable,...crayon.objects()].filter(o=>{for(let p=o;p;p=p.parent){if(!p.visible)return false;}return true;}));
  // Nothing hit: the click moves the spot cursor (the floor ring) there. Drags orbit and never get this far.
  if(!hits.length){clearSelection();const floor=ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,1,0),0),new THREE.Vector3());if(floor&&!crayon.isActive()&&!map2D.isActive())placeSpotMarker(floor);return;}const h=hits.find(h=>h.object.userData.kind==='path')||hits.find(h=>h.object.userData.kind==='portal')||hits[0],d=h.object.userData;
@@ -907,11 +909,12 @@ renderer.domElement.addEventListener('pointerup',e=>{
  if(d.kind==='portal')showSelection(`Portal ${d.portal.payload.split(':').at(-1)}`,'','',{kind:'Portal',facts:[['Encoded size',`${d.portal.side_length_m.toFixed(2)} m`],['Source','Manually supplied · no backend lookup']]});
 });
 // Hover: the label under the pointer gets its ring and a pointer cursor (unless a tool owns the cursor).
-let hoverFrame=0,hoverEvent=null;
-renderer.domElement.addEventListener('pointermove',e=>{if(e.buttons||e.pointerType==='touch')return;hoverEvent=e;if(hoverFrame)return;
- hoverFrame=requestAnimationFrame(()=>{hoverFrame=0;const hit=sceneLabels.hitTest(hoverEvent.clientX,hoverEvent.clientY),canvas=renderer.domElement;sceneLabels.setHover(hit?.id||null);
-  if(!placingNote&&!crayon.isActive()&&['','pointer'].includes(canvas.style.cursor))canvas.style.cursor=hit?'pointer':'';});});
-renderer.domElement.addEventListener('pointerleave',()=>sceneLabels.setHover(null));
+// It is re-checked while the view moves under a still pointer, and dropped (with any pending check) on leaving.
+let hoverFrame=0,hoverAt=null;
+function updateHover(){if(!hoverAt)return;const hit=sceneLabels.hitTest(hoverAt[0],hoverAt[1]),canvas=renderer.domElement;sceneLabels.setHover(hit?.id||null);
+ if(!placingNote&&!crayon.isActive()&&['','pointer'].includes(canvas.style.cursor))canvas.style.cursor=hit?'pointer':'';}
+renderer.domElement.addEventListener('pointermove',e=>{if(e.buttons||e.pointerType==='touch')return;hoverAt=[e.clientX,e.clientY];if(!hoverFrame)hoverFrame=requestAnimationFrame(()=>{hoverFrame=0;updateHover();});});
+renderer.domElement.addEventListener('pointerleave',()=>{cancelAnimationFrame(hoverFrame);hoverFrame=0;hoverAt=null;sceneLabels.setHover(null);if(renderer.domElement.style.cursor==='pointer')renderer.domElement.style.cursor='';});
 renderer.domElement.addEventListener('dblclick',e=>{
  if(e.button!==0||!current||crayon.isActive()||map2D.isActive())return;
  const r=renderer.domElement.getBoundingClientRect(),ray=new THREE.Raycaster();
@@ -994,12 +997,12 @@ function keepSpriteSizes(amount){
 // the canvas or the label, handle and locator layers above it land here; OrbitControls' own wheel never fires.
 let wheelZoom=0,wheelTau=0,wheelAt=null,wheelLast=0;
 renderer.domElement.parentElement.addEventListener('wheel',e=>{
- if(!(e.target===renderer.domElement||e.target.closest?.('.scene-labels,.volume-handles,.content-locator')))return;
+ if(!(e.target===renderer.domElement||e.target.closest?.('.volume-handles,.content-locator')))return;
  if(!controls.enabled||!controls.enableZoom||controls.state!==-1||attachedCamera.isActive()||map2D.isActive())return;
- e.preventDefault();e.stopPropagation();cameraPan.cancel();
+ e.preventDefault();e.stopPropagation();cameraPan.cancel();closeSpotMenu();
  const delta=e.deltaY*([1,16,100][e.deltaMode]??1)*(e.ctrlKey?10:1);
  wheelZoom+=Math.sign(delta)*Math.log(1/.95)*controls.zoomSpeed*Math.abs(delta)*.01;
- wheelTau=e.deltaMode!==0||(Math.abs(e.deltaY)>=50&&!e.ctrlKey)?70:0;wheelAt=[e.clientX,e.clientY];
+ wheelTau=e.deltaMode!==0||(Math.abs(e.deltaY)>=50&&!e.ctrlKey)?70:0;wheelAt=[e.clientX,e.clientY];sceneLabels.setFocus(e.clientX,e.clientY);
 },{capture:true,passive:false});
 renderer.domElement.addEventListener('pointerdown',()=>{wheelZoom=0;},true);
 $('map-select').addEventListener('change',()=>{wheelZoom=0;});
@@ -1050,7 +1053,7 @@ function setContentBounds(data){
 function keepAboveGrid(){if(attachedCamera.isActive()||map2D.isActive())return;const floor=grid.position.y+.05;if(camera.position.y<floor)camera.position.y=floor;if(controls.target.y<grid.position.y)controls.target.y=grid.position.y;}
 renderer.setAnimationLoop(now=>{easeViewOffset();cameraFlying=cameraPan.tick(now);if(!cameraFlying&&!attachedCamera.isActive()){applyWheelZoom(now);controls.update();}else wheelZoom=0;ghostCamera.tick(now);keepAboveGrid();updateFog();if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);updateFlatten();
  // Volume handles are HTML placed from this frame's camera: settle its matrices and projection first so they never trail a glide.
- camera.updateMatrixWorld();semanticVolumes.tick();sceneLabels.setSelected(selectedNoteId?'note:'+selectedNoteId:null);sceneLabels.tick(now);contentLocator.tick(now);renderer.render(scene,camera);});
+ camera.updateMatrixWorld();semanticVolumes.tick();sceneLabels.setSelected(selectedNoteId?'note:'+selectedNoteId:null);sceneLabels.tick(now);if(hoverAt&&sceneLabels.moving)updateHover();contentLocator.tick(now);renderer.render(scene,camera);});
 refresh().catch(e=>{$('notice').textContent=e.message;$('notice').classList.add('error');});setInterval(()=>{if(!busy)refresh().catch(()=>{});},500);
 
 function updatePairingDownload(){const link=$('pairing-download');link.href=isLocalScene()?localSceneUrl()+'/connection':'/api/home-connection';link.download=isLocalScene()?activeMap.slice(6)+'-connection.json':'home-connection.json';link.textContent=isLocalScene()?'Download phone connection for selected scene ↗':'Download Xmart connection ↗';}
@@ -1826,11 +1829,13 @@ let spot=null,rightStart=null;
 function placeSpotMarker(point){const r=renderer.domElement.getBoundingClientRect();spotMarker.position.copy(point).add(new THREE.Vector3(0,.01,0));spotMarker.scale.setScalar(camera.position.distanceTo(point)*Math.tan(camera.fov*Math.PI/360)*10/r.height);spotMarker.visible=true;}
 function spotTool(label,face,accent,run,disabledReason=''){
  const button=document.createElement('button');button.type='button';button.className='agent-tool';button.dataset.accent=accent;button.setAttribute('role','menuitem');button.setAttribute('aria-label',label);button.tabIndex=-1;
- button.dataset.tip=disabledReason?`${label} · ${disabledReason}`:label;if(disabledReason)button.setAttribute('aria-disabled','true');
+ button.dataset.tip=disabledReason?`${label} · ${disabledReason}`:label;if(disabledReason){button.setAttribute('aria-disabled','true');button.setAttribute('aria-description','Unavailable: '+disabledReason);}
  const hit=document.createElement('span'),lift=document.createElement('span'),plate=document.createElement('span'),glyph=document.createElement('span');hit.className='spot-hit';lift.className='spot-lift';plate.className='spot-plate';lift.append(plate);glyph.className='rail-face';glyph.append(typeof face==='string'?icon(face,20):face);button.append(hit,lift,glyph);
  // The ring has done its job once a tool starts there; only Ask keeps it, until the question is sent.
  button.onclick=()=>{if(disabledReason)return;const at=spot;closeSpotMenu();run(at);};return button;}
-function closeSpotMenu(clearMarker=true){if(spotMenu.hidden||spotMenu.dataset.closing)return;sceneLabels.setMask(null);clearTimeout(spotTipTimer);spotTip.hidden=true;spot=null;if(clearMarker&&!chatFocus)spotMarker.visible=false;
+function closeSpotMenu(clearMarker=true){if(spotMenu.hidden||spotMenu.dataset.closing)return;sceneLabels.setMask(null);
+ // Focus goes back where it was before the menu opened, unless a tool has already moved it on.
+ if(spotMenu.contains(document.activeElement))(spotMenu.returnFocus?.isConnected?spotMenu.returnFocus:document.body).focus?.({preventScroll:true});clearTimeout(spotTipTimer);spotTip.hidden=true;spot=null;if(clearMarker&&!chatFocus)spotMarker.visible=false;
  if(matchMedia('(prefers-reduced-motion: reduce)').matches){spotMenu.hidden=true;return;}
  // A quick scale-down into the spot; the menu ignores the pointer while it goes.
  spotMenu.dataset.closing='true';spotMenu.getAnimations({subtree:true}).forEach(a=>a.cancel());
@@ -1838,8 +1843,9 @@ function closeSpotMenu(clearMarker=true){if(spotMenu.hidden||spotMenu.dataset.cl
 function openSpotMenu(e){
  const r=renderer.domElement.getBoundingClientRect(),ray=new THREE.Raycaster();ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,1-(e.clientY-r.top)/r.height*2),camera);
  const hit=ray.intersectObjects(selectable.filter(o=>{for(let p=o;p;p=p.parent)if(!p.visible)return false;return true;}))[0];
- const point=hit?hit.point.clone():ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,1,0),0),new THREE.Vector3());
+ const label=labelHit(e),point=label?.kind==='note'?new THREE.Vector3(...label.note.position):label?.kind==='note-cluster'?label.centre.clone():hit?hit.point.clone():ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,1,0),0),new THREE.Vector3());
  if(!point)return;
+ spotMenu.returnFocus=document.activeElement;
  spot={point,request:{source:'scene',frame:current.frame,origin:ray.ray.origin.toArray(),direction:ray.ray.direction.toArray()}};
  placeSpotMarker(point);
  const writable=notesWritable(),orb=document.createElement('span');orb.className='agent-orb';orb.setAttribute('aria-hidden','true');
@@ -1881,7 +1887,10 @@ function showSpotTip(button){
 spotMenu.addEventListener('pointerover',e=>{const button=e.target.closest('[data-tip]');if(!button||spotMenu.dataset.opening)return;clearTimeout(spotTipTimer);spotTipTimer=setTimeout(()=>showSpotTip(button),spotTip.hidden?120:0);});
 spotMenu.addEventListener('pointerout',e=>{if(!e.relatedTarget?.closest?.('.spot-menu [data-tip]')){clearTimeout(spotTipTimer);spotTip.hidden=true;}});
 spotMenu.addEventListener('focusin',e=>{if(e.target===spotMenu)return;for(const item of spotMenu.querySelectorAll('[role="menuitem"]'))item.tabIndex=item===e.target?0:-1;if(e.target.matches(':focus-visible')&&!spotMenu.dataset.opening){clearTimeout(spotTipTimer);showSpotTip(e.target);}});
-renderer.domElement.addEventListener('pointerdown',e=>{if(e.button===2)rightStart=[e.clientX,e.clientY];else closeSpotMenu();});
+// Any press on the canvas closes the menu (a right-drag pan included); a still right-click reopens it on release.
+// The ring sits under the cursor, so a wheel over it closes it too (the view is about to move).
+spotMenu.addEventListener('wheel',e=>{e.preventDefault();closeSpotMenu();},{passive:false});
+renderer.domElement.addEventListener('pointerdown',e=>{rightStart=e.button===2?[e.clientX,e.clientY]:null;closeSpotMenu();});
 renderer.domElement.addEventListener('pointerup',e=>{
  if(e.button!==2||!rightStart)return;const moved=Math.hypot(e.clientX-rightStart[0],e.clientY-rightStart[1]);rightStart=null;
  // A right-drag orbits the view; only a still right-click opens the menu.

@@ -24,7 +24,7 @@ const MERGE_MS=260,CLUSTER_DELAY_MS=180;
 export function createSceneLabels({camera,controls,renderer,parent=renderer.domElement.parentElement,hidden=()=>false,fog=()=>null}){
  const layer=document.createElement('div');layer.className='scene-labels';layer.setAttribute('aria-hidden','true');parent.append(layer);
  const sources=new Map(),labels=new Map(),clusters=new Map(),point=new THREE.Vector3(),at=new THREE.Vector3();
- let tier=0,selected=null,hovered=null,mask=null,dirty=true,declutterAt=0,settled=false,clusterCache=null,focus=null,lastView='',restSince=0,host=null,canvasRect=null;
+ let tier=0,selected=null,hovered=null,mask=null,moving=false,dirty=true,declutterAt=0,settled=false,clusterCache=null,focus=null,lastView='',restSince=0,host=null,canvasRect=null;
 
  function shown(anchor){if(!anchor.parent)return false;for(let o=anchor;o;o=o.parent)if(!o.visible)return false;return true;}
  function create(item){
@@ -49,8 +49,8 @@ export function createSceneLabels({camera,controls,renderer,parent=renderer.domE
   dirty=true;if(source==='notes')clusterCache=null;
  }
 
- // The zoom focus (last wheel or pointer position) staggers changes outward from where the user is looking.
- renderer.domElement.addEventListener('wheel',e=>{focus=[e.clientX,e.clientY];},{passive:true,capture:true});
+ // The zoom focus (the last wheel position, set by the app's wheel zoom) staggers changes outward from where the
+ // user is looking.
  const stagger=label=>{if(!focus||!label.visible||!host)return 0;return Math.min(120,.12*Math.hypot(label.x+host.left-focus[0],label.y+host.top-focus[1]));};
  function setForm(label,form){
   if(label.form===form)return;
@@ -127,7 +127,7 @@ export function createSceneLabels({camera,controls,renderer,parent=renderer.domE
   const nextTier=zoomTier(mpp,tier);if(nextTier!==tier){tier=nextTier;dirty=true;}
   // Positions snap to device pixels once the view has been still for 100 ms; while it moves they stay sub-pixel.
   const view=camera.matrixWorld.elements.join(',')+camera.projectionMatrix.elements.join(',')+canvasRect.width+'x'+canvasRect.height;
-  if(view!==lastView){lastView=view;restSince=now;}const still=now-restSince>100;
+  if(view!==lastView){lastView=view;restSince=now;}const still=now-restSince>100;moving=!still;
   if(dirty){dirty=false;decide(now);}
   // Labels fade with the scene's distance fog; a faint label isn't clickable, and the selected one stays readable.
   const f=fog(),fade=(world,floor=0)=>{const alpha=f?1-smoothstep(f.near,f.far,camera.position.distanceTo(world)):1;return Math.max(floor,alpha);};
@@ -186,5 +186,5 @@ export function createSceneLabels({camera,controls,renderer,parent=renderer.domE
  }
  function setSelected(id){if(id===selected)return;labels.get(selected)?.el.classList.remove('selected');selected=id;labels.get(id)?.el.classList.add('selected');dirty=true;clusterCache=null;}
  function setHover(id){if(id===hovered)return;labels.get(hovered)?.el.classList.remove('hovered');hovered=id;labels.get(id)?.el.classList.add('hovered');}
- return {sync,tick,hitTest,setSelected,setHover,setMask,get tier(){return tier;}};
+ return {sync,tick,hitTest,setSelected,setHover,setMask,setFocus(x,y){focus=[x,y];},get tier(){return tier;},get moving(){return moving;}};
 }
