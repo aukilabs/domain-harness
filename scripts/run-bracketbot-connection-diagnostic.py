@@ -81,6 +81,9 @@ if request.get('drive'):
     for file in ('scripts/drive-bracketbot.py','scripts/bracketbot_drive.py'):
         if not (root/file).is_file(): raise SystemExit('Missing diagnostic file: '+file)
     command+=['--drive']
+if request.get('navigate'):
+    if not (root/'scripts/diagnostic-nav.py').is_file(): raise SystemExit('Missing diagnostic file: scripts/diagnostic-nav.py')
+    command+=['--navigate']
 with (root/'diagnostic.log').open('ab',buffering=0) as log:
     child=subprocess.Popen(command,cwd=root,env=env,stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True)
 (root/'diagnostic.pid').write_text(str(child.pid)+'\n')
@@ -103,10 +106,11 @@ def main():
     arm.add_argument('--arm-plan', action='store_true', help='point_at plans with the live arm; never moves it; implies poses')
     arm.add_argument('--arm-motion', action='store_true', help='point_at moves an arm; clear the space in front of the robot; implies poses')
     parser.add_argument('--drive', action='store_true', help='Teleop: Home drives the base at full teleop speeds through its scene drive relay; implies poses')
+    parser.add_argument('--navigate', action='store_true', help="Navigation: Home sends waypoints the robot's BBOS nav app drives (nav must be running on :8010); implies poses")
     parser.add_argument('--start-staged', action='store_true', help='Resume after a completed transfer; verifies the staged binary hash before stopping anything')
     args = parser.parse_args()
     args.portals = args.portals or args.points
-    args.poses = args.poses or args.portals or args.arm_plan or args.arm_motion or args.drive
+    args.poses = args.poses or args.portals or args.arm_plan or args.arm_motion or args.drive or args.navigate
     repo = Path(__file__).resolve().parents[1]
     credentials = {key: os.environ[key] for key in ('AUKI_ACCESS_KEY', 'AUKI_APP_SECRET')}
     home = json.loads(args.home_connection.read_text())
@@ -127,13 +131,13 @@ def main():
             archive.addfile(entry, io.BytesIO(config))
             for name in ('bracketbot-python.py', 'bracketbot_slam_led_diagnostic.py', 'diagnostic-camera.py', 'diagnostic-depth.py', 'bracketbot_capture.py',
                          'diagnostic-arm.py', 'bracketbot_point.py', 'bracketbot_aim.py',
-                         'drive-bracketbot.py', 'bracketbot_drive.py', 'diagnostic-robot-state.py'):
+                         'drive-bracketbot.py', 'bracketbot_drive.py', 'diagnostic-nav.py', 'diagnostic-robot-state.py'):
                 archive.add(repo/'scripts'/name, arcname='scripts/'+name)
         payload.seek(0)
         if not args.start_staged:
             subprocess.run(ssh+[f'mkdir -p {ROOT} && tar -xzf - -C {ROOT}'], stdin=payload, check=True)
     subprocess.run(ssh+[shlex.join(['python3', '-c', START])],
-                   input=json.dumps({'home':home,'credentials':credentials,'poses':args.poses,'portals':args.portals,'points':args.points,'arm':'motion' if args.arm_motion else 'plan' if args.arm_plan else None,'drive':args.drive,'robot':args.robot,'sha256':hashlib.sha256(args.binary.read_bytes()).hexdigest()}).encode(), check=True)
+                   input=json.dumps({'home':home,'credentials':credentials,'poses':args.poses,'portals':args.portals,'points':args.points,'arm':'motion' if args.arm_motion else 'plan' if args.arm_plan else None,'drive':args.drive,'navigate':args.navigate,'robot':args.robot,'sha256':hashlib.sha256(args.binary.read_bytes()).hexdigest()}).encode(), check=True)
 
 
 if __name__ == '__main__':

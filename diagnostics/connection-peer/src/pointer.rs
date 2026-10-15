@@ -59,7 +59,7 @@ fn identity() -> Pose {
     }
 }
 
-fn now_ns() -> u64 {
+pub fn now_ns() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -105,7 +105,7 @@ fn value(t: &Transform, clock: &ClockReference, session: &str, now: u64) -> Resu
     Ok((pose.clone(), used))
 }
 
-fn through(pose: &Pose, point: [f64; 3]) -> Result<[f64; 3]> {
+pub fn through(pose: &Pose, point: [f64; 3]) -> Result<[f64; 3]> {
     let at = Pose {
         translation: point,
         ..identity()
