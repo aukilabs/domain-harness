@@ -952,7 +952,10 @@ function keepSpriteSizes(amount){
   obj.scale.copy(base).multiplyScalar(perspective00*((1-amount)*depth+amount)/p00);
  }
 }
-renderer.setAnimationLoop(now=>{easeViewOffset();if(!cameraPan.tick(now)&&!attachedCamera.isActive())controls.update();ghostCamera.tick(now);if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);updateFlatten();
+// The camera never goes beneath the grid. Orbiting is limited to above the horizon, but views the assistant sets
+// (and detaching an attached camera) lift that limit, so the floor is also held here, every frame.
+function keepAboveGrid(){if(attachedCamera.isActive()||map2D.isActive())return;const floor=grid.position.y+.05;if(camera.position.y<floor)camera.position.y=floor;}
+renderer.setAnimationLoop(now=>{easeViewOffset();if(!cameraPan.tick(now)&&!attachedCamera.isActive())controls.update();keepAboveGrid();ghostCamera.tick(now);if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);updateFlatten();
  // Volume handles are HTML placed from this frame's camera: settle its matrices and projection first so they never trail a glide.
  camera.updateMatrixWorld();semanticVolumes.tick();renderer.render(scene,camera);});
 refresh().catch(e=>{$('notice').textContent=e.message;$('notice').classList.add('error');});setInterval(()=>{if(!busy)refresh().catch(()=>{});},500);

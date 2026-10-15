@@ -32,3 +32,17 @@ for(const mode of ['move','stale','2d','invalid','look-up'])test(`chat map-camer
  for(const key of ['camera_position','camera_target'])for(let i=0;i<3;i++)expect(actual[key][i]).toBeCloseTo(expected[key][i],5);
  await expect(page.locator('#sensor-pip')).toBeHidden();
 });
+test('chat map-camera never goes beneath the grid',async({page})=>{
+ await page.route('**/api/scene-sources',r=>r.fulfill({json:{local:[{id:'demo',name:'Home Server'}],preferred:'demo',runners:[],scenes:[],phones:[]}}));
+ const requests=[];
+ await page.route('**/api/chat',r=>{const body=r.request().postDataJSON();requests.push(body);
+  return r.fulfill({json:requests.length>1?{reply:'View inspected.',model:'test',changes:[]}:{reply:'Requested view.',model:'test',changes:[],ui_actions:[{type:'move_camera',scene:body.scene,frame:body.viewer.frame,position:[2,-3,4],look_at:[0,1,0]}]}});});
+ await page.goto('/');await expect(page.locator('#connection')).toHaveText('Home Server online');
+ await page.locator('#agent-toggle').click();await page.locator('#scene-chat-input').fill('Look up from under the floor');
+ await page.locator('#scene-chat-form button[type="submit"]').click();await expect(page.locator('#scene-chat-history')).toContainText('Map camera moved.');
+ await page.waitForTimeout(500);
+ await page.locator('#agent-toggle').click();await page.locator('#scene-chat-input').fill('What is my view?');
+ await page.locator('#scene-chat-form button[type="submit"]').click();await expect.poll(()=>requests.length).toBe(2);
+ const [x,y,z]=requests[1].viewer.camera_position;
+ expect(y).toBeGreaterThan(-.1);expect(x).toBeCloseTo(2,5);expect(z).toBeCloseTo(4,5);
+});
