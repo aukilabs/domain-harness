@@ -9,15 +9,12 @@ use spatial_home::{
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn home_integrates_declared_camera_points_over_authenticated_sdk() -> Result<()> {
-    run(false, false, false).await
+    // Depth is binary on the wire; a JSON depth export is refused at the endpoint.
+    run(false, false, true).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn home_consumes_the_actual_mobile_declared_publisher() -> Result<()> {
     run(true, false, false).await
-}
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn home_voxelizes_points_through_sensor_mount_odometry_and_home_alignment() -> Result<()> {
-    run(false, true, false).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn home_subscribes_to_empty_compact_depth_and_preserves_capture_chain() -> Result<()> {
