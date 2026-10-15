@@ -104,6 +104,16 @@ struct ViewerScreen: View {
                     .accessibilityValue(controller.voxelLook == .camera ? "Camera only"
                                         : controller.voxelLook == .voxels ? "Voxels only" : "Voxels over the camera")
                     .accessibilityHint("Changes what the camera view shows")
+                    // Show or hide the scene's volumes in AR.
+                    Button { controller.showVolumesInAR.toggle() } label: {
+                        Image(systemName: controller.showVolumesInAR ? "cube.fill" : "cube")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(controller.showVolumesInAR ? Theme.accent : Theme.dim)
+                            .frame(width: 36, height: 36).background(Theme.paper, in: Circle())
+                            .shadow(color: Theme.glow, radius: 4, y: 2)
+                    }
+                    .padding(.top, 10)
+                    .accessibilityLabel(controller.showVolumesInAR ? "Hide volumes" : "Show volumes")
                     // Draw on the scene with a finger, as Home's Crayon does.
                     Button { controller.drawing.toggle() } label: {
                         Image(systemName: "scribble.variable").font(.system(size: 16, weight: .semibold))
