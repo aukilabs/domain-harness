@@ -1717,14 +1717,18 @@ spotMarker.rotation.x=-Math.PI/2;spotMarker.renderOrder=-1;spotMarker.visible=fa
 const spotMenu=document.createElement('div');spotMenu.className='spot-menu';spotMenu.hidden=true;spotMenu.setAttribute('role','menu');spotMenu.setAttribute('aria-label','Tools at this spot');spotMenu.tabIndex=-1;document.body.append(spotMenu);
 // Clockwise from the top right: [place, x, y, the side its hint opens on].
 const SPOT_PLACES=[['top-right',1,-1,'right'],['bottom-right',1,1,'right'],['bottom-left',-1,1,'left'],['top-left',-1,-1,'left']],SPOT_RADIUS=50,SPOT_SIZE=152,SPOT_HOLE=18;
-// Each tool is one quarter of the ring (its hit area and hover fill), with a hairline gap to its neighbours.
-function spotWedge(qx,qy){const c=SPOT_SIZE/2,outer=c-.5,inner=SPOT_HOLE+1,gap=1,along=r=>Math.sqrt(r*r-gap*gap),at=(x,y)=>`${(c+x).toFixed(2)} ${(c+y).toFixed(2)}`,sweep=qx*qy<0?1:0;
- return `path('M${at(gap*qx,along(outer)*qy)} A${outer} ${outer} 0 0 ${sweep} ${at(along(outer)*qx,gap*qy)} L${at(along(inner)*qx,gap*qy)} A${inner} ${inner} 0 0 ${1-sweep} ${at(gap*qx,along(inner)*qy)} Z')`;}
+// Each tool is one quarter of the ring: a wedge for its hit area and, inset from it, a rounded wedge plate that
+// lifts and tilts on hover. Drawn in a quadrant's own frame (x, y >= 0), mirrored into place and given in the
+// coordinates of the tool's box, which is that quadrant of the menu; `gap` is the distance from the cross.
+function spotWedge(qx,qy,{outer,inner,gap,round=0}){const c=SPOT_SIZE/2,k=round,sweep=qx*qy<0?1:0,
+  p=([x,y])=>`${(qx>0?qx*x:c+qx*x).toFixed(2)} ${(qy>0?qy*y:c+qy*y).toFixed(2)}`,side=r=>Math.sqrt(r*r-gap*gap),e1=r=>[gap,side(r)],e2=r=>[side(r),gap],
+  arc=(r,[x,y],turn)=>{const a=Math.atan2(y,x)+turn/r;return [r*Math.cos(a),r*Math.sin(a)];};
+ return `path('M${p(e1(outer-k))} Q${p(e1(outer))} ${p(arc(outer,e1(outer),-k))} A${outer} ${outer} 0 0 ${sweep} ${p(arc(outer,e2(outer),k))} Q${p(e2(outer))} ${p(e2(outer-k))} L${p(e2(inner+k))} Q${p(e2(inner))} ${p(arc(inner,e2(inner),k))} A${inner} ${inner} 0 0 ${1-sweep} ${p(arc(inner,e1(inner),-k))} Q${p(e1(inner))} ${p(e1(inner+k))} Z')`;}
 let spot=null,rightStart=null;
 function spotTool(label,face,accent,run,disabledReason=''){
  const button=document.createElement('button');button.type='button';button.className='agent-tool';button.dataset.accent=accent;button.setAttribute('role','menuitem');button.setAttribute('aria-label',label);button.tabIndex=-1;
  button.dataset.tip=disabledReason?`${label} · ${disabledReason}`:label;if(disabledReason)button.setAttribute('aria-disabled','true');
- const plate=document.createElement('span');plate.className='rail-face';const glint=document.createElement('span');glint.className='rail-glint';glint.setAttribute('aria-hidden','true');plate.append(typeof face==='string'?icon(face,20):face,glint);button.append(plate);
+ const hit=document.createElement('span'),lift=document.createElement('span'),plate=document.createElement('span'),glyph=document.createElement('span');hit.className='spot-hit';lift.className='spot-lift';plate.className='spot-plate';lift.append(plate);glyph.className='rail-face';glyph.append(typeof face==='string'?icon(face,20):face);button.append(hit,lift,glyph);
  // The ring has done its job once a tool starts there; only Ask keeps it, until the question is sent.
  button.onclick=()=>{if(disabledReason)return;const at=spot;closeSpotMenu();run(at);};return button;}
 function closeSpotMenu(clearMarker=true){if(spotMenu.hidden||spotMenu.dataset.closing)return;clearTimeout(spotTipTimer);spotTip.hidden=true;spot=null;if(clearMarker&&!chatFocus)spotMarker.visible=false;
@@ -1748,7 +1752,11 @@ function openSpotMenu(e){
   spotTool('Ask about this spot',orb,'zinc')];
  const ask=tools[3];ask.classList.add('spot-ask');ask.onclick=()=>{chatFocus=spot.point.toArray().map(n=>Math.round(n*1000)/1000);closeSpotMenu(false);agentBar.open();};
  const offset=v=>Math.round(v*SPOT_RADIUS*Math.SQRT1_2);
- tools.forEach((tool,i)=>{const [place,dx,dy,side]=SPOT_PLACES[i];tool.dataset.place=place;tool.dataset.side=side;tool.style.setProperty('--x',offset(dx)+'px');tool.style.setProperty('--y',offset(dy)+'px');tool.style.clipPath=spotWedge(dx,dy);});
+ // Each tool's box is its quadrant (so the tilt pivots on the wedge); the icon sits on the diagonal at SPOT_RADIUS.
+ tools.forEach((tool,i)=>{const [place,dx,dy,side]=SPOT_PLACES[i],half=SPOT_SIZE/2;tool.dataset.place=place;tool.dataset.side=side;
+  tool.style.left=(dx>0?half:0)+'px';tool.style.top=(dy>0?half:0)+'px';tool.style.transformOrigin=`${dx>0?0:100}% ${dy>0?0:100}%`;
+  tool.style.setProperty('--x',(dx>0?offset(1):half-offset(1))+'px');tool.style.setProperty('--y',(dy>0?offset(1):half-offset(1))+'px');
+  tool.querySelector('.spot-hit').style.clipPath=spotWedge(dx,dy,{outer:half-.5,inner:SPOT_HOLE+1,gap:1});tool.querySelector('.spot-plate').style.clipPath=spotWedge(dx,dy,{outer:half-8,inner:SPOT_HOLE+7,gap:6,round:8});});
  spotMenu.replaceChildren(...tools);spotMenu.getAnimations({subtree:true}).forEach(a=>a.cancel());delete spotMenu.dataset.closing;spotMenu.hidden=false;
  // Centred on the cursor, shifted inward near an edge so the whole ring stays on screen.
  const half=SPOT_SIZE/2,x=Math.min(Math.max(half+8,e.clientX),innerWidth-half-8),y=Math.min(Math.max(half+8,e.clientY),innerHeight-half-8);
