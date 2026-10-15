@@ -22,6 +22,12 @@ class StatusTests(unittest.TestCase):
         self.assertIsNone(diagnostic.pose_sample(dict(record, quat=[0, 0, 0, 0]), 'tracking', 1_010_000_000, 42))
         self.assertIsNone(diagnostic.pose_sample(dict(record, pos=[float('nan'), 0, 0]), 'tracking', 1_010_000_000, 42))
 
+    def test_restarts_back_off_and_are_bounded(self):
+        delays = [diagnostic.restart_delay(n) for n in range(10)]
+        self.assertEqual(delays[:6], [2, 4, 8, 16, 32, 60])
+        self.assertTrue(all(d == 60 for d in delays[6:]), 'never faster than once a minute when failing')
+        self.assertGreater(diagnostic.STEADY_RUN_S, delays[0], 'a run that lasted resets the backoff')
+
     def test_red_trumps_green(self):
         for connected in (False, True):
             for state in ('lost', 'stalled'):

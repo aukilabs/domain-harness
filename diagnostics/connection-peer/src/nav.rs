@@ -59,6 +59,7 @@ struct Adapter {
     child: Child,
     stdin: Mutex<Option<ChildStdin>>,
     waiting: Waiting,
+    gone: Arc<std::sync::atomic::AtomicBool>,
 }
 impl Adapter {
     fn ask(&self, request: serde_json::Value, request_id: &str) -> Result<Reply> {
@@ -236,6 +237,7 @@ impl Drop for Inbox {
 }
 
 pub struct Navigator {
+    adapter: Arc<Adapter>,
     _inbox: Inbox,
     _component: Component,
     _navigate: Operable<Navigate, NavigateAccepted>,
@@ -245,6 +247,10 @@ pub struct Navigator {
 }
 
 impl Navigator {
+    /// The nav adapter process has exited.
+    pub fn gone(&self) -> bool {
+        self.adapter.gone.load(std::sync::atomic::Ordering::Relaxed)
+    }
     pub fn mount(p: &crate::poses::Publisher, known: Arc<Mutex<Frames>>, home: String) -> Result<Self> {
         let mut child = Command::new("python3")
             .args(["scripts/bracketbot-python.py", "scripts/diagnostic-nav.py"])
@@ -260,6 +266,8 @@ impl Navigator {
         let (first_tx, first_rx) = mpsc::channel();
         let waiting: Waiting = Arc::default();
         let replies = waiting.clone();
+        let gone = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ended = gone.clone();
         std::thread::spawn(move || {
             let _ = first_tx.send(lines.next());
             for line in lines {
@@ -275,6 +283,7 @@ impl Navigator {
                 }
             }
             replies.lock().unwrap().clear();
+            ended.store(true, std::sync::atomic::Ordering::Relaxed);
         });
         let declaration = (|| -> Result<Declaration> {
             let first = first_rx
@@ -295,7 +304,7 @@ impl Navigator {
             }
         };
         crate::diagnostic_log!("Nav backend: {} (its frame relative to the SLAM world as BBOS defines it)", declaration.mode);
-        let adapter = Arc::new(Adapter { child, stdin: Mutex::new(stdin), waiting });
+        let adapter = Arc::new(Adapter { child, stdin: Mutex::new(stdin), waiting, gone });
         // Nav's floor frame: Z up, metres, its +Y the robot's forward at heading 0.
         let owner = &p.contract.from_frame.peer_id;
         let nav_frame = FrameRegistryEntry::in_convention(
@@ -393,11 +402,12 @@ impl Navigator {
             move |ctx| ctx.caller_peer_id == also_home,
             move |_ctx, request: Cancel| stop.stop(&request.request_id).map_err(rejected),
         )?;
+        let adapter = goals.adapter.clone();
         let inbox = Inbox::start(goals);
         component.expose()?;
         p.endpoint.export_operable(&navigate)?;
         p.endpoint.export_operable(&cancel)?;
-        Ok(Self { _component: component, _navigate: navigate, _cancel: cancel, _mount: mount, _capture: capture, _inbox: inbox })
+        Ok(Self { adapter, _component: component, _navigate: navigate, _cancel: cancel, _mount: mount, _capture: capture, _inbox: inbox })
     }
 }
 

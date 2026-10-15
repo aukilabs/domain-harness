@@ -154,6 +154,10 @@ pub async fn follow(
 /// The BBOS drive helper, at full teleop speeds, allowing only `home`.
 pub struct Helper(Child);
 impl Helper {
+    /// The helper process has exited (it is fail-closed: the base stops).
+    pub fn exited(&mut self) -> bool {
+        !matches!(self.0.try_wait(), Ok(None))
+    }
     pub fn start(home: &str) -> Result<Self> {
         std::fs::create_dir_all(STATE)?;
         save(&Path::new(STATE).join("drive-command.json"), &packet(home, None, now_ns()))?;

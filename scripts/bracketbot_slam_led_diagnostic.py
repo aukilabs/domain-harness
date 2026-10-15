@@ -94,6 +94,16 @@ def pose_sample(record, tracking, now_ns, source_id):
                 pose=dict(translation=position, rotation_xyzw=[v/norm for v in quaternion]))
 
 
+# A peer that exits (a BBOS SLAM restart needs a fresh session; a crashed helper
+# needs respawning) is started again after a growing delay, reset by a long run.
+RESTART_DELAYS_S = (2, 4, 8, 16, 32, 60)
+STEADY_RUN_S = 60
+
+
+def restart_delay(failures):
+    return RESTART_DELAYS_S[min(failures, len(RESTART_DELAYS_S)-1)]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--publish-poses', action='store_true')
@@ -125,19 +135,46 @@ def main():
         pose_reader = None
         last_pose_sent = 0
         last_pose_write = 0
+        peer_started = 0.0
+        restart_at = None
+        failures = 0
+
+        def start_peer():
+            started = subprocess.Popen(args.peer_command, stdout=subprocess.PIPE,
+                                       stdin=subprocess.PIPE if args.publish_poses else subprocess.DEVNULL)
+            os.set_blocking(started.stdout.fileno(), False)
+            if args.publish_poses:
+                os.set_blocking(started.stdin.fileno(), False)
+            return started
+
+        def close_peer(old):
+            for pipe in (old.stdin, old.stdout):
+                if pipe is not None:
+                    try:
+                        pipe.close()
+                    except OSError:
+                        pass
         try:
             if args.peer_command:
-                peer = subprocess.Popen(args.peer_command, stdout=subprocess.PIPE,
-                                        stdin=subprocess.PIPE if args.publish_poses else subprocess.DEVNULL)
-                os.set_blocking(peer.stdout.fileno(), False)
+                peer = start_peer()
+                peer_started = time.monotonic()
                 if args.publish_poses:
-                    os.set_blocking(peer.stdin.fileno(), False)
                     pose_reader = Reader('slam.pose', keeptime=False)
                     pose_reader.__enter__()
             with Reader('slam.health', keeptime=False) as reader:
                 while not stopped:
                     now = time.monotonic()
-                    if peer is not None:
+                    if peer is not None and restart_at is None and peer.poll() is not None:
+                        failures = 0 if now - peer_started >= STEADY_RUN_S else failures + 1
+                        delay = restart_delay(failures)
+                        print(time.strftime('%Y-%m-%dT%H:%M:%S%z'), f'peer exited ({peer.returncode}); restarting in {delay} s', flush=True)
+                        close_peer(peer)
+                        restart_at = now + delay
+                    if restart_at is not None and now >= restart_at:
+                        peer = start_peer()
+                        peer_started, restart_at, pending, last_pose_sent = now, None, b'', 0
+                        print(time.strftime('%Y-%m-%dT%H:%M:%S%z'), 'peer restarted', flush=True)
+                    if peer is not None and restart_at is None:
                         if select.select([peer.stdout], [], [], 0)[0]:
                             chunk = os.read(peer.stdout.fileno(), 4096)
                             pending += chunk
@@ -155,6 +192,8 @@ def main():
                                 raise RuntimeError('Invalid peer status output')
                         if peer.poll() is not None or now - connection_received > 3:
                             connected = False
+                    elif peer is not None:
+                        connected = False
                     if reader.ready():
                         sample = reader.data.copy()
                         stamp = int(sample['timestamp'].astype('int64'))
@@ -170,7 +209,7 @@ def main():
                                 sample = None
                         if sample is None and (current != 'tracking' or now-last_pose_write > .8) and now-last_pose_write > .2:
                             sample = dict(timestamp_ns=time.time_ns(), pose=None, source_id=None)
-                        if sample is not None and peer.poll() is None:
+                        if sample is not None and restart_at is None and peer.poll() is None:
                             try:
                                 # Small atomic pipe writes; never block BBOS polling on networking.
                                 os.write(peer.stdin.fileno(), (json.dumps(sample)+'\n').encode())
@@ -215,7 +254,7 @@ def main():
             if writer is not None:
                 writer.__exit__(None, None, None)
             if peer is not None:
-                if peer.stdin is not None:
+                if peer.stdin is not None and not peer.stdin.closed:
                     peer.stdin.close()
                 if peer.poll() is None:
                     peer.terminate()
@@ -224,7 +263,8 @@ def main():
                     except subprocess.TimeoutExpired:
                         peer.kill()
                         peer.wait()
-                peer.stdout.close()
+                if not peer.stdout.closed:
+                    peer.stdout.close()
 
 
 if __name__ == '__main__':
