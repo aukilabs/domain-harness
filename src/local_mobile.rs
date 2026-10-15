@@ -420,7 +420,7 @@ impl Publisher {
         let voxel_capture = runtime.capture_buffer_with_metadata(crate::voxel_delta::product_id(id), &voxel_output,
             BufferLimits { max_entries: Some(crate::voxel_delta::KEYFRAME_EVERY as usize + 4), max_bytes: Some(MAX_BYTES), target_duration: None },
             |u: &crate::voxel_delta::Update| 64 + u.set.len() * 15 + u.removed.len() * 12,
-            move |_| Ok(Some(CatalogProductMetadata { schema: crate::voxel_delta::METADATA.into(), source_sequence: 0,
+            move |o| Ok(Some(CatalogProductMetadata { schema: crate::voxel_delta::METADATA.into(), source_sequence: o.sequence,
                 value: json!({"keyframe_source_sequence": keyframe_metadata.load(std::sync::atomic::Ordering::Acquire)}) })))?;
         endpoint.export_product_with_encoder(&voxel_capture.product(), crate::voxel_delta::encoder())?;
         let geometry_capture = runtime.capture_buffer(format!("home-geometry:{id}"), &geometry_output,

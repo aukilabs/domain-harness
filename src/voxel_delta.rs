@@ -261,13 +261,15 @@ mod tests {
         let third = home.update("f", 0.1, &[at(0.15)]).unwrap();
         phone.apply(&first).unwrap();
         assert!(phone.apply(&third).is_err());
+        // Keep the map changing until Home's next keyframe comes round.
         let mut keyframe = None;
-        for _ in 0..KEYFRAME_EVERY {
-            if let Some(u) = home.update("f", 0.1, &[at(0.15), at(0.35)]).filter(|u| u.keyframe) { keyframe = Some(u); break; }
-            home.update("f", 0.1, &[at(0.15)]);
+        for step in 0..2 * KEYFRAME_EVERY {
+            let voxels = if step % 2 == 0 { vec![at(0.15), at(0.35)] } else { vec![at(0.15)] };
+            if let Some(u) = home.update("f", 0.1, &voxels).filter(|u| u.keyframe) { keyframe = Some(u); break; }
         }
-        phone.apply(&keyframe.unwrap()).unwrap();
-        assert!(phone.cells.contains_key(&[3, 0, 0]));
+        let keyframe = keyframe.expect("a keyframe within two cycles");
+        phone.apply(&keyframe).unwrap();
+        assert_eq!(phone.cells.len(), keyframe.set.len(), "the keyframe replaces everything the reader held");
     }
 
     #[test]
