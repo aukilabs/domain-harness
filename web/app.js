@@ -1708,14 +1708,24 @@ let chatFocus=null;
 const spotMarker=new THREE.Mesh(new THREE.RingGeometry(.7,1,40),new THREE.MeshBasicMaterial({color:'#8b5cf6',side:THREE.DoubleSide,depthWrite:false,transparent:true,opacity:.9,polygonOffset:true,polygonOffsetFactor:-2}));
 // Drawn under notes and everything else in the scene; it only marks the floor.
 spotMarker.rotation.x=-Math.PI/2;spotMarker.renderOrder=-1;spotMarker.visible=false;scene.add(spotMarker);
-const spotMenu=document.createElement('div');spotMenu.className='spot-menu';spotMenu.hidden=true;spotMenu.setAttribute('role','menu');spotMenu.setAttribute('aria-label','Tools at this spot');document.body.append(spotMenu);
+// A donut centred on the spot: four tools on the diagonals of a glass ring split into wedges, the spot itself
+// showing through the hollow centre. Disabled tools stay focusable (aria-disabled) so their reason is
+// reachable from the keyboard; arrow keys step around the ring (roving tabindex).
+const spotMenu=document.createElement('div');spotMenu.className='spot-menu';spotMenu.hidden=true;spotMenu.setAttribute('role','menu');spotMenu.setAttribute('aria-label','Tools at this spot');spotMenu.tabIndex=-1;document.body.append(spotMenu);
+// Clockwise from the top right: [place, x, y, the side its hint opens on].
+const SPOT_PLACES=[['top-right',1,-1,'right'],['bottom-right',1,1,'right'],['bottom-left',-1,1,'left'],['top-left',-1,-1,'left']],SPOT_RADIUS=50,SPOT_SIZE=152;
 let spot=null,rightStart=null;
-function spotTool(label,iconPath,accent,run,enabled=true){
- const button=document.createElement('button');button.type='button';button.className='agent-tool';button.dataset.accent=accent;button.setAttribute('role','menuitem');button.setAttribute('aria-label',label);button.dataset.tip=label;button.disabled=!enabled;
- const face=document.createElement('span');face.className='rail-face';face.append(icon(iconPath,20));button.append(face);
+function spotTool(label,face,accent,run,disabledReason=''){
+ const button=document.createElement('button');button.type='button';button.className='agent-tool';button.dataset.accent=accent;button.setAttribute('role','menuitem');button.setAttribute('aria-label',label);button.tabIndex=-1;
+ button.dataset.tip=disabledReason?`${label} · ${disabledReason}`:label;if(disabledReason)button.setAttribute('aria-disabled','true');
+ const plate=document.createElement('span');plate.className='rail-face';const glint=document.createElement('span');glint.className='rail-glint';glint.setAttribute('aria-hidden','true');plate.append(typeof face==='string'?icon(face,20):face,glint);button.append(plate);
  // The ring has done its job once a tool starts there; only Ask keeps it, until the question is sent.
- button.onclick=()=>{const at=spot;closeSpotMenu();run(at);};return button;}
-function closeSpotMenu(clearMarker=true){if(spotMenu.hidden)return;spotMenu.hidden=true;clearTimeout(spotTipTimer);spotTip.hidden=true;spot=null;if(clearMarker&&!chatFocus)spotMarker.visible=false;}
+ button.onclick=()=>{if(disabledReason)return;const at=spot;closeSpotMenu();run(at);};return button;}
+function closeSpotMenu(clearMarker=true){if(spotMenu.hidden||spotMenu.dataset.closing)return;clearTimeout(spotTipTimer);spotTip.hidden=true;spot=null;if(clearMarker&&!chatFocus)spotMarker.visible=false;
+ if(matchMedia('(prefers-reduced-motion: reduce)').matches){spotMenu.hidden=true;return;}
+ // A quick scale-down into the spot; the menu ignores the pointer while it goes.
+ spotMenu.dataset.closing='true';spotMenu.getAnimations({subtree:true}).forEach(a=>a.cancel());
+ spotMenu.animate([{opacity:1,transform:'none'},{opacity:0,transform:'scale(.6)'}],{duration:140,easing:'cubic-bezier(.4,0,1,1)'}).finished.then(()=>{if(spotMenu.dataset.closing){delete spotMenu.dataset.closing;spotMenu.hidden=true;}},()=>{});}
 function openSpotMenu(e){
  const r=renderer.domElement.getBoundingClientRect(),ray=new THREE.Raycaster();ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,1-(e.clientY-r.top)/r.height*2),camera);
  const hit=ray.intersectObjects(selectable.filter(o=>{for(let p=o;p;p=p.parent)if(!p.visible)return false;return true;}))[0];
@@ -1724,27 +1734,40 @@ function openSpotMenu(e){
  spot={point,request:{source:'scene',frame:current.frame,origin:ray.ray.origin.toArray(),direction:ray.ray.direction.toArray()}};
  // About 10 px across whatever the distance.
  spotMarker.position.copy(point).add(new THREE.Vector3(0,.01,0));spotMarker.scale.setScalar(camera.position.distanceTo(point)*Math.tan(camera.fov*Math.PI/360)*10/r.height);spotMarker.visible=true;
- const writable=notesWritable(),ask=document.createElement('button');ask.type='button';ask.className='agent-ask';ask.setAttribute('role','menuitem');
- ask.innerHTML='<span class="agent-orb" aria-hidden="true"></span><span class="agent-ask-label">Ask</span>';ask.dataset.tip='Ask about this spot';
- ask.onclick=()=>{chatFocus=spot.point.toArray().map(n=>Math.round(n*1000)/1000);closeSpotMenu(false);agentBar.open();};
- const divider=document.createElement('span');divider.className='agent-divider';divider.setAttribute('aria-hidden','true');
- spotMenu.replaceChildren(
-  spotTool('New note here',icons.note,'amber',at=>beginLabel(at.request),writable&&!newNoteButton.disabled),
-  spotTool('Draw a path',icons.pen,'amber',()=>{if($('crayon').getAttribute('aria-pressed')!=='true')$('crayon').click();},!$('crayon').disabled),
-  spotTool('New volume here','M9 1.5 15.5 5v8L9 16.5 2.5 13V5ZM2.5 5 9 8.5l6.5-3.5M9 8.5v8','violet',at=>semanticVolumes.beginAt(at.point.toArray()),!$('volume-draw').disabled),
-  divider,ask);
- spotMenu.hidden=false;
- const box=spotMenu.getBoundingClientRect(),x=Math.min(Math.max(8,e.clientX-box.width/2),innerWidth-box.width-8),y=e.clientY-box.height-22<8?e.clientY+22:e.clientY-box.height-22;
- spotMenu.style.left=x+'px';spotMenu.style.top=y+'px';
- if(!matchMedia('(prefers-reduced-motion: reduce)').matches)spotMenu.animate([{opacity:0,transform:'translateY(6px) scale(.96)',filter:'blur(4px)'},{opacity:1,transform:'none',filter:'none'}],{duration:260,easing:'cubic-bezier(.3,1.3,.5,1)'});
- spotMenu.querySelector('button:not(:disabled)')?.focus({preventScroll:true});
+ const writable=notesWritable(),orb=document.createElement('span');orb.className='agent-orb';orb.setAttribute('aria-hidden','true');
+ const tools=[
+  spotTool('New note here',icons.note,'amber',at=>beginLabel(at.request),writable&&!newNoteButton.disabled?'':'switch to a Home scene'),
+  spotTool('Draw a path',icons.pen,'amber',()=>{if($('crayon').getAttribute('aria-pressed')!=='true')$('crayon').click();},$('crayon').disabled?'switch to a Home scene':''),
+  spotTool('New volume here','M9 1.5 15.5 5v8L9 16.5 2.5 13V5ZM2.5 5 9 8.5l6.5-3.5M9 8.5v8','violet',at=>semanticVolumes.beginAt(at.point.toArray()),$('volume-draw').disabled?'select a local Home scene':''),
+  spotTool('Ask about this spot',orb,'zinc')];
+ const ask=tools[3];ask.classList.add('spot-ask');ask.onclick=()=>{chatFocus=spot.point.toArray().map(n=>Math.round(n*1000)/1000);closeSpotMenu(false);agentBar.open();};
+ const offset=v=>Math.round(v*SPOT_RADIUS*Math.SQRT1_2);
+ tools.forEach((tool,i)=>{const [place,dx,dy,side]=SPOT_PLACES[i];tool.dataset.place=place;tool.dataset.side=side;tool.style.setProperty('--x',offset(dx)+'px');tool.style.setProperty('--y',offset(dy)+'px');});
+ spotMenu.replaceChildren(...tools);spotMenu.getAnimations({subtree:true}).forEach(a=>a.cancel());delete spotMenu.dataset.closing;spotMenu.hidden=false;
+ // Centred on the cursor, shifted inward near an edge so the whole ring stays on screen.
+ const half=SPOT_SIZE/2,x=Math.min(Math.max(half+8,e.clientX),innerWidth-half-8),y=Math.min(Math.max(half+8,e.clientY),innerHeight-half-8);
+ spotMenu.style.left=x-half+'px';spotMenu.style.top=y-half+'px';
+ // Tools fly out under a resting cursor: hints wait until they have landed.
+ clearTimeout(spotMenu.settle);delete spotMenu.dataset.opening;
+ if(!matchMedia('(prefers-reduced-motion: reduce)').matches){
+  const spring='cubic-bezier(.34,1.56,.64,1)';spotMenu.dataset.opening='true';spotMenu.settle=setTimeout(()=>delete spotMenu.dataset.opening,620);
+  spotMenu.animate([{opacity:0,transform:'scale(.4)'},{opacity:1,transform:'none'}],{duration:380,easing:spring});
+  tools.forEach((tool,i)=>{const [,dx,dy]=SPOT_PLACES[i];tool.animate([{opacity:0,transform:`translate(${-offset(dx)}px,${-offset(dy)}px) scale(.3)`},{opacity:1,transform:'none'}],{duration:420,delay:50+i*45,easing:spring,fill:'backwards'});});
+ }
+ // The menu takes focus, not a tool: nothing looks selected until the pointer or an arrow key picks one.
+ spotMenu.focus({preventScroll:true});
 }
-// Hints come quickly here: the menu is opened to be used at once.
-const spotTip=document.createElement('div');spotTip.className='rail-tooltip tip-top';spotTip.setAttribute('aria-hidden','true');spotTip.hidden=true;document.body.append(spotTip);
+// Hints come quickly here: the menu is opened to be used at once. Each sits outside its tool, away from the ring.
+const spotTip=document.createElement('div');spotTip.className='rail-tooltip spot-tip';spotTip.setAttribute('aria-hidden','true');spotTip.hidden=true;document.body.append(spotTip);
 let spotTipTimer=0;
-spotMenu.addEventListener('pointerover',e=>{const button=e.target.closest('[data-tip]');if(!button)return;clearTimeout(spotTipTimer);
- spotTipTimer=setTimeout(()=>{const box=button.getBoundingClientRect();spotTip.textContent=button.dataset.tip;spotTip.style.left=(box.left+box.width/2)+'px';spotTip.style.top=(box.top-10)+'px';spotTip.hidden=false;},spotTip.hidden?120:0);});
+function showSpotTip(button){
+ spotTip.textContent=button.dataset.tip;spotTip.dataset.side=button.dataset.side;spotTip.hidden=false;
+ const box=button.getBoundingClientRect(),tip=spotTip.getBoundingClientRect(),side=button.dataset.side,gap=10;
+ const x=side==='left'?box.left-gap-tip.width:side==='right'?box.right+gap:box.left+(box.width-tip.width)/2,y=side==='top'?box.top-gap-tip.height:side==='bottom'?box.bottom+gap:box.top+(box.height-tip.height)/2;
+ spotTip.style.left=Math.min(Math.max(8,x),innerWidth-tip.width-8)+'px';spotTip.style.top=Math.min(Math.max(8,y),innerHeight-tip.height-8)+'px';}
+spotMenu.addEventListener('pointerover',e=>{const button=e.target.closest('[data-tip]');if(!button||spotMenu.dataset.opening)return;clearTimeout(spotTipTimer);spotTipTimer=setTimeout(()=>showSpotTip(button),spotTip.hidden?120:0);});
 spotMenu.addEventListener('pointerout',e=>{if(!e.relatedTarget?.closest?.('.spot-menu [data-tip]')){clearTimeout(spotTipTimer);spotTip.hidden=true;}});
+spotMenu.addEventListener('focusin',e=>{if(e.target===spotMenu)return;for(const item of spotMenu.querySelectorAll('[role="menuitem"]'))item.tabIndex=item===e.target?0:-1;if(e.target.matches(':focus-visible')&&!spotMenu.dataset.opening){clearTimeout(spotTipTimer);showSpotTip(e.target);}});
 renderer.domElement.addEventListener('pointerdown',e=>{if(e.button===2)rightStart=[e.clientX,e.clientY];else closeSpotMenu();});
 renderer.domElement.addEventListener('pointerup',e=>{
  if(e.button!==2||!rightStart)return;const moved=Math.hypot(e.clientX-rightStart[0],e.clientY-rightStart[1]);rightStart=null;
@@ -1752,7 +1775,9 @@ renderer.domElement.addEventListener('pointerup',e=>{
  if(moved>4||!current||map2D.isActive()||crayon.isActive()||placingNote)return;openSpotMenu(e);});
 document.addEventListener('pointerdown',e=>{if(!spotMenu.hidden&&!spotMenu.contains(e.target)&&e.target!==renderer.domElement)closeSpotMenu();},true);
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!spotMenu.hidden){e.preventDefault();closeSpotMenu();}});
-spotMenu.addEventListener('keydown',e=>{if(!['ArrowLeft','ArrowRight'].includes(e.key))return;const items=[...spotMenu.querySelectorAll('button:not(:disabled)')],at=items.indexOf(document.activeElement);if(at<0)return;e.preventDefault();items[(at+(e.key==='ArrowRight'?1:-1)+items.length)%items.length].focus();});
+// Right and Down step clockwise, Left and Up back; Home and End go to the first and last tool.
+spotMenu.addEventListener('keydown',e=>{const items=[...spotMenu.querySelectorAll('[role="menuitem"]')],at=items.indexOf(document.activeElement),step={ArrowRight:1,ArrowDown:1,ArrowLeft:-1,ArrowUp:-1}[e.key];
+ const next=step?items[at<0?(step>0?0:items.length-1):(at+step+items.length)%items.length]:e.key==='Home'?items[0]:e.key==='End'?items.at(-1):null;if(!next)return;e.preventDefault();next.focus();});
 function notesWritable(){return !activeMap.startsWith('peer-scene:')&&!activeMap.startsWith('phone:')&&!isRunner()&&activeMap!=='domain';}
 function noteRowTile(note){
  if(!note.details?.thumbnail)return icons.note;
