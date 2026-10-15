@@ -454,7 +454,7 @@ dependencies = [
  "getrandom 0.3.4",
  "hickory-resolver",
  "http",
- "jsonwebtoken 10.4.0",
+ "jsonwebtoken",
  "libc",
  "libp2p",
  "libp2p-identity",
@@ -1151,7 +1151,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 3.0.6",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -2242,21 +2242,6 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "jsonwebtoken"
-version = "9.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a87cc7a48537badeae96744432de36f4be2b4a34a05a5ef32e9dd8a1c169dde"
-dependencies = [
- "base64 0.22.1",
- "js-sys",
- "pem",
- "ring",
- "serde",
- "serde_json",
- "simple_asn1",
 ]
 
 [[package]]
@@ -4441,7 +4426,7 @@ dependencies = [
  "chrono",
  "futures",
  "image",
- "jsonwebtoken 9.3.1",
+ "jsonwebtoken",
  "nalgebra 0.33.3",
  "p256",
  "prost 0.13.5",

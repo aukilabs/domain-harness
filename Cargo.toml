@@ -49,7 +49,7 @@ auki-qr-localizer = { git = "https://github.com/aukilabs/auki-sdk.git", rev = "3
 
 # The explicitly enabled robot simulator uses an isolated loopback authority.
 chrono = "0.4"
-jsonwebtoken = "9"
+jsonwebtoken = "10"
 p256 = { version = "0.13", features = ["pem"] }
 rand = "0.8"
 auki-p2p = { git = "https://github.com/aukilabs/auki-sdk.git", rev = "3342d589605846f5f45c1de5430dd22923555de2" }
