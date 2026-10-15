@@ -74,7 +74,7 @@ if request.get('points'): command+=['--points']
 elif request.get('portals'): command+=['--portals']
 elif request.get('poses'): command+=['--poses']
 if request.get('arm'):
-    for file in ('scripts/diagnostic-arm.py','scripts/bracketbot_point.py','scripts/bracketbot_aim.py'):
+    for file in ('scripts/diagnostic-arm.py','scripts/bracketbot_quest_point.py','scripts/bracketbot_aim.py'):
         if not (root/file).is_file(): raise SystemExit('Missing diagnostic file: '+file)
     command+=['--arm-motion' if request['arm']=='motion' else '--arm-plan']
 if request.get('drive'):
@@ -130,7 +130,7 @@ def main():
             entry.size = len(config)
             archive.addfile(entry, io.BytesIO(config))
             for name in ('bracketbot-python.py', 'bracketbot_slam_led_diagnostic.py', 'diagnostic-camera.py', 'diagnostic-depth.py', 'bracketbot_capture.py',
-                         'diagnostic-arm.py', 'bracketbot_point.py', 'bracketbot_aim.py', 'diagnostic-robot-state.py',
+                         'diagnostic-arm.py', 'bracketbot_quest_point.py', 'bracketbot_aim.py', 'diagnostic-robot-state.py',
                          'drive-bracketbot.py', 'bracketbot_drive.py', 'diagnostic-nav.py', 'play-bracketbot-speech.py'):
                 archive.add(repo/'scripts'/name, arcname='scripts/'+name)
         payload.seek(0)

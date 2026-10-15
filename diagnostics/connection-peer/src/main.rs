@@ -31,6 +31,34 @@ mod poses;
 mod robot_state;
 #[path = "../../../src/qr_decode.rs"]
 mod qr_decode;
+#[path = "../../../src/onboarding.rs"]
+mod onboarding;
+#[path = "../../../src/square_pose.rs"]
+mod square_pose;
+mod onboard;
+/// What the shared onboarding code needs from Home's crate, from this one.
+mod local_mapper {
+    pub use crate::alignment::{compose, inverse};
+}
+mod network {
+    /// The public Home connection profile, as an invitation carries it.
+    #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct HomeConnection {
+        pub schema: String,
+        pub peer_id: String,
+        pub domain_id: String,
+        pub routes: Vec<String>,
+        pub frame: String,
+        pub product_id: String,
+    }
+    impl HomeConnection {
+        pub fn validate_scene_contract(&self) -> anyhow::Result<()> {
+            anyhow::ensure!(!self.frame.is_empty() && !self.product_id.is_empty(), "Home profile names no scene");
+            Ok(())
+        }
+    }
+}
 use anyhow::{Context, Result, ensure};
 use auki_component_protocol::{CatalogResponse, ComponentProtocolClient};
 use auki_sdk::{
@@ -201,19 +229,21 @@ async fn main() -> Result<()> {
     let (pointing_tx, mut pointing_rx) = tokio::sync::mpsc::unbounded_channel::<arm::Reply>();
     let mut pointing_arm: Option<(String, String)> = None;
     let mut pointing_open = true;
-    let _pointer = match &publisher {
-        Some(p) => {
-            known.lock().unwrap().insert(
-                &[&p.contract.from_frame, &p.contract.to_frame],
-                pointer::Transform { contract: p.compact(), product: p.product() },
-            );
-            Some(pointer::Pointer::mount(p, known.clone(), arm, pointing_tx)?)
-        }
-        None => None,
-    };
+    if let Some(p) = &publisher {
+        known.lock().unwrap().insert(
+            &[&p.contract.from_frame, &p.contract.to_frame],
+            pointer::Transform { contract: p.compact(), product: p.product() },
+        );
+    }
     let _navigator = match (&publisher, navigate) {
         (Some(p), true) => Some(nav::Navigator::mount(p, known.clone(), home.peer_id.clone())?),
         _ => None,
+    };
+    // With navigation, Home's point_at may turn the robot to face a target first.
+    let _pointer = match &publisher {
+        Some(p) => Some(pointer::Pointer::mount(p, known.clone(), arm, pointing_tx,
+            _navigator.as_ref().map(|n| n.turner()))?),
+        None => None,
     };
     let mut input = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     let (camera_tx, mut camera_rx) =
@@ -310,6 +340,8 @@ async fn main() -> Result<()> {
     let mut alignment: Option<alignment::Worker> = None;
     let mut alignment_error = String::new();
     let client = ComponentProtocolClient::new(peer.protocols());
+    // A robot that sees a phone's onboarding code places itself from the phone's marker.
+    let onboarding_task = portals.then(|| tokio::spawn(onboard::run(client.clone(), home.clone())));
     let (tx, rx) = tokio::sync::watch::channel(None::<Instant>);
     // An essential helper that exits ends this run; the controller that started
     // it (bracketbot_slam_led_diagnostic.py) restarts it, which respawns them all.
@@ -422,7 +454,8 @@ async fn main() -> Result<()> {
                 if let Some((calibration,t,jpeg))=sample {
                     if camera_publisher.is_none(){
                         match camera::Camera::mount(publisher.as_ref().unwrap(),calibration) {
-                            Ok(camera)=>{let (frame,transform)=camera.extrinsic();known.lock().unwrap().insert(&[&frame],transform);camera_publisher=Some(camera)},
+                            Ok(camera)=>{let (frame,transform)=camera.extrinsic();known.lock().unwrap().insert(&[&frame],transform);
+                                *onboard::CALIBRATION.lock().unwrap()=Some(camera.calibration());camera_publisher=Some(camera)},
                             Err(error)=>{camera_open=false;crate::diagnostic_log!("Camera unavailable: {error}; pose diagnostic continues");continue;}
                         }
                     }
@@ -479,6 +512,7 @@ async fn main() -> Result<()> {
         let _ = task.await;
         drop(helper);
     }
+    if let Some(task) = onboarding_task { task.abort(); }
     drop(alignment);
     if let Some(task) = home_task {
         task.abort();

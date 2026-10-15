@@ -62,14 +62,16 @@ struct Adapter {
     gone: Arc<std::sync::atomic::AtomicBool>,
 }
 impl Adapter {
+    fn send(&self, request: &serde_json::Value) -> Result<()> {
+        let mut stdin = self.stdin.lock().unwrap();
+        let pipe = stdin.as_mut().context("Nav adapter stopped")?;
+        writeln!(pipe, "{request}").and_then(|_| pipe.flush()).context("Nav adapter unavailable")
+    }
     fn ask(&self, request: serde_json::Value, request_id: &str) -> Result<Reply> {
         let (tx, rx) = mpsc::channel();
         self.waiting.lock().unwrap().insert(request_id.into(), tx);
         let result = (|| {
-            let mut stdin = self.stdin.lock().unwrap();
-            let pipe = stdin.as_mut().context("Nav adapter stopped")?;
-            writeln!(pipe, "{request}").and_then(|_| pipe.flush()).context("Nav adapter unavailable")?;
-            drop(stdin);
+            self.send(&request)?;
             let until = Instant::now() + REPLY_TIMEOUT;
             loop {
                 let reply = rx
@@ -157,6 +159,68 @@ impl Goals {
     }
 }
 
+/// A turn in place takes at most this long (nav turns at 0.15 rad/s by default).
+pub const TURN_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// Turns the robot in place for the arm pointer: one nav goal at the robot's
+/// own position whose heading faces a point. Nav reaches a goal inside its
+/// arrival radius by turning on the spot, avoiding obstacles as always.
+#[derive(Clone)]
+pub struct Turner {
+    goals: Arc<Goals>,
+    /// The only peer whose requests may turn the robot, as for `navigate`.
+    pub home: String,
+}
+impl Turner {
+    /// Face `point` in `frame`, resolved like a goal; returns the nav heading
+    /// once nav reports arrival. Stops nav and fails when `stop` is set.
+    pub fn face(&self, request_id: &str, frame: &FrameRef, point: [f64; 3],
+        stop: &std::sync::atomic::AtomicBool) -> Result<f64> {
+        let g = &self.goals;
+        let (robot, target) = {
+            let known = g.known.lock().map_err(|_| anyhow!("Frames unavailable"))?;
+            let now = now_ns();
+            let (nav_from_target, _) = chain(&known, frame, &g.nav, &g.clock, &g.session, now)?;
+            let (nav_from_base, _) = chain(&known, &g.base, &g.nav, &g.clock, &g.session, now)?;
+            (through(&nav_from_base, [0.; 3])?, through(&nav_from_target, point)?)
+        };
+        ensure!((target[0] - robot[0]).hypot(target[1] - robot[1]) > 0.05, "Target is straight above or below the robot");
+        let h = heading([robot[0], robot[1]], [target[0], target[1]]);
+        let (tx, rx) = mpsc::channel();
+        g.adapter.waiting.lock().unwrap().insert(request_id.into(), tx);
+        let result = (|| {
+            g.adapter.send(&serde_json::json!({"op":"go","request_id":request_id,
+                "waypoints":[[robot[0], robot[1], h]]}))?;
+            crate::diagnostic_log!("point_at {request_id}: turning to face the target (nav heading {:.0}°)", h.to_degrees());
+            let until = Instant::now() + TURN_TIMEOUT;
+            loop {
+                let halt = |why: &str| {
+                    let _ = g.stop(&uuid::Uuid::new_v4().to_string());
+                    anyhow!("Turn {why}")
+                };
+                if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Err(halt("cancelled"));
+                }
+                if Instant::now() >= until {
+                    return Err(halt("timed out"));
+                }
+                match rx.recv_timeout(Duration::from_millis(200)) {
+                    Ok(reply) => match reply.phase.as_str() {
+                        "arrived" => return Ok(h),
+                        "failed" | "rejected" | "stopped" =>
+                            anyhow::bail!("Nav could not turn: {}", reply.reason.unwrap_or_else(|| reply.phase.clone())),
+                        _ => {}
+                    },
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => anyhow::bail!("Nav adapter ended"),
+                }
+            }
+        })();
+        g.adapter.waiting.lock().unwrap().remove(request_id);
+        result
+    }
+}
+
 /// Local debug entry, reachable only by someone logged in on the robot: a
 /// `navigate-debug/request.json` naming a frame this robot relates by its ID
 /// and a point in it (or `"op": "stop"`) runs the same goal path as the
@@ -238,6 +302,7 @@ impl Drop for Inbox {
 
 pub struct Navigator {
     adapter: Arc<Adapter>,
+    turner: Turner,
     _inbox: Inbox,
     _component: Component,
     _navigate: Operable<Navigate, NavigateAccepted>,
@@ -250,6 +315,10 @@ impl Navigator {
     /// The nav adapter process has exited.
     pub fn gone(&self) -> bool {
         self.adapter.gone.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    /// Turning in place, for the arm pointer; only `home`'s requests may use it.
+    pub fn turner(&self) -> Turner {
+        self.turner.clone()
     }
     pub fn mount(p: &crate::poses::Publisher, known: Arc<Mutex<Frames>>, home: String) -> Result<Self> {
         let mut child = Command::new("python3")
@@ -386,6 +455,7 @@ impl Navigator {
             clock: p.contract.clock.clone(),
             session: p.contract.session_id.clone(),
         });
+        let turner = Turner { goals: goals.clone(), home: home.clone() };
         let (only_home, also_home) = (home.clone(), home);
         let (go, stop) = (goals.clone(), goals.clone());
         let rejected = |e: anyhow::Error| InvocationError::Rejected(format!("{e:#}"));
@@ -407,7 +477,7 @@ impl Navigator {
         component.expose()?;
         p.endpoint.export_operable(&navigate)?;
         p.endpoint.export_operable(&cancel)?;
-        Ok(Self { adapter, _component: component, _navigate: navigate, _cancel: cancel, _mount: mount, _capture: capture, _inbox: inbox })
+        Ok(Self { adapter, turner, _component: component, _navigate: navigate, _cancel: cancel, _mount: mount, _capture: capture, _inbox: inbox })
     }
 }
 

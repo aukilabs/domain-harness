@@ -29,9 +29,23 @@ argument opts in to the local arm adapter, `scripts/diagnostic-arm.py`:
 - `--arm-plan`: the adapter plans each request against the live arm (measured
   joint limits, current pose, feedback health) and refuses what it cannot
   reach. It opens no arm writer and never moves anything.
-- `--arm-motion`: a planned request then moves. The arm eases to sides HOME,
-  swings straight forward, aims its finger axis at the target, holds 3 s and
-  returns, then releases its writers to BBOS. It refuses to take an arm another
+- `--arm-motion`: a planned request then moves, the way Quest teleop
+  (`bbapps/quest_teleop`) moves the arm: it eases to BBOS's own `cfg.home`,
+  then the hand glides to a pointing pose (fingers on the target) through
+  BBOS's `hybrid_ik`, one solve per tick, speed-capped. It holds 3 s, retraces
+  the same path back to where it started, then releases its writers to BBOS.
+  The whole path is solved and checked (joint limits, joint speed, the clear
+  envelope, the final aim) before anything moves.
+- With `--arm-motion` and `--navigate` together, a `point_at` from the robot's
+  own Home peer whose target is behind the robot, or that the arm refuses as
+  unreachable more than 15° off to a side, first turns the robot in place to
+  face the target: one BBOS nav goal at the robot's own position with that
+  heading, resolved through the published transforms like any goal. Once nav
+  reports arrival the target is resolved again from the fresh base pose and
+  pointed at with the arm on its original side. The Operable answers at once
+  (`executes: true`); a turn or plan that then fails is reported as a
+  `rejected` pointing status. Other callers get the old "turn the robot first"
+  refusal. Nav turns at its `HEADING_OMEGA` (0.15 rad/s by default). It refuses to take an arm another
   writer holds, and yields on stale feedback, tilt, low battery, temperature or
   current margins, or a following error. Clear the space in front of the robot.
 
@@ -91,6 +105,33 @@ a minute or more). The peer exits on purpose when BBOS restarts SLAM (a new
 writer is a new pose session, so it starts a fresh one) and when an essential
 helper (arm, nav or drive) exits, so a restart respawns them all. Camera, depth
 and robot-state helpers degrade without stopping the peer.
+
+## Onboarding from a phone (`--portals`)
+
+The detector hands onboarding codes (an invitation QR, a session's `ONB:`
+marker) to `src/onboard.rs` in-process; they are never published, since an
+invitation may hold a Wi-Fi password. On an invitation for this runner's Home
+(same Home peer and scene frame), the robot:
+
+1. joins the invitation's Wi-Fi if it is not already on it, with
+   `sudo -n nmcli dev wifi connect …` (arguments without a shell; the
+   previous network is kept on failure). This needs a sudoers entry for
+   exactly that command for the runner's user; without it the join fails and
+   says so;
+2. names itself in Home with the alias (Home's `name` operation, bound to
+   this Peer ID);
+3. asks the phone to show its 50 mm marker, and times the phone's capture
+   clock against this one (BBOS stamps camera frames with wall-clock
+   nanoseconds) over 16 authenticated exchanges;
+4. for each sighting of the marker, undistorts its corners with the head
+   camera's fisheye model, solves the 50 mm square, asks the phone where the
+   marker was in the scene at that instant, and hands the alignment worker
+   "where this camera was in the scene";
+5. the alignment worker composes that with the capture-time base pose and the
+   head extrinsic, and publishes the held transform into the scene once five
+   sightings agree within 2 cm / 2° — the same Product a Portal alignment uses.
+
+An invitation for a different Home is refused (restart with that profile).
 
 ## Validation and operation
 

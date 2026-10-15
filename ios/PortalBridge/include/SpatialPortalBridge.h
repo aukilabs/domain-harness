@@ -7,6 +7,7 @@ extern "C" {
 /// The commit the bridge was built from. Owned by the bridge; never freed.
 const char *spatial_bridge_source(void);
 int32_t spatial_mobile_start(const char *profile, const char *email, const char *password, const char *identity_path);
+void spatial_mobile_set_lan_address(const char *ipv4);
 int32_t spatial_mobile_start_app(const char *profile, const char *key, const char *secret, const char *identity_path);
 char *spatial_mobile_poll(void);
 void spatial_mobile_stop(void);

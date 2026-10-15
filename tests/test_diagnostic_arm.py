@@ -12,8 +12,7 @@ spec = importlib.util.spec_from_file_location('diagnostic_arm', scripts / 'diagn
 arm = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(arm)
 from bracketbot_aim import AXLE_HEIGHT_M, aim_error
-from bracketbot_point import HOME
-from test_bracketbot_point import LIMITS, fk
+from test_bracketbot_quest_point import HOME, LIMITS, START, fk, solve
 
 
 def request(**changes):
@@ -38,8 +37,8 @@ class FakeArms:
     """The adapter's Arms with toy kinematics and a resting right arm."""
 
     def __init__(self, pos=None, vel=0.):
-        self.arms = {'arm_right': dict(fk=fk, cfg=None)}
-        self.state = state_record(np.array(HOME['arm_right'] if pos is None else pos), vel)
+        self.arms = {'arm_right': dict(fk=fk, solve=solve, reset=lambda q: None, home=HOME, cfg=None)}
+        self.state = state_record(np.array(START if pos is None else pos), vel)
 
     def healthy(self, name, arm_max_age=.25, temp_limit=arm.TEMP_LIMIT_C):
         self.temp_limit = temp_limit
@@ -70,17 +69,18 @@ class DiagnosticArmTests(unittest.TestCase):
                 arm.parse_request(bad)
 
     def test_plan_from_rest_aims_and_keeps_the_gripper_as_found(self):
-        rest = HOME['arm_right'].copy(); rest[7] = .05
-        start, home, forward, aimed, report = arm.plan(FakeArms(rest), 'arm_right', np.array([2., -.6, 1.2]))
-        self.assertLess(aim_error(fk, aimed, [2., -.6, 1.2])[1], 1.)
-        self.assertTrue(start[7] == home[7] == forward[7] == aimed[7] == .05)
+        rest = START.copy(); rest[7] = .12
+        start, samples, report = arm.plan(FakeArms(rest), 'arm_right', np.array([2., -.6, 1.2]))
+        np.testing.assert_array_equal(start, rest)
+        self.assertLess(aim_error(fk, samples[-1], [2., -.6, 1.2])[1], 1.)
+        self.assertTrue(all(q[7] == .12 for q in samples))
         self.assertLess(report['aim_error_deg'], 1.)
 
     def test_limits_come_from_live_state_or_the_older_file(self):
-        lower, upper = arm.measured_limits(None, 'arm_right', state_record(HOME['arm_right']))
+        lower, upper = arm.measured_limits(None, 'arm_right', state_record(START))
         np.testing.assert_array_equal(lower, LIMITS[0])
         np.testing.assert_array_equal(upper, LIMITS[1])
-        flat = state_record(HOME['arm_right'], limits=(np.zeros(8), np.zeros(8)))
+        flat = state_record(START, limits=(np.zeros(8), np.zeros(8)))
         with self.assertRaisesRegex(RuntimeError, 'no calibrated travel'):
             arm.measured_limits(None, 'arm_right', flat)
         # Older BBOS: no cal fields in the state, ranges.calibration.json beside the daemon.
@@ -90,22 +90,30 @@ class DiagnosticArmTests(unittest.TestCase):
             (root/'arm_right/urdf').mkdir(parents=True)
             cfg = types.SimpleNamespace(urdf_path=str(root/'arm_right/urdf/arm.urdf'))
             with self.assertRaisesRegex(RuntimeError, 'not range-calibrated'):
-                arm.measured_limits(cfg, 'arm_right', dict(pos=HOME['arm_right']))
+                arm.measured_limits(cfg, 'arm_right', dict(pos=START))
             (root/'arm_right/ranges.calibration.json').write_text(json.dumps(
                 dict(cal_min=LIMITS[1].tolist(), cal_max=LIMITS[0].tolist())))
-            lower, _ = arm.measured_limits(cfg, 'arm_right', dict(pos=HOME['arm_right']))
+            lower, _ = arm.measured_limits(cfg, 'arm_right', dict(pos=START))
             np.testing.assert_array_equal(lower, LIMITS[0])
 
     def test_plan_refuses_a_moving_arm_and_an_unreachable_target(self):
         with self.assertRaisesRegex(ValueError, 'moving'):
             arm.plan(FakeArms(vel=.1), 'arm_right', np.array([2., -.6, 1.2]))
         with self.assertRaises(ValueError):
-            arm.plan(FakeArms(), 'arm_right', np.array([.6, 1.5, .73]))
+            arm.plan(FakeArms(), 'arm_right', np.array([-2., -.3, .8]))
 
     def test_plan_keeps_temperature_headroom_for_the_move(self):
         arms = FakeArms()
         arm.plan(arms, 'arm_right', np.array([2., -.6, 1.2]))
         self.assertEqual(arms.temp_limit, arm.TEMP_LIMIT_C-arm.PLAN_TEMP_MARGIN_C)
+
+    def test_following_allows_the_boards_lag_but_not_a_stuck_joint(self):
+        ramp = [np.full(8, v) for v in (0., .05, .1, .15)]
+        # Measured behind the newest command but within the last commands: fine.
+        self.assertEqual(arm.following_error(np.full(8, .02), ramp).max(), 0.)
+        # Short of everything sent recently: that is the error.
+        np.testing.assert_allclose(arm.following_error(np.full(8, -.1), ramp)[:7], .1)
+        self.assertEqual(len(arm.following_error(np.zeros(8), ramp)), 7)
 
     def test_protection_names_the_joint_and_its_reading(self):
         class Config:

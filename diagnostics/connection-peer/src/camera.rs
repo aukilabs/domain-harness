@@ -328,6 +328,11 @@ impl Camera {
                     }
                     let (codes, upscaled) =
                         crate::qr_decode::detect_codes(&mut decoder, &gray, allow)?;
+                    // Onboarding codes go to onboarding in-process only: an
+                    // invitation may hold a Wi-Fi password, so it is never published.
+                    crate::onboard::offer(observation.timestamp_ns, codes.iter()
+                        .filter(|c| crate::onboard::wanted(&c.payload))
+                        .map(|c| (c.payload.clone(), c.corners_px)).collect());
                     let codes = codes
                         .iter()
                         .filter_map(|c| {

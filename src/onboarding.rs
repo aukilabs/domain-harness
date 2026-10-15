@@ -141,14 +141,6 @@ pub fn marker_payload(session: &str) -> String {
     format!("ONB:{}", hex.to_ascii_uppercase())
 }
 
-/// A code's modules, row by row, quiet zone excluded, so the app can draw it
-/// at an exact physical size. Medium error correction.
-pub fn qr_modules(text: &str) -> Result<(usize, Vec<bool>)> {
-    ensure!(text.len() <= MAX_TEXT, "Too much text for a code");
-    let code = qrcode::QrCode::with_error_correction_level(text, qrcode::EcLevel::M)?;
-    Ok((code.width(), code.to_colors().into_iter().map(|c| c == qrcode::Color::Dark).collect()))
-}
-
 /// Scans seen in normal operation, so a QR held in view does not start the
 /// same session again. A failed session is retried only when asked.
 #[derive(Default)]
@@ -598,7 +590,7 @@ mod tests {
             domain_id: "d3e1d6a6-0000-4000-8000-000000000001".into(),
             routes: vec!["/ip4/192.168.1.186/tcp/4001".into()],
             frame: "local-scene:hub:portal-HNY3JGNLRAE".into(),
-            product_id: crate::local_scenes::mobile_product("hub"),
+            product_id: "local-scene:hub:mobile".into(),
         }
     }
     fn host() -> Host {
@@ -635,18 +627,6 @@ mod tests {
         short.wifi = Some(Wifi { ssid: "Lab".into(), password: Some("short".into()), hidden: false });
         assert!(short.encode().is_err());
         assert!(Invitation::parse(&format!("{text}{}", " ".repeat(MAX_TEXT))).is_err());
-    }
-
-    #[test]
-    fn marker_is_short_alphanumeric_and_not_a_portal() {
-        let payload = marker_payload("5f1c2a9e-3b7d-4c11-9a2e-0f6b7d8e9a10");
-        assert_eq!(payload, "ONB:5F1C2A9E3B7D4C11");
-        assert!(crate::local_mapper::portal_code(&payload).is_none());
-        let code = qrcode::QrCode::with_error_correction_level(&payload, qrcode::EcLevel::M).unwrap();
-        assert_eq!(code.width(), 21, "version 1 keeps the modules large");
-        let (width, modules) = qr_modules(&payload).unwrap();
-        assert_eq!((width, modules.len()), (21, 21 * 21));
-        assert!(modules[0] && modules[20] && !modules[21 * 7], "finder corners dark, separator light");
     }
 
     #[test]

@@ -128,14 +128,29 @@ struct HomeProfile: Decodable {
         return value
     }
 
+    /// The local scene this profile selects, matching Home's `frame_scene_id`:
+    /// `local-scene:<id>:epoch-<uuid>`, `local-scene:<id>:origin`, or the older
+    /// `local-scene:<id>:portal-<CODE>`.
     var sceneID: String? {
         guard frame.hasPrefix("local-scene:") else { return nil }
-        let parts = String(frame.dropFirst("local-scene:".count)).components(separatedBy: ":portal-")
-        guard parts.count == 2, (1...64).contains(parts[0].utf8.count),
-              parts[0].utf8.allSatisfy({ (97...122).contains($0) || (48...57).contains($0) || $0 == 45 }),
+        let rest = String(frame.dropFirst("local-scene:".count))
+        if let range = rest.range(of: ":epoch-") {
+            let id = String(rest[..<range.lowerBound])
+            return Self.validSceneID(id) && UUID(uuidString: String(rest[range.upperBound...])) != nil ? id : nil
+        }
+        if rest.hasSuffix(":origin") {
+            let id = String(rest.dropLast(":origin".count))
+            return Self.validSceneID(id) ? id : nil
+        }
+        let parts = rest.components(separatedBy: ":portal-")
+        guard parts.count == 2, Self.validSceneID(parts[0]),
               parts[1].utf8.count == 11,
               parts[1].utf8.allSatisfy({ (65...90).contains($0) || (48...57).contains($0) }) else { return nil }
         return parts[0]
+    }
+    private static func validSceneID(_ id: String) -> Bool {
+        (1...64).contains(id.utf8.count)
+            && id.utf8.allSatisfy({ (97...122).contains($0) || (48...57).contains($0) || $0 == 45 })
     }
     var validSceneContract: Bool {
         if let id = sceneID { return product_id == "local-scene:\(id):mobile" }
@@ -190,6 +205,8 @@ struct RenderScene: Decodable, Equatable {
         let name: String?
         let state: String?
         let pose: Portal.Pose
+        /// A robot's motor health, when it reports it; the app shows its battery.
+        var health: RobotHealth? = nil
     }
     struct Mapping: Decodable, Equatable {
         let robot_pose: RobotPose?
