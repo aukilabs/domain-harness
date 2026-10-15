@@ -108,9 +108,9 @@ pub fn render_scene(s: &CanonicalScene) -> Result<Value> {
     let mut view = json!({"frame":display,"local_map":local,"local_mapping":metadata,"source_frame":s.frame,"source_convention":s.portals.scenegraph.map.frame.convention,"convention":"OpenGL · Y up · meters",
             "voxel_size":s.voxels.definition.grid().voxel_size_m.0,"voxels":voxels,
             "portals":portals.scenegraph.anchors.values().collect::<Vec<_>>(),"objects":objects,"notes":notes.items,"volumes":volumes,
-            "sources":{"galbot":s.voxels.integrated_observations},"integrated_observations":s.voxels.integrated_observations,
+            "sources":{"robot":s.voxels.integrated_observations},"integrated_observations":s.voxels.integrated_observations,
             "sdk_revision":s.sdk_revision,"mode":"Runner-owned scenegraph","demo":false,"synthetic_layout":null,"sensor_positions":{},
-            "authority":"Galbot mapper","authority_peer_id":s.authority_peer_id,"remote_status":null});
+            "authority":"Robot mapper","authority_peer_id":s.authority_peer_id,"remote_status":null});
     crate::mobile_pose::append_labels(&mut view, &s.registries["mobile_presence"]);
     view["landmarks"] = serde_json::to_value(landmarks)?;
     Ok(view)
@@ -259,7 +259,7 @@ async fn monitor_scene(
     loop {
         state.send_modify(|s| {
             s.status = "connecting".into();
-            s.detail = "Connecting to Galbot’s scene publisher".into();
+            s.detail = "Connecting to the robot’s scene publisher".into();
         });
         let work = async {
             let mut subscription = subscribe_scene(peer, config).await?;

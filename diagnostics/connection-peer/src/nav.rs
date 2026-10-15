@@ -5,7 +5,7 @@
 //! nav only through declared transforms. Only the robot's Home peer may call.
 use crate::compact_pose::{Contract, FrameRef, Lifetime, Update};
 use crate::navigate::*;
-use crate::pointer::{Frames, Transform, chain, now_ns, through};
+use crate::pointer::{Frames, Transform, chain, through};
 use anyhow::{Context, Result, anyhow, ensure};
 use auki_components::*;
 use auki_protocols::registry::v3::RegistryKind;
@@ -110,13 +110,14 @@ struct Goals {
     base: FrameRef,
     clock: ClockReference,
     session: String,
+    session_clock: auki_time::SessionClock,
 }
 impl Goals {
     fn go(&self, request: Navigate, caller: &str) -> Result<NavigateAccepted> {
         uuid::Uuid::parse_str(&request.request_id).context("request_id must be a UUID")?;
         let (points, h, resolved_from) = {
             let known = self.known.lock().map_err(|_| anyhow!("Frames unavailable"))?;
-            let now = now_ns();
+            let now = self.session_clock.now_ns();
             let (nav_from_goal, mut used) = chain(&known, &request.frame, &self.nav, &self.clock, &self.session, now)?;
             let (nav_from_base, robot_used) = chain(&known, &self.base, &self.nav, &self.clock, &self.session, now)?;
             used.extend(robot_used);
@@ -179,7 +180,7 @@ impl Turner {
         let g = &self.goals;
         let (robot, target) = {
             let known = g.known.lock().map_err(|_| anyhow!("Frames unavailable"))?;
-            let now = now_ns();
+            let now = g.session_clock.now_ns();
             let (nav_from_target, _) = chain(&known, frame, &g.nav, &g.clock, &g.session, now)?;
             let (nav_from_base, _) = chain(&known, &g.base, &g.nav, &g.clock, &g.session, now)?;
             (through(&nav_from_base, [0.; 3])?, through(&nav_from_target, point)?)
@@ -454,6 +455,7 @@ impl Navigator {
             base: (&p.contract.from_frame).into(),
             clock: p.contract.clock.clone(),
             session: p.contract.session_id.clone(),
+            session_clock: p.session_clock.clone(),
         });
         let turner = Turner { goals: goals.clone(), home: home.clone() };
         let (only_home, also_home) = (home.clone(), home);

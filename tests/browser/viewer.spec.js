@@ -209,18 +209,18 @@ test('live runner pose is independent of scene updates and becomes stale or lost
  let telemetry={status:'live',pose:{translation:[-4.071,.025,3.943],rotation_xyzw:[-.70710678,0,0,.70710678]},detail:'13 reference portals verified'};
  await page.route('**/api/runner-pose',route=>route.fulfill({json:telemetry}));
  await page.goto('/');
- await expect(page.locator('#runner-status')).toHaveText('Galbot · live');
+ await expect(page.locator('#runner-status')).toHaveText('Robot · live');
  await expect(page.locator('#runner-card')).toHaveAttribute('data-position','[-4.071,0.025,3.943]');
  await expect(page.locator('#runner-card')).toHaveAttribute('data-rotation','[-0.70710678,0,0,0.70710678]');
  const observations=await page.locator('#observation-count').textContent();
- await page.getByRole('button',{name:'Focus Galbot'}).click();
+ await page.getByRole('button',{name:'Focus Robot'}).click();
  await expect(page.locator('#selection')).toContainText('Calibrated robot base');
  await page.screenshot({path:'test-results/runner-pose.png'});
  telemetry={...telemetry,pose:{...telemetry.pose,translation:[-3,.1,4]}};
  await expect(page.locator('#runner-card')).toHaveAttribute('data-position','[-3,0.1,4]');
  await expect(page.locator('#observation-count')).toHaveText(observations);
  telemetry={...telemetry,status:'stale'};
- await expect(page.locator('#runner-status')).toHaveText('Galbot · stale');
+ await expect(page.locator('#runner-status')).toHaveText('Robot · stale');
  await expect(page.locator('#runner-position')).toContainText('last known');
  await page.locator('#map-select').selectOption('domain');
  await expect(page.locator('#runner-card')).toHaveAttribute('data-position','[-3,0.1,4]');
@@ -252,11 +252,11 @@ test('scene selector switches owner, geometry and export without merging maps',a
  const robot={...home,integrated_observations:3,voxels:[{center:[-4,.25,4],linear_rgb:[1,0,0]}]};
  await page.route('**/api/scene',r=>r.fulfill({json:home}));
  await page.route('**/api/runner-scene',r=>r.fulfill({json:robot}));
- await page.route('**/api/scene-sources',r=>r.fulfill({json:{status:'connected',detail:'Scenegraph built on Galbot'}}));
+ await page.route('**/api/scene-sources',r=>r.fulfill({json:{status:'connected',detail:'Scenegraph built on Robot'}}));
  await page.goto('/');await expect(page.locator('#observation-count')).toHaveText('20');
  await page.locator('#map-select').selectOption('runner');
- await expect(page.locator('#scene-title')).toHaveText('Galbot scenegraph');
- await expect(page.locator('#map-authority')).toHaveText('Galbot mapper');
+ await expect(page.locator('#scene-title')).toHaveText('Robot scenegraph');
+ await expect(page.locator('#map-authority')).toHaveText('Robot mapper');
  await expect(page.locator('#voxel-count')).toHaveText('1');
  await expect(page.locator('#observation-count')).toHaveText('3');
  await expect(page.locator('.portal-row')).toHaveCount(13);
@@ -268,9 +268,9 @@ test('scene selector switches owner, geometry and export without merging maps',a
  await expect(page.locator('#observation-count')).toHaveText('20');
  await page.route('**/api/runner-scene',r=>r.fulfill({status:422,json:{error:'not available'}}));
  await page.locator('#map-select').selectOption('runner');
- await expect(page.locator('#scene-title')).toHaveText('Waiting for Galbot scenegraph');
+ await expect(page.locator('#scene-title')).toHaveText('Waiting for Robot scenegraph');
  await expect(page.locator('#voxel-count')).toHaveText('—');
- await expect(page.locator('#map-authority')).toHaveText('Galbot mapper');
+ await expect(page.locator('#map-authority')).toHaveText('Robot mapper');
 });
 
 test('sensor preview selects, renders, survives map changes, and closes',async({page})=>{
@@ -296,7 +296,7 @@ test('observed local portals are blue and local telemetry never uses Home pose',
  const errors=[];page.on('pageerror',e=>errors.push(e.message));
  const domain=await (await request.get('/api/domain-scene')).json();
  const portal={...domain.portals[0],pose_in_map:{...domain.portals[0].pose_in_map,translation:[0,0,0],rotation_wxyz:[1,0,0,0]}};
- const local={...domain,frame:'galbot-local:test:opengl',local_map:true,demo:false,portals:[portal],local_mapping:{origin:{portal_code:portal.anchor_id},robot_pose:{pose:{translation:[1,2,3],rotation_xyzw:[0,0,0,1]}}},remote_status:{status:'connected',age_ms:10}};
+ const local={...domain,frame:'bracketbot-local:test:opengl',local_map:true,demo:false,portals:[portal],local_mapping:{origin:{portal_code:portal.anchor_id},robot_pose:{pose:{translation:[1,2,3],rotation_xyzw:[0,0,0,1]}}},remote_status:{status:'connected',age_ms:10}};
  await page.route('**/api/runner-scene',r=>r.fulfill({json:local}));
  await page.route('**/api/runner-pose',r=>r.fulfill({json:{status:'live',pose:{translation:[99,99,99],rotation_xyzw:[0,0,0,1]}}}));
  await page.goto('/');await page.selectOption('#map-select','runner');
@@ -313,13 +313,13 @@ test('observed local portals are blue and local telemetry never uses Home pose',
  expect(errors).toEqual([]);
 });
 
-test('second Galbot has independent geometry, pose and export selection',async({page,request})=>{
+test('second Robot has independent geometry, pose and export selection',async({page,request})=>{
  const domain=await (await request.get('/api/domain-scene')).json();
  const errors=[];page.on('pageerror',e=>errors.push(e.message));
  const base={...domain,demo:false,local_map:true,local_mapping:{robot_pose:{pose:{translation:[1,2,3],rotation_xyzw:[0,0,0,1]}}},remote_status:{status:'connected',age_ms:5}};
  const first={...base,frame:'robot-one',integrated_observations:3};
  const second={...base,frame:'robot-two',integrated_observations:7,local_mapping:{robot_pose:{pose:{translation:[4,5,6],rotation_xyzw:[0,0,0,1]}}}};
- await page.route('**/api/scene-sources',r=>r.fulfill({json:{status:'connected',runners:[{peer_id:'second-peer',name:'Galbot Echo (.87)',status:'connected',primary:false}]}}));
+ await page.route('**/api/scene-sources',r=>r.fulfill({json:{status:'connected',runners:[{peer_id:'second-peer',name:'Robot Echo',status:'connected',primary:false}]}}));
  await page.route('**/api/runner-scene*',r=>r.fulfill({json:new URL(r.request().url()).searchParams.get('peer')==='second-peer'?second:first}));
  await page.goto('/');
  await expect(page.locator('#map-select option[value="runner:second-peer"]')).toHaveCount(1);
@@ -327,7 +327,7 @@ test('second Galbot has independent geometry, pose and export selection',async({
  await expect(page.locator('#observation-count')).toHaveText('7');
  await expect(page.locator('#runner-card')).toHaveAttribute('data-position','[4,5,6]');
  await expect(page.locator('.export')).toHaveAttribute('href','/api/runner-snapshot?peer=second-peer');
- await expect(page.locator('#map-authority')).toHaveText('Galbot Echo (.87) mapper');
+ await expect(page.locator('#map-authority')).toHaveText('Robot Echo mapper');
  await page.selectOption('#map-select','runner');
  await expect(page.locator('#observation-count')).toHaveText('3');
  await expect(page.locator('#runner-card')).toHaveAttribute('data-position','[1,2,3]');
@@ -341,15 +341,15 @@ test('Home renders both calibrated runner poses and keeps stale peers separate',
  const sample=(position,rotation,stamp)=>({status:'aligned',robot_pose:{capture_timestamp_ns:stamp,pose:{translation:position,rotation_xyzw:rotation}}});
  const first=sample([1,0,2],[0,0,0,1],1),second=sample([5,0,4],[0,.70710678,0,.70710678],2);
  const shared={...domain,local_map:true,demo:false,frame:'home-live:test:opengl',local_mapping:{robot_pose:first.robot_pose,runners:{one:first,two:second}},remote_status:{status:'connected',age_ms:5}};
- await page.route('**/api/scene-sources',r=>r.fulfill({json:{runners:[{peer_id:'one',name:'Galbot One',primary:true},{peer_id:'two',name:'Galbot Echo',primary:false}]}}));
+ await page.route('**/api/scene-sources',r=>r.fulfill({json:{runners:[{peer_id:'one',name:'Robot One',primary:true},{peer_id:'two',name:'Robot Echo',primary:false}]}}));
  await page.route('**/api/home-live-scene',r=>r.fulfill({json:shared}));
  await page.goto('/');await page.selectOption('#map-select','home-live');
  const one=page.locator('.runner-pose-row[data-peer="one"]'),two=page.locator('.runner-pose-row[data-peer="two"]');
- await expect(page.locator('#runner-status')).toHaveText('2 Galbots · 2 live');
+ await expect(page.locator('#runner-status')).toHaveText('2 robots · 2 live');
  await expect(one).toHaveAttribute('data-position','[1,0,2]');await expect(two).toHaveAttribute('data-position','[5,0,4]');
  await expect(two).toHaveAttribute('data-rotation','[0,0.70710678,0,0.70710678]');
  expect(await one.locator('strong').evaluate(e=>e.style.color)).not.toBe(await two.locator('strong').evaluate(e=>e.style.color));
- await page.getByRole('button',{name:'Focus Galbot Echo',exact:false}).click();await expect(page.locator('#selection')).toContainText('5.000, 0.000, 4.000');
+ await page.getByRole('button',{name:'Focus Robot Echo',exact:false}).click();await expect(page.locator('#selection')).toContainText('5.000, 0.000, 4.000');
  await page.locator('#runner-layer').uncheck();await expect(one).toHaveAttribute('data-visible','false');await expect(two).toHaveAttribute('data-visible','false');
  await page.locator('#runner-layer').check();await expect(two).toHaveAttribute('data-visible','true');
  // Per-peer metadata changes must update even if map geometry is unchanged.

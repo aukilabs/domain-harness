@@ -195,7 +195,7 @@ This initial depth path carries no RGB colors.
 
 Sharing pauses when alignment/tracking is lost, the switch is disabled, or the
 app disconnects/backgrounds. Home can build a live scene from the phone alone;
-Galbot sensor inputs continue through the same mapper. The older phone presence
+Other peer sensor inputs continue through the same mapper. The older phone presence
 label currently still publishes a pre-composed Home pose; refactoring that
 separate presence path remains deferred as requested.
 

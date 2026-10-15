@@ -489,27 +489,6 @@ fn starts_empty_without_home_portals_or_domain_alignment() -> Result<()> {
     assert!(portal_code("https://evil.example/HRIPLL40GL6").is_none());
     Ok(())
 }
-// A bounded, explicitly supplied sensor recording, never a fabricated fixture.
-#[test]
-#[ignore = "requires SPATIAL_SENSOR_RECORDING from a read-only Galbot capture"]
-fn replay_real_camera_lidar_and_odometry() -> Result<()> {
-    use std::io::BufRead;
-    let runtime = ComponentRuntime::new("robot");
-    let mut map = LocalMap::new(&runtime, "robot", &uuid::Uuid::new_v4().to_string())?;
-    let file = std::fs::File::open(std::env::var("SPATIAL_SENSOR_RECORDING")?)?;
-    for line in std::io::BufReader::new(file).lines() {
-        let line = line?;
-        if let Some(raw) = line.strip_prefix("SENSOR ") {
-            let event: SensorEvent = serde_json::from_str(raw)?;
-            map.accept(event)?;
-        }
-    }
-    println!("{}", map.metadata()["local_mapping"]);
-    assert!(map.origin.is_some());
-    assert!(map.voxels.as_ref().unwrap().integrated_observations > 0);
-    Ok(())
-}
-
 #[test]
 fn decoded_camera_portals_define_map_and_colored_depth_uses_same_transform() -> Result<()> {
     let runtime = ComponentRuntime::new("robot");
@@ -738,7 +717,7 @@ fn decoded_camera_portals_define_map_and_colored_depth_uses_same_transform() -> 
     );
     assert_eq!(map.origin.as_ref().unwrap().odometry_to_local, boot_origin);
     // A moving wrist contributes its full pose before the robot/base transform.
-    // These nontrivial values come from a read-only Galbot TF-chain audit.
+    // Nontrivial rigid transforms exercise composition without robot hardware.
     let arm = Pose {
         translation: [0.2902529876782686, -0.1584286616089709, 0.6351196862868895],
         rotation_xyzw: [
@@ -1373,34 +1352,27 @@ fn bracketbot_stereo_maps_room_depth_and_detects_manual_conference_portal() -> R
 }
 
 #[test]
-fn bracketbot_depth_contract_does_not_relax_galbot_validation() -> Result<()> {
-    let source = sample("HNY3JGNLRAE", 1_000_000_000);
+fn bracketbot_depth_requires_matching_frame_and_calibration() -> Result<()> {
     let mut capture = spatial_home::rgbd::Capture {
-        timestamp_ns: source.timestamp_ns,
-        rgb_timestamp_ns: source.rgb_timestamp_ns,
-        transform_timestamp_ns: source.transform_timestamp_ns,
-        calibration: source.calibration,
+        timestamp_ns: 1_000_000_000,
+        rgb_timestamp_ns: 1_000_000_000,
+        transform_timestamp_ns: 1_000_000_000,
+        calibration: spatial_home::runner_voxels::SensorCalibration {
+            sensor_frame: "unknown-camera".into(),
+            sensor_to_base: identity(),
+            calibration_source: "unverified".into(),
+        },
         hit_points_m: vec![[0., 0., 2.]],
         hit_colors_srgb: vec![[255, 0, 0]],
     };
-    assert!(capture.validate().is_err());
+    assert!(capture.validate_in_frame(spatial_home::rgbd::BRACKETBOT_FRAME).is_err());
     capture.calibration.sensor_frame = spatial_home::rgbd::BRACKETBOT_FRAME.into();
-    assert!(
-        capture
-            .validate_in_frame(spatial_home::rgbd::BRACKETBOT_FRAME)
-            .is_err()
-    );
+    assert!(capture.validate_in_frame(spatial_home::rgbd::BRACKETBOT_FRAME).is_err());
     capture.calibration.calibration_source = format!(
-        "{}{}",
-        spatial_home::rgbd::BRACKETBOT_CALIBRATION,
-        "b".repeat(64)
+        "{}{}", spatial_home::rgbd::BRACKETBOT_CALIBRATION, "b".repeat(64)
     );
     capture.validate_in_frame(spatial_home::rgbd::BRACKETBOT_FRAME)?;
     capture.hit_points_m[0] = [4., 0., 4.];
-    assert!(
-        capture
-            .validate_in_frame(spatial_home::rgbd::BRACKETBOT_FRAME)
-            .is_err()
-    );
+    assert!(capture.validate_in_frame(spatial_home::rgbd::BRACKETBOT_FRAME).is_err());
     Ok(())
 }

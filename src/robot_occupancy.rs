@@ -93,6 +93,7 @@ pub async fn monitor(
     futures::future::join_all(targets.iter().map(|target| async move {
         let work = async {
             let client = ComponentProtocolClient::new(peer.protocols());
+            let mut retained = crate::observation_history::Fetched::default();
             let expected: auki_sdk::PeerId = target.peer_id.parse()?;
             let mut product = None;
             let mut catalog_at = Instant::now() - Duration::from_secs(20);
@@ -128,6 +129,9 @@ pub async fn monitor(
                 let bracket = auki_registry::FrameRegistryEntry::in_convention(&target.peer_id,"robot.base",auki_registry::CoordinateConvention::ZUpRightForward);
                 if observation.payload.validate().is_err() || frame.validate().is_err()
                     || (frame.definition != ros && frame.definition != bracket) {continue;}
+                // The short display queue below is not the source history.
+                // Preserve consumed observations in the common SDK buffer too.
+                retained.retain(&batch)?;
                 let mut cache=cache.lock().unwrap();
                 // Re-reading the same observation must not refresh its expiry.
                 let history=cache.entry(target.peer_id.clone()).or_default();

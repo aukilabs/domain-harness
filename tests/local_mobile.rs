@@ -7,7 +7,7 @@ use spatial_home::{
 };
 use std::{
     sync::Arc,
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tokio_util::sync::CancellationToken;
 fn from_rigid(p: &auki_scenegraph::RigidTransform) -> auki_odometry::Pose {
@@ -54,14 +54,11 @@ async fn selected_scene_notes_volumes_and_paths_are_isolated() -> Result<()> {
         let store = spatial_home::model::Store::open_canonical(dir.path().join("xmart.journal"))?;
         let mut server = ScenePublisher::mount(&pair.a)?;
         server.publish(&store.built)?;
-        let owner = pair.a.peer_id().to_string();
-        let clock = spatial_home::model::clock_entry(&owner, &uuid::Uuid::new_v4().to_string());
         let mut publishers = spatial_home::local_mobile::Publisher::mount_all(
             &server.runtime,
             &server.endpoint,
             scenes.clone(),
-            clock.clone(),
-            Instant::now(),
+            server.session_clock.clone(),
         )?;
         let home = scenes.connection("humanoid-hub-conference", HomeConnection::direct(&pair.a))?;
         let nacs = scenes.connection("nacs", HomeConnection::direct(&pair.a))?;
@@ -275,8 +272,7 @@ async fn selected_scene_notes_volumes_and_paths_are_isolated() -> Result<()> {
             &server.runtime,
             &server.endpoint,
             restarted,
-            clock,
-            Instant::now(),
+            server.session_clock.clone(),
         )?;
         let restored = read(&pair.b, &home).await?;
         assert_eq!(restored["render"]["semantic_volumes"]["items"][0], serde_json::to_value(&browser_edit)?);
@@ -302,14 +298,11 @@ async fn phone_reports_a_new_portal_into_the_selected_scene() -> Result<()> {
         let store = spatial_home::model::Store::open_canonical(dir.path().join("xmart.journal"))?;
         let mut server = ScenePublisher::mount(&pair.a)?;
         server.publish(&store.built)?;
-        let owner = pair.a.peer_id().to_string();
-        let clock = spatial_home::model::clock_entry(&owner, &uuid::Uuid::new_v4().to_string());
         let mut publishers = spatial_home::local_mobile::Publisher::mount_all(
             &server.runtime,
             &server.endpoint,
             scenes.clone(),
-            clock.clone(),
-            Instant::now(),
+            server.session_clock.clone(),
         )?;
         let home = scenes.connection("humanoid-hub-conference", HomeConnection::direct(&pair.a))?;
         let nacs = scenes.connection("nacs", HomeConnection::direct(&pair.a))?;

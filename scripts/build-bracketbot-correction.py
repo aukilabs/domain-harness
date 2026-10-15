@@ -90,9 +90,6 @@ def patch_sources(source, repo):
     if '"correction_pending"' not in text:
         files[name]=once(text,'"map_correction" | "trajectory_correction"','"map_correction" | "trajectory_correction" | "correction_pending"')
     name='src/robot_runner.rs'; text=read(name)
-    old='Some(value) => crate::robot_presence::from_live(&value, if hardware == Hardware::Bracketbot { "Bracketbot 0184" } else { "Galbot" })?,'
-    if old in text:
-        text=once(text,old,'Some(value) => {\n                        let name=std::env::var("SPATIAL_ROBOT_NAME").unwrap_or_else(|_|if hardware==Hardware::Bracketbot { "Bracketbot 0184".into() } else { "Galbot".into() });\n                        crate::robot_presence::from_live(&value,&name)?\n                    },')
     if '"control_state_path"' not in text:
         text=once(text,'        "session_id":session,','        "session_id":session,\n        "control_state_path":path.with_file_name("robot-control.json"),')
     if 'SensorEvent::TrajectoryCorrection' not in text:

@@ -65,17 +65,22 @@ fn close(actual: [f64; 3], expected: [f64; 3]) {
 
 #[test]
 fn glyph_forward_follows_declared_body_axes_through_yaw() -> Result<()> {
-    for (family, yaw, forward) in [
-        (BRACKETBOT_FAMILY, 0., [0., 0., -1.]),
+    for (ros_body, yaw, forward) in [
+        (false, 0., [0., 0., -1.]),
         (
-            BRACKETBOT_FAMILY,
+            false,
             std::f64::consts::FRAC_PI_2,
             [-1., 0., 0.],
         ),
-        ("galbot-local", 0., [1., 0., 0.]),
-        ("galbot-local", std::f64::consts::FRAC_PI_2, [0., 0., -1.]),
+        (true, 0., [1., 0., 0.]),
+        (true, std::f64::consts::FRAC_PI_2, [0., 0., -1.]),
     ] {
-        let scene = scene(family, yaw)?;
+        let mut scene = scene(BRACKETBOT_FAMILY, yaw)?;
+        if ros_body {
+            // Verify the declared axes independently of the runner family.
+            scene.registries["local_mapping"]["robot_pose"]["from_frame"] =
+                json!(FrameRegistryEntry::ros_body("robot", "robot.base"));
+        }
         let before = serde_json::to_value(&scene)?;
         let view = render_scene(&scene)?;
         let robot = &view["local_mapping"]["robot_pose"];

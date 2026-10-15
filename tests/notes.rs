@@ -180,8 +180,8 @@ fn robot_labels_follow_each_base_in_home_up_and_expire() -> Result<()> {
         &format!("home-live:{}:zup", uuid::Uuid::new_v4()),
     )?;
     let names = BTreeMap::from([
-        ("a".into(), "Galbot 95".into()),
-        ("b".into(), "Galbot Echo".into()),
+        ("a".into(), "Robot One".into()),
+        ("b".into(), "Robot Echo".into()),
     ]);
     let mut runners = json!({});
     for peer in ["a", "b"] {
@@ -191,7 +191,7 @@ fn robot_labels_follow_each_base_in_home_up_and_expire() -> Result<()> {
     let mut labels = notes::RobotLabels::default();
     let initial = labels.update(&runners, &names, &frame, now)?;
     assert_eq!(initial.len(), 2);
-    assert_eq!(initial[0].text, "Galbot 95");
+    assert_eq!(initial[0].text, "Robot One");
     assert_eq!(initial[0].position, [2., 3., 2.]);
     assert_eq!(initial[1].position, [-2., 1., 2.2]);
     let mut envelope = notes::Notes::empty(&frame.frame_id);
@@ -207,7 +207,7 @@ fn robot_labels_follow_each_base_in_home_up_and_expire() -> Result<()> {
     assert_eq!(moved[0].position, [4., 3., 2.]);
     let expired = labels.update(&runners, &names, &frame, now + Duration::from_secs(4))?;
     assert_eq!(expired.len(), 1);
-    assert_eq!(expired[0].text, "Galbot 95");
+    assert_eq!(expired[0].text, "Robot One");
     runners["a"]["status"] = json!("disconnected");
     assert!(
         labels

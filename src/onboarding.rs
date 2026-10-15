@@ -18,7 +18,7 @@
 //! its acceptance test; it never pairs an observation with the latest pose.
 use crate::local_mapper::{compose, inverse};
 use anyhow::{Result, bail, ensure};
-use auki_components::ContractType;
+use auki_components::{ClockReference, ContractType};
 use auki_odometry::Pose;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -234,56 +234,7 @@ impl Display {
 // ---------------------------------------------------------------------------
 // Clocks
 
-/// One exchange: the joiner's clock when it asked and when the answer came,
-/// and the host's clock as it answered.
-#[derive(Clone, Copy, Debug)]
-pub struct ClockProbe {
-    pub sent_ns: u64,
-    pub remote_ns: u64,
-    pub received_ns: u64,
-}
-/// `remote = local + offset`, good to `± uncertainty`.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ClockMapping {
-    pub offset_ns: i64,
-    pub uncertainty_ns: u64,
-}
-impl ClockMapping {
-    /// The tightest exchange bounds the offset best: the host answered
-    /// somewhere between ask and answer.
-    pub fn measure(probes: &[ClockProbe]) -> Result<Self> {
-        ensure!(probes.len() >= 3, "Too few clock exchanges");
-        let best = probes.iter()
-            .filter(|p| p.received_ns >= p.sent_ns && p.remote_ns > 0)
-            .min_by_key(|p| p.received_ns - p.sent_ns)
-            .ok_or_else(|| anyhow::anyhow!("No usable clock exchange"))?;
-        let rtt = best.received_ns - best.sent_ns;
-        let middle = best.sent_ns + rtt / 2;
-        Ok(Self { offset_ns: best.remote_ns as i64 - middle as i64, uncertainty_ns: rtt / 2 + 1 })
-    }
-    pub fn remote(&self, local_ns: u64) -> Result<u64> {
-        let t = local_ns as i128 + self.offset_ns as i128;
-        ensure!(t > 0 && t < u64::MAX as i128, "Clock mapping out of range");
-        Ok(t as u64)
-    }
-}
-
-/// The phone's AR capture clock now: the clock ARKit stamps frames with
-/// (seconds since boot, not counting sleep).
-pub fn capture_clock_now() -> Result<u64> {
-    #[cfg(target_vendor = "apple")]
-    {
-        unsafe extern "C" {
-            fn clock_gettime_nsec_np(clock: u32) -> u64;
-        }
-        const CLOCK_UPTIME_RAW: u32 = 8;
-        let now = unsafe { clock_gettime_nsec_np(CLOCK_UPTIME_RAW) };
-        ensure!(now > 0, "Capture clock unavailable");
-        Ok(now)
-    }
-    #[cfg(not(target_vendor = "apple"))]
-    bail!("This device's capture clock is not known to onboarding yet")
-}
+pub use crate::clock_sync::{Mapping as ClockMapping, Probe as ClockProbe};
 
 // ---------------------------------------------------------------------------
 // The host's pose history
@@ -293,12 +244,13 @@ pub fn capture_clock_now() -> Result<u64> {
 /// extrapolates and never answers with the nearest pose.
 pub struct PoseHistory {
     session: String,
+    clock: Option<ClockReference>,
     samples: VecDeque<(u64, Pose)>,
 }
 const HISTORY: usize = 600;
 const MAX_GAP_NS: u64 = 120_000_000;
 impl Default for PoseHistory {
-    fn default() -> Self { Self { session: String::new(), samples: VecDeque::with_capacity(HISTORY) } }
+    fn default() -> Self { Self { session: String::new(), clock: None, samples: VecDeque::with_capacity(HISTORY) } }
 }
 #[derive(Clone, Debug)]
 pub struct PoseAt {
@@ -309,9 +261,10 @@ pub struct PoseAt {
 }
 impl PoseHistory {
     pub fn session(&self) -> &str { &self.session }
-    pub fn push(&mut self, session: &str, timestamp_ns: u64, pose: Pose) {
-        if self.session != session {
+    pub fn push(&mut self, clock: &ClockReference, session: &str, timestamp_ns: u64, pose: Pose) {
+        if self.session != session || self.clock.as_ref() != Some(clock) {
             self.session = session.into();
+            self.clock = Some(clock.clone());
             self.samples.clear();
         }
         if self.samples.back().is_some_and(|(t, _)| *t >= timestamp_ns) {
@@ -321,12 +274,15 @@ impl PoseHistory {
             self.samples.pop_front();
         }
         self.samples.push_back((timestamp_ns, pose));
+        let cutoff = timestamp_ns.saturating_sub(10_000_000_000);
+        while self.samples.front().is_some_and(|(at, _)| *at < cutoff) { self.samples.pop_front(); }
     }
     /// Tracking was lost: nothing before now may be bridged to what follows.
     pub fn lose(&mut self) {
         self.samples.clear();
     }
-    pub fn at(&self, session: &str, t: u64) -> Result<PoseAt> {
+    pub fn at(&self, clock: &ClockReference, session: &str, t: u64) -> Result<PoseAt> {
+        ensure!(self.clock.as_ref() == Some(clock), "Pose history is for another SDK clock");
         ensure!(self.session == session, "Pose history is for another AR session");
         let after = self.samples.iter().position(|(at, _)| *at >= t)
             .ok_or_else(|| anyhow::anyhow!("No pose yet at that time"))?;
@@ -335,6 +291,7 @@ impl PoseHistory {
             let neighbour = after.checked_sub(1).or((after + 1 < self.samples.len()).then_some(after + 1))
                 .ok_or_else(|| anyhow::anyhow!("Too few poses"))?;
             let (tn, pn) = &self.samples[neighbour];
+            ensure!(t1.abs_diff(*tn) <= MAX_GAP_NS, "Poses around that time are too far apart");
             let (speed, turn) = motion(p1, pn, t1.abs_diff(*tn));
             return Ok(PoseAt { pose: p1.clone(), speed_m_s: speed, turn_rad_s: turn });
         }
@@ -344,6 +301,20 @@ impl PoseHistory {
         let f = (t - t0) as f64 / (t1 - t0) as f64;
         let (speed, turn) = motion(p0, p1, t1 - t0);
         Ok(PoseAt { pose: interpolate(p0, p1, f), speed_m_s: speed, turn_rad_s: turn })
+    }
+    pub fn interval(&self, clock: &ClockReference, session: &str, t: u64, uncertainty: u64) -> Result<PoseAt> {
+        ensure!(uncertainty <= MAX_CLOCK_UNCERTAINTY_NS, "Clock uncertainty exceeds onboarding limit");
+        let low = t.checked_sub(uncertainty).ok_or_else(|| anyhow::anyhow!("Capture interval predates clock"))?;
+        let high = t.checked_add(uncertainty).ok_or_else(|| anyhow::anyhow!("Capture interval overflow"))?;
+        let mut at = self.at(clock, session, t)?;
+        for timestamp in [low, high].into_iter().chain(self.samples.iter().map(|s| s.0).filter(|s| *s > low && *s < high)) {
+            let sample = self.at(clock, session, timestamp)?;
+            at.speed_m_s = at.speed_m_s.max(sample.speed_m_s);
+            at.turn_rad_s = at.turn_rad_s.max(sample.turn_rad_s);
+        }
+        ensure!(!self.samples.iter().zip(self.samples.iter().skip(1)).any(|(a,b)| a.0 < high && b.0 > low && b.0 - a.0 > MAX_GAP_NS),
+            "Capture interval crosses a pose gap");
+        Ok(at)
     }
 }
 fn motion(a: &Pose, b: &Pose, dt_ns: u64) -> (f64, f64) {
@@ -394,34 +365,48 @@ pub struct Marker {
     /// The scene frame `marker_at` answers in: Home's peer and frame ID.
     pub scene_peer_id: String,
     pub scene_frame: String,
+    pub clock: ClockReference,
 }
-impl ContractType for Marker { const DATATYPE: &'static str = "spatial-harness.onboarding-marker/v1"; }
+impl ContractType for Marker { const DATATYPE: &'static str = "spatial-harness.onboarding-marker/v2"; }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ReadClock { pub session: String }
-impl ContractType for ReadClock { const DATATYPE: &'static str = "spatial-harness.onboarding-read-clock/v1"; }
-/// The host's AR capture clock as it answered.
+pub struct ReadClock { pub session: String, pub clock: ClockReference }
+impl ContractType for ReadClock { const DATATYPE: &'static str = "spatial-harness.onboarding-read-clock/v2"; }
+/// The host's registered SDK session clock as it answered, not native uptime.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ClockReading { pub session: String, pub now_ns: u64 }
-impl ContractType for ClockReading { const DATATYPE: &'static str = "spatial-harness.onboarding-clock/v1"; }
+pub struct ClockReading { pub session: String, pub clock: ClockReference, pub now_ns: u64 }
+impl ContractType for ClockReading { const DATATYPE: &'static str = "spatial-harness.onboarding-clock/v2"; }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AskMarker { pub session: String, pub timestamp_ns: u64 }
-impl ContractType for AskMarker { const DATATYPE: &'static str = "spatial-harness.onboarding-ask-marker/v1"; }
+pub struct AskMarker { pub session: String, pub clock: ClockReference, pub timestamp_ns: u64, pub uncertainty_ns: u64 }
+impl ContractType for AskMarker { const DATATYPE: &'static str = "spatial-harness.onboarding-ask-marker/v2"; }
 /// The marker in the scene at the host's capture time asked for.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MarkerAt {
     pub session: String,
+    pub clock: ClockReference,
     pub timestamp_ns: u64,
+    pub uncertainty_ns: u64,
     pub marker_to_scene: Pose,
     pub speed_m_s: f64,
     pub turn_rad_s: f64,
 }
-impl ContractType for MarkerAt { const DATATYPE: &'static str = "spatial-harness.onboarding-marker-at/v1"; }
+impl ContractType for MarkerAt { const DATATYPE: &'static str = "spatial-harness.onboarding-marker-at/v2"; }
+impl MarkerAt {
+    pub fn validate_answer(&self, request: &AskMarker) -> Result<()> {
+        ensure!(self.session == request.session && self.clock == request.clock
+            && self.timestamp_ns == request.timestamp_ns && self.uncertainty_ns == request.uncertainty_ns,
+            "The host answered for another clock, session, or capture interval");
+        ensure!(self.speed_m_s.is_finite() && self.speed_m_s >= 0. && self.turn_rad_s.is_finite() && self.turn_rad_s >= 0.,
+            "Invalid marker motion");
+        self.marker_to_scene.validate().map_err(|e| anyhow::anyhow!("Invalid marker pose: {e:?}"))?;
+        Ok(())
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -666,37 +651,73 @@ mod tests {
 
     #[test]
     fn clock_offset_comes_from_the_tightest_exchange() {
+        let registered = |peer| crate::clock_sync::RegisteredClock {
+            contract: crate::capture_time::Contract::local(auki_time::SessionClock::new(peer, "session", "capture").registry_entry()),
+            anchor: (0, crate::capture_time::Sample {offset_ns: 1_700_000_000_000_000_000, uncertainty_ns: 0}),
+        };
+        let a = registered("joiner");
+        let mut b = registered("host");
+        b.anchor.1.offset_ns += 5_000_000_000; // Host wall clock is five seconds ahead.
         let probes = [
             ClockProbe { sent_ns: 1_000, remote_ns: 51_000_000, received_ns: 40_001_000 },
             ClockProbe { sent_ns: 100_000_000, remote_ns: 150_000_000 + 5_000_000, received_ns: 110_000_000 },
             ClockProbe { sent_ns: 200_000_000, remote_ns: 300_000_000, received_ns: 260_000_000 },
         ];
-        let mapping = ClockMapping::measure(&probes).unwrap();
+        let mapping = ClockMapping::measure(&a, &b, &probes).unwrap();
         assert_eq!(mapping.offset_ns, 50_000_000);
-        assert_eq!(mapping.uncertainty_ns, 5_000_001);
-        assert_eq!(mapping.remote(1_000_000_000).unwrap(), 1_050_000_000);
-        assert!(ClockMapping::measure(&probes[..2]).is_err());
+        assert_eq!(mapping.uncertainty_ns, 5_000_001 + 2 * crate::capture_time::CAPTURE_CONVERSION_BUDGET_NS);
+        assert_eq!(mapping.remote(&a.reference(), 1_000_000_000).unwrap(), 1_050_000_000);
+        assert!(ClockMapping::measure(&a, &b, &probes[..2]).is_err());
+        assert!(mapping.remote(&b.reference(), 1_000_000_000).is_err());
+        assert!(mapping.remote(&a.reference(), 200_000_000_000).is_err());
+    }
+
+    #[test]
+    fn marker_answer_must_match_the_exact_capture_request() {
+        let clock = crate::clock_sync::reference(&auki_time::SessionClock::new("host", "session", "capture").registry_entry());
+        let request = AskMarker { session: "pairing".into(), clock: clock.clone(), timestamp_ns: 100, uncertainty_ns: 10 };
+        let answer = MarkerAt { session: request.session.clone(), clock, timestamp_ns: 100, uncertainty_ns: 10,
+            marker_to_scene: pose([0.;3], [0.,0.,0.,1.]), speed_m_s: 0., turn_rad_s: 0. };
+        assert!(answer.validate_answer(&request).is_ok());
+        let mut wrong = answer.clone(); wrong.session = "other".into();
+        assert!(wrong.validate_answer(&request).is_err());
+        let mut wrong = answer.clone(); wrong.clock.hash = "other".into();
+        assert!(wrong.validate_answer(&request).is_err());
+        let mut wrong = answer.clone(); wrong.timestamp_ns += 1;
+        assert!(wrong.validate_answer(&request).is_err());
+        let mut wrong = answer.clone(); wrong.uncertainty_ns += 1;
+        assert!(wrong.validate_answer(&request).is_err());
+        let mut wrong = answer; wrong.speed_m_s = f64::NAN;
+        assert!(wrong.validate_answer(&request).is_err());
+        assert!(serde_json::from_value::<ReadClock>(serde_json::json!({"session":"pairing"})).is_err());
     }
 
     #[test]
     fn history_interpolates_between_neighbours_and_never_beyond() {
         let mut history = PoseHistory::default();
         let s = "session";
-        history.push(s, 1_000_000_000, pose([0., 0., 0.], [0., 0., 0., 1.]));
+        let clock = crate::clock_sync::reference(&auki_time::SessionClock::new("peer", s, "capture").registry_entry());
+        history.push(&clock, s, 1_000_000_000, pose([0., 0., 0.], [0., 0., 0., 1.]));
         let half = std::f64::consts::FRAC_1_SQRT_2;
-        history.push(s, 1_100_000_000, pose([1., 0., 0.], [0., half, 0., half]));
-        let mid = history.at(s, 1_050_000_000).unwrap();
+        history.push(&clock, s, 1_100_000_000, pose([1., 0., 0.], [0., half, 0., half]));
+        let mid = history.at(&clock, s, 1_050_000_000).unwrap();
         assert!((mid.pose.translation[0] - 0.5).abs() < 1e-9);
         let (_, angle) = distance(&mid.pose, &pose([0., 0., 0.], [0., 0., 0., 1.]));
         assert!((angle - std::f64::consts::FRAC_PI_4).abs() < 1e-9);
         assert!((mid.speed_m_s - 10.).abs() < 1e-9);
-        assert!(history.at(s, 1_200_000_000).is_err(), "no extrapolation");
-        assert!(history.at(s, 900_000_000).is_err());
-        assert!(history.at("other", 1_050_000_000).is_err());
-        history.push(s, 1_400_000_000, pose([1., 0., 0.], [0., 0., 0., 1.]));
-        assert!(history.at(s, 1_300_000_000).is_err(), "gap too long");
+        assert!(history.at(&clock, s, 1_200_000_000).is_err(), "no extrapolation");
+        assert!(history.at(&clock, s, 900_000_000).is_err());
+        assert!(history.at(&clock, "other", 1_050_000_000).is_err());
+        assert!(history.interval(&clock, s, 1_050_000_000, 60_000_000).is_err(), "whole uncertainty interval must be retained");
+        history.push(&clock, s, 1_400_000_000, pose([1., 0., 0.], [0., 0., 0., 1.]));
+        assert!(history.at(&clock, s, 1_300_000_000).is_err(), "gap too long");
         history.lose();
-        assert!(history.at(s, 1_050_000_000).is_err());
+        assert!(history.at(&clock, s, 1_050_000_000).is_err());
+        let next = crate::clock_sync::reference(&auki_time::SessionClock::new("peer", "next", "capture").registry_entry());
+        history.push(&next, s, 1_000_000_000, pose([0.;3], [0.,0.,0.,1.]));
+        history.push(&next, s, 1_100_000_000, pose([0.;3], [0.,0.,0.,1.]));
+        assert!(history.at(&clock, s, 1_050_000_000).is_err(), "new SDK session cannot reuse old clock history");
+        assert!(history.at(&next, s, 1_050_000_000).is_ok());
     }
 
     #[test]

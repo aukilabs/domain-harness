@@ -9,7 +9,7 @@ use spatial_home::{
 };
 use std::{
     sync::Arc,
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -56,14 +56,11 @@ async fn a_large_colored_map_keeps_accepting_captures() -> Result<()> {
         let store = spatial_home::model::Store::open_canonical(dir.path().join("xmart.journal"))?;
         let mut server = ScenePublisher::mount(&pair.a)?;
         server.publish(&store.built)?;
-        let owner = pair.a.peer_id().to_string();
-        let clock = spatial_home::model::clock_entry(&owner, &uuid::Uuid::new_v4().to_string());
         let mut publishers = spatial_home::local_mobile::Publisher::mount_all(
             &server.runtime,
             &server.endpoint,
             scenes.clone(),
-            clock.clone(),
-            Instant::now(),
+            server.session_clock.clone(),
         )?;
         let home = scenes.connection("humanoid-hub-conference", HomeConnection::direct(&pair.a))?;
         let reference = scenes.snapshot("humanoid-hub-conference")?;

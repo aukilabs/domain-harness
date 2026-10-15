@@ -425,7 +425,7 @@ impl Store {
         self.built.view.integrated_observations = saved.voxels.integrated_observations;
 
         self.built.view.sources = std::collections::BTreeMap::from([(
-            "galbot".into(),
+            "robot".into(),
             saved.voxels.integrated_observations as usize,
         )]);
         let mut frames = vec![saved.voxels.definition.frame.clone()];
@@ -701,7 +701,7 @@ pub fn place(
     }))
 }
 
-/// Shared capture-time placement for physical Galbot sensors. Until deskew is
+/// Shared capture-time placement for physical robot sensors. Until deskew is
 /// available, require a stationary base around the measurement timestamp.
 pub fn capture_pose(
     odom: &auki_components::RetainedProduct<auki_odometry::PoseUpdate>,

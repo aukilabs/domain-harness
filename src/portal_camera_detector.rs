@@ -1,5 +1,5 @@
 //! Pixel-only Portal detection, independent of tracking and camera calibration.
-use crate::{galbot_sensors::SensorSpec, landmarks::*};
+use crate::{runner_sensors::SensorSpec, landmarks::*};
 use auki_component_protocol::ComponentProtocolEndpoint;
 use auki_components::*;
 use std::sync::{Arc, Condvar, Mutex};

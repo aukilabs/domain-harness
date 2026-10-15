@@ -2,6 +2,34 @@ import Foundation
 import UIKit
 import Security
 import SpatialPortalBridge
+import CoreMedia
+import Darwin
+
+/// Sample the native host clock, not a frame's earlier capture time.
+/// AR uses CLOCK_UPTIME_RAW, measured against the SDK session clock. Google's
+/// GARFrame reference documents ARFrame timestamps as seconds since boot:
+/// https://developers.google.com/ar/reference/ios/interface/GARFrame
+/// Apple documents CLOCK_UPTIME_RAW as the nanosecond mach_absolute_time API:
+/// https://developer.apple.com/documentation/kernel/1462446-mach_absolute_time
+/// ReplayKit is sampled separately in Core Media host time. On-device epoch
+/// and suspend/resume validation remains required; Rust rejects unmatched
+/// captures and clock steps rather than assigning an arrival timestamp.
+func sampleNativeCaptureClock(_ kind: UInt32) {
+    let generation = spatial_mobile_clock_generation()
+    guard generation > 0 else { return }
+    let before = spatial_mobile_session_now(generation)
+    guard before > 0 else { return }
+    let native: UInt64
+    if kind == 0 {
+        native = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+    } else {
+        let host = CMTimeConvertScale(CMClockGetTime(CMClockGetHostTimeClock()), timescale: 1_000_000_000, method: .default)
+        guard host.isNumeric, host.value >= 0 else { return }
+        native = UInt64(host.value)
+    }
+    let after = spatial_mobile_session_now(generation)
+    _ = spatial_mobile_clock_sample(generation, kind, before, native, after)
+}
 
 @MainActor
 final class HomePeer: ObservableObject {

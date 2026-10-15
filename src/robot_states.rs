@@ -49,6 +49,8 @@ struct Entry {
     owner: String,
     kind: Kind,
     body: BodyContract,
+    product: ProductReference,
+    output: OutputReference,
     latest: Option<Latest>,
 }
 
@@ -80,6 +82,7 @@ impl RobotStates {
                 "base_frame":e.body.base_frame,"session_id":e.body.session_id,"joints":null,"health":null,"pointing":null}));
             if let Some(l) = &e.latest {
                 robot[e.kind.name()] = json!({"sequence":l.sequence,"timestamp_ns":l.timestamp_ns.to_string(),
+                    "clock":e.body.clock,"source":{"product":e.product,"output":e.output},
                     "age_ms":l.received.elapsed().as_millis() as u64,"state":l.payload});
             }
         }
@@ -105,10 +108,11 @@ impl RobotStates {
                     let reference = p.manifest.reference();
                     let key = serde_json::to_string(&reference).unwrap();
                     let fingerprint = serde_json::to_string(&(&body, &row["catalog_route"])).unwrap();
-                    let sensor = crate::sensor_preview::Sensor {id:key.clone(), reference, peer,
+                    let sensor = crate::sensor_preview::Sensor {id:key.clone(), reference:reference.clone(), peer,
                         route:row["catalog_route"].as_str().and_then(|s| s.parse().ok()),
                         datatype:kind.name().into(), metadata:p.metadata.clone(), ar_supported:false};
-                    desired.insert(key, (fingerprint, sensor, Entry {owner:owner.clone(), kind, body, latest:None}));
+                    desired.insert(key, (fingerprint, sensor, Entry {owner:owner.clone(), kind, body,
+                        product:reference,output:p.manifest.producer.clone(),latest:None}));
                 }
             }
             let removed = workers.iter().filter(|(key, (fingerprint, _, _))|
@@ -144,12 +148,15 @@ impl RobotStates {
         }
     }
 
-    fn accept(&self, key: &str, sequence: u64, timestamp_ns: u64, payload: Value) {
+    fn accept(&self, key: &str, output: &OutputReference, clock: &ClockReference,
+        sequence: u64, timestamp_ns: u64, payload: Value) -> Result<()> {
         if let Some(e) = self.0.lock().unwrap().get_mut(key) {
+            ensure!(output == &e.output && clock == &e.body.clock, "Robot state source or capture clock changed");
             // Never step backwards within one Output.
-            if e.latest.as_ref().is_some_and(|l| sequence <= l.sequence) { return; }
+            if e.latest.as_ref().is_some_and(|l| sequence <= l.sequence) { return Ok(()); }
             e.latest = Some(Latest {sequence, timestamp_ns, payload, received: Instant::now()});
         }
+        Ok(())
     }
 }
 
@@ -160,7 +167,7 @@ where T: ContractType + serde::de::DeserializeOwned + serde::Serialize + Send + 
     loop {
         let run = async {
             // Only fresh state: a retained tail would look live after the robot stopped.
-            let limits = BufferLimits {max_entries:Some(4), max_bytes:Some(256 * 1024), target_duration:None};
+            let limits = crate::observation_history::structured();
             let size = |v: &T| serde_json::to_vec(v).map_or(usize::MAX, |b| b.len());
             let connect = async {
                 if let Some(route) = &sensor.route {
@@ -178,7 +185,8 @@ where T: ContractType + serde::de::DeserializeOwned + serde::Serialize + Send + 
                         Some(RemoteObservationEvent::Observation(o)) => {
                             ensure!(o.output == sub.product().producer.reference(), "Robot state provenance mismatch");
                             validate(&o.payload)?;
-                            states.accept(&key, o.sequence, o.timestamp_ns, serde_json::to_value(&*o.payload)?);
+                            states.accept(&key, &o.output, &sub.product().producer.clock,
+                                o.sequence, o.timestamp_ns, serde_json::to_value(&*o.payload)?)?;
                             backoff = 1;
                         }
                         Some(RemoteObservationEvent::Gap(_)) => {}
@@ -198,5 +206,55 @@ where T: ContractType + serde::de::DeserializeOwned + serde::Serialize + Send + 
             _ = tokio::time::sleep(Duration::from_secs(backoff)) => {},
         }
         backoff = (backoff * 2).min(10);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry() -> Entry {
+        Entry {owner:"robot".into(),kind:Kind::Health,
+            body:BodyContract {model:"bracketbot".into(),session_id:"session".into(),
+                base_frame:crate::compact_pose::FrameRef {peer_id:"robot".into(),id:"base".into(),hash:"frame-hash".into()},
+                clock:ClockReference {peer_id:"robot".into(),id:"session-clock".into(),hash:"clock-hash".into()}},
+            product:ProductReference {peer_id:"robot".into(),product_id:"health".into(),manifest_hash:"product-hash".into()},
+            output:OutputReference {peer_id:"robot".into(),component_id:"body".into(),component_manifest_hash:"component-hash".into(),
+                slot:"health".into(),output_id:"health-output".into(),manifest_hash:"output-hash".into()},latest:None}
+    }
+
+    #[test]
+    fn view_preserves_each_states_capture_clock_and_source() {
+        let e = entry();
+        let clock = e.body.clock.clone();
+        let output = e.output.clone();
+        let product = e.product.clone();
+        let states = RobotStates::default();
+        states.0.lock().unwrap().insert("health".into(), e);
+        let capture = 9_007_199_254_740_993;
+        states.accept("health", &output, &clock, 7, capture, json!({"battery":{"percent":50}})).unwrap();
+        let view = states.view();
+        let health = &view["robots"][0]["health"];
+        assert_eq!(health["timestamp_ns"], capture.to_string(), "capture nanoseconds stay exact for browser readers");
+        assert_eq!(health["clock"], json!(clock));
+        assert_eq!(health["sequence"], 7);
+        assert_eq!(health["source"], json!({"product":product,"output":output}));
+        states.accept("health", &output, &clock, 6, capture + 1, json!({})).unwrap();
+        assert_eq!(states.view()["robots"][0]["health"]["sequence"], 7);
+    }
+
+    #[test]
+    fn changed_clock_or_source_cannot_be_relabelled_as_the_declared_state() {
+        let e = entry();
+        let mut clock = e.body.clock.clone();
+        let mut output = e.output.clone();
+        let states = RobotStates::default();
+        states.0.lock().unwrap().insert("health".into(), e);
+        clock.hash = "other-clock-definition".into();
+        assert!(states.accept("health", &output, &clock, 7, 10, json!({})).is_err());
+        clock.hash = "clock-hash".into();
+        output.manifest_hash = "other-output".into();
+        assert!(states.accept("health", &output, &clock, 7, 10, json!({})).is_err());
+        assert!(states.view()["robots"][0]["health"].is_null());
     }
 }

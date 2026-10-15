@@ -47,6 +47,10 @@ async fn catalogs_are_real_refreshable_and_not_retained_as_live_peers() -> Resul
         let view = spatial_home::sensor_preview::read_scene(&client, &scenes[0]).await?;
         assert_eq!(view["authority_peer_id"], pair.b.peer_id().to_string());
         assert_eq!(view["product_id"], "phone-local-voxels");
+        assert_eq!(view["source_observation"]["clock"], serde_json::json!(
+            spatial_home::model::clock_ref(&products.timing.clock.registry_entry())));
+        assert_eq!(view["source_observation"]["timestamp_ns"], "1");
+        assert_eq!(view["source_observation"]["product"]["product_id"], "phone-local-voxels");
         assert!(view["frame"].as_str().unwrap().ends_with(&session));
         assert_eq!(view["voxels"].as_array().unwrap().len(), 1);
         let next_session = uuid::Uuid::new_v4().to_string();

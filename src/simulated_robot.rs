@@ -1,6 +1,5 @@
 //! Opt-in, isolated robot/Home peers. No DDS login, discovery, real robot or map writes.
 use crate::{
-    model,
     network::{HomeConnection, subscribe_scene_product},
     occupancy_fixture::FakeVoxelSource,
     occupancy_mapper::{Config, OccupancyMapper, OccupancyScene},
@@ -169,14 +168,18 @@ async fn connected(
     } else {
         None
     };
+    let clock = auki_time::SessionClock::new(&owner, uuid::Uuid::new_v4().to_string(), "session");
+    let (mut time, registry) = clock_product(robot, &runtime, &endpoint, &clock)?;
+    let clock2 = auki_time::SessionClock::new(&owner2, uuid::Uuid::new_v4().to_string(), "session");
+    let mut time2 = if let (Some(robot2), Some(endpoint2)) = (robot2, &endpoint2) {
+        Some(clock_product(robot2, &runtime2, endpoint2, &clock2)?)
+    } else { None };
     let result = async {
-        let clock = model::clock_entry(&owner, &uuid::Uuid::new_v4().to_string());
-        let mut source = FakeVoxelSource::new(&runtime, &owner, clock)?;
+        let mut source = FakeVoxelSource::new(&runtime, &owner, clock.clone())?;
         endpoint.export_product(&source.product())?;
         source.publish_patrol(0.)?;
         let mut source2 = if let Some(endpoint2) = &endpoint2 {
-        let clock2 = model::clock_entry(&owner2, &uuid::Uuid::new_v4().to_string());
-        let mut source2 = FakeVoxelSource::new(&runtime2, &owner2, clock2)?;
+        let mut source2 = FakeVoxelSource::new(&runtime2, &owner2, clock2.clone())?;
         endpoint2.export_product(&source2.product())?;
         source2.publish_patrol_phase(0., std::f64::consts::PI)?;
         Some(source2) } else { None };
@@ -187,11 +190,12 @@ async fn connected(
             let home_owner = home.peer_id().to_string();
             let home_runtime = ComponentRuntime::new(home_owner.as_str());
             let home_endpoint = ComponentProtocolEndpoint::mount(home.protocols(), home_runtime.clone())?;
+            let home_clock = auki_time::SessionClock::new(&home_owner, uuid::Uuid::new_v4().to_string(), "session");
+            let (mut home_time, home_registry) = clock_product(home, &home_runtime, &home_endpoint, &home_clock)?;
             let work = async {
-                let clock = model::clock_entry(&home_owner, &uuid::Uuid::new_v4().to_string());
-                let mut combined = FakeVoxelSource::new(&home_runtime, &home_owner, clock.clone())?;
+                let mut combined = FakeVoxelSource::new(&home_runtime, &home_owner, home_clock.clone())?;
                 home_endpoint.export_product(&combined.product())?;
-                let mut mapper = OccupancyMapper::mount(&home_runtime, &home_endpoint, &combined.product(), &home_owner, model::clock_ref(&clock), Config::new(0.))?;
+                let mut mapper = OccupancyMapper::mount(&home_runtime, &home_endpoint, &combined.product(), &home_owner, home_clock.clone(), Config::new(0.))?;
                 let client = auki_component_protocol::ComponentProtocolClient::new(home.protocols());
                 let mut devices = Vec::new();
                 // Enumerate the SDK's actual known peers, using the same inventory as live Home.
@@ -236,6 +240,11 @@ async fn connected(
                             if let Some(source2) = &mut source2 {source2.publish_patrol_phase(seconds, std::f64::consts::PI)?;}
                         },
                         _ = tick.tick() => {
+                            home_time.sample(&crate::capture_time::SessionUtcClock(home_clock.clone()))?;
+                            if !disconnected {
+                                time.sample(&crate::capture_time::SessionUtcClock(clock.clone()))?;
+                                if let Some((time2, _)) = &mut time2 { time2.sample(&crate::capture_time::SessionUtcClock(clock2.clone()))?; }
+                            }
                             if mapper.tick()? {
                                 let snapshot = mapper.state().clone();
                                 state.send_modify(|s| {
@@ -289,12 +298,16 @@ async fn connected(
                 }
                 Ok::<_, anyhow::Error>(())
             }.await;
-            work.and(home_endpoint.close().await.map_err(Into::into))
+            let close_registry = home_registry.close().await;
+            let close_endpoint = home_endpoint.close().await;
+            work.and(close_registry.map_err(Into::into)).and(close_endpoint.map_err(Into::into))
             }.await;
             work.and(if let Some(mut input2) = input2 {input2.close().await.map_err(Into::into)} else {Ok(())})
         }.await;
         work.and(input.close().await.map_err(Into::into))
     }.await;
+    let registry_result = registry.close().await;
+    let registry2_result = if let Some((_, registry)) = time2 { registry.close().await } else { Ok(()) };
     let a = endpoint.close().await;
     let b = if let Some(endpoint2) = endpoint2 {
         endpoint2.close().await
@@ -304,7 +317,17 @@ async fn connected(
     for robot in robots.into_iter().flatten() {
         robot.shutdown().await?;
     }
-    result.and(a.map_err(Into::into)).and(b.map_err(Into::into))
+    result.and(registry_result.map_err(Into::into)).and(registry2_result.map_err(Into::into)).and(a.map_err(Into::into)).and(b.map_err(Into::into))
+}
+
+fn clock_product(peer: &AukiPeer, runtime: &ComponentRuntime, endpoint: &ComponentProtocolEndpoint,
+    clock: &auki_time::SessionClock) -> Result<(crate::capture_time::Publisher, auki_protocols::registry::RegistryEndpoint)> {
+    let mut publisher = crate::capture_time::Publisher::mount(runtime, endpoint, clock.registry_entry())?;
+    publisher.sample(&crate::capture_time::SessionUtcClock(clock.clone()))?;
+    let definitions = crate::product_registry::Definitions::default();
+    crate::product_registry::clock(&definitions, &clock.registry_entry())?;
+    crate::product_registry::clock(&definitions, &publisher.contract.to_clock)?;
+    Ok((publisher, crate::product_registry::mount(peer, runtime.clone(), definitions)?))
 }
 
 /// Display adapter only. The exported Product retains its typed grid/cell schema.

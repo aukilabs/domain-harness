@@ -288,7 +288,7 @@ async fn follow_packed(client: ComponentProtocolClient, sensor: crate::sensor_pr
     loop {
         *product.lock().unwrap() = None;
         let run = async {
-            let limits = BufferLimits {max_entries:Some(1), max_bytes:Some(128 * 1024), target_duration:None};
+            let limits = crate::observation_history::depth();
             let connect = async {
                 let size = |points: &PackedPoints| points.as_bytes().len();
                 client.subscribe_product_exact_with_decoder(sensor.peer, sensor.route.clone().unwrap(), sensor.reference.clone(),

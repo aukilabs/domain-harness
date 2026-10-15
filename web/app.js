@@ -254,7 +254,7 @@ function isSimulation(map=activeMap){return map==='sim-voxels'||map==='sim-occup
 function runnerUrl(endpoint,map=activeMap){return endpoint+(map.startsWith('runner:')?'?peer='+encodeURIComponent(map.slice(7)):'');}
 const runnerNames=new Map(),peerNames=new Map();
 let primaryRunnerPeer=null;
-function runnerDisplay(){return activeMap.startsWith('peer-scene:')?'Robot':isSimulation()?'Simulated robot':runnerNames.get(activeMap)||'Galbot';}
+function runnerDisplay(){return activeMap.startsWith('peer-scene:')?'Robot':isSimulation()?'Simulated robot':runnerNames.get(activeMap)||'Robot';}
 async function runnerCatalog(){
  try {
   const data=await api('/api/scene-sources');
@@ -756,7 +756,7 @@ function updateMapUI(){
  const domain=activeMap==='domain';$('domain-info').hidden=false;$('demo-controls').hidden=domain||!current?.demo;
  $('scene-title').textContent=activeMap==='home-live'?'Home live map':isRunner()?runnerDisplay()+' scenegraph':domain?'13 stored domain portals':(current?.demo?'Domain + synthetic scene':current?.environment_name||'Canonical portals');
  $('map-authority').textContent=isRunner()?runnerDisplay()+' mapper':'Home Server';
- $('scene-badge').textContent=activeMap==='home-live'?'HOME LIVE MAP':isRunner()?'GALBOT SCENEGRAPH':domain?'STORED DOMAIN POSES':(current?.demo?'DOMAIN + SYNTHETIC SCENE':'CANONICAL PORTALS');
+ $('scene-badge').textContent=activeMap==='home-live'?'HOME LIVE MAP':isRunner()?'ROBOT SCENEGRAPH':domain?'STORED DOMAIN POSES':(current?.demo?'DOMAIN + SYNTHETIC SCENE':'CANONICAL PORTALS');
  $('scene-note').textContent=activeMap==='home-live'?'Mapped on Home from both robots’ raw observations, each calibrated through known portal poses. UCOF1J40N7O defines the fixed origin.':local?(current?.display_alignment?`Display aligned via ${current.display_alignment.portal}. Robot data remains in its native frame.`:current?.frame_transform?.validity==='stale'?'Robot-native map. Portal transform is stale; waiting for a fresh tracked observation.':'Robot-native map. Waiting for a shared portal transform from its Catalog.'):domain?'Supplied poses and sizes. Grid is a coordinate reference, not a measured floor.':(current?.demo?'Illustrative L-shaped workspace fitted to the marker footprint. Furniture and walls are synthetic; stored portal poses are unchanged.':'Canonical portal record with supplied poses and sizes. Live geometry is in Home live map.');
  document.querySelector('.flow').hidden=domain||!current?.demo;
  $('demo-view').hidden=!current?.demo;
@@ -827,7 +827,7 @@ function updateMapUI(){
   grid.position.x=0;grid.position.z=0;
  }
 }
-$('map-select').onchange=async()=>{activeMap=$('map-select').value;selectedPathId=null;crayon.select(null);selectedNoteId=null;selectedSpatialNode=null;lastScene=null;current=null;crayon.update();hideRobots();selectable=[];Object.values(groups).forEach(clear);$('selection').hidden=true;updateMapUI();$('scene-title').textContent='Loading selected scene…';$('voxel-count').textContent='—';$('observation-count').textContent='—';$('object-count').textContent='—';try{await refresh();}catch{$('scene-title').textContent=isRunner()?'Waiting for Galbot scenegraph':'Scene unavailable';}};
+$('map-select').onchange=async()=>{activeMap=$('map-select').value;selectedPathId=null;crayon.select(null);selectedNoteId=null;selectedSpatialNode=null;lastScene=null;current=null;crayon.update();hideRobots();selectable=[];Object.values(groups).forEach(clear);$('selection').hidden=true;updateMapUI();$('scene-title').textContent='Loading selected scene…';$('voxel-count').textContent='—';$('observation-count').textContent='—';$('object-count').textContent='—';try{await refresh();}catch{$('scene-title').textContent=isRunner()?'Waiting for Robot scenegraph':'Scene unavailable';}};
 // Closing the card returns focus to whatever opened it (a row), so keyboard users aren't dropped on the page.
 function closeCard(){const back=cardReturn;clearSelection();back?.()?.focus?.();}
 // Snapshot links: the legacy pair and the account menu's pair always point at the selected scene.
@@ -1100,16 +1100,16 @@ function showHomeRunners(local,fresh){
   const sample=value.robot_pose,stamp=sample?JSON.stringify([sample.clock,sample.capture_timestamp_ns]):null;
   let update=poseUpdates.get(key);if(!update||update.stamp!==stamp){update={stamp,at:now};poseUpdates.set(key,update);}
   const pose=robotGlyphPose(sample);
-  return {key,name:peerNames.get(key)||'Galbot '+key.slice(-6),state:{pose,status:pose?(fresh&&value.status==='aligned'&&now-update.at<10000?'live':'stale'):'waiting'}};
+  return {key,name:peerNames.get(key)||'Robot '+key.slice(-6),state:{pose,status:pose?(fresh&&value.status==='aligned'&&now-update.at<10000?'live':'stale'):'waiting'}};
  });
  renderRunners(entries);
  $('runner-list').hidden=false;
  const live=entries.filter(e=>e.state.status==='live').length;
- $('runner-status').textContent=`${entries.length} Galbots · ${live} live`;
+ $('runner-status').textContent=`${entries.length} robots · ${live} live`;
  $('runner-card').dataset.status=live===entries.length?'live':'stale';
  $('runner-card').dataset.position='';$('runner-card').dataset.rotation='';
  $('runner-position').textContent='Poses in Home’s shared portal frame';$('runner-detail').textContent='Each arrow points forward.';
- $('focus-runner').textContent='Focus all Galbots ↗';$('focus-runner').disabled=!entries.some(e=>e.state.pose);
+ $('focus-runner').textContent='Focus all robots ↗';$('focus-runner').disabled=!entries.some(e=>e.state.pose);
  $('focus-runner').onclick=()=>{
   const points=entries.filter(e=>e.state.pose).map(e=>new THREE.Vector3(...e.state.pose.translation));if(!points.length)return;
   const box=new THREE.Box3().setFromPoints(points),center=box.getCenter(new THREE.Vector3()),size=box.getSize(new THREE.Vector3());
@@ -1158,7 +1158,7 @@ async function refreshRunner(){
 runnerCatalog();refreshRunner();setInterval(refreshRunner,250);
 setInterval(()=>{if(!(isLocalScene()||isRunner()||isSimulation()||activeMap==='home-live'||activeMap.startsWith('peer-scene:'))&&lastRunnerReply&&performance.now()-lastRunnerReply>3000&&runner?.status==='live')showRunner({...runner,status:'stale',detail:'Home telemetry has stopped updating'});},500);
 
-async function refreshMapping(){if(isLocalScene()||activeMap.startsWith('phone:')||activeMap.startsWith('peer-scene:'))return;if(activeMap==='home-live'){try{const state=await api('/api/home-live-status');$('mapping-status').textContent='Home map · '+state.status;$('mapping-detail').textContent=state.detail||'';}catch{$('mapping-status').textContent='Home map · unavailable';}return;}if(activeMap==='demo'&&!current?.demo){$('mapping-status').textContent='Canonical reference';$('mapping-detail').textContent='13 supplied portal poses and physical sizes';return;}if(isRunner()){try{const sources=await api('/api/scene-sources');const remote=activeMap.startsWith('runner:')?(sources.runners||[]).find(r=>r.peer_id===activeMap.slice(7))||{status:'unavailable'}:sources;$('mapping-status').textContent='Galbot map · '+remote.status;$('mapping-detail').textContent=remote.detail||'';}catch{$('mapping-status').textContent='Galbot map · unavailable';}return;}try{const mapping=await api('/api/mapping');$('mapping-status').textContent='LiDAR · '+mapping.status+(mapping.rgbd?' / RGB-D · '+mapping.rgbd.status:'');$('mapping-detail').textContent=(mapping.detail||'')+(mapping.rgbd?' · '+(mapping.rgbd.detail||`${mapping.rgbd.colored_voxels} colored voxels`):'');$('mapping-card').dataset.status=mapping.status;}catch{$('mapping-status').textContent='LiDAR · unavailable';}}
+async function refreshMapping(){if(isLocalScene()||activeMap.startsWith('phone:')||activeMap.startsWith('peer-scene:'))return;if(activeMap==='home-live'){try{const state=await api('/api/home-live-status');$('mapping-status').textContent='Home map · '+state.status;$('mapping-detail').textContent=state.detail||'';}catch{$('mapping-status').textContent='Home map · unavailable';}return;}if(activeMap==='demo'&&!current?.demo){$('mapping-status').textContent='Canonical reference';$('mapping-detail').textContent='13 supplied portal poses and physical sizes';return;}if(isRunner()){try{const sources=await api('/api/scene-sources');const remote=activeMap.startsWith('runner:')?(sources.runners||[]).find(r=>r.peer_id===activeMap.slice(7))||{status:'unavailable'}:sources;$('mapping-status').textContent='Robot map · '+remote.status;$('mapping-detail').textContent=remote.detail||'';}catch{$('mapping-status').textContent='Robot map · unavailable';}return;}try{const mapping=await api('/api/mapping');$('mapping-status').textContent='LiDAR · '+mapping.status+(mapping.rgbd?' / RGB-D · '+mapping.rgbd.status:'');$('mapping-detail').textContent=(mapping.detail||'')+(mapping.rgbd?' · '+(mapping.rgbd.detail||`${mapping.rgbd.colored_voxels} colored voxels`):'');$('mapping-card').dataset.status=mapping.status;}catch{$('mapping-status').textContent='LiDAR · unavailable';}}
 
 // Prefer live topography; canonical scenes can also use the reference floor.
 let placement=null,placementGeneration=0,displayedCamera=null,placingNote=false,placementTarget=null;
@@ -1837,6 +1837,7 @@ const opacityLabel=document.createElement('label');opacityLabel.className='layer
 {
  const body=panelBodies.settings,load=key=>{try{return JSON.parse(localStorage.getItem(key));}catch{return null;}},save=(key,value)=>{try{localStorage.setItem(key,JSON.stringify(value));}catch{}};
  const layers=document.createElement('section');layers.setAttribute('aria-label','Layers');layers.append(sectionHeader('Layers'));
+ // Compatibility-only normalization for legacy layer labels; not a device-specific feature.
  const renames={'Text notes':'Notes','Live Galbot poses':'Robot poses'},saved=load('settings-layers')||{};
  for(const [name,selectors] of [['Annotations',['[data-layer="notes"]']],['Scene',['[data-layer="voxels"]','[data-layer="portals"]','[data-layer="objects"]']],['Live',['#runner-layer','#robot-volume-layer','[data-layer="rays"]']]]){
   const heading=document.createElement('h4');heading.className='settings-group';heading.textContent=name;layers.append(heading);

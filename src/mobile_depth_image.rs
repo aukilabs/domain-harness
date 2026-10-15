@@ -141,9 +141,7 @@ pub fn decoder() -> Result<auki_component_protocol::ObservationDecoder<DepthImag
     Ok(auki_component_protocol::ObservationDecoder::new(ENCODING, |bytes| unpack(bytes).map_err(|e| e.to_string()))?)
 }
 
-fn spec(owner: &str, session: &str) -> ConfiguredObservableSpec {
-    let mut clock = crate::model::clock_entry(owner, session);
-    clock.clock_id = "arkit-capture".into();
+fn spec(owner: &str, session: &str, clock: &auki_components::clock::ClockRegistryEntry) -> ConfiguredObservableSpec {
     ConfiguredObservableSpec::new(
         "frames",
         format!("depth-image:{session}:{}", uuid::Uuid::new_v4()),
@@ -199,6 +197,7 @@ fn capture(
 }
 
 pub struct Publisher {
+    clock: auki_components::clock::ClockRegistryEntry,
     session: String,
     output: ConfiguredObservable<DepthImage>,
     capture: Option<BufferProductCapture<DepthImage>>,
@@ -219,11 +218,13 @@ impl Publisher {
                 access: vec![ObservationAccess::FollowNew],
                 exposure: Exposure::Cluster,
             }))?;
-        let output = component.configured_observable(spec(runtime.peer_id(), session))?;
+        let clock = products.timing.clock.registry_entry();
+        let output = component.configured_observable(spec(runtime.peer_id(), session, &clock))?;
         component.expose()?;
         let capture = capture(&runtime, &output)?;
         products.endpoint.export_product_with_encoder(&capture.product(), encoder()?)?;
         Ok(Self {
+            clock,
             session: session.into(),
             output,
             capture: Some(capture),
@@ -246,7 +247,7 @@ impl Publisher {
             .component
             .replace_configured_observable(
                 &self.output,
-                spec(self.runtime.peer_id(), session),
+                spec(self.runtime.peer_id(), session, &self.clock),
                 timestamp_ns,
             )?
             .replacement;

@@ -183,6 +183,8 @@ pub struct MobileState {
 pub const DIRECT_PORT: u16 = 4330;
 
 pub struct MobileClient {
+    timing: Mutex<Option<Arc<crate::mobile_products::CaptureTiming>>>,
+    capture_clock_reset: CancellationToken,
     camera: tokio::sync::watch::Sender<Option<(u64, Vec<u8>, Instant, Option<crate::mobile_camera::Geometry>)>>,
     camera_configuration:tokio::sync::watch::Sender<Option<crate::mobile_camera::RegisteredConfiguration>>,
     camera_active: AtomicBool,
@@ -246,6 +248,8 @@ impl Default for MobileClient {
         let (origin_reports, origin_receiver) = tokio::sync::mpsc::channel(1);
         let (sightings, sighting_receiver) = tokio::sync::mpsc::channel(4);
         Self {
+            timing: Mutex::new(None),
+            capture_clock_reset: CancellationToken::new(),
             onboarding: Default::default(),
             voxels: Default::default(),
             connection: Mutex::new(None),
@@ -303,6 +307,26 @@ impl Default for MobileClient {
     }
 }
 impl MobileClient {
+    pub fn clock_generation(&self) -> u64 {
+        self.timing.lock().ok().and_then(|t| t.as_ref().map(|t| t.generation)).unwrap_or(0)
+    }
+    /// Both brackets must belong to the same SDK clock, even if CLIENT changes
+    /// between the separate native calls. Zero means absent/replaced clock.
+    pub fn session_now_ns(&self, generation: u64) -> u64 {
+        self.timing.lock().ok().and_then(|t| t.as_ref().filter(|t| t.generation == generation).map(|t| t.clock.now_ns())).unwrap_or(0)
+    }
+    pub fn observe_native_clock(&self, generation: u64, kind: usize, before: u64, native: u64, after: u64) -> bool {
+        if before == 0 || after == 0 { return false; }
+        let result = self.timing.lock().ok().and_then(|t| t.as_ref().filter(|t| t.generation == generation).map(|t| t.observe(kind, before, native, after)));
+        match result {
+            Some(Ok(())) => true,
+            Some(Err(error)) => {
+                if error.downcast_ref::<crate::capture_time::NativeClockReset>().is_some() { self.capture_clock_reset.cancel(); }
+                self.local_status(format!("Capture clock: {error}")); false
+            }
+            None => false,
+        }
+    }
     pub fn camera_demanded(&self, active: bool) -> bool {
         self.camera_active.store(active, Ordering::Release);
         if !active { self.camera.send_replace(None); }
@@ -368,9 +392,15 @@ impl MobileClient {
     pub fn update_pose(&self, mut sample: Option<crate::mobile_pose::Sample>) {
         if let Some(sample)=&mut sample {sample.camera_configuration_id=self.camera_configuration.borrow().as_ref().filter(|c|c.configuration.session==sample.session).map(|c|c.id.clone());}
         if let Ok(mut history) = self.onboarding.history.lock() {
-            match &sample {
-                Some(sample) => history.push(&sample.session, sample.timestamp_ns, crate::local_mapper::from_rigid(&sample.pose)),
-                None => history.lose(),
+            let converted = (|| -> Result<_> {
+                let timing = self.timing.lock().map_err(|_| anyhow::anyhow!("Capture clock unavailable"))?;
+                let timing = timing.as_ref().ok_or_else(|| anyhow::anyhow!("Capture clock unavailable"))?;
+                let sample = sample.as_ref().ok_or_else(|| anyhow::anyhow!("Tracking unavailable"))?;
+                Ok((timing.clock_reference()?, timing.pose(sample.clone())?))
+            })();
+            match converted {
+                Ok((clock, sample)) => history.push(&clock, &sample.session, sample.timestamp_ns, crate::local_mapper::from_rigid(&sample.pose)),
+                Err(_) => history.lose(),
             }
         }
         // Capture-time compact pose history; no legacy Home presence push.
@@ -505,7 +535,9 @@ impl MobileClient {
         let marker = self.onboarding.joining.lock().ok()
             .and_then(|j| j.as_ref().filter(|j| j.looking).and_then(|j| j.marker.clone()));
         let Some(marker) = marker else { return Ok(false) };
-        let Some(sighting) = crate::mobile_onboarding::sight(luma, frame, &marker)? else { return Ok(false) };
+        let timing = self.timing.lock().map_err(|_| anyhow::anyhow!("Capture clock unavailable"))?.clone()
+            .ok_or_else(|| anyhow::anyhow!("Capture clock unavailable"))?;
+        let Some(sighting) = crate::mobile_onboarding::sight(luma, frame, &marker, &timing)? else { return Ok(false) };
         let _ = self.sightings.try_send(sighting);
         Ok(true)
     }
@@ -613,6 +645,14 @@ impl MobileClient {
                 // sample deadlines cannot repeatedly cancel cold discovery.
                 tokio::select! { _ = self.stop.cancelled() => return Ok(()), _ = operations.warm() => {} }
                 let products = crate::mobile_products::MobileProducts::mount(&peer)?;
+                *self.timing.lock().unwrap_or_else(|e| e.into_inner()) = Some(products.timing.clone());
+                let clock_work = async {
+                    let mut tick = tokio::time::interval(Duration::from_millis(200));
+                    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    loop { tick.tick().await; products.sample_time()?; }
+                    #[allow(unreachable_code)]
+                    Ok::<(), anyhow::Error>(())
+                };
                 // How a phone being onboarded reaches this one: its own addresses on the network.
                 let routes: Vec<String> = peer.listen_addresses().iter().map(ToString::to_string)
                     .filter(|r| !r.contains("/127.0.0.1/") && !r.contains("/0.0.0.0/")).take(4).collect();
@@ -627,7 +667,7 @@ impl MobileClient {
                         let Some(invitation) = invitations.borrow_and_update().clone() else { continue };
                         let joined = tokio::select! {
                             result = tokio::time::timeout(Duration::from_secs(120),
-                                crate::mobile_onboarding::join(&peer, &home, &invitation, &self.onboarding, &mut sightings)) =>
+                                crate::mobile_onboarding::join(&peer, &home, &invitation, &self.onboarding, &mut sightings, &products)) =>
                                 result.unwrap_or_else(|_| Err(anyhow::anyhow!("Onboarding timed out; scan the code again"))),
                             // Stopped or replaced by another invitation.
                             _ = invitations.changed() => { invitations.mark_changed(); continue }
@@ -692,10 +732,17 @@ impl MobileClient {
                                 && received.elapsed() < Duration::from_millis(500)
                                 && let Some(camera) = declared().camera.as_mut() {
                                 // Bad/late frames must not tear down mapping or the peer.
-                                let _ = match geometry {
-                                    Some(geometry) => camera.publish_calibrated(timestamp, jpeg, geometry),
-                                    None => camera.publish(timestamp, jpeg),
-                                };
+                                let result = (|| {
+                                    let timestamp = products.timing.capture(0, timestamp)?;
+                                    match geometry {
+                                        Some(mut geometry) => {
+                                            geometry.alignment_timestamp_ns = products.timing.held(&geometry.session, geometry.alignment_timestamp_ns)?;
+                                            camera.publish_calibrated(timestamp, jpeg, geometry)
+                                        }
+                                        None => camera.publish(timestamp, jpeg),
+                                    }
+                                })();
+                                if let Err(error) = result { self.local_status(format!("Camera not shared: {error}")); }
                             }
                         }
                     }
@@ -724,7 +771,9 @@ impl MobileClient {
                                 && received.elapsed() < Duration::from_millis(500)
                                 && let Some(screen) = screen.as_mut() {
                                 // A bad frame must not tear down the connection.
-                                let _ = screen.publish(timestamp, jpeg);
+                                if let Err(error) = products.timing.capture(1, timestamp).and_then(|at| screen.publish(at, jpeg)) {
+                                    self.local_status(format!("Screen not shared: {error}"));
+                                }
                             }
                         }
                     }
@@ -990,6 +1039,10 @@ impl MobileClient {
                 let mut pose_log = self.pose_log_receiver.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap();
                 let pose_product_work = async {
                     while let Some(sample) = pose_log.recv().await {
+                        let sample = match sample.map(|sample| products.timing.pose(sample)).transpose() {
+                            Ok(sample) => sample,
+                            Err(error) => { self.local_status(format!("Pose not shared: {error}")); continue; }
+                        };
                         let result = {
                             let mut declared = declared();
                             let declared = &mut *declared;
@@ -1023,11 +1076,13 @@ impl MobileClient {
                 let mut depth_images = self.depth_image.subscribe();
                 let depth_image_work = async {
                     while depth_images.changed().await.is_ok() {
-                        let Some((image, received)) = depth_images.borrow_and_update().clone() else { continue };
+                        let Some((mut image, received)) = depth_images.borrow_and_update().clone() else { continue };
                         if received.elapsed() > Duration::from_millis(500) {
                             continue;
                         }
-                        let result = {
+                        let result = (|| {
+                            image.timestamp_ns = products.timing.capture(0, image.timestamp_ns)?;
+                            image.alignment_timestamp_ns = products.timing.held(&image.session, image.alignment_timestamp_ns)?;
                             let mut declared = declared();
                             match declared.depth_image.as_mut() {
                                 Some(publisher) => publisher.publish(image),
@@ -1038,7 +1093,7 @@ impl MobileClient {
                                         Ok(())
                                     }),
                             }
-                        };
+                        })();
                         // A bad image must not tear down mapping or the peer.
                         if let Err(error) = result {
                             self.local_status(format!("Depth image not shared: {error}"));
@@ -1052,6 +1107,15 @@ impl MobileClient {
                 let placement_work = async {
                     while placements.changed().await.is_ok() {
                         let latest = placements.borrow_and_update().clone();
+                        let at = match latest.as_ref().map(|p| products.timing.assert_current_held(&p.session, p.timestamp_ns)).transpose() {
+                            Ok(at) => at,
+                            Err(error) => {
+                                self.local_status(format!("Scene transform waiting for capture clock: {error}"));
+                                tokio::time::sleep(Duration::from_millis(100)).await;
+                                placements.mark_changed();
+                                continue;
+                            }
+                        };
                         let published = (|| {
                             let mut declared = declared();
                             let Some(placement) = latest else {
@@ -1064,7 +1128,7 @@ impl MobileClient {
                             if declared.placed.is_none() {
                                 declared.placed = Some(crate::mobile_declared::Publisher::new(&products, &placement.session, &home.peer_id, &home.frame)?);
                             }
-                            declared.placed.as_mut().unwrap().align(placement.timestamp_ns, &placement.session_to_scene)
+                            declared.placed.as_mut().unwrap().align(at.unwrap(), &placement.session_to_scene)
                         })();
                         if let Err(error) = published { self.local_status(format!("Scene transform not published: {error}")); }
                     }
@@ -1103,8 +1167,10 @@ impl MobileClient {
                                 declared.placed = Some(crate::mobile_declared::Publisher::new(&products, &sample.session, &home.peer_id, &home.frame)?);
                             }
                             let placed = declared.placed.as_mut().unwrap();
-                            placed.align(sample.alignment.timestamp_ns, &sample.alignment.session_to_home)?;
-                            placed.capture(sample.timestamp_ns, &sample.points, sample.colors.as_deref())
+                            let at = products.timing.capture(0, sample.timestamp_ns)?;
+                            let aligned_at = products.timing.held(&sample.session, sample.alignment.timestamp_ns)?;
+                            placed.align(aligned_at, &sample.alignment.session_to_home)?;
+                            placed.capture(at, &sample.points, sample.colors.as_deref())
                         })();
                         self.depth_status(match published {
                             Ok(()) if colored => format!("Depth published · {count} colored voxels"),
@@ -1115,6 +1181,7 @@ impl MobileClient {
                 };
                 let mut local_publisher = None;
                 let local_work = async {
+                    let mut source_time = crate::mobile_products::RetainedTimestamp::default();
                     let mut tick = tokio::time::interval(Duration::from_secs(1));
                     // The map only grows (cells in the order first measured), so its
                     // size says whether it changed. Unchanged, it goes every 5 s,
@@ -1123,7 +1190,7 @@ impl MobileClient {
                     loop {
                         tick.tick().await;
                         let latest = self.local_map.borrow().clone();
-                        let Some((sample, received)) = latest else {
+                        let Some((mut sample, received)) = latest else {
                             continue;
                         };
                         if received.elapsed() > Duration::from_secs(3) {
@@ -1134,6 +1201,7 @@ impl MobileClient {
                             continue;
                         }
                         let result = async {
+                            sample.timestamp_ns = source_time.convert(&products.timing, &sample.session, sample.timestamp_ns)?;
                             if local_publisher.is_none() {
                                 local_publisher = Some(crate::mobile_local::Publisher::new(&products)?);
                             }
@@ -1154,6 +1222,8 @@ impl MobileClient {
                     Ok::<(), anyhow::Error>(())
                 };
                 let work = tokio::select! {
+                    _ = self.capture_clock_reset.cancelled() => Err(anyhow::anyhow!("Capture clock reset; reconnect to establish a new SDK session clock")),
+                    result = clock_work => result,
                     result = camera_work => result,
                     result = screen_work => result,
                     _ = change_work => Ok(()),
@@ -1177,6 +1247,7 @@ impl MobileClient {
                 };
                 self.camera_demand.store(false, Ordering::Release);
                 self.screen_demand.store(false, Ordering::Release);
+                *self.timing.lock().unwrap_or_else(|e| e.into_inner()) = None;
                 drop(onboarding_display);
                 *self.connection.lock().unwrap_or_else(|e| e.into_inner()) = None;
                 if let Some(screen) = screen.take() { let _ = screen.close(); }
@@ -1395,4 +1466,62 @@ pub async fn receive_portals(
     .await;
     let cleanup = subscription.close().await.map_err(anyhow::Error::from);
     work.and(cleanup)
+}
+
+#[cfg(test)]
+mod capture_clock_tests {
+    use super::*;
+    #[test]
+    fn onboarding_history_uses_capture_clock_without_changing_app_evidence() {
+        let client = MobileClient::default();
+        let timing = Arc::new(crate::mobile_products::CaptureTiming::new("phone"));
+        timing.observe(0, 100_000_000, 50_100_000_010, 100_000_020).unwrap();
+        timing.observe(0, 200_000_000, 50_200_000_010, 200_000_020).unwrap();
+        let clock = timing.clock_reference().unwrap();
+        *client.timing.lock().unwrap() = Some(timing);
+        let session = "ar-session";
+        for t in [125_000_000, 175_000_000] {
+            client.update_pose(Some(crate::mobile_pose::Sample { session: session.into(),
+                timestamp_ns: 50_000_000_000 + t,
+                pose: auki_scenegraph::RigidTransform::identity("camera", "ar"), camera_configuration_id: None }));
+        }
+        assert_eq!(client.pose.borrow().as_ref().unwrap().timestamp_ns, 50_175_000_000);
+        {
+            let history = client.onboarding.history.lock().unwrap();
+            assert!(history.at(&clock, session, 150_000_000).is_ok());
+            assert!(history.at(&clock, session, 50_150_000_000).is_err());
+        }
+        client.update_pose(None);
+        assert!(client.onboarding.history.lock().unwrap().at(&clock, session, 150_000_000).is_err());
+    }
+    #[test]
+    fn bridge_bracket_rejects_a_replaced_clock_generation() {
+        let client = MobileClient::default();
+        let first = Arc::new(crate::mobile_products::CaptureTiming::new("phone"));
+        let generation = first.generation;
+        *client.timing.lock().unwrap() = Some(first);
+        assert_eq!(client.clock_generation(), generation);
+        assert!(client.session_now_ns(generation) > 0);
+        assert!(client.observe_native_clock(generation, 0, 100, 1000, 120));
+        *client.timing.lock().unwrap() = Some(Arc::new(crate::mobile_products::CaptureTiming::new("phone")));
+        assert_ne!(client.clock_generation(), generation);
+        assert_eq!(client.session_now_ns(generation), 0);
+        assert!(!client.observe_native_clock(generation, 0, 200, 1100, 220));
+        assert!(client.timing.lock().unwrap().as_ref().unwrap().capture(0, 1050).is_err());
+    }
+    #[test]
+    fn native_clock_reset_requests_a_new_session_not_tracking_loss() {
+        let client = MobileClient::default();
+        let timing = Arc::new(crate::mobile_products::CaptureTiming::new("phone"));
+        let generation = timing.generation;
+        *client.timing.lock().unwrap() = Some(timing);
+        client.update_pose(None);
+        assert_eq!(client.clock_generation(), generation);
+        assert!(!client.capture_clock_reset.is_cancelled());
+        assert!(client.observe_native_clock(generation, 0, 100, 1000, 120));
+        assert!(!client.observe_native_clock(generation, 0, 200, 10_000_000, 220));
+        assert!(client.capture_clock_reset.is_cancelled());
+        let replacement = crate::mobile_products::CaptureTiming::new("phone");
+        assert_ne!(replacement.generation, generation);
+    }
 }

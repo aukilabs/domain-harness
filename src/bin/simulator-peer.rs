@@ -11,24 +11,29 @@ use tokio::{
     net::{TcpListener, TcpStream},
 };
 
-async fn capture(stream: &mut TcpStream, camera: &mut Camera) -> Result<()> {
+async fn capture(stream: &mut TcpStream, camera: &mut Camera, mapping: &mut spatial_home::capture_time::NativeMapping) -> Result<()> {
     stream.write_all(&[1]).await?;
     let size = stream.read_u32_le().await? as usize;
     ensure!(
         size > 0 && size <= MAX_JPEG,
         "Godot image exceeds local bridge limit"
     );
-    let timestamp = stream.read_u64_le().await?;
+    let capture_utc = stream.read_u64_le().await?;
     let mut bytes = vec![0; size];
     stream.read_exact(&mut bytes).await?;
     // A viewer may close while rendering. Do not publish an unwanted frame.
     if camera.demanded() {
+        sample_clock(mapping, &camera.session_clock)?;
+        let Ok(timestamp) = mapping.convert(capture_utc) else {
+            eprintln!("Skipping camera capture outside measured session-clock history");
+            return Ok(());
+        };
         camera.publish(timestamp, bytes)?;
     }
     Ok(())
 }
 
-async fn capture_lidar(stream: &mut TcpStream, lidar: &mut Lidar) -> Result<()> {
+async fn capture_lidar(stream: &mut TcpStream, lidar: &mut Lidar, clock: &auki_time::SessionClock, mapping: &mut spatial_home::capture_time::NativeMapping) -> Result<()> {
     stream.write_all(&[2]).await?;
     let size = stream.read_u32_le().await? as usize;
     ensure!(
@@ -37,7 +42,21 @@ async fn capture_lidar(stream: &mut TcpStream, lidar: &mut Lidar) -> Result<()> 
     );
     let mut bytes = vec![0; size];
     stream.read_exact(&mut bytes).await?;
-    lidar.publish(serde_json::from_slice::<Scan>(&bytes)?)
+    let mut scan = serde_json::from_slice::<Scan>(&bytes)?;
+    sample_clock(mapping, clock)?;
+    let Ok(timestamp) = mapping.convert(scan.timestamp_ns) else {
+        eprintln!("Skipping LiDAR capture outside measured session-clock history");
+        return Ok(());
+    };
+    scan.timestamp_ns = timestamp;
+    lidar.publish(scan)
+}
+
+// Godot and this sidecar run on the same host. Godot stamps CLOCK_REALTIME at
+// capture, before rendering/encoding; this measures the relationship locally,
+// without turning render or socket delay into an offset.
+fn sample_clock(mapping: &mut spatial_home::capture_time::NativeMapping, clock: &auki_time::SessionClock) -> Result<()> {
+    mapping.observe(clock, || auki_time::Clock::read_to_ns(&auki_time::SystemClock) as u64)
 }
 
 // A hidden/minimized simulator may suspend rendering. Keep the in-flight
@@ -89,8 +108,10 @@ async fn main() -> Result<()> {
         };
         stream.set_nodelay(true)?;
         let mut camera = Camera::mount(&running.peer)?;
-        let mut lidar = Lidar::mount(&camera.runtime, &camera.endpoint)?;
-        let mut mapper = spatial_home::simulator_mapper::Mapper::mount(&camera.runtime, &camera.endpoint, &lidar)?;
+        let mut mapping = spatial_home::capture_time::NativeMapping::default();
+        sample_clock(&mut mapping, &camera.session_clock)?;
+        let mut lidar = Lidar::mount(&camera.runtime, &camera.endpoint, &camera.session_clock)?;
+        let mut mapper = spatial_home::simulator_mapper::Mapper::mount(&camera.runtime, &camera.endpoint, &lidar, camera.session_clock.clone())?;
         let mut occupancy = None::<spatial_home::occupancy_mapper::OccupancyMapper>;
         println!("Camera catalog mounted: simulator-camera (640x480, demand-driven, max 10 FPS)");
         let work = async {
@@ -110,7 +131,7 @@ async fn main() -> Result<()> {
                             if occupancy.is_none() {
                                 occupancy = Some(spatial_home::occupancy_mapper::OccupancyMapper::mount(
                                     &camera.runtime, &camera.endpoint, &product,
-                                    camera.runtime.peer_id(), product.producer.clock.clone(),
+                                    camera.runtime.peer_id(), camera.session_clock.clone(),
                                     spatial_home::occupancy_mapper::Config::new(mapper.floor_m().expect("Mapped boot frame")),
                                 )?);
                                 println!("Robot occupancy mapper mounted: occupancy-2d (1 Hz, robot-local voxels)");
@@ -122,12 +143,14 @@ async fn main() -> Result<()> {
                     exit = running.peer.wait_stopped() => anyhow::bail!("Simulator transport stopped: {exit:?}"),
                     _ = log.tick() => println!("Camera: subscribers={}, frames={captured}; LiDAR: subscribers={}, scans={scans}", camera.endpoint.product_active_subscriptions(spatial_home::simulated_camera::PRODUCT), camera.endpoint.product_active_subscriptions(spatial_home::simulated_lidar::PRODUCT)),
                     _ = tick.tick() => {
+                        camera.tick_clock()?;
+                        sample_clock(&mut mapping, &camera.session_clock)?;
                         if camera.demanded() {
-                            if !await_capture(capture(&mut stream, &mut camera)).await? { break; }
+                            if !await_capture(capture(&mut stream, &mut camera, &mut mapping)).await? { break; }
                             captured += 1;
                         }
                         if lidar.demanded(&camera.endpoint) {
-                            if !await_capture(capture_lidar(&mut stream, &mut lidar)).await? { break; }
+                            if !await_capture(capture_lidar(&mut stream, &mut lidar, &camera.session_clock, &mut mapping)).await? { break; }
                             scans += 1;
                         }
                         if !camera.demanded() && !lidar.demanded(&camera.endpoint) {

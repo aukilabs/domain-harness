@@ -25,7 +25,7 @@ async fn annotator_camera_is_consumed_by_generic_registry_reader() -> Result<()>
             .find(|o|o.manifest.reference()==p.manifest.producer).unwrap();
         let (contract,calibration) = registry_ar::camera(p.metadata.as_ref().unwrap(),&output.manifest,&row["registries"])?;
         assert_eq!(contract.session_id,geometry.session);
-        assert_eq!(contract.clock.id,"arkit-capture");
+        assert_eq!(contract.clock,spatial_home::model::clock_ref(&products.timing.clock.registry_entry()));
         // Declared once per AR session: autofocus drift keeps the first picture's.
         assert_eq!(calibration["K"][0],480.,"fx {fx}");
         identities.push(p.manifest.reference());
@@ -69,6 +69,8 @@ async fn annotator_camera_frames_arrive_binary_and_unchanged() -> Result<()> {
     assert_eq!(payload.schema, spatial_home::camera_frame::SCHEMA);
     let (contract, _) = registry_ar::camera(product.metadata.as_ref().unwrap(),&output.manifest,&row["registries"])?;
     contract.validate(&output.manifest)?;
+    assert_eq!(output.manifest.clock,spatial_home::model::clock_ref(&products.timing.clock.registry_entry()));
+    assert_eq!(contract.clock,output.manifest.clock);
 
     let client = ComponentProtocolClient::new(pair.a.protocols());
     let peer = pair.b.peer_id();

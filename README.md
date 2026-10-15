@@ -1,6 +1,6 @@
 # Domain Harness
 
-A component-based spatial mapping prototype with a Home server, Galbot runners,
+A component-based spatial mapping prototype with a Home server, Bracketbot runners,
 and an iPhone Annotator. It uses [Auki SDK PR #425](https://github.com/aukilabs/auki-sdk/pull/425),
 pinned to `3342d589605846f5f45c1de5430dd22923555de2`.
 
@@ -47,13 +47,14 @@ and sizes come from local configuration, with no portal backend API calls.
 | Part | Entry point | Role |
 | --- | --- | --- |
 | Home | `src/main.rs` | Canonical mapping, peer subscriptions, local web API and Three.js viewer |
-| Galbot runner | `src/bin/galbot-runner.rs` | One peer/runtime for sensors, odometry, portal localization, and a local voxel scenegraph |
+| Bracketbot runner | `src/bin/bracketbot-runner.rs` | One peer/runtime for BBOS sensors, odometry, portal localization, and a local voxel scenegraph |
+| Bracketbot Diagnostics | `diagnostics/connection-peer` | Registry-backed camera, pose, detector, alignment, and optional depth Products |
 | Scene reader | `src/bin/spatial-runner.rs` | Subscribe to a peer's complete scene snapshots |
 | iPhone Annotator | `ios/PortalViewer` + `ios/PortalBridge` | Native Swift/ARKit app with a Rust SDK bridge |
 
-The Galbot deployment publishes sensor data; it does not enable robot motion,
-navigation, arm, or gripper commands. `runner-integration/original` and `retired`
-are reference source, not additional running processes.
+See [the Bracketbot guide](bracketbot-runner.md) and
+[Diagnostics](diagnostics/connection-peer/README.md) for their separate entrypoints.
+Run only the intended runner on a robot.
 
 ## Run Home locally
 
@@ -130,16 +131,9 @@ cargo run --locked --bin spatial-runner -- \
   --once --output data/received-scene.json
 ```
 
-The Galbot launcher assumes the vendor SDK is installed on the robot, a built
-ARM64 runner and adapters have been deployed, and the robot has its own peer config
-and identity. It passes credentials over encrypted SSH stdin. See [runner.md](runner.md)
-and [runner-integration/README.md](runner-integration/README.md) for installation
-paths, sensor choices, and the existing lab setup.
-
-```sh
-python3 scripts/with-home-credentials.py python3 scripts/run-galbot-runner.py \
-  --host 192.168.9.95 --mapping-camera right_arm
-```
+For robot builds and deployment, use [bracketbot-runner.md](bracketbot-runner.md).
+Building and starting are separate operations; do not restart another operator's
+runner as an implicit build step.
 
 ## Geometry and persistence
 
@@ -157,12 +151,8 @@ capabilities and observation provenance travel in `registries.landmarks`.
 extension alongside the pinned SDK's existing QR scenegraph, not an SDK fork.
 See [home.md](home.md#landmarks-and-anchors) for its contracts and frame rules.
 
-Galbot LiDAR mapping samples at most 384 measured points per scan in the 0.3–5 m
-range. A timestamp-derived sampling offset avoids repeatedly selecting the same
-parts of a structured scan. Capture-time odometry and sensor extrinsics place
-measurements; moving LiDAR scans are rejected until motion compensation is
-implemented. Wrist RGB-D supplies measured near-field color. No synthetic voxels
-are injected into live maps.
+Sensor measurements keep their capture-time pose, calibration, clock, and color.
+No synthetic voxels are injected into live maps.
 
 Live occupancy uses the latest three observations per cell. At the 65,536-cell
 limit, old histories containing only free-space observations can become unknown;
@@ -191,8 +181,7 @@ sh ios/PortalViewer/test.sh
 Browser tests start an isolated demo server on port 4318 with a temporary journal;
 they do not reuse the running Home. Some Rust tests are explicitly ignored unless
 a real sensor recording is supplied. Python adapter tests live under `tests/test_*.py`:
-geometry tests require NumPy/SciPy, and RealSense projection tests also require
-`pyrealsense2` in a compatible Galbot Python environment.
+geometry tests require NumPy/SciPy.
 
 Known prototype limits include intermittent peer EOF/reconnection gaps affecting
 camera AR, camera availability after robot boot that can require a runner restart,
@@ -205,7 +194,7 @@ or production deployment package.
 - [Overall plan](plan.md)
 - [Home server](home.md)
 - [2D occupancy mapper](occupancy-mapper.md)
-- [Galbot / Bracketbot runner](runner.md)
+- [Bracketbot runner](runner.md)
 - [iPhone Annotator](annotator.md)
 - [iPhone build guide](ios/PortalViewer/README.md)
 - [Vendored voxel adapter changes and license](vendor/auki-voxel-map/LOCAL-CHANGES.md)

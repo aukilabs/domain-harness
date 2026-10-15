@@ -281,6 +281,7 @@ dependencies = [
  "auki-registry",
  "auki-scenegraph",
  "auki-sdk",
+ "auki-time",
  "base64 0.22.1",
  "image",
  "nalgebra",
@@ -624,6 +625,18 @@ dependencies = [
  "tokio-util",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "auki-time"
+version = "0.0.0"
+source = "git+https://github.com/aukilabs/auki-sdk.git?rev=3342d589605846f5f45c1de5430dd22923555de2#3342d589605846f5f45c1de5430dd22923555de2"
+dependencies = [
+ "auki-datatypes",
+ "auki-logs",
+ "auki-manifests",
+ "auki-registry",
+ "libc",
 ]
 
 [[package]]

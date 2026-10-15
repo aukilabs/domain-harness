@@ -88,7 +88,7 @@ struct PortalMap: Decodable, Equatable {
     }
 
     static func portalCode(_ payload: String) -> String? {
-        // Match the Galbot's local_mapper::portal_code contract exactly:
+        // Match the shared local_mapper::portal_code contract exactly:
         // URL prefix is case-insensitive; the eleven-character identity is not.
         guard let slash = payload.lastIndex(of: "/"),
               payload[..<slash].lowercased() == "https://r8.hr" else { return nil }

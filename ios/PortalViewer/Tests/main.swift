@@ -115,14 +115,14 @@ print("Single-scan calibration cooldown checks passed")
 
 let matchingMap = try PortalMap.load(JSONSerialization.data(withJSONObject: direct))
 for prefix in ["https://r8.hr", "HTTPS://R8.HR", "Https://R8.Hr"] {
-    check(matchingMap.matching(prefix + "/ABC12345678") != nil, "Galbot-compatible URL prefix casing")
+    check(matchingMap.matching(prefix + "/ABC12345678") != nil, "Portal URL prefix casing")
 }
 for payload in ["HTTPS://R8.HR/abc12345678", "https://evil.example/ABC12345678",
                 "https://r8.hr/ABC12345678?x=1", "https://r8.hr/ABC12345678/",
                 "https://r8.hr/a/ABC12345678", "https://r8.hr/%41BC12345678"] {
     check(matchingMap.matching(payload) == nil, "unknown or malformed identity rejected")
 }
-print("Galbot-compatible Portal payload checks passed")
+print("Portal payload checks passed")
 
 var fullScene = direct
 fullScene["render"] = ["frame": "home", "voxel_size": 0.1,
