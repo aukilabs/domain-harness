@@ -1093,6 +1093,10 @@ impl MobileClient {
                 let mut local_publisher = None;
                 let local_work = async {
                     let mut tick = tokio::time::interval(Duration::from_secs(1));
+                    // The map only grows (cells in the order first measured), so its
+                    // size says whether it changed. Unchanged, it goes every 5 s,
+                    // which keeps it inside Home's 10 s listing window.
+                    let mut sent: Option<(usize, Instant)> = None;
                     loop {
                         tick.tick().await;
                         let latest = self.local_map.borrow().clone();
@@ -1100,6 +1104,10 @@ impl MobileClient {
                             continue;
                         };
                         if received.elapsed() > Duration::from_secs(3) {
+                            continue;
+                        }
+                        let cells = sample.cells.len();
+                        if sent.is_some_and(|(count, at)| count == cells && at.elapsed() < Duration::from_secs(5)) {
                             continue;
                         }
                         let result = async {
@@ -1113,6 +1121,7 @@ impl MobileClient {
                             Ok::<(),anyhow::Error>(())
                         }
                         .await;
+                        if result.is_ok() { sent = Some((cells, Instant::now())); }
                         self.local_status(match result {
                             Ok(()) => "Local voxel map received by Home (unaligned)".into(),
                             Err(e) => format!("Local map: {e}"),
