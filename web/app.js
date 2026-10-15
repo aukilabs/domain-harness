@@ -869,7 +869,8 @@ renderer.domElement.addEventListener('pointerup',e=>{
  if(!current||!pointerStart||Math.hypot(e.clientX-pointerStart[0],e.clientY-pointerStart[1])>4)return;
  if(placingNote){const target=placementTarget;stopNotePlacement();const box=renderer.domElement.getBoundingClientRect(),pick=new THREE.Raycaster();pick.setFromCamera(new THREE.Vector2((e.clientX-box.left)/box.width*2-1,1-(e.clientY-box.top)/box.height*2),camera);const request={source:'scene',frame:current.frame,origin:pick.ray.origin.toArray(),direction:pick.ray.direction.toArray()};if(target)target(request);else beginLabel(request);return;}
  const r=renderer.domElement.getBoundingClientRect(), ray=new THREE.Raycaster();ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),camera);
- const hits=ray.intersectObjects([...selectable,...crayon.objects()].filter(o=>{for(let p=o;p;p=p.parent){if(!p.visible)return false;}return true;}));if(!hits.length){clearSelection();return;}const h=hits.find(h=>h.object.userData.kind==='note')||hits.find(h=>h.object.userData.kind==='path')||hits.find(h=>h.object.userData.kind==='portal')||hits[0],d=h.object.userData;
+ const hits=ray.intersectObjects([...selectable,...crayon.objects()].filter(o=>{for(let p=o;p;p=p.parent){if(!p.visible)return false;}return true;}));// Nothing hit: the click moves the spot cursor (the floor ring) there. Drags orbit and never get this far.
+ if(!hits.length){clearSelection();const floor=ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,1,0),0),new THREE.Vector3());if(floor&&!crayon.isActive()&&!map2D.isActive())placeSpotMarker(floor);return;}const h=hits.find(h=>h.object.userData.kind==='note')||hits.find(h=>h.object.userData.kind==='path')||hits.find(h=>h.object.userData.kind==='portal')||hits[0],d=h.object.userData;
  if(d.kind==='voxels'){const v=current.voxels[h.instanceId];showSelection('Occupied voxel','','',{kind:'Voxel',facts:[['Position',xyz(v.center),true],['Evidence',String(v.evidence)],['Cell size','10 cm']]});}
  if(d.kind==='occupancy'){const t=current.occupancy_tiles[h.instanceId],state=t.value===100?'Occupied':t.value===0?'Free':'Unknown';showSelection(state+' cell','','',{kind:'Occupancy',facts:[['State',state],['Position',xyz(t.center),true],['Value',String(t.value)],['Sample','10 cm · retrieved in 2 m cells']]});}
  if(d.kind==='path'){showPathSelection(d.path);return;}
@@ -1729,6 +1730,8 @@ function spotWedge(qx,qy,{outer,inner,gap,round=0}){const c=SPOT_SIZE/2,k=round,
   arc=(r,[x,y],turn)=>{const a=Math.atan2(y,x)+turn/r;return [r*Math.cos(a),r*Math.sin(a)];};
  return `path('M${p(e1(outer-k))} Q${p(e1(outer))} ${p(arc(outer,e1(outer),-k))} A${outer} ${outer} 0 0 ${sweep} ${p(arc(outer,e2(outer),k))} Q${p(e2(outer))} ${p(e2(outer-k))} L${p(e2(inner+k))} Q${p(e2(inner))} ${p(arc(inner,e2(inner),k))} A${inner} ${inner} 0 0 ${1-sweep} ${p(arc(inner,e1(inner),-k))} Q${p(e1(inner))} ${p(e1(inner+k))} Z')`;}
 let spot=null,rightStart=null;
+// About 10 px across whatever the distance.
+function placeSpotMarker(point){const r=renderer.domElement.getBoundingClientRect();spotMarker.position.copy(point).add(new THREE.Vector3(0,.01,0));spotMarker.scale.setScalar(camera.position.distanceTo(point)*Math.tan(camera.fov*Math.PI/360)*10/r.height);spotMarker.visible=true;}
 function spotTool(label,face,accent,run,disabledReason=''){
  const button=document.createElement('button');button.type='button';button.className='agent-tool';button.dataset.accent=accent;button.setAttribute('role','menuitem');button.setAttribute('aria-label',label);button.tabIndex=-1;
  button.dataset.tip=disabledReason?`${label} · ${disabledReason}`:label;if(disabledReason)button.setAttribute('aria-disabled','true');
@@ -1746,8 +1749,7 @@ function openSpotMenu(e){
  const point=hit?hit.point.clone():ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,1,0),0),new THREE.Vector3());
  if(!point)return;
  spot={point,request:{source:'scene',frame:current.frame,origin:ray.ray.origin.toArray(),direction:ray.ray.direction.toArray()}};
- // About 10 px across whatever the distance.
- spotMarker.position.copy(point).add(new THREE.Vector3(0,.01,0));spotMarker.scale.setScalar(camera.position.distanceTo(point)*Math.tan(camera.fov*Math.PI/360)*10/r.height);spotMarker.visible=true;
+ placeSpotMarker(point);
  const writable=notesWritable(),orb=document.createElement('span');orb.className='agent-orb';orb.setAttribute('aria-hidden','true');
  const tools=[
   spotTool('New note here',icons.note,'amber',at=>beginLabel(at.request),writable&&!newNoteButton.disabled?'':'switch to a Home scene'),
