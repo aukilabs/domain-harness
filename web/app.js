@@ -577,6 +577,16 @@ function noteAnchorText(note){
  return note.anchor_portal?`${note.height_m} m above portal ${note.anchor_portal}`:'Anchored in Home';
 }
 function cardActions(...buttons){const row=document.createElement('div');row.className='card-actions';row.append(...buttons);return row;}
+// Send the robot that advertises `navigate` to a place in this local scene.
+// Home plans the route on the scene map; the robot's own navigation drives it.
+async function sendRobot(target,status){status.textContent='Planning the route…';try{const r=await api(localSceneUrl()+'/navigate-robot',{target});status.textContent=r.summary;lastScene=null;}catch(error){status.textContent='Not sent · '+error.message;}}
+async function stopRobotNav(status){try{const r=await api('/api/robots/stop',{});status.textContent=r.summary;}catch(error){status.textContent='Not stopped · '+error.message;}}
+function robotGoControls(target){
+ const box=document.createElement('div');box.setAttribute('aria-label','Robot navigation');
+ const status=document.createElement('p');status.className='form-status';status.setAttribute('role','status');
+ box.append(cardActions(actionButton('Send robot here',{onClick:()=>sendRobot(target,status)}),actionButton('Stop robot',{variant:'danger-ghost',onClick:()=>stopRobotNav(status)})),status);
+ return box;
+}
 function showNoteSelection(note){
  noteCardMode='view';
  showSelection(noteTitle(note),'',noteAnchorText(note),{kind:'Note'});
@@ -590,6 +600,7 @@ function showNoteSelection(note){
  if(note.anchor_portal)field('Anchor portal',note.anchor_portal,true);
  field('Note ID',note.id,true);
  card.append(technical);
+ if(isLocalScene())card.append(robotGoControls({kind:'note',id:note.id}));
  const reason=noteReadOnlyReason(note);
  if(reason){const lock=document.createElement('p');lock.className='card-readonly';lock.append(icon(icons.lock,14),document.createTextNode('Read-only · '+reason));card.append(lock);}
  else card.append(cardActions(actionButton('Edit',{onClick:()=>editNoteCard(note)}),actionButton('Delete',{variant:'danger-ghost',onClick:()=>confirmNoteDelete(note)})));
@@ -862,8 +873,8 @@ renderer.domElement.addEventListener('pointerup',e=>{
  if(placingNote){const target=placementTarget;stopNotePlacement();const box=renderer.domElement.getBoundingClientRect(),pick=new THREE.Raycaster();pick.setFromCamera(new THREE.Vector2((e.clientX-box.left)/box.width*2-1,1-(e.clientY-box.top)/box.height*2),camera);const request={source:'scene',frame:current.frame,origin:pick.ray.origin.toArray(),direction:pick.ray.direction.toArray()};if(target)target(request);else beginLabel(request);return;}
  const r=renderer.domElement.getBoundingClientRect(), ray=new THREE.Raycaster();ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),camera);
  const hits=ray.intersectObjects([...selectable,...crayon.objects()].filter(o=>{for(let p=o;p;p=p.parent){if(!p.visible)return false;}return true;}));if(!hits.length){clearSelection();return;}const h=hits.find(h=>h.object.userData.kind==='note')||hits.find(h=>h.object.userData.kind==='path')||hits.find(h=>h.object.userData.kind==='portal')||hits[0],d=h.object.userData;
- if(d.kind==='voxels'){const v=current.voxels[h.instanceId];showSelection('Occupied voxel','','',{kind:'Voxel',facts:[['Position',xyz(v.center),true],['Evidence',String(v.evidence)],['Cell size','10 cm']]});}
- if(d.kind==='occupancy'){const t=current.occupancy_tiles[h.instanceId],state=t.value===100?'Occupied':t.value===0?'Free':'Unknown';showSelection(state+' cell','','',{kind:'Occupancy',facts:[['State',state],['Position',xyz(t.center),true],['Value',String(t.value)],['Sample','10 cm · retrieved in 2 m cells']]});}
+ if(d.kind==='voxels'){const v=current.voxels[h.instanceId];showSelection('Occupied voxel','','',{kind:'Voxel',facts:[['Position',xyz(v.center),true],['Evidence',String(v.evidence)],['Cell size','10 cm']]});if(isLocalScene())$('selection').append(robotGoControls({kind:'position',position:v.center}));}
+ if(d.kind==='occupancy'){const t=current.occupancy_tiles[h.instanceId],state=t.value===100?'Occupied':t.value===0?'Free':'Unknown';showSelection(state+' cell','','',{kind:'Occupancy',facts:[['State',state],['Position',xyz(t.center),true],['Value',String(t.value)],['Sample','10 cm · retrieved in 2 m cells']]});if(isLocalScene())$('selection').append(robotGoControls({kind:'position',position:t.center}));}
  if(d.kind==='path'){showPathSelection(d.path);return;}
  if(d.kind==='note')showNoteSelection(d.note);
  if(d.kind==='object'){const o=d.object;showSelection(o.label,'','',{kind:'Object',facts:[['Position',xyz(o.position),true],['Source',o.source_peer,true]]});}
@@ -1492,6 +1503,42 @@ function technicalDetails(rows,key){
  for(const [name,value,copy] of rows){if(value===undefined||value===null||value==='')continue;const dt=document.createElement('dt'),dd=document.createElement('dd'),text=document.createElement('span');dt.textContent=name;text.className='mono-id';text.textContent=value;dd.append(text);if(copy)dd.append(copyButton(String(value),'Copy '+name.toLowerCase()));list.append(dt,dd);}
  return box;
 }
+// Keyboard teleop through the selected scene's drive relay, the same board a
+// phone joystick uses. Home moves nothing: the robot drives only for the Home
+// it is paired with, at its own speed limits, and stops when commands stop.
+const keyDrive={peer:null,session:null,sequence:0,keys:new Set(),timer:null,zeros:0,status:''};
+const DRIVE_KEYS={KeyW:[1,0],ArrowUp:[1,0],KeyS:[-1,0],ArrowDown:[-1,0],KeyA:[0,1],ArrowLeft:[0,1],KeyD:[0,-1],ArrowRight:[0,-1]};
+function driveStick(){let forward=0,turn=0;for(const key of keyDrive.keys){const [f,t]=DRIVE_KEYS[key];forward+=f;turn+=t;}return [Math.max(-1,Math.min(1,forward)),Math.max(-1,Math.min(1,turn))];}
+function driveCommand(forward,turn){return api(localSceneUrl()+'/drive',{session:keyDrive.session,sequence:++keyDrive.sequence,target_peer_id:keyDrive.peer,forward,turn});}
+function setDriveStatus(text){if(keyDrive.status===text)return;keyDrive.status=text;const hint=fleetList.querySelector('[data-drive-status]');if(hint)hint.textContent=text;}
+async function driveTick(){
+ if(!keyDrive.peer)return;if(!isLocalScene())return stopKeyDrive();
+ const [forward,turn]=driveStick();
+ // A released stick sends a few explicit zeros, then nothing: silence is a stop too.
+ if(!forward&&!turn){if(keyDrive.zeros>=3)return setDriveStatus('Driving · hold WASD or arrows · Esc to stop');keyDrive.zeros++;}else keyDrive.zeros=0;
+ try{await driveCommand(forward,turn);setDriveStatus(forward||turn?`Driving · forward ${forward} · turn ${turn}`:'Driving · stopped');}catch(error){setDriveStatus('Not sent · '+error.message);}
+}
+function startKeyDrive(peer){stopKeyDrive();keyDrive.peer=peer;keyDrive.session=crypto.randomUUID();keyDrive.sequence=0;keyDrive.keys.clear();keyDrive.zeros=3;keyDrive.status='';keyDrive.timer=setInterval(driveTick,100);fleetSignature='';renderFleetRows();setDriveStatus('Driving · hold WASD or arrows · Esc to stop');}
+function stopKeyDrive(){
+ if(!keyDrive.peer)return;keyDrive.keys.clear();clearInterval(keyDrive.timer);
+ driveCommand(0,0).catch(()=>{});keyDrive.peer=null;fleetSignature='';renderFleetRows();
+}
+function driveSection(peer){
+ const section=document.createElement('section');section.setAttribute('aria-label','Drive');section.append(sectionHeader('Drive'));
+ const driving=keyDrive.peer===peer.peer_id;
+ const button=actionButton(driving?'Stop driving (Esc)':'Drive with keyboard',{variant:driving?'danger-ghost':'secondary',onClick:()=>driving?stopKeyDrive():startKeyDrive(peer.peer_id)});
+ button.setAttribute('aria-pressed',String(driving));section.append(button);
+ const hint=document.createElement('p');hint.className='device-note';hint.dataset.driveStatus='';hint.textContent=driving?keyDrive.status:'WASD or arrow keys while driving. The robot moves only if it was started with --drive for this Home.';section.append(hint);
+ return section;
+}
+window.addEventListener('keydown',e=>{
+ if(!keyDrive.peer)return;if(e.code==='Escape'){stopKeyDrive();return;}
+ if(!(e.code in DRIVE_KEYS)||e.target?.matches?.('input,textarea,select,[contenteditable]'))return;
+ e.preventDefault();e.stopImmediatePropagation();keyDrive.keys.add(e.code);
+},true);
+window.addEventListener('keyup',e=>{if(e.code in DRIVE_KEYS)keyDrive.keys.delete(e.code);},true);
+window.addEventListener('blur',()=>keyDrive.keys.clear());
+document.addEventListener('visibilitychange',()=>{if(document.hidden)keyDrive.keys.clear();});
 function renderFleetRows(){
  if(componentControlPending||(fleetList.contains(document.activeElement)&&document.activeElement.matches('input,textarea,select')))return;
  disconnectRobots.hidden=!fleetNetwork?.simulation;disconnectRobots.disabled=homeOffline||!(fleetNetwork?.peers||[]).some(p=>p.status==='connected');
@@ -1591,6 +1638,7 @@ function renderDeviceDetail(peer,feeds,openedTechnical){
  if(poses.length){const location=document.createElement('section');location.setAttribute('aria-label','Pose logs');location.append(sectionHeader('Location'));
   for(const product of poses){const button=actionButton('Pose log · '+humanize(product.manifest.product_id),{onClick:()=>inspectPose(peer.peer_id,product,deviceName(peer)+' / '+product.manifest.product_id)});location.append(button);}
   view.append(location);}
+ if(!peer.self&&isLocalScene()&&poses.some(p=>(p.metadata.value?.lifetime??'sampled')==='sampled'))view.append(driveSection(peer));
  // Capabilities: components with the products they make; raw manifests behind Technical details.
  const components=catalog.components||[],products=catalog.products||[];
  if(components.length||products.length){

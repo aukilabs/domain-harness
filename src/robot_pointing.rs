@@ -21,12 +21,17 @@ pub struct Candidate {
 
 /// Peers whose Catalog advertises this exact pointing contract.
 pub fn candidates(network: &Value) -> Vec<Candidate> {
+    candidates_for(network, &point_at::contract())
+}
+
+/// Peers whose Catalog advertises exactly `contract` (any robot operation).
+pub fn candidates_for(network: &Value, contract: &auki_components::OperableContract) -> Vec<Candidate> {
     let mut found = Vec::new();
     for row in network["peers"].as_array().into_iter().flatten() {
         let Some(entries) = row["catalog"]["components"].as_array() else { continue };
         for entry in entries {
             let Ok(entry) = serde_json::from_value::<CatalogComponentEntry>(entry.clone()) else { continue };
-            let advertised = entry.manifest.operables.iter().any(|o| o == &point_at::contract());
+            let advertised = entry.manifest.operables.iter().any(|o| o == contract);
             if advertised && row["peer_id"] == entry.manifest.peer_id.as_str() {
                 found.push(Candidate {
                     peer_id: entry.manifest.peer_id.clone(),
@@ -41,7 +46,12 @@ pub fn candidates(network: &Value) -> Vec<Candidate> {
 
 /// Resolve the robot by exact peer ID or Home alias/name; with none named, the only candidate.
 pub fn select(network: &Value, robot: Option<&str>) -> Result<Candidate> {
-    let all = candidates(network);
+    select_for(network, robot, &point_at::contract(), "point")
+}
+
+/// `select` for any robot operation; `verb` names what the robots can do in errors.
+pub fn select_for(network: &Value, robot: Option<&str>, contract: &auki_components::OperableContract, verb: &str) -> Result<Candidate> {
+    let all = candidates_for(network, contract);
     let names = |id: &str| {
         network["peers"].as_array().into_iter().flatten()
             .find(|p| p["peer_id"] == id)
@@ -50,12 +60,12 @@ pub fn select(network: &Value, robot: Option<&str>) -> Result<Candidate> {
             .unwrap_or_default()
     };
     let listed = || all.iter().map(|c| c.peer_id.clone()).collect::<Vec<_>>().join(", ");
-    let operation = point_at::OPERATION;
+    let operation = contract.name.as_str();
     let Some(robot) = robot.map(str::trim).filter(|r| !r.is_empty()) else {
         return match all.as_slice() {
             [one] => Ok(one.clone()),
             [] => Err(anyhow!("No peer advertises a {operation} operable")),
-            _ => Err(anyhow!("Several robots can point ({}); name one", listed())),
+            _ => Err(anyhow!("Several robots can {verb} ({}); name one", listed())),
         };
     };
     let wanted = robot.to_lowercase();
@@ -64,7 +74,7 @@ pub fn select(network: &Value, robot: Option<&str>) -> Result<Candidate> {
         .cloned().collect::<Vec<_>>();
     match matches.as_slice() {
         [one] => Ok(one.clone()),
-        [] => Err(anyhow!("{robot:?} does not advertise a {operation} operable. Robots that can point: {}",
+        [] => Err(anyhow!("{robot:?} does not advertise a {operation} operable. Robots that can {verb}: {}",
             if all.is_empty() { "none".into() } else { listed() })),
         _ => Err(anyhow!("{robot:?} matches several robots; use an exact peer ID")),
     }

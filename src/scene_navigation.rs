@@ -289,7 +289,7 @@ pub async fn send(peer: &auki_sdk::AukiPeer, home: &crate::network::HomeConnecti
 
 /// Mount `scene-navigation:<id>` with its `plan` and `clear` Operables, exported for peers of the scene.
 pub fn mount<W: World>(runtime: &ComponentRuntime, endpoint: &auki_component_protocol::ComponentProtocolEndpoint,
-    id: &str, frame: &str, clock: ClockReference, world: W) -> Result<Component> {
+    id: &str, frame: &str, clock: ClockReference, world: W) -> Result<(Component, Operable<RouteRequest, Route>)> {
     let operable = |name: &str, instruction: &str, result: &str| OperableContract {
         name: name.into(), instruction: instruction.into(), result: result.into(), exposure: Exposure::Cluster };
     let component = runtime.component(ComponentSpec::new(format!("{COMPONENT}:{id}"))
@@ -306,5 +306,5 @@ pub fn mount<W: World>(runtime: &ComponentRuntime, endpoint: &auki_component_pro
     component.expose()?;
     endpoint.export_operable(&plan)?;
     endpoint.export_operable(&clear)?;
-    Ok(component)
+    Ok((component, plan))
 }

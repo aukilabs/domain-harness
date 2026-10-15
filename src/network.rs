@@ -585,6 +585,7 @@ pub async fn serve_scene(
     previews: tokio::sync::mpsc::Receiver<crate::sensor_preview::Request>,
     controls: tokio::sync::mpsc::Receiver<crate::component_control::Request>,
     pointing: tokio::sync::mpsc::Receiver<crate::robot_pointing::Invoke>,
+    navigation: tokio::sync::mpsc::Receiver<crate::robot_navigation::Invoke>,
     occupancy: crate::robot_occupancy::Cache,
     robot_states: crate::robot_states::RobotStates,
     ar_frames: crate::ar_preview::Frames,
@@ -744,7 +745,8 @@ pub async fn serve_scene(
         &monitor_stop,
     );
     let pointing = crate::robot_pointing::serve(&running.peer, pointing, &monitor_stop);
-    let (result, _, _, _, _, _, _, _, _, _, _, _) = tokio::join!(
+    let navigation = crate::robot_navigation::serve(&running.peer, navigation, &monitor_stop);
+    let (result, _, _, _, _, _, _, _, _, _, _, _, _) = tokio::join!(
         publish,
         remote,
         previews,
@@ -756,6 +758,7 @@ pub async fn serve_scene(
         held_subscriptions,
         controls,
         pointing,
+        navigation,
         robot_bodies
     );
     shutdown.cancel();
