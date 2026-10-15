@@ -67,8 +67,8 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
  }
  let shownDraft=null;
  function tick(){
-  // Handles stay up (inert) while a change saves, so releasing a drag doesn't flash them out and spring them back.
-  const visible=draft&&context?.editable&&!drawing&&preview.visible;handleLayer.classList.toggle('saving',pending);
+  // Handles stay up while a change saves, so releasing a drag doesn't flash them out, and can be dragged again at once.
+  const visible=draft&&context?.editable&&!drawing&&preview.visible;
   if(!visible){for(const h of handles)h.button.hidden=true;zoomPill.hidden=true;shownDraft=null;return;}
   const rect=renderer.domElement.getBoundingClientRect(),parent=handleLayer.parentElement.getBoundingClientRect(),ox=rect.left-parent.left,oy=rect.top-parent.top;
   const screen=p=>{const q=p.clone().project(camera);return {x:ox+(q.x+1)*rect.width/2,y:oy+(1-q.y)*rect.height/2,on:q.z>-1&&q.z<1};};
@@ -99,7 +99,8 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
  }
  function pointerRay(e){const rect=renderer.domElement.getBoundingClientRect(),ray=new THREE.Raycaster();ray.setFromCamera(new THREE.Vector2((e.clientX-rect.left)/rect.width*2-1,-(e.clientY-rect.top)/rect.height*2+1),camera);return ray.ray;}
  function startResize(e,h){
-  if(e.button!==0||!e.isPrimary||!editable()||!draft||drawing)return;e.preventDefault();e.stopPropagation();
+  // A new drag may start while the last one is still saving; its change saves next (see finishResize).
+  if(e.button!==0||!e.isPrimary||!context?.editable||!draft||drawing)return;e.preventDefault();e.stopPropagation();
   const original=structuredClone(draft),axis=axisVector(h.axis,original.yaw),face=facePoint(original,h);
   const normal=h.kind==='resize'?camera.position.clone().sub(face):new THREE.Vector3(0,1,0);if(h.kind==='resize')normal.addScaledVector(axis,-normal.dot(axis));
   if(normal.lengthSq()<1e-8){message('Orbit the view slightly to resize this face.');return;}
@@ -124,7 +125,7 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
   let delta=p.sub(resize.point).dot(resize.axis)*h.sign;if(e.shiftKey)delta=Math.round(delta*10)/10;resizeFace(original,h,delta);
  }
  function stopResize(restore=false){if(!resize)return;const r=resize;resize=null;if(restore){draft=r.original;fill(draft);draw();}if(r.h.button.hasPointerCapture(r.pointerId))r.h.button.releasePointerCapture(r.pointerId);controls.enabled=true;tick();}
- function finishResize(e){if(!resize||e.pointerId!==resize.pointerId)return;moveResize(e);stopResize();if(editing&&cardMode==='view')persist(false,true);else message(editing?'Handle change pending · Save volume to keep it.':'Volume adjusted. Add a title and save to create it.');}
+ function finishResize(e){if(!resize||e.pointerId!==resize.pointerId)return;moveResize(e);stopResize();if(editing&&cardMode==='view'){if(pending)saveQueued=true;else persist(false,true);}else message(editing?'Handle change pending · Save volume to keep it.':'Volume adjusted. Add a title and save to create it.');}
  // Panel: create, show/hide, list. Detail and editing live in the inspector card.
  const newVolume=actionButton('New volume',{variant:'primary',iconPath:icons.plus,id:'volume-draw'});
  const reason=document.createElement('p');reason.className='panel-hint';
@@ -247,7 +248,7 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
  // A scene poll that was already in flight when a save landed still carries the old volume; merged as a remote
  // edit, it would undo the save (a quick drag and release). For a few seconds after a save, polls that don't yet
  // show what was saved are skipped.
- let recentSave=null;
+ let recentSave=null,saveQueued=false;
  const volumeKey=v=>v?JSON.stringify([v.title,v.description,v.center,v.size,v.yaw]):null;
  function staleAfterSave(collection){
   if(!recentSave)return false;if(performance.now()-recentSave.at>5000){recentSave=null;return false;}
@@ -265,10 +266,12 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
    const saved=remove?null:(identifier?response.items.find(v=>v.id===identifier):response.items.find(v=>!before.has(v.id)))||null;
    items=remove?items.filter(v=>v.id!==identifier):saved?(items.some(v=>v.id===saved.id)?items.map(v=>v.id===saved.id?saved:v):[...items,saved]):items;
    recentSave={id:remove?identifier:saved?.id,after:remove?null:volumeKey(saved),at:performance.now()};
-   if(saved){editing=saved.id;draft=structuredClone(saved);fill(saved);draw();showList();if(!(keepSelection&&cardMode==='edit'))renderCard('view');}else cancel();
-   message(remove?'Volume deleted.':'Volume saved in this scene.');toast(remove?`Deleted “${body.volume?.title||'volume'}”`:'Volume saved');}
+   // A drag that started during the save (or is queued to save next) keeps its own draft.
+   if(saved&&(resize||saveQueued)){editing=saved.id;showList();}
+   else if(saved){editing=saved.id;draft=structuredClone(saved);fill(saved);draw();showList();if(!(keepSelection&&cardMode==='edit'))renderCard('view');}else cancel();
+   message(remove?'Volume deleted.':'Volume saved in this scene.');if(remove)toast(`Deleted “${body.volume?.title||'volume'}”`);}
   catch(e){if(context===selected){message(e.message);alertInCard(e.message);}}
-  finally{if(context===selected){pending=false;buttons();}}
+  finally{if(context===selected){pending=false;buttons();if(saveQueued){saveQueued=false;persist(false,true);}}}
  }
  form.onsubmit=e=>{e.preventDefault();if(form.reportValidity())persist();};
  function groundPoint(e){const rect=renderer.domElement.getBoundingClientRect(),ray=new THREE.Raycaster();ray.setFromCamera(new THREE.Vector2((e.clientX-rect.left)/rect.width*2-1,-(e.clientY-rect.top)/rect.height*2+1),camera);return ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,1,0),-Number(form.elements.base.value)),new THREE.Vector3());}
