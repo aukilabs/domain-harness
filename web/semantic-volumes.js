@@ -6,7 +6,6 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
  const group=new THREE.Group(),preview=new THREE.Group();scene.add(group,preview);
  let context=null,items=[],draft=null,editing=null,drawing=false,start=null,press=null,pending=false,signature='',resize=null,conflicted=false;
  const handleLayer=document.createElement('div');handleLayer.className='volume-handles';renderer.domElement.parentElement.append(handleLayer);
- const leaders=document.createElementNS('http://www.w3.org/2000/svg','svg');leaders.classList.add('volume-handle-leaders');handleLayer.append(leaders);
  const handles=[];
  // Handle roles, glyphs, colors and rail layout follow Peyote's
  // AxisRailHandle, handle-icons and OutlineHandles (meter-based Home adapter).
@@ -23,8 +22,7 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
   const {axis,sign,kind,name}=descriptor;
   const button=document.createElement('button');button.type='button';button.className='volume-resize-handle';button.dataset.axis=String(axis);button.dataset.kind=kind;button.dataset.sign=String(sign);
   button.setAttribute('aria-label',name);button.title=kind==='rotate'?'Rotate around the opposite corner · Shift snaps to 15°':kind==='move'?'Move along the ground · Shift snaps to 10 cm':`Resize ${['width','height','depth'][axis]} · Shift snaps to 10 cm`;button.innerHTML=handleIcon(descriptor.icon);button.hidden=true;handleLayer.append(button);
-  const leader=document.createElementNS('http://www.w3.org/2000/svg','line');leader.setAttribute('class','volume-leader');leaders.append(leader);
-  const handle={...descriptor,button,leader};handles.push(handle);
+  const handle={...descriptor,button,opacity:1,live:true};handles.push(handle);
   button.addEventListener('pointerdown',e=>startResize(e,handle));
   button.addEventListener('pointermove',moveResize);
   button.addEventListener('pointerup',e=>finishResize(e));
@@ -50,18 +48,48 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
   if(h.axis===1)return localPoint(v,[0,v.size[1]/2+.16,v.size[2]/2-.02]);
   return localPoint(v,[0,0,-v.size[2]/2-.12]);
  }
+ // Handles follow the box's size on screen continuously, with no jumps: the secondary handles fade and shrink as the
+ // box gets small, the +Y handle later, the move handle never, and a "Zoom to edit" pill joins it once the box is
+ // tiny. Face handles sit a fixed 26 px out along their face's on-screen normal (fading as the face turns towards
+ // the camera, when it can't be dragged sensibly), rotate handles 24 px out from their corners, and a handle that
+ // would land on a higher-priority one fades rather than being pushed aside. The drag maths still uses facePoint().
+ const zoomPill=document.createElement('button');zoomPill.type='button';zoomPill.className='volume-zoom-pill';zoomPill.textContent='Zoom to edit';zoomPill.hidden=true;handleLayer.append(zoomPill);
+ zoomPill.onclick=()=>{if(draft)focus(draft);};
+ const smooth=(a,b,x)=>{const t=Math.min(1,Math.max(0,(x-a)/(b-a)));return t*t*(3-2*t);};
+ const rank=h=>h.kind==='move'?0:h.kind==='rotate'?4:h.axis===1?1:h.axis===0?2:3;
+ function anchor(v,h){
+  if(h.kind==='move')return [localPoint(v,[0,-v.size[1]/2,v.size[2]/2]),axisVector(2,v.yaw)];
+  if(h.kind==='rotate')return [localPoint(v,[h.sign*v.size[0]/2,-v.size[1]/2,v.size[2]/2]),null];
+  if(h.axis===0)return [localPoint(v,[h.sign*v.size[0]/2,0,v.size[2]/2-.02]),axisVector(0,v.yaw).multiplyScalar(h.sign)];
+  if(h.axis===1)return [localPoint(v,[0,v.size[1]/2,v.size[2]/2-.02]),new THREE.Vector3(0,1,0)];
+  return [localPoint(v,[0,0,-v.size[2]/2]),axisVector(2,v.yaw).multiplyScalar(-1)];
+ }
+ let shownDraft=null;
  function tick(){
   const visible=draft&&editable()&&!drawing&&preview.visible;
-  if(!visible){for(const h of handles){h.button.hidden=true;h.leader.setAttribute('visibility','hidden');}return;}
-  const rect=renderer.domElement.getBoundingClientRect(),parent=handleLayer.parentElement.getBoundingClientRect();
-  leaders.setAttribute('viewBox',`0 0 ${parent.width} ${parent.height}`);const placed=[];
-  const a=facePoint(draft,handles[0]).project(camera),b=facePoint(draft,handles[1]).project(camera),compact=Math.hypot((a.x-b.x)*rect.width/2,(a.y-b.y)*rect.height/2)<120;
-  for(const h of handles){h.button.hidden=!visible;if(!visible)continue;const p=facePoint(draft,h).project(camera);h.button.hidden=p.z< -1||p.z>1||Math.abs(p.x)>1||Math.abs(p.y)>1||(compact&&resize?.h!==h&&h.kind!=='move'&&!(h.kind==='resize'&&h.axis===1));
-   h.button.classList.toggle('active',resize?.h===h);
-   const x=rect.left-parent.left+(p.x+1)*rect.width/2,y=rect.top-parent.top+(1-p.y)*rect.height/2;let offset=0;
-   if(!h.button.hidden){while(placed.some(q=>Math.hypot(q.x-x,q.y-y-offset)<52))offset-=52;if(y+offset<26){offset=0;while(placed.some(q=>Math.hypot(q.x-x,q.y-y-offset)<52))offset+=52;}placed.push({x,y:y+offset});}
-   h.button.style.left=x+'px';h.button.style.top=(y+offset)+'px';
-   h.leader.setAttribute('visibility',offset&&!h.button.hidden?'visible':'hidden');h.leader.setAttribute('x1',String(x));h.leader.setAttribute('y1',String(y));h.leader.setAttribute('x2',String(x));h.leader.setAttribute('y2',String(y+offset));
+  if(!visible){for(const h of handles)h.button.hidden=true;zoomPill.hidden=true;shownDraft=null;return;}
+  const rect=renderer.domElement.getBoundingClientRect(),parent=handleLayer.parentElement.getBoundingClientRect(),ox=rect.left-parent.left,oy=rect.top-parent.top;
+  const screen=p=>{const q=p.clone().project(camera);return {x:ox+(q.x+1)*rect.width/2,y:oy+(1-q.y)*rect.height/2,on:q.z>-1&&q.z<1};};
+  // S: the box's size on screen, the square root of the area its 8 corners cover.
+  let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+  for(const sx of [-1,1])for(const sy of [-1,1])for(const sz of [-1,1]){const c=screen(localPoint(draft,[sx*draft.size[0]/2,sy*draft.size[1]/2,sz*draft.size[2]/2]));minX=Math.min(minX,c.x);maxX=Math.max(maxX,c.x);minY=Math.min(minY,c.y);maxY=Math.max(maxY,c.y);}
+  const S=Math.sqrt(Math.max(0,(maxX-minX)*(maxY-minY))),centre={x:(minX+maxX)/2,y:(minY+maxY)/2};
+  const right=new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld,0).multiplyScalar(.5),placed=[],mounting=shownDraft!==draft.id;shownDraft=draft.id;
+  for(const h of [...handles].sort((a,b)=>rank(a)-rank(b))){
+   const [world,normal]=anchor(draft,h),at=screen(world);let x=at.x,y=at.y,opacity=h.kind==='move'?1:h.kind==='resize'&&h.axis===1?smooth(70,100,S):smooth(110,170,S);
+   if(normal){const tip=screen(world.clone().addScaledVector(normal,.5)),side=screen(world.clone().add(right)),dx=tip.x-x,dy=tip.y-y,length=Math.hypot(dx,dy),metre=Math.hypot(side.x-x,side.y-y)||1;
+    if(length>1e-3){x+=dx/length*26;y+=dy/length*26;}if(h.kind==='resize')opacity*=smooth(.25,.45,length/metre);}
+   else{const dx=x-centre.x,dy=y-centre.y,length=Math.hypot(dx,dy)||1;x+=dx/length*24;y+=dy/length*24;}
+   if(!at.on)opacity=0;
+   for(const q of placed)if(q.opacity>.05)opacity*=smooth(28,40,Math.hypot(q.x-x,q.y-y));
+   const active=resize?.h===h;if(active)opacity=1;placed.push({x,y,opacity});
+   h.button.hidden=false;h.button.classList.toggle('active',active);
+   h.button.style.transform=`translate(${x}px,${y}px) translate(-50%,-50%) scale(${active?1.08:.8+.2*opacity})`;h.button.style.opacity=String(opacity);
+   h.button.style.visibility=opacity<.05?'hidden':'';
+   // Only clearly visible handles take the pointer and focus, with a little hysteresis.
+   const live=h.live?opacity>.55:opacity>.65;if(live!==h.live){h.live=live;h.button.style.pointerEvents=live?'':'none';h.button.inert=!live;}
+   if(mounting&&opacity>.05&&!matchMedia('(prefers-reduced-motion: reduce)').matches)h.button.animate([{scale:.4},{scale:1}],{duration:280,delay:rank(h)*20,easing:'cubic-bezier(.34,1.56,.64,1)',fill:'backwards'});
+   if(h.kind==='move'){const pill=1-smooth(55,70,S);zoomPill.hidden=pill<.05;zoomPill.style.opacity=String(pill);zoomPill.style.transform=`translate(${x}px,${y+28}px) translate(-50%,0)`;zoomPill.inert=pill<.6;}
   }
  }
  function pointerRay(e){const rect=renderer.domElement.getBoundingClientRect(),ray=new THREE.Raycaster();ray.setFromCamera(new THREE.Vector2((e.clientX-rect.left)/rect.width*2-1,-(e.clientY-rect.top)/rect.height*2+1),camera);return ray.ray;}

@@ -243,7 +243,6 @@ aside{display:block;padding:0;min-width:0;max-height:none;overflow:hidden;backgr
 .volume-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 10px}
 .volume-grid input{min-width:0}
 .volume-handles{position:absolute;inset:0;pointer-events:none;z-index:80}
-.volume-handle-leaders{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
 .volume-resize-handle{position:absolute;transform:translate(-50%,-50%);width:48px;height:48px;padding:0;border:0;border-radius:50%;background:transparent;color:#3b82f6;pointer-events:auto;cursor:grab;touch-action:none;display:grid;place-items:center}
 .volume-resize-handle[hidden]{display:none}
 .volume-resize-handle .handle-ring{stroke:#1d4ed8}
@@ -1094,7 +1093,6 @@ select.form-control{appearance:none;-webkit-appearance:none;padding-right:30px;b
 :root:not([data-theme="light"]) .volume-resize-handle{color:#c4b5fd}
 :root:not([data-theme="light"]) .volume-resize-handle::before{background:radial-gradient(circle at 35% 28%,#52525b,#3f3f46 58%,#27272a);box-shadow:inset 0 0 0 1.5px color-mix(in srgb,#a78bfa 60%,transparent),inset 0 1px 0 rgba(255,255,255,.12),0 6px 14px -5px rgba(0,0,0,.7)}
 :root:not([data-theme="light"]) .volume-resize-handle.active{color:#fff}
-.volume-leader{stroke:#7c3aed;stroke-width:1.25;stroke-dasharray:3 3;opacity:.55}
 @media(prefers-reduced-motion:reduce){.volume-resize-handle::before,.volume-resize-handle svg{transition:none}}
 /* Devices: the list follows hidden legacy controls, so its first header needs the same top reset as other panels. */
 #fleet-sensors>.section-header:first-child,#fleet-sensors>:first-child>.section-header:first-child{margin-top:0}
@@ -1525,3 +1523,12 @@ select.form-control[size]:focus{animation:none}
 .scene-label.hovered :is(.label-chip,.label-tile-only){box-shadow:var(--label-shadow),inset 0 0 0 1px var(--chip-rim),0 0 0 2px #8b5cf6}
 .scene-label.selected :is(.label-bubble,.label-pin){--ring:#d97706;box-shadow:none;filter:drop-shadow(2px 0 0 var(--ring)) drop-shadow(-2px 0 0 var(--ring)) drop-shadow(0 2px 0 var(--ring)) drop-shadow(0 -2px 0 var(--ring)) drop-shadow(0 3px 6px rgba(24,24,27,.25))}
 @media(prefers-reduced-motion:reduce){.scene-label .label-form,.scene-label[data-form] .label-form{transform:translateX(-50%)!important;transition:opacity .1s linear!important}}
+/* Volume handles are placed by transform from the layer's origin every frame (semantic-volumes.js tick()); their
+   opacity and scale follow the box's size on screen. A tiny box shows only the move handle and this pill. */
+.volume-handles .volume-resize-handle{left:0;top:0;will-change:transform,opacity}
+.volume-zoom-pill{position:absolute;left:0;top:0;height:26px;padding:0 10px;border:0;border-radius:999px;background:var(--sheet-glass);color:#6d28d9;
+ box-shadow:inset 0 0 0 1px var(--glass-rim),0 6px 16px -6px rgba(24,24,27,.35);font:600 12px/26px system-ui,-apple-system,sans-serif;white-space:nowrap;pointer-events:auto;cursor:pointer;
+ -webkit-backdrop-filter:blur(14px) saturate(1.3);backdrop-filter:blur(14px) saturate(1.3)}
+.volume-zoom-pill[hidden]{display:none}
+.volume-zoom-pill:hover{background:color-mix(in srgb,#7c3aed 12%,var(--sheet-glass))}
+:root:not([data-theme="light"]) .volume-zoom-pill{color:#c4b5fd}
