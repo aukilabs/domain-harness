@@ -107,6 +107,32 @@ class DiagnosticNavTests(unittest.TestCase):
             np.testing.assert_allclose(np.abs(pose['rotation_xyzw']), [0, 0, np.sqrt(.5), np.sqrt(.5)], atol=1e-9)
             self.assertEqual(len(files), 2)
 
+    def test_daemon_outcome_follows_nav_state(self):
+        outcome = nav.DaemonOutcome()
+        # A route reached before this goal started is not an arrival.
+        self.assertEqual([p for p, _ in outcome.update('reached', '')], ['progress'])
+        self.assertEqual([p for p, _ in outcome.update('navigating', '')], ['progress'])
+        self.assertEqual(outcome.update('navigating', ''), [])
+        self.assertEqual([p for p, _ in outcome.update('reached', '')], ['progress', 'arrived'])
+        failed = nav.DaemonOutcome().update('failed', 'no path')
+        self.assertEqual(failed[-1], ('failed', dict(reason='no path')))
+        stopped = nav.DaemonOutcome()
+        stopped.update('navigating', '')
+        self.assertEqual(stopped.update('idle', 'command writer disconnected')[-1][0], 'failed')
+
+    def test_daemon_command_record(self):
+        dtype = np.dtype([('enabled', '?'), ('num_waypoints', 'u1'), ('waypoints', 'f4', (128, 3)),
+                          ('loop', '?'), ('global_goal', '?')])
+        record = np.zeros((), dtype=dtype)
+        nav.daemon_record(record, [(1., 2., None), (3., 4., .5)])
+        self.assertTrue(record['enabled'])
+        self.assertEqual(int(record['num_waypoints']), 2)
+        self.assertTrue(np.isnan(record['waypoints'][0][2]), 'no heading is NaN for the daemon')
+        np.testing.assert_allclose(record['waypoints'][1], [3, 4, .5])
+        nav.daemon_record(record, [], enabled=False)
+        self.assertFalse(record['enabled'])
+        self.assertEqual(int(record['num_waypoints']), 0)
+
     def test_websocket_client_handshakes_reads_and_sends_masked_frames(self):
         server = FakeNav(dict(status='idle', ready=True))
         ws = nav.WebSocket(server.address)

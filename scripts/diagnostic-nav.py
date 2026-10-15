@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
-"""navigate adapter for the diagnostic peer: hands waypoints to the BBOS nav
-app (ws://127.0.0.1:8010/ws) and reports its progress. Local IPC only.
+"""navigate adapter for the diagnostic peer: hands waypoints to BBOS
+navigation and reports its progress. Local IPC only. Two BBOS generations:
 
-The first stdout line declares where the nav frame sits relative to the frame
-`slam.pose` is in, exactly as nav decides it at start: `T_nav_gl.npy` when a
-nav map is installed with QR relocalization on, identity when nav runs mapless.
+- Newer BBOS runs navigation as the always-on `nav` daemon: goals go on the
+  `nav.command` topic (held open while a route runs: the daemon stops if its
+  writer disconnects) and progress comes from `nav.state`. The daemon reads
+  `slam.pose` directly, so its frame is the SLAM world (identity).
+- Older BBOS runs the nav app: goals go on ws://127.0.0.1:8010/ws, and its
+  frame is `T_nav_gl.npy` applied to the SLAM world when a nav map is installed
+  with QR relocalization on, identity when it runs mapless.
+
+The first stdout line declares that relationship and the backend in use.
 
 Then each stdin line is one request:
   {"op": "go", "request_id": UUID, "waypoints": [[x, y, h|null], ...]}   nav frame
@@ -102,6 +108,96 @@ class Outcome:
         return events
 
 
+class DaemonOutcome:
+    """nav.state (idle, waiting_for_drive, navigating, reached, failed) to progress."""
+
+    def __init__(self):
+        self.started = False
+        self.last = None
+
+    def update(self, state, reason):
+        events = []
+        if state == 'navigating':
+            self.started = True
+        if (state, reason) != self.last:
+            self.last = (state, reason)
+            events.append(('progress', dict(status=state, reason=reason)))
+        if state == 'failed':
+            events.append(('failed', dict(reason=reason or 'nav failed')))
+        elif self.started and state == 'reached':
+            events.append(('arrived', {}))
+        elif self.started and state == 'idle':
+            events.append(('failed', dict(reason=reason or 'navigation stopped')))
+        return events
+
+
+def daemon_record(buffer, waypoints, enabled=True):
+    """Fill a nav_command record: up to 128 [x, y, heading|NaN] waypoints."""
+    import numpy as np
+    buffer['enabled'] = enabled
+    buffer['num_waypoints'] = len(waypoints) if enabled else 0
+    buffer['waypoints'][:] = 0
+    for i, (x, y, h) in enumerate(waypoints if enabled else []):
+        buffer['waypoints'][i] = (x, y, np.nan if h is None else h)
+    buffer['loop'] = False
+    buffer['global_goal'] = False
+
+
+class DaemonNav:
+    """Newer BBOS: the nav daemon over nav.command / nav.state."""
+    mode = 'daemon'
+
+    def __init__(self):
+        self.writer = None
+        self.pose = dict(translation=[0., 0., 0.], rotation_xyzw=[0., 0., 0., 1.])
+        self.files = {}
+
+    def command(self):
+        # Opened with the first goal and kept: the daemon stops a route whose writer goes away.
+        if self.writer is None:
+            from bbos import Type, Writer
+            try:
+                writer = Writer('nav.command', Type('nav_command'), keeptime=False)
+                writer.__enter__()
+            except RuntimeError as e:
+                raise ValueError(f'nav.command is held by another program: {e}')
+            self.writer = writer
+        return self.writer
+
+    def start(self, on_state):
+        from bbos import Reader
+
+        def follow():
+            with Reader('nav.state', keeptime=False) as reader:
+                while True:
+                    if reader.ready():
+                        d = reader.data
+                        on_state(bytes(d['state']).decode(errors='replace').strip('\0'),
+                                 bytes(d['reason']).decode(errors='replace').strip('\0'))
+                    time.sleep(.1)
+        threading.Thread(target=follow, daemon=True).start()
+
+    def ready(self):
+        return True
+
+    def go(self, waypoints):
+        with self.command().buf() as buffer:
+            daemon_record(buffer, waypoints)
+
+    def stop(self):
+        with self.command().buf() as buffer:
+            daemon_record(buffer, [], enabled=False)
+
+
+def daemon_available():
+    try:
+        from bbos import Type
+        Type('nav_command')
+        return True
+    except Exception:
+        return False
+
+
 class WebSocket:
     """Minimal RFC 6455 text client: enough for nav's local /ws."""
 
@@ -165,6 +261,52 @@ class WebSocket:
             pass
 
 
+class AppNav:
+    """Older BBOS: the nav app on ws://127.0.0.1:8010/ws."""
+    mode = 'app'
+
+    def __init__(self):
+        self.pose, self.map_mode, self.files = nav_from_world()
+        self.mode = 'app-' + self.map_mode
+        self.ws = None
+        self.connected = threading.Event()
+
+    def start(self, on_state):
+        def follow():
+            # One long-lived connection: state frames for progress, and the channel commands go out on.
+            while True:
+                try:
+                    ws = WebSocket(NAV)
+                    ws.sock.settimeout(None)
+                    self.ws = ws
+                    while True:
+                        frame = json.loads(ws.receive())
+                        if frame.get('t') == 'params' or 'status' not in frame:
+                            continue
+                        if frame.get('ready'):
+                            self.connected.set()
+                        on_state(frame, None)
+                except (OSError, ValueError, ConnectionError):
+                    self.connected.clear()
+                    self.ws = None
+                    on_state(None, 'lost the nav app connection')
+                    time.sleep(1)
+        threading.Thread(target=follow, daemon=True).start()
+
+    def ready(self):
+        if self.files and any(Path(p).stat().st_mtime_ns != t for p, t in self.files.items()):
+            raise ValueError('nav map changed since start; restart the diagnostic')
+        return self.connected.wait(READY_WAIT_S) and self.ws is not None
+
+    def go(self, waypoints):
+        for message in nav_messages(waypoints):
+            self.ws.send(message)
+            time.sleep(.02)
+
+    def stop(self):
+        self.ws.send(dict(type='stop'))
+
+
 def main():
     out_lock = threading.Lock()
 
@@ -172,40 +314,27 @@ def main():
         with out_lock:
             print(json.dumps(dict(request_id=request_id, phase=phase, **details), allow_nan=False), flush=True)
 
-    pose, mode, files = nav_from_world()
+    nav = DaemonNav() if daemon_available() else AppNav()
     with out_lock:
-        print(json.dumps(dict(nav_from_world=pose, mode=mode), allow_nan=False), flush=True)
+        print(json.dumps(dict(nav_from_world=nav.pose, mode=nav.mode), allow_nan=False), flush=True)
     current = {'id': None, 'outcome': None}
-    socket_holder = {'ws': None, 'ready': threading.Event()}
 
-    def follow():
-        # One long-lived connection: state frames for progress, and the channel commands go out on.
-        while True:
-            try:
-                ws = WebSocket(NAV)
-                ws.sock.settimeout(None)
-                socket_holder['ws'] = ws
-                while True:
-                    frame = json.loads(ws.receive())
-                    if frame.get('t') == 'params' or 'status' not in frame:
-                        continue
-                    if frame.get('ready'):
-                        socket_holder['ready'].set()
-                    request_id, outcome = current['id'], current['outcome']
-                    if request_id and outcome:
-                        for phase, details in outcome.update(frame):
-                            emit(request_id, phase, **details)
-                            if phase in ('arrived', 'failed'):
-                                current['id'] = current['outcome'] = None
-            except (OSError, ValueError, ConnectionError):
-                socket_holder['ready'].clear()
-                socket_holder['ws'] = None
-                if current['id']:
-                    emit(current['id'], 'failed', reason='lost the nav app connection')
-                    current['id'] = current['outcome'] = None
-                time.sleep(1)
+    def on_state(state, reason):
+        request_id, outcome = current['id'], current['outcome']
+        if not (request_id and outcome):
+            return
+        if state is None:
+            events = [('failed', dict(reason=reason))]
+        elif isinstance(nav, DaemonNav):
+            events = outcome.update(state, reason)
+        else:
+            events = outcome.update(state)
+        for phase, details in events:
+            emit(request_id, phase, **details)
+            if phase in ('arrived', 'failed'):
+                current['id'] = current['outcome'] = None
 
-    threading.Thread(target=follow, daemon=True).start()
+    nav.start(on_state)
     parent = os.getppid()
     for line in sys.stdin:
         if os.getppid() != parent:
@@ -215,24 +344,20 @@ def main():
             if len(line) > 16384:
                 raise ValueError('request too large')
             op, request_id, waypoints = parse(line)
-            if files and any(Path(p).stat().st_mtime_ns != t for p, t in files.items()):
-                raise ValueError('nav map changed since start; restart the diagnostic')
-            if not socket_holder['ready'].wait(READY_WAIT_S) or socket_holder['ws'] is None:
+            if not nav.ready():
                 raise ValueError('nav app is not running or has no slam.pose yet (:8010)')
-            ws = socket_holder['ws']
             if op == 'stop':
-                ws.send(dict(type='stop'))
+                nav.stop()
                 if current['id']:
                     emit(current['id'], 'failed', reason='cancelled')
                 current['id'] = current['outcome'] = None
                 emit(request_id, 'stopped')
                 continue
-            current['id'], current['outcome'] = request_id, Outcome()
-            for message in nav_messages(waypoints):
-                ws.send(message)
-                time.sleep(.02)
-            emit(request_id, 'accepted', mode=mode, waypoints=len(waypoints))
-        except (ValueError, KeyError, OSError, ConnectionError) as e:
+            current['id'] = request_id
+            current['outcome'] = DaemonOutcome() if isinstance(nav, DaemonNav) else Outcome()
+            nav.go(waypoints)
+            emit(request_id, 'accepted', mode=nav.mode, waypoints=len(waypoints))
+        except (ValueError, KeyError, OSError, ConnectionError, RuntimeError) as e:
             emit(request_id, 'rejected', reason=str(e))
 
 

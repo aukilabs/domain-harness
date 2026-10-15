@@ -43,7 +43,8 @@ def find_note(home, scene, name):
 
 
 def nav_up(robot):
-    code, out = ssh(robot, "ss -ltn | grep -qE ':8010\\b' && echo up || echo down")
+    """Newer BBOS: the always-on nav daemon. Older BBOS: the nav app on :8010."""
+    code, out = ssh(robot, "(pgrep -f 'daemon.py nav' >/dev/null || ss -ltn | grep -qE ':8010\\b') && echo up || echo down")
     return out.strip().endswith('up')
 
 
@@ -68,7 +69,7 @@ def main():
 
     if not nav_up(args.robot):
         if not args.start_nav:
-            sys.exit('The nav app is not running on the robot (:8010). Rerun with --start-nav to start it.')
+            sys.exit('Neither the BBOS nav daemon nor the nav app (:8010) is running. Rerun with --start-nav to start the app.')
         print('Starting the BBOS nav app...')
         ssh(args.robot, f'{MANAGER}/run nav')
         until = time.time() + 45
@@ -76,7 +77,7 @@ def main():
             if time.time() > until:
                 sys.exit('nav did not start listening on :8010 within 45 s')
             time.sleep(3)
-    print('Nav app is running on :8010')
+    print('BBOS navigation is running')
 
     inbox = f'{ROOT}/navigate-debug'
     code, _ = ssh(args.robot, f'mkdir -p {inbox} && rm -f {inbox}/response.json && '

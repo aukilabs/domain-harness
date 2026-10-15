@@ -283,7 +283,7 @@ impl Navigator {
                 .context("Nav adapter ended")??;
             let declaration: Declaration = serde_json::from_str(&first)?;
             declaration.nav_from_world.validate()?;
-            ensure!(matches!(declaration.mode.as_str(), "map" | "mapless"), "Unknown nav mode");
+            ensure!(matches!(declaration.mode.as_str(), "daemon" | "app-map" | "app-mapless"), "Unknown nav mode");
             Ok(declaration)
         })();
         let declaration = match declaration {
@@ -294,7 +294,7 @@ impl Navigator {
                 return Err(e);
             }
         };
-        crate::diagnostic_log!("Nav frame: {} (nav app's T_nav_gl rule)", declaration.mode);
+        crate::diagnostic_log!("Nav backend: {} (its frame relative to the SLAM world as BBOS defines it)", declaration.mode);
         let adapter = Arc::new(Adapter { child, stdin: Mutex::new(stdin), waiting });
         // Nav's floor frame: Z up, metres, its +Y the robot's forward at heading 0.
         let owner = &p.contract.from_frame.peer_id;
