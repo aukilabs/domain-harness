@@ -19,6 +19,9 @@ mod depth_points;
 mod compact_pose;
 #[path = "../../../src/fisheye.rs"]
 mod fisheye;
+#[path = "../../../src/greet.rs"]
+mod greet;
+mod greeter;
 mod home;
 mod nav;
 #[path = "../../../src/navigate.rs"]
@@ -75,17 +78,18 @@ async fn main() -> Result<()> {
     let _logging = diagnostic_log::start()?;
     let args: Vec<_> = std::env::args().collect();
     let options = args.get(5..).unwrap_or_default();
-    let usage = "usage: auki-connection-diagnostic PEER_CONFIG HOME_CONNECTION DIAGNOSTIC_IDENTITY [--poses|--portals|--points|--check-home] [--arm-plan|--arm-motion] [--drive] [--navigate]";
+    let usage = "usage: auki-connection-diagnostic PEER_CONFIG HOME_CONNECTION DIAGNOSTIC_IDENTITY [--poses|--portals|--points|--check-home] [--arm-plan|--arm-motion] [--drive] [--navigate] [--greet]";
     ensure!(
         args.len() == 4
             || (args.len() == 5
                 && matches!(args[4].as_str(), "--poses" | "--portals" | "--points" | "--check-home"))
             || (args.len() >= 6
                 && matches!(args[4].as_str(), "--poses" | "--portals" | "--points")
-                && options.iter().all(|o| matches!(o.as_str(), "--arm-plan" | "--arm-motion" | "--drive" | "--navigate"))
+                && options.iter().all(|o| matches!(o.as_str(), "--arm-plan" | "--arm-motion" | "--drive" | "--navigate" | "--greet"))
                 && options.iter().filter(|o| o.starts_with("--arm-")).count() <= 1
                 && options.iter().filter(|o| *o == "--drive").count() <= 1
-                && options.iter().filter(|o| *o == "--navigate").count() <= 1),
+                && options.iter().filter(|o| *o == "--navigate").count() <= 1
+                && options.iter().filter(|o| *o == "--greet").count() <= 1),
         "{usage}"
     );
     // point_at plans with the arm adapter (--arm-plan) and moves (--arm-motion).
@@ -94,6 +98,8 @@ async fn main() -> Result<()> {
     let drive = options.iter().any(|o| o == "--drive");
     // Navigation: Home's own peer sends waypoints the BBOS nav app drives.
     let navigate = options.iter().any(|o| o == "--navigate");
+    // Greeting: say hello through the speaker with piper when asked.
+    let greet = options.iter().any(|o| o == "--greet");
     let check_home = args.get(4).is_some_and(|v| v == "--check-home");
     let publish_poses = args.len() >= 5 && !check_home;
     let points = args.get(4).is_some_and(|v| v == "--points");
@@ -216,6 +222,10 @@ async fn main() -> Result<()> {
         Some(p) => Some(pointer::Pointer::mount(p, known.clone(), arm, pointing_tx,
             _navigator.as_ref().map(|n| n.turner()))?),
         None => None,
+    };
+    let _greeter = match (&publisher, greet) {
+        (Some(p), true) => Some(greeter::Greeter::mount(p)?),
+        _ => None,
     };
     let mut input = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     let (camera_tx, mut camera_rx) =
