@@ -29,9 +29,23 @@ argument opts in to the local arm adapter, `scripts/diagnostic-arm.py`:
 - `--arm-plan`: the adapter plans each request against the live arm (measured
   joint limits, current pose, feedback health) and refuses what it cannot
   reach. It opens no arm writer and never moves anything.
-- `--arm-motion`: a planned request then moves. The arm eases to sides HOME,
-  swings straight forward, aims its finger axis at the target, holds 3 s and
-  returns, then releases its writers to BBOS. It refuses to take an arm another
+- `--arm-motion`: a planned request then moves, the way Quest teleop
+  (`bbapps/quest_teleop`) moves the arm: it eases to BBOS's own `cfg.home`,
+  then the hand glides to a pointing pose (fingers on the target) through
+  BBOS's `hybrid_ik`, one solve per tick, speed-capped. It holds 3 s, retraces
+  the same path back to where it started, then releases its writers to BBOS.
+  The whole path is solved and checked (joint limits, joint speed, the clear
+  envelope, the final aim) before anything moves.
+- With `--arm-motion` and `--navigate` together, a `point_at` from the robot's
+  own Home peer whose target is behind the robot, or that the arm refuses as
+  unreachable more than 15° off to a side, first turns the robot in place to
+  face the target: one BBOS nav goal at the robot's own position with that
+  heading, resolved through the published transforms like any goal. Once nav
+  reports arrival the target is resolved again from the fresh base pose and
+  pointed at with the arm on its original side. The Operable answers at once
+  (`executes: true`); a turn or plan that then fails is reported as a
+  `rejected` pointing status. Other callers get the old "turn the robot first"
+  refusal. Nav turns at its `HEADING_OMEGA` (0.15 rad/s by default). It refuses to take an arm another
   writer holds, and yields on stale feedback, tilt, low battery, temperature or
   current margins, or a following error. Clear the space in front of the robot.
 
@@ -52,9 +66,72 @@ independent of decoding.
 All peer data uses authenticated SDK libp2p component/registry protocols. The
 Python adapter uses local BBOS shared memory and stdout IPC only. SDK account
 authentication/discovery uses SDK infrastructure as before. This does not modify
-BBOS, start SLAM or load maps, and commands no motors unless `--arm-motion` is
-given (see `point_at` above). Dynamic camera mounts are rejected;
+BBOS, start SLAM or load maps, and commands no motors unless `--arm-motion`, `--drive` or `--navigate` is
+given (see `point_at` and teleop above). Dynamic camera mounts are rejected;
 they require timestamped extrinsics rather than a held calibration.
+
+## Teleop from Home
+
+`--drive` (with a scene-specific Home profile) lets that Home drive the base.
+The peer follows the scene's Home drive stream (`local-scene:<id>:drive`, the
+same relay a phone joystick uses), keeps only commands for itself whose driver
+is the Home peer in its profile, and hands them to `scripts/drive-bracketbot.py`
+at full teleop speeds. That helper is fail-closed: a command older than 400 ms,
+a centred stick, low battery or another `drive.ctrl` writer is a stop, and it
+holds the writer only while commands are fresh. Home's viewer sends commands
+from the keyboard (WASD/arrows, Esc stops) through
+`POST /api/local-scenes/{id}/drive`, as Home's own peer.
+
+## Navigation from Home
+
+`--navigate` exposes `base-navigator` with `navigate` and `cancel`
+(`src/navigate.rs`), callable only by the Home peer in the profile. Home plans
+a route on its scene map (`scene-navigation:<id>` `plan`, as its own peer and
+shared so viewers draw it) from the robot's live position, and sends the
+thinned waypoints in its scene frame. `scripts/diagnostic-nav.py` declares
+where the BBOS nav app's frame sits relative to the SLAM world by nav's own
+rule (`T_nav_gl.npy` with QR relocalization on, else identity); this peer
+publishes that as the held `bbos-nav-frame` transform, resolves the waypoints
+through declared transforms only, sets the final heading along the last
+segment, and hands nav `clear` / `add_wp` / `start` on `ws://127.0.0.1:8010/ws`.
+Nav plans locally, avoids obstacles and writes `drive.ctrl`; `cancel` sends
+`stop`. The nav app must already be running on the robot.
+
+## Recovery
+
+The LED controller (`scripts/bracketbot_slam_led_diagnostic.py`) restarts the
+peer whenever it exits, after 2, 4, 8, 16, 32 then 60 s (reset after a run of
+a minute or more). The peer exits on purpose when BBOS restarts SLAM (a new
+writer is a new pose session, so it starts a fresh one) and when an essential
+helper (arm, nav or drive) exits, so a restart respawns them all. Camera, depth
+and robot-state helpers degrade without stopping the peer.
+
+## Onboarding from a phone (`--portals`)
+
+The detector hands onboarding codes (an invitation QR, a session's `ONB:`
+marker) to `src/onboard.rs` in-process; they are never published, since an
+invitation may hold a Wi-Fi password. On an invitation for this runner's Home
+(same Home peer and scene frame), the robot:
+
+1. joins the invitation's Wi-Fi if it is not already on it, with
+   `sudo -n nmcli dev wifi connect …` (arguments without a shell; the
+   previous network is kept on failure). This needs a sudoers entry for
+   exactly that command for the runner's user; without it the join fails and
+   says so;
+2. names itself in Home with the alias (Home's `name` operation, bound to
+   this Peer ID);
+3. asks the phone to show its 50 mm marker, and times the phone's capture
+   clock against this one (BBOS stamps camera frames with wall-clock
+   nanoseconds) over 16 authenticated exchanges;
+4. for each sighting of the marker, undistorts its corners with the head
+   camera's fisheye model, solves the 50 mm square, asks the phone where the
+   marker was in the scene at that instant, and hands the alignment worker
+   "where this camera was in the scene";
+5. the alignment worker composes that with the capture-time base pose and the
+   head extrinsic, and publishes the held transform into the scene once five
+   sightings agree within 2 cm / 2° — the same Product a Portal alignment uses.
+
+An invitation for a different Home is refused (restart with that profile).
 
 ## Validation and operation
 

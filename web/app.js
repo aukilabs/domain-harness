@@ -23,6 +23,7 @@ import { moveMapCamera, applyChatActions, chatResultPresentation } from './view-
 import { createAttachedCamera } from './attached-camera.js';
 import { createRobotModel } from './robot-model.js';
 import { applyRobotHealth, applyPointingStatus } from './robot-health.js';
+import { createSlashCommands } from './slash-commands.js';
 import { createAgentBar } from './agent-bar.js';
 const $=id=>document.getElementById(id);
 const chatForm=$('scene-chat-form'),chatInput=$('scene-chat-input'),chatStatus=$('scene-chat-status');
@@ -39,11 +40,21 @@ function renderChat(){
  const fresh=chatShown.map===activeMap?chatShown.count:messages.length;chatShown={map:activeMap,count:messages.length};
  chatHistory.replaceChildren();chatHistory.hidden=!messages.length&&!pending;
  messages.forEach((m,i)=>{const row=document.createElement('div');row.className='scene-chat-message '+m.role+(i>=fresh?' enter':'');
-  const who=document.createElement('strong');who.className='visually-hidden';who.textContent=m.role==='user'?'You':'Qwen';
+  const who=document.createElement('strong');who.className=m.direct?'scene-chat-source':'visually-hidden';who.textContent=m.role==='user'?'You':m.direct?'Home':'Qwen';
   // The "nothing was saved" receipt stays with the reply, as a quiet note rather than body text.
   const shown=m.display_content||m.content,receipt=m.role==='user'?null:shown.match(/\n\nNo scene changes were saved\.$/);
   const text=document.createElement('div');text.className='scene-chat-text';text.textContent=receipt?shown.slice(0,receipt.index):shown;row.append(who,text);
   if(receipt){const note=document.createElement('div');note.className='scene-chat-receipt';note.textContent='No scene changes were saved.';row.append(note);}
+  if(m.role==='assistant'&&m.explanation){
+   const details=document.createElement('div');details.className='scene-chat-explanation';details.id=`chat-explanation-${i}`;details.textContent=m.explanation;
+   text.tabIndex=0;text.setAttribute('role','button');text.setAttribute('aria-controls',details.id);text.setAttribute('aria-label',text.textContent+' — toggle explanation');
+   text.title='Right-click to expand or collapse explanation. Keyboard: Enter or Space.';
+   const sync=()=>{details.hidden=!m.explanation_expanded;text.setAttribute('aria-expanded',String(!!m.explanation_expanded));};
+   const toggle=e=>{e.preventDefault();e.stopPropagation();m.explanation_expanded=!m.explanation_expanded;sync();};
+   row.addEventListener('contextmenu',toggle);
+   text.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){if(!e.repeat)toggle(e);else e.preventDefault();}});
+   sync();row.append(details);
+  }
   chatHistory.append(row);});
  if(pending){const row=document.createElement('div');row.className='scene-chat-message assistant thinking enter';const text=document.createElement('div');text.className='scene-chat-text';text.textContent='Thinking…';row.append(text);chatHistory.append(row);}
  document.querySelector('.scene-chat').classList.toggle('pending',pending);
@@ -51,6 +62,7 @@ function renderChat(){
  document.querySelector('.agent-bar').classList.toggle('has-conversation',!!messages.length||pending);agentBar?.syncSheet();
 }
 let chatPendingMap=null;
+const slashCommands=createSlashCommands({input:chatInput,container:document.querySelector('.scene-chat'),getScene:()=>activeMap,fetchInventory:scene=>api('/api/commands?scene='+encodeURIComponent(scene))});
 $('agent-new').onclick=()=>{if(chatPending)return;chatConversations.delete(activeMap);renderChat();chatStatus.textContent='Local Qwen · inspect scene and edit volume descriptions';chatInput.focus();};
 chatInput.addEventListener('input',()=>{chatForm.querySelector('button').disabled=chatPending||!chatInput.value.trim();});
 chatForm.onsubmit=async e=>{
@@ -58,23 +70,25 @@ chatForm.onsubmit=async e=>{
  // Sending while the conversation is minimised brings it back, so the reply isn't hidden.
  if(chatCompact){chatCompact=false;try{localStorage.setItem('home.chat.compact','false');}catch{}syncChatCompact();}
  const map=activeMap,message=chatInput.value.trim(),history=(chatConversations.get(map)||[]).slice(-18);
- history.push({role:'user',content:message});
+ const direct=message.startsWith('/');let command;
+ if(direct){try{command=slashCommands.prepare();}catch(error){chatStatus.textContent=error.message;toast(error.message);return;}}
+ history.push({role:'user',content:message,direct});
  if(history.reduce((n,m)=>n+m.content.length,0)>32000){chatStatus.textContent='Conversation is too long. Start a shorter conversation.';toast(chatStatus.textContent);return;}
- chatConversations.set(map,history);chatPending=true;chatPendingMap=map;renderChat();chatInput.value='';chatForm.querySelector('button').disabled=true;chatStatus.textContent='Qwen is thinking…';
+ chatConversations.set(map,history);chatPending=true;chatPendingMap=map;renderChat();chatInput.value='';slashCommands.submitted();chatForm.querySelector('button').disabled=true;chatStatus.textContent=direct?'Executing directly in Home…':'Qwen is thinking…';
  try{
-  const result=await api('/api/chat',{messages:history.map(({role,content})=>({role,content})),scene:map});
+  const result=direct?await api('/api/commands',command):await api('/api/chat',{messages:history.filter(m=>!m.direct).map(({role,content})=>({role,content})),scene:map});
   const browser=result.ui_actions===undefined?null:await applyChatCamera(result.ui_actions,map);
   const presentation=chatResultPresentation(result,browser);
-  history.push({role:'assistant',content:presentation.content,display_content:presentation.display_content});
+  history.push({role:'assistant',content:presentation.content,display_content:presentation.display_content,explanation:presentation.explanation,direct});
   chatStatus.textContent=presentation.status;
   if(result.changes?.length){
    // A failed refresh cannot undo saved receipts or offer the whole edit again.
    lastScene=null;try{await refresh();}catch(error){chatStatus.textContent+=' · View refresh failed: '+error.message;}
   }
- }catch(error){history.pop();if(activeMap===map&&!chatInput.value)chatInput.value=message;chatStatus.textContent=error.message;toast(error.message);}
+ }catch(error){if(direct){history.push({role:'assistant',direct:true,content:'Command failed or was not confirmed: '+error.message+'. Check the current state before retrying; Home will not retry automatically.'});}else{history.pop();if(activeMap===map&&!chatInput.value)chatInput.value=message;}chatStatus.textContent=error.message;toast(error.message);}
  finally{chatPending=false;chatPendingMap=null;renderChat();if(document.activeElement===document.body||document.activeElement?.closest?.('.agent-bar'))chatInput.focus({preventScroll:true});chatForm.querySelector('button').disabled=!chatInput.value.trim();}
 };
-$('map-select').addEventListener('change',()=>{renderChat();chatStatus.textContent=chatPending?'A local reply is pending for the previous scene…':'Local Qwen · inspect scene and edit volume descriptions';});
+$('map-select').addEventListener('change',()=>{slashCommands.reset();renderChat();chatStatus.textContent=chatPending?'A local reply is pending for the previous scene…':'Ask Qwen, or type / for direct commands';});
 for(const event of ['pointerdown','pointerup','click','dblclick','contextmenu','wheel','keydown','keyup']){
  document.querySelector('.scene-chat').addEventListener(event,e=>e.stopPropagation());
 }
@@ -505,7 +519,8 @@ function build(data){flatSpritesAge=Infinity;
  renderer.domElement.dataset.legacyVolumeCount=String(legacyVolumesForView(data).length);
  const noteLabels=[];
  for(const note of data.notes||[]){
-  if(note.phone_pose)continue;
+  // Registry robots draw their own name tag from their pose; these labels are for phones.
+  if(note.phone_pose||note.robot_pose?.registry)continue;
   const peer=Boolean(note.robot_pose||note.anchor_robot||note.id?.startsWith('robot-name:')||note.id?.startsWith('phone-name:'));
   const anchor=new THREE.Object3D();anchor.position.fromArray(note.position);groups.notes.add(anchor);
   noteLabels.push({id:'note:'+note.id,kind:'note',anchor,text:noteTitle(note),peer,note});
@@ -524,7 +539,7 @@ function build(data){flatSpritesAge=Infinity;
    const marker=new THREE.Mesh(new THREE.OctahedronGeometry(.045),new THREE.MeshStandardMaterial({color:'#7f9aba'}));marker.position.fromArray(p);groups.rays.add(marker);
   }
  }
- $('empty').hidden=data.portals.length>0||data.voxels.length>0;if(activeMap==='home-live')$('empty').textContent='Waiting for Home to observe UCOF1J40N7O';else $('empty').textContent='No geometry yet';$('voxel-count').textContent=data.voxels.length.toLocaleString();$('observation-count').textContent=data.integrated_observations??'—';$('object-count').textContent=data.objects.length;
+ $('empty').hidden=data.portals.length>0||data.voxels.length>0||(data.paths?.items?.length||0)>0;if(activeMap==='home-live')$('empty').textContent='Waiting for Home to observe UCOF1J40N7O';else $('empty').textContent='No geometry yet';$('voxel-count').textContent=data.voxels.length.toLocaleString();$('observation-count').textContent=data.integrated_observations??'—';$('object-count').textContent=data.objects.length;
  for(const [peer,id] of [['iphone','phone-state'],['bracketbot','bot-state']]){const n=data.sources[peer];$(id).textContent=n?'Contributed':'Ready';$(id).classList.toggle('active',Boolean(n));}
  $('load').innerHTML=data.integrated_observations?'Reload test contributions <span>↗</span>':'Load two test peers <span>↗</span>';
  $('project').disabled=busy||!data.voxels.length;$('replay').disabled=busy||!data.sources.iphone;
@@ -619,6 +634,16 @@ function noteAnchorText(note){
  return note.anchor_portal?`${note.height_m} m above portal ${note.anchor_portal}`:'Anchored in Home';
 }
 function cardActions(...buttons){const row=document.createElement('div');row.className='card-actions';row.append(...buttons);return row;}
+// Send the robot that advertises `navigate` to a place in this local scene.
+// Home plans the route on the scene map; the robot's own navigation drives it.
+async function sendRobot(target,status){status.textContent='Planning the route…';try{const r=await api(localSceneUrl()+'/navigate-robot',{target});status.textContent=r.summary;lastScene=null;}catch(error){status.textContent='Not sent · '+error.message;}}
+async function stopRobotNav(status){try{const r=await api('/api/robots/stop',{});status.textContent=r.summary;}catch(error){status.textContent='Not stopped · '+error.message;}}
+function robotGoControls(target){
+ const box=document.createElement('div');box.setAttribute('aria-label','Robot navigation');
+ const status=document.createElement('p');status.className='form-status';status.setAttribute('role','status');
+ box.append(cardActions(actionButton('Send robot here',{onClick:()=>sendRobot(target,status)}),actionButton('Stop robot',{variant:'danger-ghost',onClick:()=>stopRobotNav(status)})),status);
+ return box;
+}
 function showNoteSelection(note){
  // Close an open volume first (its handles and edits), as showSelection() would if the mode were still 'volume'.
  if(noteCardMode==='volume')semanticVolumes.closed();
@@ -634,6 +659,7 @@ function showNoteSelection(note){
  if(note.anchor_portal)field('Anchor portal',note.anchor_portal,true);
  field('Note ID',note.id,true);
  card.append(technical);
+ if(isLocalScene())card.append(robotGoControls({kind:'note',id:note.id}));
  const reason=noteReadOnlyReason(note);
  if(reason){const lock=document.createElement('p');lock.className='card-readonly';lock.append(icon(icons.lock,14),document.createTextNode('Read-only · '+reason));card.append(lock);}
  else card.append(cardActions(actionButton('Edit',{onClick:()=>editNoteCard(note)}),actionButton('Delete',{variant:'danger-ghost',onClick:()=>confirmNoteDelete(note)})));
@@ -918,8 +944,8 @@ renderer.domElement.addEventListener('pointerup',e=>{
  const hits=ray.intersectObjects([...selectable,...crayon.objects()].filter(o=>{for(let p=o;p;p=p.parent){if(!p.visible)return false;}return true;}));
  // Nothing hit: the click moves the spot cursor (the floor ring) there. Drags orbit and never get this far.
  if(!hits.length){clearSelection();const floor=ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,1,0),0),new THREE.Vector3());if(floor&&!crayon.isActive()&&!map2D.isActive())placeSpotMarker(floor);return;}const h=hits.find(h=>h.object.userData.kind==='path')||hits.find(h=>h.object.userData.kind==='portal')||hits[0],d=h.object.userData;
- if(d.kind==='voxels'){const v=current.voxels[h.instanceId];showSelection('Occupied voxel','','',{kind:'Voxel',facts:[['Position',xyz(v.center),true],['Evidence',String(v.evidence)],['Cell size','10 cm']]});}
- if(d.kind==='occupancy'){const t=current.occupancy_tiles[h.instanceId],state=t.value===100?'Occupied':t.value===0?'Free':'Unknown';showSelection(state+' cell','','',{kind:'Occupancy',facts:[['State',state],['Position',xyz(t.center),true],['Value',String(t.value)],['Sample','10 cm · retrieved in 2 m cells']]});}
+ if(d.kind==='voxels'){const v=current.voxels[h.instanceId];showSelection('Occupied voxel','','',{kind:'Voxel',facts:[['Position',xyz(v.center),true],['Evidence',String(v.evidence)],['Cell size','10 cm']]});if(isLocalScene())$('selection').append(robotGoControls({kind:'position',position:v.center}));}
+ if(d.kind==='occupancy'){const t=current.occupancy_tiles[h.instanceId],state=t.value===100?'Occupied':t.value===0?'Free':'Unknown';showSelection(state+' cell','','',{kind:'Occupancy',facts:[['State',state],['Position',xyz(t.center),true],['Value',String(t.value)],['Sample','10 cm · retrieved in 2 m cells']]});if(isLocalScene())$('selection').append(robotGoControls({kind:'position',position:t.center}));}
  if(d.kind==='path'){showPathSelection(d.path);return;}
  if(d.kind==='object'){const o=d.object;showSelection(o.label,'','',{kind:'Object',facts:[['Position',xyz(o.position),true],['Source',o.source_peer,true]]});}
  if(d.kind==='portal'&&(d.portal.anchor_id.length===11||d.portal.anchor_id.startsWith('home:'))){showSelection(d.portal.anchor_id,'','Double-click to approach',{kind:'Portal',monoTitle:true});return;}
@@ -944,7 +970,7 @@ renderer.domElement.addEventListener('dblclick',e=>{
  const volume=semanticVolumes.pick(ray);if(volume){closeUp(volume.point.toArray());return;}
  const hit=hits[0];if(hit)closeUp(hit.point.toArray());
 });
-async function api(path,body,method){if(path==='/api/chat'&&body){camera.updateMatrixWorld();const right=map2D.isActive()?[1,0,0]:new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld,0).toArray();body={...body,viewer:{frame:current?.frame||'',mode:map2D.isActive()?'2d':'3d',screen_right:right,camera_position:camera.position.toArray(),camera_target:controls.target.toArray(),...(chatFocus?{focus_point:chatFocus}:{})}};chatFocus=null;spotMarker.visible=false;}const r=await fetch(path,body?{method:method||'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:method?{method}:undefined);const text=await r.text();let result;try{result=JSON.parse(text);}catch{throw new Error(text);}if(!r.ok){const error=new Error(result.error||text);error.status=r.status;throw error;}return result;}
+async function api(path,body,method){if((path==='/api/chat'||path==='/api/commands')&&body){camera.updateMatrixWorld();const right=map2D.isActive()?[1,0,0]:new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld,0).toArray();body={...body,viewer:{frame:current?.frame||'',mode:map2D.isActive()?'2d':'3d',screen_right:right,camera_position:camera.position.toArray(),camera_target:controls.target.toArray(),...(chatFocus?{focus_point:chatFocus}:{})}};chatFocus=null;spotMarker.visible=false;}const r=await fetch(path,body?{method:method||'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:method?{method}:undefined);const text=await r.text();let result;try{result=JSON.parse(text);}catch{throw new Error(text);}if(!r.ok){const error=new Error(result.error||text);error.status=r.status;throw error;}return result;}
 function peerSceneUrl(map){return '/api/sensors?scene=true&sensor='+encodeURIComponent(map.slice(11));}
 // The 3D view stays hidden until the first scene is built and framed, then fades in, so a refresh never
 // shows the default grid, the camera jump or a flash of the empty state. A fallback reveals it regardless.
@@ -1389,13 +1415,13 @@ function restartSensor(){
 }
 async function applyChatCamera(actions,map){
  return applyChatActions(actions,{scene:map,context:()=>({scene:activeMap,frame:current?.frame}),apply:async(action,guard)=>{
-  if(['attach_camera','detach_camera','move_camera'].includes(action.type))cameraPan.cancel();
+  if(['attach_camera','detach_camera'].includes(action.type))cameraPan.cancel();
   if(action.type==='attach_camera')return attachedCamera.attach(action);
   if(action.type==='detach_camera'){
    if(action.scene!==activeMap||action.frame!==current?.frame)throw Error('Selected scene changed; ask again');
    return attachedCamera.detach();
   }
-  if(action.type==='move_camera'){const result=moveMapCamera(action,{scene:activeMap,frame:current?.frame,camera,controls,map2D});attachedCamera.detach();return result;}
+  if(action.type==='move_camera')return moveMapCamera(action,{scene:activeMap,frame:current?.frame,camera,controls,map2D,cameraPan,beforeMove:()=>attachedCamera.detach()});
   const catalog=await api('/api/sensors');
   guard();
   const sensor=catalog.sensors.find(s=>s.id===action.sensor_id&&s.peer_id===action.peer_id);
@@ -1584,6 +1610,42 @@ function technicalDetails(rows,key){
  for(const [name,value,copy] of rows){if(value===undefined||value===null||value==='')continue;const dt=document.createElement('dt'),dd=document.createElement('dd'),text=document.createElement('span');dt.textContent=name;text.className='mono-id';text.textContent=value;dd.append(text);if(copy)dd.append(copyButton(String(value),'Copy '+name.toLowerCase()));list.append(dt,dd);}
  return box;
 }
+// Keyboard teleop through the selected scene's drive relay, the same board a
+// phone joystick uses. Home moves nothing: the robot drives only for the Home
+// it is paired with, at its own speed limits, and stops when commands stop.
+const keyDrive={peer:null,session:null,sequence:0,keys:new Set(),timer:null,zeros:0,status:''};
+const DRIVE_KEYS={KeyW:[1,0],ArrowUp:[1,0],KeyS:[-1,0],ArrowDown:[-1,0],KeyA:[0,1],ArrowLeft:[0,1],KeyD:[0,-1],ArrowRight:[0,-1]};
+function driveStick(){let forward=0,turn=0;for(const key of keyDrive.keys){const [f,t]=DRIVE_KEYS[key];forward+=f;turn+=t;}return [Math.max(-1,Math.min(1,forward)),Math.max(-1,Math.min(1,turn))];}
+function driveCommand(forward,turn){return api(localSceneUrl()+'/drive',{session:keyDrive.session,sequence:++keyDrive.sequence,target_peer_id:keyDrive.peer,forward,turn});}
+function setDriveStatus(text){if(keyDrive.status===text)return;keyDrive.status=text;const hint=fleetList.querySelector('[data-drive-status]');if(hint)hint.textContent=text;}
+async function driveTick(){
+ if(!keyDrive.peer)return;if(!isLocalScene())return stopKeyDrive();
+ const [forward,turn]=driveStick();
+ // A released stick sends a few explicit zeros, then nothing: silence is a stop too.
+ if(!forward&&!turn){if(keyDrive.zeros>=3)return setDriveStatus('Driving · hold WASD or arrows · Esc to stop');keyDrive.zeros++;}else keyDrive.zeros=0;
+ try{await driveCommand(forward,turn);setDriveStatus(forward||turn?`Driving · forward ${forward} · turn ${turn}`:'Driving · stopped');}catch(error){setDriveStatus('Not sent · '+error.message);}
+}
+function startKeyDrive(peer){stopKeyDrive();keyDrive.peer=peer;keyDrive.session=crypto.randomUUID();keyDrive.sequence=0;keyDrive.keys.clear();keyDrive.zeros=3;keyDrive.status='';keyDrive.timer=setInterval(driveTick,100);fleetSignature='';renderFleetRows();setDriveStatus('Driving · hold WASD or arrows · Esc to stop');}
+function stopKeyDrive(){
+ if(!keyDrive.peer)return;keyDrive.keys.clear();clearInterval(keyDrive.timer);
+ driveCommand(0,0).catch(()=>{});keyDrive.peer=null;fleetSignature='';renderFleetRows();
+}
+function driveSection(peer){
+ const section=document.createElement('section');section.setAttribute('aria-label','Drive');section.append(sectionHeader('Drive'));
+ const driving=keyDrive.peer===peer.peer_id;
+ const button=actionButton(driving?'Stop driving (Esc)':'Drive with keyboard',{variant:driving?'danger-ghost':'secondary',onClick:()=>driving?stopKeyDrive():startKeyDrive(peer.peer_id)});
+ button.setAttribute('aria-pressed',String(driving));section.append(button);
+ const hint=document.createElement('p');hint.className='device-note';hint.dataset.driveStatus='';hint.textContent=driving?keyDrive.status:'WASD or arrow keys while driving. The robot moves only if it was started with --drive for this Home.';section.append(hint);
+ return section;
+}
+window.addEventListener('keydown',e=>{
+ if(!keyDrive.peer)return;if(e.code==='Escape'){stopKeyDrive();return;}
+ if(!(e.code in DRIVE_KEYS)||e.target?.matches?.('input,textarea,select,[contenteditable]'))return;
+ e.preventDefault();e.stopImmediatePropagation();keyDrive.keys.add(e.code);
+},true);
+window.addEventListener('keyup',e=>{if(e.code in DRIVE_KEYS)keyDrive.keys.delete(e.code);},true);
+window.addEventListener('blur',()=>keyDrive.keys.clear());
+document.addEventListener('visibilitychange',()=>{if(document.hidden)keyDrive.keys.clear();});
 function renderFleetRows(){
  if(componentControlPending||(fleetList.contains(document.activeElement)&&document.activeElement.matches('input,textarea,select')))return;
  disconnectRobots.hidden=!fleetNetwork?.simulation;disconnectRobots.disabled=homeOffline||!(fleetNetwork?.peers||[]).some(p=>p.status==='connected');
@@ -1686,6 +1748,7 @@ function renderDeviceDetail(peer,feeds,openedTechnical){
    const row=listRow({title:humanize(kind),meta:rest.join(':')||id,tile:icons.pin,label:'Pose log · '+humanize(id),onSelect:()=>inspectPose(peer.peer_id,product,deviceName(peer)+' / '+id)});
    row.classList.add('pose-log-row');row.title=id;row.dataset.focusKey='pose:'+id;location.append(row);}
   view.append(location);}
+ if(!peer.self&&isLocalScene()&&poses.some(p=>(p.metadata.value?.lifetime??'sampled')==='sampled'))view.append(driveSection(peer));
  // Capabilities: components with the products they make; raw manifests behind Technical details.
  const components=catalog.components||[],products=catalog.products||[];
  if(components.length||products.length){
@@ -1931,7 +1994,8 @@ function noteRowTile(note){
 }
 let notesSignature='';
 function renderNotes(){
- const notes=current?.notes||[],paths=current?.paths?.items||[];
+ // Registry robots are drawn from their poses; their labels exist for phones.
+ const notes=(current?.notes||[]).filter(n=>!n.robot_pose?.registry),paths=current?.paths?.items||[];
  const writable=notesWritable();
  const signature=JSON.stringify([activeMap,writable,notesQuery,selectedNoteId,selectedPathId,notes.map(n=>[n.id,noteTitle(n),n.details?.description,Boolean(n.details?.thumbnail),noteReadOnlyReason(n)]),paths.map(p=>[p.id,p.title,p.color,p.segments.length])]);
  newNoteButton.disabled=!writable||!current;notesReadOnly.hidden=writable;notesReadOnly.textContent=writable?'':'This map is read-only. Switch to a Home scene to add notes.';

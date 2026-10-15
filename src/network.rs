@@ -205,7 +205,7 @@ impl HomeConnection {
 
 pub struct ScenePublisher {
     pub endpoint: Arc<ComponentProtocolEndpoint>,
-    capture: BufferProductCapture<CanonicalScene>,
+    capture: Option<BufferProductCapture<CanonicalScene>>,
     output: ConfiguredObservable<CanonicalScene>,
     _component: Component,
     pub runtime: ComponentRuntime,
@@ -213,7 +213,7 @@ pub struct ScenePublisher {
     clock: ClockRegistryEntry,
     started: Instant,
     last_scene: Option<Vec<u8>>,
-    inputs: crate::shared_inputs::InputPublisher,
+    inputs: Option<crate::shared_inputs::InputPublisher>,
     frame_transform: Option<crate::frame_transform::Publisher>,
     live: Option<(
         Component,
@@ -226,6 +226,14 @@ impl ScenePublisher {
         Self::mount_in_frame(peer, FRAME)
     }
     pub fn mount_in_frame(peer: &AukiPeer, frame: &str) -> Result<Self> {
+        Self::mount_with_reference(peer, frame, true)
+    }
+    /// Keep the shared endpoint/registry host without exposing a deleted legacy
+    /// reference scene. Independent local scenes mount on this same endpoint.
+    pub fn mount_without_reference(peer: &AukiPeer) -> Result<Self> {
+        Self::mount_with_reference(peer, FRAME, false)
+    }
+    fn mount_with_reference(peer: &AukiPeer, frame: &str, reference: bool) -> Result<Self> {
         let peer_id = peer.peer_id().to_string();
         let runtime = ComponentRuntime::new(peer_id.clone());
         let mut clock = clock_entry(&peer_id, &uuid::Uuid::new_v4().to_string());
@@ -254,14 +262,17 @@ impl ScenePublisher {
             )
             .in_registered_frame(crate::conventions::registry(&peer_id, frame)?),
         )?;
-        component.expose()?;
-        let capture = runtime.capture_buffer(SCENE_PRODUCT, &output, scene_limits(), scene_size)?;
+        let capture = if reference {
+            component.expose()?;
+            Some(runtime.capture_buffer(SCENE_PRODUCT, &output, scene_limits(), scene_size)?)
+        } else { None };
         let endpoint = ComponentProtocolEndpoint::mount(peer.protocols(), runtime.clone())?;
         // Export only the coherent aggregate. Internal mapper Products are rebuilt
         // by the journal and are not stable network subscription identities.
-        endpoint.export_product(&capture.product())?;
-        let inputs =
-            crate::shared_inputs::InputPublisher::mount(&runtime, &endpoint, clock_ref(&clock))?;
+        let inputs = if let Some(capture) = &capture {
+            endpoint.export_product(&capture.product())?;
+            Some(crate::shared_inputs::InputPublisher::mount(&runtime, &endpoint, clock_ref(&clock))?)
+        } else { None };
         Ok(Self {
             inputs,
             frame_transform: None,
@@ -484,6 +495,7 @@ impl ScenePublisher {
         Ok(())
     }
     pub fn publish(&mut self, built: &Built) -> Result<bool> {
+        let capture = self.capture.as_ref().ok_or_else(|| anyhow!("Reference scene was deleted"))?;
         let scene = CanonicalScene {
             schema: SCENE_SCHEMA.into(),
             sdk_revision: SDK_REV.into(),
@@ -504,9 +516,9 @@ impl ScenePublisher {
         self.output
             .publish(self.started.elapsed().as_nanos() as u64, Arc::new(scene))?;
         ensure!(
-            self.capture.errors().is_empty(),
+            capture.errors().is_empty(),
             "scene capture failed: {:?}",
-            self.capture.errors()
+            capture.errors()
         );
         self.last_scene = Some(content);
         Ok(true)
@@ -515,6 +527,7 @@ impl ScenePublisher {
         &mut self,
         local: &crate::local_mapper::LocalMap,
     ) -> Result<Option<CanonicalScene>> {
+        let capture = self.capture.as_ref().ok_or_else(|| anyhow!("Reference scene was deleted"))?;
         if self.frame_transform.is_none() {
             self.frame_transform = Some(crate::frame_transform::Publisher::mount(
                 &self.runtime, &self.endpoint, clock_ref(&self.clock),
@@ -548,17 +561,18 @@ impl ScenePublisher {
             Arc::new(scene.clone()),
         )?;
         ensure!(
-            self.capture.errors().is_empty(),
+            capture.errors().is_empty(),
             "local scene retention failed"
         );
         Ok(Some(scene))
     }
     pub fn publish_inputs(&mut self, inputs: &[crate::runner_voxels::MappingInput]) -> Result<()> {
         self.inputs
+            .as_mut().ok_or_else(|| anyhow!("Reference scene was deleted"))?
             .publish(inputs, self.started.elapsed().as_nanos() as u64)
     }
     pub async fn close(self) -> Result<()> {
-        self.capture.cancel();
+        if let Some(capture) = &self.capture { capture.cancel(); }
         Arc::try_unwrap(self.endpoint)
             .map_err(|_| anyhow!("endpoint still in use at shutdown"))?
             .close()
@@ -588,27 +602,32 @@ pub async fn serve_scene(
     previews: tokio::sync::mpsc::Receiver<crate::sensor_preview::Request>,
     controls: tokio::sync::mpsc::Receiver<crate::component_control::Request>,
     pointing: tokio::sync::mpsc::Receiver<crate::robot_pointing::Invoke>,
+    navigation: tokio::sync::mpsc::Receiver<crate::robot_navigation::Invoke>,
     occupancy: crate::robot_occupancy::Cache,
     robot_states: crate::robot_states::RobotStates,
     ar_frames: crate::ar_preview::Frames,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<()> {
     let monitor_stop = shutdown.child_token();
-    mapping.status.send_replace(serde_json::json!({"status":"reference","detail":"Canonical portal record; live geometry has its own scenegraph"}));
+    mapping.status.send_replace(if local_scenes.reference_enabled {
+        serde_json::json!({"status":"reference","detail":"Canonical portal record; live geometry has its own scenegraph"})
+    } else {
+        serde_json::json!({"status":"local_scenes","detail":"Legacy reference deleted; mapping uses independent local scenes"})
+    });
     let remote_portals = store
         .lock()
         .map_err(|_| anyhow!("store unavailable"))?
         .built
         .portals
         .clone();
-    let remote = crate::scene_mirror::monitor(
+    let remote = async { if local_scenes.reference_enabled { crate::scene_mirror::monitor(
         &running.peer,
         runner_scene.as_ref(),
         &remote_portals,
         &remote_state,
         &monitor_stop,
-    );
-    let extra_monitors = futures::future::join_all(extra_runners.iter().map(|(config, state)| {
+    ).await; } };
+    let extra_monitors = futures::future::join_all(extra_runners.iter().filter(|_| local_scenes.reference_enabled).map(|(config, state)| {
         crate::scene_mirror::monitor(
             &running.peer,
             Some(config),
@@ -623,7 +642,7 @@ pub async fn serve_scene(
         .chain(extra_runners.iter().map(|(profile, _)| profile.clone()))
         .collect();
     let phone_depth = Arc::new(std::sync::Mutex::new(crate::mobile_depth::Inbox::default()));
-    let home_mapper = crate::home_mapper::monitor(
+    let home_mapper = async { if local_scenes.reference_enabled { crate::home_mapper::monitor(
         &running.peer,
         &home_sources,
         &remote_portals,
@@ -633,7 +652,7 @@ pub async fn serve_scene(
         &ar_frames,
         phone_depth.clone(),
         &monitor_stop,
-    );
+    ).await; } };
     let robot_occupancy =
         crate::robot_occupancy::monitor(&running.peer, &home_sources, &occupancy, &monitor_stop);
     let (catalog_tx, mut catalog_rx) =
@@ -649,14 +668,15 @@ pub async fn serve_scene(
         crate::device_catalogs::monitor(&running.peer, &registry_definitions, &local_scenes, &catalog_targets, catalog_tx, &monitor_stop);
     let preview_catalogs = catalog_rx.clone();
     let publish = async {
-        let publisher = ScenePublisher::mount(&running.peer);
+        let publisher = if local_scenes.reference_enabled { ScenePublisher::mount(&running.peer) }
+            else { ScenePublisher::mount_without_reference(&running.peer) };
         let result = match publisher {
             Err(error) => Err(error),
             Ok(mut publisher) => {
                 crate::product_registry::clock(&registry_definitions,&publisher.clock)?;
                 let _registry=crate::product_registry::mount(&running.peer,publisher.runtime.clone(),registry_definitions.clone())?;
                 let work = async {
-                publisher.enable_home_live()?;
+                if local_scenes.reference_enabled { publisher.enable_home_live()?; }
                 let _local_scene_components = local_scenes.mount(
                     &publisher.runtime, &publisher.endpoint,
                     clock_ref(&publisher.clock), publisher.started,
@@ -668,7 +688,7 @@ pub async fn serve_scene(
                 crate::mobile_local::mount_receiver(&publisher.runtime, &publisher.endpoint)?;
                 // Opt in with a measured floor height in the live map's up axis.
                 // Bind the same retained Product that peers subscribe to.
-                let mut occupancy_mapper = match std::env::var("SPATIAL_OCCUPANCY_FLOOR_M") {
+                let mut occupancy_mapper = if !local_scenes.reference_enabled { None } else { match std::env::var("SPATIAL_OCCUPANCY_FLOOR_M") {
                     Ok(floor) => Some(crate::occupancy_mapper::OccupancyMapper::mount(
                         &publisher.runtime, &publisher.endpoint,
                         &publisher.live.as_ref().unwrap().2.product(),
@@ -677,18 +697,20 @@ pub async fn serve_scene(
                     )?),
                     Err(std::env::VarError::NotPresent) => None,
                     Err(e) => return Err(e.into()),
-                };
-                publisher.enable_phone_depth(phone_depth.clone(),remote_portals.clone())?;
+                } };
                 let annotation_changes = Arc::new(tokio::sync::Notify::new());
-                publisher.enable_annotations_with_volumes(store.clone(), annotation_changes.clone(), Some(home_live.subscribe()),Some(local_scenes.clone()))?;
-                let phone_presence = publisher.enable_phone_presence(store.clone(), annotation_changes.clone())?;
+                let phone_presence = if local_scenes.reference_enabled {
+                    publisher.enable_phone_depth(phone_depth.clone(),remote_portals.clone())?;
+                    publisher.enable_annotations_with_volumes(store.clone(), annotation_changes.clone(), Some(home_live.subscribe()),Some(local_scenes.clone()))?;
+                    Some(publisher.enable_phone_presence(store.clone(), annotation_changes.clone())?)
+                } else { None };
                 let mut presence_tick = tokio::time::interval(std::time::Duration::from_millis(500));
                 let mut live_updates=home_live.subscribe();
                 let mut last_live=None;
                 let mut peer_status = running.peer.subscribe_status();
                 let mut routes = running.peer.protocol_context().routes().subscribe();
                 loop {
-                    { let presence = phone_presence.lock().map_err(|_|anyhow!("presence unavailable"))?;
+                    if let Some(phone_presence) = &phone_presence { let presence = phone_presence.lock().map_err(|_|anyhow!("presence unavailable"))?;
                         let mut store=store.lock().map_err(|_|anyhow!("store unavailable"))?;
                         crate::mobile_pose::sync(&mut store, &presence, Instant::now());
                         publisher.publish_inputs(store.mapping_inputs())?;
@@ -700,7 +722,12 @@ pub async fn serve_scene(
                     }
                     if let Some(mapper) = &mut occupancy_mapper { mapper.tick()?; }
                     for scene in &mut local_mobile { scene.tick()?; }
-                    let connection = HomeConnection::current(&running.peer)?;
+                    let mut connection = HomeConnection::current(&running.peer)?;
+                    if !local_scenes.reference_enabled {
+                        let id = local_scenes.preferred_id().or_else(||local_scenes.snapshots.keys().next().map(|id|format!("local:{id}")))
+                            .ok_or_else(||anyhow!("Home needs an active scene for its connection profile"))?;
+                        connection = local_scenes.connection(id.strip_prefix("local:").unwrap(), connection)?;
+                    }
                     let peers = crate::device_catalogs::device_rows(&running.peer, &catalog_rx.borrow());
                     status.send_replace(serde_json::json!({"enabled":true,
                         "status":format!("{:?}", running.peer.status()), "connection":connection,
@@ -747,7 +774,8 @@ pub async fn serve_scene(
         &monitor_stop,
     );
     let pointing = crate::robot_pointing::serve(&running.peer, pointing, &monitor_stop);
-    let (result, _, _, _, _, _, _, _, _, _, _, _) = tokio::join!(
+    let navigation = crate::robot_navigation::serve(&running.peer, navigation, &monitor_stop);
+    let (result, _, _, _, _, _, _, _, _, _, _, _, _) = tokio::join!(
         publish,
         remote,
         previews,
@@ -759,6 +787,7 @@ pub async fn serve_scene(
         held_subscriptions,
         controls,
         pointing,
+        navigation,
         robot_bodies
     );
     shutdown.cancel();

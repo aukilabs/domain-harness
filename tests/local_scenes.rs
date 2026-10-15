@@ -4,6 +4,120 @@ use auki_scenegraph::MapSnapshot;
 use spatial_home::{local_scenes::LocalScenes, model};
 
 #[test]
+fn scene_settings_rename_without_reframing_and_do_not_resurrect_deleted_scenes() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let scenes = support::seeded_local_scenes(dir.path())?;
+    let nacs_before = scenes.snapshot("nacs")?.scenegraph.clone();
+    let conference_before = scenes.snapshot("humanoid-hub-conference")?.scenegraph.clone();
+    let bb_bytes = std::fs::read(dir.path().join("bb-lab.json"))?;
+    let retained_notes = br#"{"fixture":"untouched"}"#;
+    for subdir in ["mobile-notes", "semantic-volumes", "paths"] {
+        std::fs::create_dir_all(dir.path().join(subdir))?;
+        std::fs::write(dir.path().join(subdir).join("bb-lab.json"), retained_notes)?;
+        std::fs::write(dir.path().join(subdir).join("humanoid-hub-conference.json"), retained_notes)?;
+    }
+    std::fs::create_dir_all(dir.path().join(".settings"))?;
+    std::fs::write(dir.path().join(".settings/catalog.json"), br#"{
+        "delete_reference":true,"deleted":["bb-lab"],
+        "names":{"nacs":"My apartment","humanoid-hub-conference":"1 Arkansas"}
+    }"#)?;
+    for _ in 0..2 {
+        let loaded = LocalScenes::load(dir.path())?;
+        assert!(!loaded.reference_enabled);
+        assert_eq!(loaded.snapshots.len(), scenes.snapshots.len() - 1);
+        assert!(loaded.snapshot("bb-lab").is_err());
+        assert!(!dir.path().join("bb-lab.json").exists());
+        for (id, old, name) in [("nacs", &nacs_before, "My apartment"),
+            ("humanoid-hub-conference", &conference_before, "1 Arkansas")] {
+            let mut expected = old.clone();
+            expected.map.name = Some(name.into());
+            let current = loaded.snapshot(id)?;
+            current.validate()?;
+            assert_eq!(serde_json::to_value(&current.scenegraph)?, serde_json::to_value(expected)?);
+            assert!(loaded.rows().iter().any(|row|row["id"] == format!("local:{id}") && row["name"] == name));
+        }
+        assert_eq!(loaded.preferred_id().as_deref(), Some("local:humanoid-hub-conference"));
+        assert_eq!(std::fs::read(dir.path().join(".deleted/bb-lab.json"))?, bb_bytes);
+        for subdir in ["mobile-notes", "semantic-volumes", "paths"] {
+            assert_eq!(std::fs::read(dir.path().join(".deleted").join(subdir).join("bb-lab.json"))?, retained_notes);
+            assert!(!dir.path().join(subdir).join("bb-lab.json").exists());
+            assert_eq!(std::fs::read(dir.path().join(subdir).join("humanoid-hub-conference.json"))?, retained_notes);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retired_reference_keeps_independent_scene_products_and_services() -> Result<()> {
+    use auki_component_protocol::{CatalogResponse, ComponentProtocolClient};
+    use spatial_home::network::{ScenePublisher, SCENE_PRODUCT};
+    let pair = support::LocalPair::start().await?;
+    let result = async {
+        let dir = tempfile::tempdir()?;
+        std::fs::create_dir_all(dir.path().join(".settings"))?;
+        std::fs::write(dir.path().join(".settings/catalog.json"), br#"{
+            "delete_reference":true,"deleted":["bb-lab"],
+            "names":{"nacs":"My apartment","humanoid-hub-conference":"1 Arkansas"}
+        }"#)?;
+        let scenes = std::sync::Arc::new(LocalScenes::load(dir.path())?);
+        let mut publisher = ScenePublisher::mount_without_reference(&pair.a)?;
+        let clock = model::clock_entry(&pair.a.peer_id().to_string(), "local-scenes-test");
+        let started = std::time::Instant::now();
+        let components = scenes.mount(&publisher.runtime, &publisher.endpoint, model::clock_ref(&clock), started)?;
+        let mut mobiles = spatial_home::local_mobile::Publisher::mount_all(
+            &publisher.runtime, &publisher.endpoint, scenes.clone(), clock, started)?;
+        for mobile in &mut mobiles { mobile.tick()?; }
+        let client = ComponentProtocolClient::new(pair.b.protocols());
+        let CatalogResponse::Snapshot { snapshot } = client.catalog_exact(
+            pair.a.peer_id(), pair.a.listen_addresses()[0].clone(), None).await? else {
+            panic!("Catalog unavailable")
+        };
+        for product in &snapshot.products {
+            let id = &product.manifest.product_id;
+            assert_ne!(id, SCENE_PRODUCT);
+            assert_ne!(id, "home-live-scene");
+            assert_ne!(id, "accepted-mapping-inputs");
+            assert!(!id.contains("bb-lab"));
+        }
+        for id in ["nacs", "humanoid-hub-conference"] {
+            assert!(snapshot.products.iter().any(|p|p.manifest.product_id == format!("local-scene:{id}:mobile")));
+            for base in ["home-annotations", "home-phone-presence", "home-robot-presence"] {
+                assert!(snapshot.components.iter().any(|c|c.manifest.component_id == format!("{base}:{id}")), "Missing {base}:{id}");
+                assert!(!snapshot.components.iter().any(|c|c.manifest.component_id == base));
+            }
+            let connection = scenes.connection(id, spatial_home::network::HomeConnection::direct(&pair.a))?;
+            connection.validate_scene_contract()?;
+            assert_eq!(connection.local_scene_id(), Some(id));
+            assert_eq!(scenes.view(id)?["environment_name"], scenes.snapshot(id)?.scenegraph.map.name.as_deref().unwrap());
+        }
+        let legacy = model::Store::open_canonical(dir.path().join("legacy.journal"))?;
+        assert!(publisher.publish(&legacy.built).is_err());
+        assert!(publisher.publish_inputs(&[]).is_err());
+        drop(mobiles);
+        drop(components);
+        publisher.close().await?;
+        Ok::<_, anyhow::Error>(())
+    }.await;
+    let cleanup = pair.shutdown().await;
+    result.and(cleanup)
+}
+
+#[test]
+fn scene_settings_reject_unsafe_or_conflicting_targets_before_archiving() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let _scenes = LocalScenes::load(dir.path())?;
+    std::fs::create_dir_all(dir.path().join(".settings"))?;
+    for invalid in [r#"{"deleted":["../nacs"]}"#,
+        r#"{"deleted":["bb-lab"],"names":{"bb-lab":"Still here"}}"#,
+        r#"{"names":{"nacs":" "}}"#] {
+        std::fs::write(dir.path().join(".settings/catalog.json"), invalid)?;
+        assert!(LocalScenes::load(dir.path()).is_err());
+        assert!(dir.path().join("bb-lab.json").is_file());
+    }
+    Ok(())
+}
+
+#[test]
 fn saved_scenes_are_independent_and_existing_data_is_authoritative() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let scenes = support::seeded_local_scenes(dir.path())?;

@@ -647,6 +647,8 @@ impl Publisher {
             },
         )?;
         drive.expose()?;
+        scenes.drives.lock().map_err(|_| anyhow!("Drive relay unavailable"))?
+            .insert(id.into(), drive_update.clone());
         endpoint.export_operable(&drive_update)?;
         endpoint.export_operable(&drive_snapshot)?;
         components.push(drive);
@@ -744,8 +746,10 @@ impl Publisher {
         let (path_scenes,path_scene,path_frame)=(scenes.clone(),id.to_owned(),paths_frame.clone());
         let paths_publisher=crate::scene_paths::Publisher::mount(runtime,endpoint,id,&owner,&paths_frame,crate::model::clock_ref(&clock),
             move |path,stroke| path_scenes.paths.change(&path_scene,&path_frame,path,stroke))?;
-        components.push(crate::scene_navigation::mount(runtime, endpoint, id, &paths_frame, crate::model::clock_ref(&clock),
-            NavigationWorld { state: state.clone(), scenes: scenes.clone(), scene: id.into(), frame: paths_frame.clone(), started })?);
+        let (navigation, planner) = crate::scene_navigation::mount(runtime, endpoint, id, &paths_frame, crate::model::clock_ref(&clock),
+            NavigationWorld { state: state.clone(), scenes: scenes.clone(), scene: id.into(), frame: paths_frame.clone(), started })?;
+        scenes.planners.lock().map_err(|_| anyhow!("Route planner unavailable"))?.insert(id.into(), planner);
+        components.push(navigation);
         let mut publisher = Self {
             id: id.into(),
             reference,
@@ -833,8 +837,20 @@ impl Publisher {
                 .presence
                 .lock().map_err(|_| anyhow!("Phone presence unavailable"))?
                 .snapshot_in_frame(Instant::now(), &reference.scenegraph.map.frame.id),
-            robot_presence: state.robot_presence.lock().map_err(|_|anyhow!("Robot presence unavailable"))?
-                .snapshot(Instant::now(), &reference.scenegraph.map.frame.id),
+            robot_presence: {
+                let frame = &reference.scenegraph.map.frame.id;
+                let mut presence = state.robot_presence.lock().map_err(|_|anyhow!("Robot presence unavailable"))?
+                    .snapshot(Instant::now(), frame);
+                // Robots that declare their body through the registry, so phones see them too.
+                let registry = self.scenes.registry_robots.lock().map_err(|_|anyhow!("Registry robots unavailable"))?
+                    .get(frame).cloned().unwrap_or_default();
+                if let Some(poses) = presence["poses"].as_array_mut() {
+                    let added: Vec<_> = registry.into_iter()
+                        .filter(|r| !poses.iter().any(|p| p["peer_id"] == r["peer_id"])).collect();
+                    poses.extend(added);
+                }
+                presence
+            },
         };
         scene.validate(&self.owner, &reference.scenegraph.map.frame.id)?;
         self.paths_publisher.publish(self.started.elapsed().as_nanos() as u64,scene.paths.clone().unwrap())?;

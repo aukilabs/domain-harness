@@ -119,35 +119,7 @@ impl Board {
     }
 }
 
-/// What Home pushes to robots the moment a phone's command is accepted.
-/// Polling `snapshot` costs a full request round trip per read, which on a
-/// loaded robot measured 130-390 ms; a pushed message is one hop.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Pushed {
-    pub driver_peer_id: String,
-    pub target_peer_id: String,
-    pub session: String,
-    pub sequence: u64,
-    pub forward: f32,
-    pub turn: f32,
-}
-impl ContractType for Pushed {
-    const DATATYPE: &'static str = STREAM_SCHEMA;
-}
-pub const STREAM_SCHEMA: &str = "spatial.phone-drive-stream/v1";
-pub fn stream_product(scene_id: &str) -> String {
-    format!("local-scene:{scene_id}:drive")
-}
-fn stream_limits() -> auki_components::BufferLimits {
-    auki_components::BufferLimits {
-        max_entries: Some(4),
-        max_bytes: Some(16 * 1024),
-        target_duration: None,
-    }
-}
-fn pushed_size(value: &Pushed) -> usize {
-    serde_json::to_vec(value).map_or(usize::MAX, |v| v.len())
-}
+pub use crate::drive_contract::{Pushed, STREAM_SCHEMA, pushed_size, stream_limits, stream_product};
 
 /// Home's side of the push stream for one scene.
 pub struct Stream {
