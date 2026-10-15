@@ -18,6 +18,8 @@ pub struct LocalScenes {
     pub(crate) directory: std::path::PathBuf,
     pub(crate) mobile_views: std::sync::Mutex<BTreeMap<String, Value>>,
     pub(crate) phone_presence: std::sync::Mutex<BTreeMap<String, std::sync::Arc<std::sync::Mutex<crate::mobile_pose::Presence>>>>,
+    /// Registry-declared robots per scene frame, kept by `registry_robots::serve`.
+    pub registry_robots: crate::registry_robots::Entries,
 }
 
 /// Stable physical-origin identity, not a coordinate-convention alias.
@@ -118,6 +120,7 @@ impl LocalScenes {
             directory: directory.into(),
             mobile_views: Default::default(),
             phone_presence: Default::default(),
+            registry_robots: Default::default(),
         })
     }
     /// Read live presence independently of the 1 Hz voxel/scene publication.

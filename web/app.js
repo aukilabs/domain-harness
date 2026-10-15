@@ -466,7 +466,8 @@ function build(data){flatSpritesAge=Infinity;
  $('canvas').dataset.volumeCount=String(data.semantic_volumes?.frame===data.frame?data.semantic_volumes.items.length:(data.volumes||[]).length);
  renderer.domElement.dataset.legacyVolumeCount=String(legacyVolumesForView(data).length);
  for(const note of data.notes||[]){
-  if(note.phone_pose)continue;
+  // Registry robots draw their own name tag from their pose; these labels are for phones.
+  if(note.phone_pose||note.robot_pose?.registry)continue;
   const peer=Boolean(note.robot_pose||note.anchor_robot||note.id?.startsWith('robot-name:')||note.id?.startsWith('phone-name:'));
   const tag=createNoteBubble(noteTitle(note),{peer});tag.position.fromArray(note.position);
   tag.userData={kind:'note',note};groups.notes.add(tag);selectable.push(tag);
@@ -1739,7 +1740,8 @@ function noteRowTile(note){
 }
 let notesSignature='';
 function renderNotes(){
- const notes=current?.notes||[],paths=current?.paths?.items||[];
+ // Registry robots are drawn from their poses; their labels exist for phones.
+ const notes=(current?.notes||[]).filter(n=>!n.robot_pose?.registry),paths=current?.paths?.items||[];
  const writable=notesWritable();
  const signature=JSON.stringify([activeMap,writable,notesQuery,selectedNoteId,selectedPathId,notes.map(n=>[n.id,noteTitle(n),n.details?.description,Boolean(n.details?.thumbnail),noteReadOnlyReason(n)]),paths.map(p=>[p.id,p.title,p.color,p.segments.length])]);
  newNoteButton.disabled=!writable||!current;notesReadOnly.hidden=writable;notesReadOnly.textContent=writable?'':'This map is read-only. Switch to a Home scene to add notes.';
