@@ -23,17 +23,37 @@ export function batteryColor(percent) {
  return percent >= 50 ? '#22c55e' : percent >= 20 ? '#f59e0b' : '#ef4444';
 }
 
+// Overlays are depth-tested, so geometry in front hides them, and each carries a
+// faint copy drawn over everything, so a hidden overlay still shows through.
+const OCCLUDED_OPACITY = 0.3;
+function ghost(object, material) {
+ const copy = material.clone();
+ copy.depthTest = false; copy.depthWrite = false; copy.transparent = true;
+ copy.opacity = material.opacity * OCCLUDED_OPACITY;
+ const shadow = object.isSprite ? new THREE.Sprite(copy) : new object.constructor(object.geometry, copy);
+ if (object.isSprite) shadow.center.copy(object.center);
+ shadow.renderOrder = object.renderOrder - 10;
+ object.add(shadow);
+ object.userData.ghost = shadow;
+ return object;
+}
+// Recolour an overlay and its faint copy together.
+function tint(object, color) {
+ object.material.color.copy(color);
+ object.userData.ghost?.material.color.copy(color);
+}
+
 function sprite(width, height, scale, center) {
  const canvas = document.createElement('canvas');
  canvas.width = width; canvas.height = height;
  const texture = new THREE.CanvasTexture(canvas);
  texture.colorSpace = THREE.SRGBColorSpace;
- const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false }));
+ const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false }));
  s.scale.set(scale * width / height, scale, 1);
  s.center.copy(center);
  s.renderOrder = 20;
  s.userData.key = null;
- return s;
+ return ghost(s, s.material);
 }
 
 function pill(ctx, x, y, w, h) {
@@ -93,7 +113,7 @@ function drawBattery(s, percent, voltage) {
  s.material.map.needsUpdate = true;
 }
 
-function dispose(s) { s.parent?.remove(s); s.material.map.dispose(); s.material.dispose(); }
+function dispose(s) { s.parent?.remove(s); s.material.map.dispose(); s.material.dispose(); s.userData.ghost?.material.dispose(); }
 
 // Badge columns beside each arm, in the model's ROS body frame (+Y left, +Z up):
 // badges keep their joint's height but are pushed apart vertically, with a
@@ -104,21 +124,21 @@ const COLUMN_REACH = 0.5;
 const sideOf = name => /^(l|left)/.test(name) ? 1 : -1;
 
 function dot(color) {
- const s = new THREE.Mesh(new THREE.SphereGeometry(0.018, 16, 12), new THREE.MeshBasicMaterial({ color, depthTest: false }));
+ const s = new THREE.Mesh(new THREE.SphereGeometry(0.018, 16, 12), new THREE.MeshBasicMaterial({ color }));
  s.renderOrder = 19;
- return s;
+ return ghost(s, s.material);
 }
 
 function leader() {
  const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]),
-  new THREE.LineBasicMaterial({ transparent: true, opacity: 0.8, depthTest: false }));
+  new THREE.LineBasicMaterial({ transparent: true, opacity: 0.8, depthWrite: false }));
  line.renderOrder = 18;
- return line;
+ return ghost(line, line.material);
 }
 
 function remove(entry) {
  dispose(entry.badge);
- for (const o of [entry.dot, entry.line]) { o.parent?.remove(o); o.geometry.dispose(); o.material.dispose(); }
+ for (const o of [entry.dot, entry.line]) { o.parent?.remove(o); o.geometry.dispose(); o.material.dispose(); o.userData.ghost?.material.dispose(); }
 }
 
 // Show `health` ({joints: {name: {temperature_c, current_a}}, battery: {voltage,
@@ -152,8 +172,8 @@ export function applyRobotHealth(glyph, health) {
     lowest = z;
     entry.badge.position.set(at.x, at.y + (side * COLUMN_Y_M - at.y) * COLUMN_REACH, z);
     entry.line.geometry.setFromPoints([at, entry.badge.position]);
-    entry.dot.material.color.copy(color);
-    entry.line.material.color.copy(color);
+    tint(entry.dot, color);
+    tint(entry.line, color);
     drawJoint(entry.badge, value.temperature_c, value.current_a);
    }
   }

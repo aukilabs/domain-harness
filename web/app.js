@@ -1027,7 +1027,9 @@ function renderRunners(entries){
  }
  entries.forEach((entry,i)=>{
   const glyph=glyphFor(entry.key,entry.name),state=entry.state;
-  glyph.tag.visible=activeMap!=='home-live'&&!isLocalScene();  // local scenes name robots with a note bubble
+  // Robots drawn from registry poses have no presence note bubble, so name them here;
+  // above the URDF's battery and pointing labels once the model has loaded.
+  glyph.tag.visible=activeMap!=='home-live';glyph.tag.position.z=glyph.robot?2.02:.6;
   glyph.state=state;glyph.group.visible=Boolean(state.pose)&&$('runner-layer').checked&&!usesBodyVolume(entry.key);
   if(state.pose){glyph.group.position.fromArray(state.pose.translation);glyph.group.quaternion.fromArray(state.pose.rotation_xyzw);}
   setGlyphModel(glyph,state.model||null);
