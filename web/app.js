@@ -824,7 +824,7 @@ function clearSelection(){const volumeOpen=noteCardMode==='volume';noteCardMode=
 let cardReturn=null;
 // Keyboard activation moves focus into the card; Escape brings it back to the row.
 function focusCard(event,back){cardReturn=back;if(event?.detail!==0)return;const heading=$('selection').querySelector('.card-title,:scope>strong');if(heading){heading.tabIndex=-1;heading.focus();}}
-function showSelection(title,body,note,{kind,subtitle,onSubtitle,monoTitle=false,facts}={}){if(noteCardMode==='volume'){noteCardMode='view';semanticVolumes.closed();}selectedPathId=null;crayon?.select(null);delete $('selection').dataset.pathId;selectedNoteId=null;selectedSpatialNode=null;updateSpatialSelection();const el=$('selection');delete el.dataset.noteId;delete el.dataset.spatialId;delete el.dataset.spatialKind;el.replaceChildren();
+function showSelection(title,body,note,{kind,subtitle,onSubtitle,monoTitle=false,facts}={}){if(noteCardMode==='robot')noteCardMode='view';if(noteCardMode==='volume'){noteCardMode='view';semanticVolumes.closed();}selectedPathId=null;crayon?.select(null);delete $('selection').dataset.pathId;selectedNoteId=null;selectedSpatialNode=null;updateSpatialSelection();const el=$('selection');delete el.dataset.noteId;delete el.dataset.spatialId;delete el.dataset.spatialKind;el.replaceChildren();
  const close=document.createElement('button');close.type='button';close.className='inspector-close';close.setAttribute('aria-label','Close inspector');close.append(icon(icons.close));close.onclick=closeCard;el.append(close);
  if(kind){const chip=document.createElement('span');chip.className='inspector-kind';chip.textContent=kind;el.append(chip);}
  const strong=document.createElement('strong');strong.textContent=title;if(monoTitle)strong.className='mono-id';el.append(strong);
@@ -1035,8 +1035,11 @@ function focusPose(name,state,key){
  const target=new THREE.Vector3(...state.pose.translation).add(new THREE.Vector3(0,.3,0));cameraPan.start(target.clone().add(new THREE.Vector3(2,2.4,2.7)),target);
  showRobotCard(name,state,key);
 }
+// Robot cards survive scene rebuilds: a previewed route is a shared path, so it
+// changes the scene, and a rebuild otherwise hides any card it does not own.
+function robotCard(...args){showSelection(...args);noteCardMode='robot';}
 function showRobotCard(name,state,key){
- showSelection(name,'',state.status,{kind:'Robot',facts:[['Position',xyz(state.pose.translation,3),true],['Pose','Calibrated robot base · arrow points forward · illustrative glyph']]});
+ robotCard(name,'',state.status,{kind:'Robot',facts:[['Position',xyz(state.pose.translation,3),true],['Pose','Calibrated robot base · arrow points forward · illustrative glyph']]});
  const peer=key?.startsWith('body:')?key.slice(5):null;if(!peer)return;
  const robot={peer_id:peer,name},canPoint=pointingRobots().some(r=>r.peer_id===peer),canSend=navigatingRobots().some(r=>r.peer_id===peer);
  const driving=keyDrive.peer===peer,again=()=>showRobotCard(name,state,key);
@@ -1066,7 +1069,7 @@ function robotDistance(robot,point){const at=declaredBodies.entries.find(e=>e.pe
 let pick=null;  // {robot, action}: a robot waiting for a clicked spot
 function startPick(robot,action){
  pick={robot,action};renderer.domElement.style.cursor='crosshair';
- showSelection(action==='point'?`Point ${robot.name} at…`:`Send ${robot.name} to…`,'','Click a spot in the scene. Nothing moves until you confirm.',{kind:'Robot'});
+ robotCard(action==='point'?`Point ${robot.name} at…`:`Send ${robot.name} to…`,'','Click a spot in the scene. Nothing moves until you confirm.',{kind:'Robot'});
  $('selection').append(cardActions(actionButton('Cancel',{onClick:()=>{stopPick();clearSelection();}})));
 }
 function stopPick(){pick=null;renderer.domElement.style.cursor='';}
@@ -1086,7 +1089,7 @@ function confirmPointAt(point,robots){
  if(!robots.length){toast('No robot here advertises pointing');return;}
  const scene=activeMap,target=point.toArray().map(n=>Math.round(n*1000)/1000),facts=[['Target',xyz(target),true]];
  for(const r of robots){const d=robotDistance(r,point);if(d!==null)facts.push([`${r.name} distance`,d.toFixed(2)+' m']);}
- showSelection(robots.length===1?`Point ${robots[0].name} here?`:'Point a robot here?','','The arm will move. Clear the space in front of the robot first.',{kind:'Robot',facts});
+ robotCard(robots.length===1?`Point ${robots[0].name} here?`:'Point a robot here?','','The arm will move. Clear the space in front of the robot first.',{kind:'Robot',facts});
  const status=statusLine(),cancel=actionButton('Cancel',{onClick:clearSelection});
  const buttons=robots.map(r=>actionButton(robots.length===1?'Point':`Point with ${r.name}`,{variant:'primary',iconPath:POINT_ICON,onClick:async()=>{
   for(const b of [cancel,...buttons])b.disabled=true;status.textContent=`Asking ${r.name}…`;
@@ -1103,15 +1106,15 @@ let sendPlan=0;
 function confirmSendTo(target,robots){
  if(!robots.length){toast('No robot here advertises navigation');return;}
  if(robots.length>1){
-  showSelection('Send which robot?','','Home plans the route for the one you choose and asks again before it moves.',{kind:'Robot'});
+  robotCard('Send which robot?','','Home plans the route for the one you choose and asks again before it moves.',{kind:'Robot'});
   $('selection').append(cardActions(actionButton('Cancel',{onClick:clearSelection}),...robots.map(r=>actionButton(r.name,{variant:'primary',onClick:()=>confirmSendTo(target,[r])}))));return;
  }
  const robot=robots[0],url=localSceneUrl()+'/navigate-robot',plan=++sendPlan;
- showSelection(`Send ${robot.name} here?`,'','Planning the route…',{kind:'Robot'});
+ robotCard(`Send ${robot.name} here?`,'','Planning the route…',{kind:'Robot'});
  $('selection').append(cardActions(actionButton('Cancel',{onClick:clearSelection})));
  api(url,{robot:robot.peer_id,target,preview:true}).then(route=>{
   if(plan!==sendPlan)return;lastScene=null;  // the shared route draws on the next refresh
-  showSelection(`Send ${robot.name} along this route?`,'',route.summary,{kind:'Robot',facts:[['Route',route.route.length_m.toFixed(1)+' m'],['Waypoints',String(route.waypoints)],['Drives','The robot. Its own navigation avoids obstacles and stops on arrival.']]});
+  robotCard(`Send ${robot.name} along this route?`,'',route.summary,{kind:'Robot',facts:[['Route',route.route.length_m.toFixed(1)+' m'],['Waypoints',String(route.waypoints)],['Drives','The robot. Its own navigation avoids obstacles and stops on arrival.']]});
   const status=statusLine(),cancel=actionButton('Cancel',{onClick:clearSelection});
   const send=actionButton('Send',{variant:'primary',iconPath:SEND_ICON,onClick:async()=>{
    send.disabled=cancel.disabled=true;status.textContent=`Sending ${robot.name}…`;
@@ -1123,7 +1126,7 @@ function confirmSendTo(target,robots){
   $('selection').append(cardActions(cancel,send),status);send.focus();
  }).catch(e=>{
   if(plan!==sendPlan)return;
-  showSelection(`Can't send ${robot.name} here`,'',e.message,{kind:'Robot'});
+  robotCard(`Can't send ${robot.name} here`,'',e.message,{kind:'Robot'});
   $('selection').append(cardActions(actionButton('Close',{onClick:clearSelection})));
  });
 }
