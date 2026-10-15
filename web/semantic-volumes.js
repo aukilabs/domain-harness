@@ -67,7 +67,8 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
  }
  let shownDraft=null;
  function tick(){
-  const visible=draft&&editable()&&!drawing&&preview.visible;
+  // Handles stay up (inert) while a change saves, so releasing a drag doesn't flash them out and spring them back.
+  const visible=draft&&context?.editable&&!drawing&&preview.visible;handleLayer.classList.toggle('saving',pending);
   if(!visible){for(const h of handles)h.button.hidden=true;zoomPill.hidden=true;shownDraft=null;return;}
   const rect=renderer.domElement.getBoundingClientRect(),parent=handleLayer.parentElement.getBoundingClientRect(),ox=rect.left-parent.left,oy=rect.top-parent.top;
   const screen=p=>{const q=p.clone().project(camera);return {x:ox+(q.x+1)*rect.width/2,y:oy+(1-q.y)*rect.height/2,on:q.z>-1&&q.z<1};};
@@ -243,13 +244,27 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
  form.oninput=()=>{if(draft&&!pending){const v=values();if([...v.center,...v.size,v.yaw].every(Number.isFinite)&&v.size.every(n=>n>=.01)){draft=v;draw();}}};
  form.addEventListener('keydown',e=>{if(e.key==='Escape'&&!resize&&!drawing){e.preventDefault();e.stopPropagation();cancelButton.click();}});
  function url(id){return '/api/semantic-volumes'+(id?'/'+encodeURIComponent(id):'')+'?scene='+encodeURIComponent(context.map);}
+ // A scene poll that was already in flight when a save landed still carries the old volume; merged as a remote
+ // edit, it would undo the save (a quick drag and release). For a few seconds after a save, polls that don't yet
+ // show what was saved are skipped.
+ let recentSave=null;
+ const volumeKey=v=>v?JSON.stringify([v.title,v.description,v.center,v.size,v.yaw]):null;
+ function staleAfterSave(collection){
+  if(!recentSave)return false;if(performance.now()-recentSave.at>5000){recentSave=null;return false;}
+  const remote=collection?.items?.find(v=>v.id===recentSave.id),current=recentSave.after===null?!remote:volumeKey(remote)===recentSave.after;
+  if(current)recentSave=null;return !current;
+ }
  async function persist(remove=false,keepSelection=false){
   if(!editable()||!draft)return;
   if(conflicted){const text='This volume changed elsewhere while you were editing. Copy your edits, then reselect the volume to reload before saving.';message(text);alertInCard(text);return;}
   const selected=context,identifier=editing,body={frame:selected.frame,volume:remove?null:values()},before=new Set(items.map(v=>v.id));
   pending=true;buttons();endDrawing();message('Saving…');
-  try {const response=await api(url(identifier),body,remove?'DELETE':identifier?'PATCH':'POST');if(context!==selected)return;items=response.items;signature=JSON.stringify(response);
-   const saved=remove?null:(identifier?items.find(v=>v.id===identifier):items.find(v=>!before.has(v.id)))||null;
+  try {const response=await api(url(identifier),body,remove?'DELETE':identifier?'PATCH':'POST');if(context!==selected)return;signature=JSON.stringify(response);
+   // Apply only the volume this save changed; scene polls bring everything else. Swapping in the whole response
+   // list made every other volume (and its label) vanish and return whenever the lists differed.
+   const saved=remove?null:(identifier?response.items.find(v=>v.id===identifier):response.items.find(v=>!before.has(v.id)))||null;
+   items=remove?items.filter(v=>v.id!==identifier):saved?(items.some(v=>v.id===saved.id)?items.map(v=>v.id===saved.id?saved:v):[...items,saved]):items;
+   recentSave={id:remove?identifier:saved?.id,after:remove?null:volumeKey(saved),at:performance.now()};
    if(saved){editing=saved.id;draft=structuredClone(saved);fill(saved);draw();showList();if(!(keepSelection&&cardMode==='edit'))renderCard('view');}else cancel();
    message(remove?'Volume deleted.':'Volume saved in this scene.');toast(remove?`Deleted “${body.volume?.title||'volume'}”`:'Volume saved');}
   catch(e){if(context===selected){message(e.message);alertInCard(e.message);}}
@@ -279,7 +294,7 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
  },true);
  canvas.addEventListener('pointercancel',()=>{if(drawing){cancel();message('Creation cancelled.');}});
  document.addEventListener('keydown',e=>{if(e.key!=='Escape')return;if(resize){e.stopImmediatePropagation();e.preventDefault();stopResize(true);message('Edit cancelled.');}else if(drawing){e.stopImmediatePropagation();e.preventDefault();cancel();message('Creation cancelled.');newVolume.focus();}},true);
- return {tick,beginAt:point=>begin(point),closed(){if(cardMode)cancel(true);},pick(ray){if(drawing||resize||!group.visible)return null;return ray.intersectObjects([...group.children,...preview.children]).find(h=>h.object.userData.volume);},update(map,data){const editable=map.startsWith('local:')||map==='demo';if(!context||context.map!==map||context.frame!==data?.frame){context={map,frame:data?.frame,editable};pending=false;items=[];cancel();signature='';message('');}const collection=data?.semantic_volumes;const next=JSON.stringify(collection||null);if(next!==signature){signature=next;const previous=items.find(v=>v.id===editing);items=collection?.frame===data.frame?collection.items:[];const remote=items.find(v=>v.id===editing);if(editing&&!pending&&!resize){if(!remote){cancel();message('This volume was deleted elsewhere.');}else if(draft&&previous){const merged=mergeVolumeDraft(previous,values(),remote);draft=merged.draft;conflicted=conflicted||merged.conflicts.length>0;fill(draft);if(conflicted)message('Conflicting edits: '+merged.conflicts.join(', ')+'. Copy your edits and reselect the volume before saving.');}else if(!draft)fill(remote);}draw();showList();}buttons();},reset(){context=null;items=[];pending=false;cancel();buttons();message('Loading selected scene…');}};
+ return {tick,beginAt:point=>begin(point),closed(){if(cardMode)cancel(true);},pick(ray){if(drawing||resize||!group.visible)return null;return ray.intersectObjects([...group.children,...preview.children]).find(h=>h.object.userData.volume);},update(map,data){const editable=map.startsWith('local:')||map==='demo';if(!context||context.map!==map||context.frame!==data?.frame){context={map,frame:data?.frame,editable};pending=false;items=[];cancel();signature='';message('');}const collection=data?.semantic_volumes;const next=JSON.stringify(collection||null);if(next!==signature&&!staleAfterSave(collection)){signature=next;const previous=items.find(v=>v.id===editing);items=collection?.frame===data.frame?collection.items:[];const remote=items.find(v=>v.id===editing);if(editing&&!pending&&!resize){if(!remote){cancel();message('This volume was deleted elsewhere.');}else if(draft&&previous){const merged=mergeVolumeDraft(previous,values(),remote);draft=merged.draft;conflicted=conflicted||merged.conflicts.length>0;fill(draft);if(conflicted)message('Conflicting edits: '+merged.conflicts.join(', ')+'. Copy your edits and reselect the volume before saving.');}else if(!draft)fill(remote);}draw();showList();}buttons();},reset(){context=null;items=[];pending=false;cancel();buttons();message('Loading selected scene…');}};
 }
 
 // Refresh untouched fields while retaining unsaved edits; never silently overwrite a conflict.

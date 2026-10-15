@@ -1545,3 +1545,4 @@ select.form-control[size]:focus{animation:none}
 .content-locator.leaving{opacity:0;transition:opacity .16s ease}
 @keyframes locator-in{from{opacity:0;scale:.6}}
 @media(prefers-reduced-motion:reduce){.content-locator.shown{animation:locator-fade .16s ease}@keyframes locator-fade{from{opacity:0}}}
+.volume-handles.saving :is(.volume-resize-handle,.volume-zoom-pill){pointer-events:none}
