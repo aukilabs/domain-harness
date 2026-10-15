@@ -62,7 +62,9 @@ func capture_frame() -> void:
 	busy = true
 	# Dedicated body-mounted camera, independent of eye pitch and overview.
 	camera.global_transform = robot.global_transform * Transform3D(Basis.IDENTITY, ROBOT_GEOMETRY.CAMERA_MOUNT)
-	var timestamp_ns := Time.get_ticks_usec() * 1000
+	# Same-host UTC capture reading; the Rust sidecar explicitly maps it into
+	# its SDK session clock. Never timestamp after rendering or encoding.
+	var timestamp_ns := int(Time.get_unix_time_from_system() * 1000000000.0)
 	viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 	await RenderingServer.frame_post_draw
 	var jpeg := viewport.get_texture().get_image().save_jpg_to_buffer(0.7)

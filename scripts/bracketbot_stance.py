@@ -4,6 +4,19 @@ import numpy as np
 TARGET = np.array([2**-.5, 0., -2**-.5])
 
 
+def control_clock(scene, capture_status):
+    """Select the explicitly declared local IPC clock, never an SDK sensor clock."""
+    origin = (((scene or {}).get('registries', {}).get('local_mapping', {}).get('origin') or {})
+              .get('capture_clock'))
+    declared = capture_status.get('local_control_clock')
+    if origin is not None and declared is not None and origin != declared:
+        raise RuntimeError('local control clock session changed')
+    clock = origin if origin is not None else declared
+    if clock is None:
+        raise RuntimeError('local control clock not ready')
+    return clock
+
+
 def hand_axis(quaternion):
     # Factory arm_base: X forward, Y left, Z up. Hand/EFF +Z follows fingers.
     x, y, z, w = quaternion

@@ -36,7 +36,9 @@ def main():
             packet = {'presence': json.load(response), 'age_ms': 0}
     else:
         packet = json.load(sys.stdin)
-    scene_path = args.state/'local-scene.json'
+    # Motion helpers consume the native-time local adapter, not SDK datasets
+    # whose capture timestamps are expressed in the runner's session clock.
+    scene_path = args.state/'robot-control.json'
     scene_stat = scene_path.stat()
     scene = json.loads(scene_path.read_text())
     home = json.loads((args.state/'home-connection.json').read_text())

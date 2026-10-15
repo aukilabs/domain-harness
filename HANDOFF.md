@@ -6,7 +6,7 @@ runtime state, recordings, generated binaries, and dependency caches are exclude
 
 ## Review areas
 
-- **Robot:** shared Galbot/Bracketbot runner; head and wrist camera Products and
+- **Robot:** Bracketbot runner; head and wrist camera Products and
   portal detection; capture-time RGB/depth/pose joins; tracking and PGO correction
   barriers; bounded independent acquisition and mapping; scan-progress diagnostics.
 - **Home:** independent saved reference scenes and scene-scoped collaboration;

@@ -33,8 +33,7 @@ async fn run(actual_publisher: bool, extra_mount: bool, packed: bool) -> Result<
             &server.runtime,
             &server.endpoint,
             scenes.clone(),
-            spatial_home::model::clock_entry(&home, "home-session"),
-            std::time::Instant::now(),
+            server.session_clock.clone(),
         )?;
         let frame = scenes
             .snapshot("humanoid-hub-conference")?
@@ -55,7 +54,7 @@ async fn run(actual_publisher: bool, extra_mount: bool, packed: bool) -> Result<
         let session = uuid::Uuid::new_v4().to_string();
         let sample = spatial_home::mobile_pose::Sample {
             session: session.clone(),
-            timestamp_ns: 100,
+            timestamp_ns: 50,
             camera_configuration_id: None,
             pose: auki_scenegraph::RigidTransform {
                 from_frame_id: format!("phone-camera:{session}"),
@@ -67,8 +66,10 @@ async fn run(actual_publisher: bool, extra_mount: bool, packed: bool) -> Result<
         let mut native = spatial_home::mobile_odometry::Publisher::new(&products, &home, &sample)?;
         native.publish(&home, &sample)?;
         let catalog = products.runtime.catalog().snapshot();
-        let pc: Contract =
-            serde_json::from_value(catalog.products[0].metadata.as_ref().unwrap().value.clone())?;
+        let pose_product_id = spatial_home::mobile_odometry::product_id(&session);
+        let pc: Contract = serde_json::from_value(catalog.products.iter()
+            .find(|p| p.manifest.product_id == pose_product_id).unwrap()
+            .metadata.as_ref().unwrap().value.clone())?;
         let point_frame = auki_registry::FrameRegistryEntry::opengl(&phone,
             if extra_mount {"arbitrary-depth-lens"} else {&pc.from_frame.id});
         let _mount = if extra_mount {
@@ -296,15 +297,25 @@ async fn run(actual_publisher: bool, extra_mount: bool, packed: bool) -> Result<
         let subscriptions = held.serve(&pair.a, rx.clone(), &stop);
         let consumer = spatial_home::declared_depth::serve(&pair.a, rx, &scenes, &held, &stop);
         let check = async {
+            let mut pose_published = false;
             let mut packed_published = false;
             tokio::time::timeout(std::time::Duration::from_secs(8), async {
                 loop {
-                    if let Some(publisher) = phone_depth.as_mut() && !packed_published
+                    // The initial pose only makes its contract discoverable.
+                    // Home follows sampled poses with NewOnly, so produce the
+                    // capture-matched sample after its live subscription starts.
+                    if !pose_published && products.endpoint.product_active_subscriptions(&pose_product_id) > 0 {
+                        let mut capture_pose = sample.clone();
+                        capture_pose.timestamp_ns = 100;
+                        native.publish(&home, &capture_pose)?;
+                        pose_published = true;
+                    }
+                    if let Some(publisher) = phone_depth.as_mut() && pose_published && !packed_published
                         && products.endpoint.product_active_subscriptions(&spatial_home::mobile_declared::points_product_id(&session)) > 0 {
                         publisher.capture(100, &[[0.,-1.,-1.]], Some(&[[255,0,0]]))?;
                         packed_published = true;
                     }
-                    if packed && !packed_published && products.endpoint.product_active_subscriptions("empty-until-subscribed") > 0 {
+                    if packed && pose_published && !packed_published && products.endpoint.product_active_subscriptions("empty-until-subscribed") > 0 {
                         let (output, packet) = packed_send.as_ref().unwrap();
                         output.publish(100, std::sync::Arc::new(packet.clone()))?;
                         packed_published = true;

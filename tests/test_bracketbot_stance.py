@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'scripts'))
-from bracketbot_stance import TARGET, calibrated, ease, hand_axis, plan_wrist
+from bracketbot_stance import TARGET, calibrated, control_clock, ease, hand_axis, plan_wrist
 
 
 def fk(q):
@@ -17,6 +17,18 @@ def fk(q):
 
 
 class StanceTests(unittest.TestCase):
+    def test_control_clock_never_uses_sdk_sensor_clock(self):
+        native = {'peer_id':'robot', 'id':'bbos-host-realtime', 'hash':'native'}
+        sdk = {'peer_id':'robot', 'id':'session', 'hash':'sdk'}
+        capture = {'local_control_clock':native, 'sensors':{'sources':[{'clock':sdk}]}}
+        self.assertEqual(control_clock(None, capture), native)
+        scene = {'registries':{'local_mapping':{'origin':{'capture_clock':native}}}}
+        self.assertEqual(control_clock(scene, capture), native)
+        with self.assertRaisesRegex(RuntimeError, 'not ready'):
+            control_clock(None, {'sensors':{'sources':[{'clock':sdk}]}})
+        with self.assertRaisesRegex(RuntimeError, 'session changed'):
+            control_clock(scene, dict(capture, local_control_clock=sdk))
+
     def test_wrist_only_plan_preserves_previous_pose_and_other_joints(self):
         q = np.array([0.,.01,-.01,.02,0,.01,.02,-.1])
         saved = q.copy()

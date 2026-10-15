@@ -3223,6 +3223,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         }
     }
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
+        sampleNativeCaptureClock(0)
         if snoozed { return }
         checkRest(frame)
         if snoozed { return }

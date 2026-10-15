@@ -110,14 +110,14 @@ fn metadata(geometry: Option<&(Geometry, (u32, u32))>) -> serde_json::Value {
             "alignment_timestamp_ns": (g.alignment_timestamp_ns > 0).then_some(g.alignment_timestamp_ns),
             // The LiDAR depth image of the same capture has the same timestamp.
             "depth_image_product_id": DEPTH_IMAGE_PRODUCT,
-            "timestamp_basis": "AR capture timestamp; device-local; a new AR session is a new clock",
+            "timestamp_basis": "SDK session-monotonic capture time; registered UTC transform",
             "presentation": PRESENTATION.clone(),
         }),
         None => serde_json::json!({
             "presentation": PRESENTATION.clone(),
             "calibration_status": "unavailable",
             "image_geometry": "unspecified",
-            "timestamp_basis": "capture timestamp; device-local",
+            "timestamp_basis": "SDK session-monotonic capture time; registered UTC transform",
         }),
     }
 }
@@ -173,20 +173,21 @@ impl CalibrationPublisher {
  pub fn new(products:&crate::mobile_products::MobileProducts,config:&RegisteredConfiguration)->Result<Self>{
   config.configuration.camera.validate()?;uuid::Uuid::parse_str(&config.configuration.session)?;
   let component=products.runtime.component(ComponentSpec::new("phone-camera-calibration").observable(ObservableContract{name:"configuration".into(),datatype:CalibrationReference::DATATYPE.into(),schema:CalibrationReference::DATATYPE.into(),access:vec![ObservationAccess::FollowNew],exposure:Exposure::Cluster}))?;
-  let owner=component.manifest().peer_id.clone();let clock=crate::model::clock_entry(&owner,&config.configuration.session);
+  let owner=component.manifest().peer_id.clone();let clock=products.timing.clock.registry_entry();
   let output=component.configured_observable(ConfiguredObservableSpec::new("configuration",config.id.clone(),crate::model::clock_ref(&clock),PayloadContract::Structured(StructuredPayloadContract{datatype:CalibrationReference::DATATYPE.into(),schema:CalibrationReference::DATATYPE.into(),modality:"calibration".into(),observes:"camera_configuration".into(),unit:None})).in_registered_frame(auki_registry::FrameRegistryEntry::opengl(&owner,format!("phone-camera:{}",config.configuration.session))))?;
   component.expose()?;
   let product=format!("phone-camera-calibration:{}",config.id);
   let metadata=serde_json::json!({"configuration_id":config.id,"camera_frame_id":format!("phone-camera:{}",config.configuration.session),"calibration":config.configuration.camera.calibration()});
   let capture=products.runtime.capture_buffer_with_metadata(&product,&output,BufferLimits{max_entries:Some(1),max_bytes:Some(4096),target_duration:None},|_:&CalibrationReference|256,move |o|Ok(Some(CatalogProductMetadata{schema:"spatial.phone-camera-calibration/v1".into(),source_sequence:o.sequence,value:metadata.clone()})))?;
   products.endpoint.export_product(&capture.product())?;
-  output.publish(1,Arc::new(CalibrationReference{configuration_id:config.id.clone()}))?;
+  output.publish(products.timing.clock.now_ns(),Arc::new(CalibrationReference{configuration_id:config.id.clone()}))?;
   Ok(Self{capture,endpoint:products.endpoint.clone(),product,_component:component})
  }
  pub fn close(self)->Result<()>{self.endpoint.unexport_product(&self.product);self.capture.delete()?;Ok(())}
 }
 
 pub struct Camera {
+    clock: auki_components::clock::ClockRegistryEntry,
     definitions: Arc<Mutex<Vec<auki_protocols::registry::v3::RegistryEntryEnvelope>>>,
     contract_hash: Option<String>,
     endpoint: Arc<auki_component_protocol::ComponentProtocolEndpoint>,
@@ -215,7 +216,7 @@ impl Camera {
                 ))?;
         let session = uuid::Uuid::new_v4().to_string();
         let owner = component.manifest().peer_id.clone();
-        let clock = crate::model::clock_entry(&owner, &session);
+        let clock = products.timing.clock.registry_entry();
         register_clock(&products.definitions, &clock)?;
         let output = component.configured_observable(
             ConfiguredObservableSpec::new(
@@ -235,6 +236,7 @@ impl Camera {
         let capture = capture(&products.runtime, &output, geometry.clone())?;
         products.endpoint.export_product_with_encoder(&capture.product(), crate::camera_frame::encoder())?;
         Ok(Self {
+            clock,
             definitions: products.definitions.clone(),
             contract_hash: None,
             endpoint: products.endpoint.clone(),
@@ -284,8 +286,7 @@ impl Camera {
         }
         let owner = self.runtime.peer_id().to_string();
         let frame = auki_registry::FrameRegistryEntry::opengl(&owner, g.frame_id());
-        let mut clock = crate::model::clock_entry(&owner, &g.session);
-        clock.clock_id = "arkit-capture".into();
+        let clock = &self.clock;
         let sensor: auki_registry::SensorRegistryEntry = serde_json::from_value(serde_json::json!({
             "peer_id":owner,"sensor_id":format!("rgb:{}",g.session),"kind":"camera","type":"mono",
             "width":size.0,"height":size.1,"frame_rate_hz":10,"image_encoding":"jpeg",
@@ -347,8 +348,7 @@ impl Camera {
         }
         uuid::Uuid::parse_str(session)?;
         let owner = self.runtime.peer_id().to_string();
-        let mut clock = crate::model::clock_entry(&owner, session);
-        clock.clock_id = "arkit-capture".into();
+        let clock = &self.clock;
         register_clock(&self.definitions, &clock)?;
         let replacement = self
             .component

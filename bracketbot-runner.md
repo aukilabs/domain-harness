@@ -196,13 +196,13 @@ Bracketbot's local map as that reference frame.
 ```sh
 python3 -m unittest discover -s tests -p test_bracketbot_capture.py
 cargo test --locked --lib --test local_mapper --test network
-cargo clippy --locked --lib --bin bracketbot-runner --bin galbot-runner
+cargo clippy --locked --lib --bin bracketbot-runner
 ```
 
 Python tests require NumPy. The tests cover native-frame projection, exact
 timestamp pairing, bounded sampling, stale/lost tracking, session resets,
 Bracketbot Portal localization, colored room-depth integration, and existing
-Galbot/network behavior.
+other peer/network behavior.
 
 ### Live result — 11 October 2026
 

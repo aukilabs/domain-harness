@@ -262,57 +262,6 @@ async fn same_observations_build_independent_owned_maps_and_survive_replay() -> 
     result.and(cleanup)
 }
 
-#[tokio::test]
-async fn rgbd_component_preserves_capture_clock_color_and_calibration_over_p2p() -> Result<()> {
-    use spatial_home::{rgbd, runner_voxels::SensorCalibration};
-    let pair = support::LocalPair::start().await?;
-    let result = async {
-        let publisher = ScenePublisher::mount(&pair.b)?;
-        let clock = clock_ref(&spatial_home::model::clock_entry(
-            "physical-galbot",
-            "capture",
-        ));
-        let source = rgbd::Publisher::mount(
-            &publisher.runtime,
-            &publisher.endpoint,
-            &pair.b.peer_id().to_string(),
-            clock.clone(),
-        )?;
-        let sample = rgbd::Capture {
-            timestamp_ns: 100,
-            rgb_timestamp_ns: 100,
-            transform_timestamp_ns: 100,
-            hit_points_m: vec![[0.1, 0., 0.3]],
-            hit_colors_srgb: vec![[12, 140, 211]],
-            calibration: SensorCalibration {
-                sensor_frame: rgbd::FRAME.into(),
-                sensor_to_base: auki_odometry::Pose {
-                    translation: [0.2, 0., 0.6],
-                    rotation_xyzw: [0., 0., 0., 1.],
-                },
-                calibration_source:
-                    "Galbot SDK D405 co-registered RGB-D; RealSense deprojection; sha256:fixture"
-                        .into(),
-            },
-        };
-        source.publish(sample.clone())?;
-        let connection = HomeConnection::direct(&pair.b);
-        let client = auki_component_protocol::ComponentProtocolClient::new(pair.a.protocols());
-        let received = rgbd::fetch(&client, Some(&connection)).await?;
-        assert_eq!(received.producer.clock, clock);
-        assert_eq!(received.observations[0].timestamp_ns, 100);
-        assert_eq!(
-            serde_json::to_value(&*received.observations[0].payload)?,
-            serde_json::to_value(sample)?
-        );
-        publisher.close().await?;
-        Ok::<_, anyhow::Error>(())
-    }
-    .await;
-    let cleanup = pair.shutdown().await;
-    result.and(cleanup)
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn robot_occupancy_product_replaces_cells_and_expires_without_refreshing_reads() -> Result<()>
 {
@@ -327,7 +276,7 @@ async fn bracketbot_occupancy_preserves_declared_native_body_axes() -> Result<()
 async fn occupancy_roundtrip(bracketbot: bool) -> Result<()> {
     use auki_components::{ContractType, PayloadContract, StructuredPayloadContract};
     use spatial_home::{
-        galbot_sensors::{Sensor, SensorSpec},
+        runner_sensors::{Sensor, SensorSpec},
         robot_occupancy::{self, RobotOccupancy},
     };
     let pair = support::LocalPair::start().await?;

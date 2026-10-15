@@ -31,6 +31,7 @@ pub struct Mapper {
     origin: Option<auki_odometry::Pose>,
     source: RetainedProduct<Scan>,
     last: Option<u64>,
+    session_clock: auki_time::SessionClock,
 }
 impl Mapper {
     /// The simulated flat floor is world Y=0; express it in the boot frame.
@@ -40,13 +41,16 @@ impl Mapper {
         runtime: &ComponentRuntime,
         endpoint: &ComponentProtocolEndpoint,
         lidar: &crate::simulated_lidar::Lidar,
+        session_clock: auki_time::SessionClock,
     ) -> Result<Self> {
         let source = lidar.product();
         let owner = runtime.peer_id();
         let session = uuid::Uuid::new_v4().to_string();
         let frame = format!("simulator-local:{session}:opengl");
-        let clock = crate::model::clock_entry(owner, &session);
+        let clock = session_clock.registry_entry();
         let reference = crate::model::clock_ref(&clock);
+        ensure!(clock.peer_id == owner && source.producer.clock == reference,
+            "Simulator mapper and LiDAR must use the same peer session clock");
         let map = MapComponent::new(
             runtime,
             MapComponentConfig {
@@ -60,7 +64,7 @@ impl Mapper {
                     frame: crate::conventions::frame(&frame)?,
                 },
             },
-            crate::local_mapper::now,
+            { let clock = session_clock.clone(); move || clock.now_ns() },
             |_| true,
             |_| false,
         )?;
@@ -169,6 +173,7 @@ impl Mapper {
             origin: None,
             source,
             last: None,
+            session_clock,
         })
     }
     pub fn product(&self) -> RetainedProduct<CanonicalScene> {
@@ -282,7 +287,7 @@ impl Mapper {
             "voxel_policy":{"unseen_cells":"retained","free_space":"measured hit rays only; no-return beams ignored","window":3}},"source_product":self.source.reference()});
         self.scene.validate(&self.scene.authority_peer_id)?;
         self.output
-            .publish(crate::local_mapper::now(), Arc::new(self.scene.clone()))?;
+            .publish(self.session_clock.now_ns(), Arc::new(self.scene.clone()))?;
         ensure!(
             self.capture.errors().is_empty(),
             "Voxel scene retention failed"

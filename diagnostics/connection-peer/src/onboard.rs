@@ -5,7 +5,7 @@
 //! invitation may carry a Wi-Fi password. On an invitation for this robot's
 //! Home, the robot joins the Wi-Fi if asked, names itself in Home, asks the
 //! phone to show its 50 mm marker, and times the phone's clock against its
-//! own capture clock (wall-clock nanoseconds, as BBOS stamps camera frames).
+//! own SDK session clock (native BBOS captures are explicitly mapped into it).
 //! Each sighting of the marker becomes "where this camera was in the scene":
 //!
 //!   T_H_K(t) = T_H_M(t_phone) × inverse(T_K_M(t))
@@ -55,10 +55,6 @@ pub struct Shared {
     pub agreed: Mutex<Option<u64>>,
 }
 pub static SHARED: LazyLock<Shared> = LazyLock::new(Shared::default);
-
-fn now_ns() -> Result<u64> {
-    Ok(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos() as u64)
-}
 
 /// Another peer's Component operations, found through its Catalog.
 struct Remote {
@@ -137,7 +133,9 @@ fn marker_in_camera(c: &crate::camera::Calibration, corners_px: [[f64; 2]; 4]) -
 
 /// One onboarding session, from an invitation to an agreed alignment.
 async fn session(client: &ComponentProtocolClient, home: &crate::Home, invitation: &ob::Invitation,
-                 codes: &mut tokio::sync::mpsc::UnboundedReceiver<Seen>) -> Result<()> {
+                 codes: &mut tokio::sync::mpsc::UnboundedReceiver<Seen>,
+                 session_clock: &auki_time::SessionClock, local_clock: &crate::clock_sync::RegisteredClock,
+                 registry: &auki_protocols::registry::RegistryClient) -> Result<()> {
     ensure!(invitation.home.peer_id == home.peer_id && invitation.home.frame == home.frame,
         "Invitation is for another Home scene; restart the runner with that Home's profile");
     if let Some(wifi) = &invitation.wifi { join_wifi(wifi).await?; }
@@ -154,13 +152,17 @@ async fn session(client: &ComponentProtocolClient, home: &crate::Home, invitatio
     ensure!(marker.session == session && marker.payload == invitation.marker_payload()
         && marker.side_length_m == ob::MARKER_SIDE_M && marker.scene_peer_id == home.peer_id
         && marker.scene_frame == home.frame, "The phone showed a different marker or scene");
+    ensure!(local_clock.reference() == crate::clock_sync::reference(&session_clock.registry_entry()), "Local capture clock changed");
+    let remote_clock = crate::clock_sync::resolve(client, registry, host.peer, host.route.clone(), &marker.clock).await?;
     let mut probes = Vec::new();
     for _ in 0..16 {
-        let sent_ns = now_ns()?;
-        let reading: ob::ClockReading = host.invoke(ob::COMPONENT, "clock", &ob::ReadClock { session: session.clone() }).await?;
-        probes.push(ob::ClockProbe { sent_ns, remote_ns: reading.now_ns, received_ns: now_ns()? });
+        let sent_ns = session_clock.now_ns();
+        let reading: ob::ClockReading = host.invoke(ob::COMPONENT, "clock", &ob::ReadClock { session: session.clone(), clock: marker.clock.clone() }).await?;
+        let received_ns = session_clock.now_ns();
+        ensure!(reading.session == session && reading.clock == marker.clock, "Clock reading for another session or clock");
+        probes.push(ob::ClockProbe { sent_ns, remote_ns: reading.now_ns, received_ns });
     }
-    let clock = ob::ClockMapping::measure(&probes)?;
+    let clock = ob::ClockMapping::measure(local_clock, &remote_clock, &probes)?;
     ensure!(clock.uncertainty_ns <= ob::MAX_CLOCK_UNCERTAINTY_NS, "The phone answers too slowly to time it");
     crate::diagnostic_log!("Onboarding as {}: clock matched to ±{} ms; looking for the marker", invitation.alias, clock.uncertainty_ns / 1_000_000);
     *SHARED.agreed.lock().unwrap() = None;
@@ -183,8 +185,10 @@ async fn session(client: &ComponentProtocolClient, home: &crate::Home, invitatio
         let Some(calibration) = CALIBRATION.lock().unwrap().clone() else { continue };
         let attempt = async {
             let (in_camera, range_m) = marker_in_camera(&calibration, *corners)?;
-            let at: ob::MarkerAt = host.invoke(ob::COMPONENT, "marker_at",
-                &ob::AskMarker { session: session.clone(), timestamp_ns: clock.remote(seen.timestamp_ns)? }).await?;
+            let request = ob::AskMarker { session: session.clone(), clock: clock.to_clock.clone(),
+                timestamp_ns: clock.remote(&local_clock.reference(), seen.timestamp_ns)?, uncertainty_ns: clock.uncertainty_ns };
+            let at: ob::MarkerAt = host.invoke(ob::COMPONENT, "marker_at", &request).await?;
+            at.validate_answer(&request)?;
             let camera_in_home = crate::alignment::compose(&at.marker_to_scene, &crate::alignment::inverse(&in_camera)?)?;
             SHARED.sightings.lock().unwrap().push_back(Sighting { timestamp_ns: seen.timestamp_ns, camera_in_home,
                 timing_error_m: ob::timing_error(&clock, &at, range_m), range_m });
@@ -195,7 +199,8 @@ async fn session(client: &ComponentProtocolClient, home: &crate::Home, invitatio
 }
 
 /// Run for the life of the runner: watch for invitations and onboard.
-pub async fn run(client: ComponentProtocolClient, home: crate::Home) {
+pub async fn run(client: ComponentProtocolClient, registry: auki_protocols::registry::RegistryClient,
+    home: crate::Home, session_clock: auki_time::SessionClock, local_clock: crate::clock_sync::RegisteredClock) {
     let (tx, mut codes) = tokio::sync::mpsc::unbounded_channel();
     if CODES.set(tx).is_err() { return; }
     let mut seen = ob::Seen::default();
@@ -207,7 +212,7 @@ pub async fn run(client: ComponentProtocolClient, home: crate::Home) {
         };
         if !seen.first(&invitation.session) { continue; }
         crate::diagnostic_log!("Onboarding as {} started", invitation.alias);
-        if let Err(e) = session(&client, &home, &invitation, &mut codes).await {
+        if let Err(e) = session(&client, &home, &invitation, &mut codes, &session_clock, &local_clock, &registry).await {
             crate::diagnostic_log!("Onboarding failed: {e}");
             // A failed session may be retried by showing the code again.
             seen.forget(&invitation.session);

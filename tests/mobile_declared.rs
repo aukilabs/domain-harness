@@ -64,7 +64,8 @@ async fn a_peer_declares_the_transform_it_knows_and_depth_for_another_peer_to_pl
         assert_eq!(contract["value"]["to_frame"]["peer_id"], home);
         assert_eq!(contract["value"]["to_frame"]["id"], scene_frame);
         assert_eq!(contract["value"]["to_frame"]["hash"], scene.hash());
-        assert_eq!(contract["value"]["clock"]["id"], "arkit-capture");
+        let session_clock=serde_json::to_value(spatial_home::model::clock_ref(&products.timing.clock.registry_entry()))?;
+        assert_eq!(contract["value"]["clock"],session_clock);
         assert_eq!(contract["value"]["session_id"], session);
         assert_eq!(contract["value"]["lifetime"], "held", "it stands after the Portal leaves view");
 
@@ -88,12 +89,14 @@ async fn a_peer_declares_the_transform_it_knows_and_depth_for_another_peer_to_pl
         let fetched: spatial_home::compact_pose::Contract = serde_json::from_value(alignment["metadata"]["value"].clone())?;
         fetched.validate_output(&serde_json::from_value(transform)?)?;
         assert_eq!(output("depth-points", "points")["spatial_frame_id"], format!("phone-camera:{session}"));
-        assert_eq!(output("depth-points", "points")["clock"]["id"], "arkit-capture");
+        assert_eq!(output("depth-points", "points")["clock"],session_clock);
+        assert_eq!(contract["value"]["clock"],session_clock);
 
         // Losing alignment is said once, and a new one follows it.
         publisher.lose()?;
         publisher.lose()?;
-        publisher.align(300, &to_scene(2.))?;
+        // Revocation is a real event on the SDK clock, not last-capture + 1.
+        publisher.align(products.timing.clock.now_ns(), &to_scene(2.))?;
         let later = fetch(&pair.a, pair.b.peer_id(), &routes).await;
         assert_eq!(product(&later, &mobile_declared::transform_product_id(&session)).unwrap()["state"]["Buffer"]["entries"], 3);
 

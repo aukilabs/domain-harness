@@ -28,15 +28,17 @@ pub struct FakeVoxelSource {
     output: ConfiguredObservable<CanonicalScene>,
     capture: BufferProductCapture<CanonicalScene>,
     template: CanonicalScene,
-    time: u64,
+    session_clock: auki_time::SessionClock,
     surveyed: BTreeSet<[i32; 2]>,
 }
 impl FakeVoxelSource {
     pub fn new(
         runtime: &ComponentRuntime,
         owner: &str,
-        clock: auki_components::clock::ClockRegistryEntry,
+        session_clock: auki_time::SessionClock,
     ) -> Result<Self> {
+        let clock = session_clock.registry_entry();
+        anyhow::ensure!(clock.peer_id == owner, "Synthetic source clock owner mismatch");
         // Reuse the explicit synthetic fixture's valid source/calibration contracts.
         let fixture = model::fixtures()?;
         let event = model::Event::Contribution(serde_json::from_value(
@@ -87,7 +89,7 @@ impl FakeVoxelSource {
             output,
             capture,
             template,
-            time: 0,
+            session_clock,
             surveyed: BTreeSet::new(),
         })
     }
@@ -297,9 +299,8 @@ impl FakeVoxelSource {
     }
     fn publish_scene(&mut self, scene: CanonicalScene) -> Result<Arc<CanonicalScene>> {
         scene.validate(&scene.authority_peer_id)?;
-        self.time += 1_000_000_000;
         let scene = Arc::new(scene);
-        self.output.publish(self.time, scene.clone())?;
+        self.output.publish(self.session_clock.now_ns(), scene.clone())?;
         anyhow::ensure!(
             self.capture.errors().is_empty(),
             "fake source retention failed"

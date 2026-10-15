@@ -40,7 +40,7 @@ def head_camera_specs(context, width, height, eyes):
                 D=[0., 0., 0., 0., 0.], distortion_model='plumb_bob'),
                 pose_product_id=camera_id+'.pose-history', image_geometry=frame['frame_id'],
                 calibration_source=calibrated['calibration_source'],
-                timestamp_basis='BBOS capture timestamp; device-local; clock jumps require new session')))
+                timestamp_basis='BBOS capture converted to SDK session-monotonic by runner; clock jumps require new session')))
     return specs
 
 
@@ -55,7 +55,7 @@ def wrist_camera_spec(context, side):
                              observes=f'Bracketbot {side} wrist camera'),
                 metadata=dict(source=f'BBOS camera.{side}.jpeg',
                               image_geometry='raw_uncalibrated', calibration_status='unavailable',
-                              timestamp_basis='BBOS capture timestamp; device-local'))
+                              timestamp_basis='BBOS capture converted to SDK session-monotonic by runner'))
 
 
 def fresh_jpeg(record, now_ns):

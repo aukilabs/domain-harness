@@ -5,7 +5,7 @@ use spatial_home::{conventions, domain_portals, home_alignment::HomePortals};
 #[test]
 fn references_align_full_pose_and_follow_new_observations() -> Result<()> {
     let home = conventions::portals(&domain_portals::load()?, spatial_home::model::FRAME)?;
-    let local_frame = format!("galbot-local:{}:zup", uuid::Uuid::new_v4());
+    let local_frame = format!("bracketbot-local:{}:zup", uuid::Uuid::new_v4());
     let mut observed = MapConventionConversion::between_named_frames(
         home.scenegraph.map.frame.clone(),
         conventions::frame(&local_frame)?,

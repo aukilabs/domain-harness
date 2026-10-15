@@ -44,7 +44,8 @@ async fn phone_depth_image_is_declared_and_read_back_exactly() -> Result<()> {
         let output = &component["current_outputs"]["frames"]["manifest"];
         // The same camera frame and capture clock as the picture, depth and pose.
         assert_eq!(output["spatial_frame_id"], format!("phone-camera:{session}"));
-        assert_eq!(output["clock"]["id"], "arkit-capture");
+        let session_clock=serde_json::to_value(spatial_home::model::clock_ref(&products.timing.clock.registry_entry()))?;
+        assert_eq!(output["clock"],session_clock);
         assert_eq!(output["payload"]["unit"], "millimeters");
         let entry = catalog["catalog"]["products"]
             .as_array()
@@ -80,14 +81,16 @@ async fn phone_depth_image_is_declared_and_read_back_exactly() -> Result<()> {
             .await?;
         let got = &read.observations[0];
         assert_eq!(got.timestamp_ns, 100);
+        assert_eq!(read.producer.clock,spatial_home::model::clock_ref(&products.timing.clock.registry_entry()));
+        assert_eq!(got.output,read.producer.reference());
         assert_eq!(*got.payload, image);
         let back: Vec<u16> = got.payload.depth_mm.chunks(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
         assert_eq!(back, depth);
         assert_eq!(got.payload.confidence, confidence);
 
-        // A new AR session is a new Output on the same Component.
+        // A new AR session is a new Output, still on the peer's monotonic clock.
         let next = uuid::Uuid::new_v4().to_string();
-        publisher.publish(DepthImage::new(&next, 5, (width, height), &depth, &confidence, intrinsics, 0)?)?;
+        publisher.publish(DepthImage::new(&next, 200, (width, height), &depth, &confidence, intrinsics, 0)?)?;
         let catalog = fetch(&pair.a, pair.b.peer_id(), &routes).await;
         let entry = catalog["catalog"]["products"]
             .as_array()
@@ -97,6 +100,9 @@ async fn phone_depth_image_is_declared_and_read_back_exactly() -> Result<()> {
             .unwrap();
         assert_eq!(entry["metadata"]["value"]["camera_frame"], format!("phone-camera:{next}"));
         assert!(entry["metadata"]["value"]["pose_product_id"].is_null());
+        let output=&catalog["catalog"]["components"].as_array().unwrap().iter()
+            .find(|c|c["manifest"]["component_id"]==COMPONENT).unwrap()["current_outputs"]["frames"]["manifest"];
+        assert_eq!(output["clock"],session_clock);
         publisher.close()?;
         products.close().await?;
         Ok::<_, anyhow::Error>(())

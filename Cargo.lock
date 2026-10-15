@@ -638,6 +638,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "auki-time"
+version = "0.0.0"
+source = "git+https://github.com/aukilabs/auki-sdk.git?rev=3342d589605846f5f45c1de5430dd22923555de2#3342d589605846f5f45c1de5430dd22923555de2"
+dependencies = [
+ "auki-datatypes",
+ "auki-logs",
+ "auki-manifests",
+ "auki-registry",
+ "libc",
+]
+
+[[package]]
 name = "auki-voxel-map"
 version = "0.1.0"
 dependencies = [
@@ -4421,6 +4433,7 @@ dependencies = [
  "auki-registry",
  "auki-scenegraph",
  "auki-sdk",
+ "auki-time",
  "auki-voxel-map",
  "axum",
  "base64 0.22.1",

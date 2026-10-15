@@ -1,5 +1,4 @@
-//! Read-only Galbot RGB-D Component. Sensor capture runs beside the independent
-//! mapper; Home aligns each observation then distributes it to both mappers.
+//! Shared RGB-D capture contracts and binary codec used by the local mapper.
 use crate::{
     network::HomeConnection,
     runner_voxels::{PreparedScan, SensorCalibration},
@@ -9,7 +8,7 @@ use auki_component_protocol::*;
 use auki_components::*;
 use auki_registry::FrameRegistryEntry;
 use serde::{Deserialize, Serialize};
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 pub const FRAME: &str = "right_arm_camera_color_optical_frame";
 pub const BRACKETBOT_FRAME: &str = "bracketbot_head_rectified_optical";
 pub const BRACKETBOT_RIGHT_FRAME: &str = "bracketbot_head_right_rectified_optical";
@@ -79,79 +78,6 @@ impl Capture {
         Ok(())
     }
 }
-pub struct Publisher {
-    output: ConfiguredObservable<Capture>,
-    _component: Component,
-    capture: BufferProductCapture<Capture>,
-}
-impl Publisher {
-    pub fn mount(
-        runtime: &ComponentRuntime,
-        endpoint: &ComponentProtocolEndpoint,
-        owner: &str,
-        clock: ClockReference,
-    ) -> Result<Self> {
-        let component = runtime.component(ComponentSpec::new("rgbd.right_arm").observable(
-            ObservableContract {
-                name: "samples".into(),
-                datatype: SCHEMA.into(),
-                schema: SCHEMA.into(),
-                access: vec![ObservationAccess::FollowNew],
-                exposure: Exposure::Cluster,
-            },
-        ))?;
-        let output = component.configured_observable(
-            ConfiguredObservableSpec::new(
-                "samples",
-                format!("rgbd-{}", uuid::Uuid::new_v4()),
-                clock,
-                PayloadContract::Structured(StructuredPayloadContract {
-                    modality: "colored_depth".into(),
-                    datatype: SCHEMA.into(),
-                    schema: SCHEMA.into(),
-                    observes: "right_arm_rgbd".into(),
-                    unit: Some("meters".into()),
-                }),
-            )
-            .in_registered_frame(FrameRegistryEntry::ros_optical(owner, FRAME)),
-        )?;
-        component.expose()?;
-        let capture = runtime.capture_buffer(PRODUCT, &output, BufferLimits::entries(3), size)?;
-        endpoint.export_product_with_encoder(&capture.product(), encoder())?;
-        Ok(Self {
-            output,
-            _component: component,
-            capture,
-        })
-    }
-    pub fn publish(&self, sample: Capture) -> Result<()> {
-        sample.validate()?;
-        self.output.publish(sample.timestamp_ns, Arc::new(sample))?;
-        ensure!(self.capture.errors().is_empty(), "RGB-D retention failed");
-        Ok(())
-    }
-    pub async fn run(self, script: std::path::PathBuf) -> Result<()> {
-        use tokio::io::{AsyncBufReadExt, BufReader};
-        let mut child = tokio::process::Command::new("python3.8")
-            .arg(script).env("PYTHONPATH","/data/galbot/lib:/data/galbot/lib/python3.8.10:/data/galbot/lib/python3/site-packages")
-            .env("LD_LIBRARY_PATH","/data/galbot/lib")
-            // Camera code does not need transport credentials.
-            .env_remove("AUKI_ACCESS_KEY").env_remove("AUKI_APP_SECRET")
-            .stdout(std::process::Stdio::piped()).kill_on_drop(true).spawn()?;
-        let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
-        while let Some(line) = lines.next_line().await? {
-            if let Some(json) = line.strip_prefix("RGBD ") {
-                ensure!(json.len() < 128 * 1024, "RGB-D capture too large");
-                self.publish(serde_json::from_str(json)?)?;
-            }
-        }
-        bail!("RGB-D capture exited: {}", child.wait().await?)
-    }
-}
-fn size(sample: &Capture) -> usize {
-    64 + sample.hit_points_m.len() * 27
-}
-
 /// The capture on the wire: never JSON for the points. "RGD1", a u32-length
 /// JSON header (times and calibration, a few hundred bytes), the point count
 /// (u32), then each point as 3 × f64 metres and its sRGB colour as 3 bytes.

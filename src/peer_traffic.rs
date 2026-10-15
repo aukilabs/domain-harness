@@ -39,11 +39,11 @@ pub struct Publisher {
     capture:BufferProductCapture<Snapshot>,
     output:ConfiguredObservable<Snapshot>,
     owner:String,
-    started:Instant,
+    session_clock:auki_time::SessionClock,
     last:Option<Instant>,
 }
 impl Publisher {
-    pub fn mount(runtime:&ComponentRuntime,endpoint:&ComponentProtocolEndpoint,clock:&ClockRegistryEntry,started:Instant)->Result<Self>{
+    pub fn mount(runtime:&ComponentRuntime,endpoint:&ComponentProtocolEndpoint,clock:&ClockRegistryEntry,session_clock:auki_time::SessionClock)->Result<Self>{
         let component=runtime.component(ComponentSpec::new("peer-network-diagnostics").observable(ObservableContract {
             name:"traffic".into(),datatype:SCHEMA.into(),schema:SCHEMA.into(),access:vec![ObservationAccess::FollowNew],exposure:Exposure::Cluster,
         }))?;
@@ -52,12 +52,12 @@ impl Publisher {
         component.expose()?;
         let capture=runtime.capture_buffer(PRODUCT,&output,BufferLimits::entries(2),|s:&Snapshot|512+s.links.len()*512)?;
         endpoint.export_product(&capture.product())?;
-        let mut result=Self{_component:component,capture,output,owner:clock.peer_id.clone(),started,last:None};result.tick()?;Ok(result)
+        let mut result=Self{_component:component,capture,output,owner:clock.peer_id.clone(),session_clock,last:None};result.tick()?;Ok(result)
     }
     pub fn tick(&mut self)->Result<()> {
         if self.last.is_some_and(|last|last.elapsed()<Duration::from_secs(1)){return Ok(());}
         self.last=Some(Instant::now());
-        self.output.publish(self.started.elapsed().as_nanos() as u64,Arc::new(snapshot(&self.owner)))?;
+        self.output.publish(self.session_clock.now_ns(),Arc::new(snapshot(&self.owner)))?;
         ensure!(self.capture.errors().is_empty(),"Traffic retention failed");Ok(())
     }
 }

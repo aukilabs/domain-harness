@@ -145,7 +145,6 @@ pub struct Publisher {
 impl Publisher {
     pub fn new(products: &crate::mobile_products::MobileProducts) -> Result<Self> {
         let runtime = products.runtime.clone();
-        let owner = runtime.peer_id().to_string();
         let component = runtime.component(
             ComponentSpec::new("phone-local-mapper").observable(ObservableContract {
                 name: "voxels".into(),
@@ -155,7 +154,7 @@ impl Publisher {
                 exposure: Exposure::Cluster,
             }),
         )?;
-        let clock = crate::model::clock_entry(&owner, &uuid::Uuid::new_v4().to_string());
+        let clock = products.timing.clock.registry_entry();
         let output = component.configured_observable(ConfiguredObservableSpec::new(
             "voxels",
             uuid::Uuid::new_v4().to_string(),

@@ -87,6 +87,10 @@ pub struct Body {
     joints: Stream<Joints>,
     health: Stream<Health>,
     pointing: Stream<Pointing>,
+    clock: auki_time::SessionClock,
+    native_clock: crate::capture_clock::NativeCaptureClock,
+    last_joints_native: u64,
+    last_health_native: u64,
 }
 impl Body {
     pub fn mount(p: &crate::poses::Publisher) -> Result<Self> {
@@ -97,26 +101,40 @@ impl Body {
             joints: stream(p, &body, JOINTS, JOINTS_SCHEMA, "urdf_joint_positions")?,
             health: stream(p, &body, HEALTH, HEALTH_SCHEMA, "motor_and_battery_health")?,
             pointing: stream(p, &body, POINTING, POINTING_SCHEMA, "pointing_request_status")?,
+            clock: p.session_clock.clone(),
+            native_clock: p.native_clock.clone(),
+            last_joints_native: 0,
+            last_health_native: 0,
         })
     }
     pub fn publish(&mut self, sample: Sample) -> Result<()> {
         match sample {
             Sample::Joints {timestamp_ns, positions} => {
+                if timestamp_ns <= self.last_joints_native { return Ok(()); }
+                let native_timestamp_ns=timestamp_ns;
+                let Some(timestamp_ns) = self.native_clock.convert(timestamp_ns)? else { return Ok(()); };
                 let joints = Joints {positions};
                 joints.validate()?;
-                self.joints.publish(timestamp_ns, joints)
+                self.joints.publish(timestamp_ns, joints)?;
+                self.last_joints_native=native_timestamp_ns;
+                Ok(())
             }
             Sample::Health {timestamp_ns, joints, battery} => {
+                if timestamp_ns <= self.last_health_native { return Ok(()); }
+                let native_timestamp_ns=timestamp_ns;
+                let Some(timestamp_ns) = self.native_clock.convert(timestamp_ns)? else { return Ok(()); };
                 let health = Health {joints, battery};
                 health.validate()?;
-                self.health.publish(timestamp_ns, health)
+                self.health.publish(timestamp_ns, health)?;
+                self.last_health_native=native_timestamp_ns;
+                Ok(())
             }
         }
     }
-    /// The latest pointing phase, stamped now on the capture clock (UTC ns).
+    /// The latest pointing phase, captured now on this peer's session clock.
     pub fn publish_pointing(&mut self, pointing: Pointing) -> Result<()> {
         pointing.validate()?;
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos() as u64;
+        let now = self.clock.now_ns();
         // Phases can share a nanosecond; keep every one, in order.
         let timestamp_ns = now.max(self.pointing.last + 1);
         self.pointing.publish(timestamp_ns, pointing)

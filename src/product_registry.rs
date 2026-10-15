@@ -9,6 +9,14 @@ use std::{
     time::Duration,
 };
 pub type Definitions = Arc<Mutex<Vec<RegistryEntryEnvelope>>>;
+pub fn resolved_time_contract(registry:&Value,c:&crate::capture_time::Contract)->Result<()> {
+    let entries=registry["definitions"].as_object().ok_or_else(||anyhow::anyhow!("Waiting for peer Registry definitions"))?;
+    for definition in [&c.from_clock,&c.to_clock] {
+        ensure!(entries.values().filter_map(|v|serde_json::from_value::<auki_registry::ClockRegistryEntry>(v.clone()).ok())
+            .any(|v|v==*definition),"Unresolved time-transform clock");
+    }
+    Ok(())
+}
 pub fn resolved_contract(
     registry: &Value,
     c: &crate::compact_pose::Contract,
@@ -157,6 +165,13 @@ pub async fn resolve(
         }
         for p in &catalog.products {
             if let Some(m) = &p.metadata {
+                if m.schema == crate::capture_time::METADATA {
+                    let contract:crate::capture_time::Contract=serde_json::from_value(m.value.clone())?;
+                    for clock in [&contract.from_clock,&contract.to_clock] {
+                        let r=crate::model::clock_ref(clock);
+                        refs.insert(format!("clock:{}:{}:{}",r.peer_id,r.id,r.hash),("clock",serde_json::to_value(r)?));
+                    }
+                }
                 if m.schema == crate::registry_ar::CAMERA_METADATA {
                     let r = m.value["sensor"].clone();
                     refs.insert(format!("sensor:{}:{}:{}",r["peer_id"],r["id"],r["hash"]),("sensor",r));

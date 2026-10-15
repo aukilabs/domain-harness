@@ -140,7 +140,7 @@ impl Lidar {
     pub fn product(&self) -> RetainedProduct<Scan> {
         self.capture.product()
     }
-    pub fn mount(runtime: &ComponentRuntime, endpoint: &ComponentProtocolEndpoint) -> Result<Self> {
+    pub fn mount(runtime: &ComponentRuntime, endpoint: &ComponentProtocolEndpoint, session_clock: &auki_time::SessionClock) -> Result<Self> {
         let component = runtime.component(
             ComponentSpec::new("simulator-forward-lidar").observable(ObservableContract {
                 name: "scans".into(),
@@ -150,8 +150,9 @@ impl Lidar {
                 exposure: Exposure::Cluster,
             }),
         )?;
-        let session = uuid::Uuid::new_v4().to_string();
-        let clock = crate::model::clock_entry(runtime.peer_id(), &session);
+        let clock = session_clock.registry_entry();
+        ensure!(clock.peer_id == runtime.peer_id(), "LiDAR session clock owner mismatch");
+        let session = clock.session_id.clone();
         let output = component.configured_observable(
             ConfiguredObservableSpec::new(
                 "scans",

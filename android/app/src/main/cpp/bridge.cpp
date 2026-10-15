@@ -3,6 +3,20 @@
 #include <string>
 #include "SpatialPortalBridge.h"
 
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_aukilabs_annotator_NativeBridge_clockGeneration(JNIEnv*, jobject) {
+    return static_cast<jlong>(spatial_mobile_clock_generation());
+}
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_aukilabs_annotator_NativeBridge_sessionNow(JNIEnv*, jobject, jlong generation) {
+    return static_cast<jlong>(spatial_mobile_session_now(generation));
+}
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_aukilabs_annotator_NativeBridge_clockSample(JNIEnv*, jobject, jlong generation, jint kind, jlong before, jlong nativeNow, jlong after) {
+    if (kind < 0 || before <= 0 || nativeNow <= 0 || after < before) return false;
+    return spatial_mobile_clock_sample(generation, kind, before, nativeNow, after) != 0;
+}
+
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_aukilabs_annotator_NativeBridge_cameraDemand(JNIEnv*, jobject, jboolean active) {
     return spatial_mobile_camera_demand(active ? 1 : 0) != 0;

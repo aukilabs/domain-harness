@@ -6,6 +6,7 @@ fn state(dir:&std::path::Path)->anyhow::Result<Shared>{
     let mut store=Store::open_canonical(dir.join("home.json"))?;
     spatial_home::notes::initialize(&mut store)?;
     Ok(Arc::new(AppState{
+        traffic:Arc::new(spatial_home::traffic_history::Monitor::open(dir.join("traffic-history.json"))),
         local_scenes:Arc::new(spatial_home::local_scenes::LocalScenes::load(&dir.join("scenes"))?),
         simulation_disconnect:Default::default(),simulation:None,
         fiducials:Mutex::new(spatial_home::fiducials::FiducialStore::load(dir.join("fiducials.json"))?),
