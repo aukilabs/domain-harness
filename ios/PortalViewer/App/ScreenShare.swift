@@ -43,6 +43,8 @@ final class ScreenShare: ObservableObject {
     func askFirst(_ done: @escaping (Bool) -> Void) {
         let recorder = RPScreenRecorder.shared()
         guard recorder.isAvailable else { done(false); return }
+        // Already allowed this launch (the intro asked): do not ask again.
+        if running { done(true); return }
         starting = true
         recorder.startCapture(handler: { [weak self] buffer, type, error in
             guard let self, error == nil, type == .video else { return }

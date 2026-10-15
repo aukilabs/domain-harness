@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		0A9A1BD27276FC3895F4A4EC /* ScreenShare.swift in Sources */ = {isa = PBXBuildFile; fileRef = C38092EFE931EB56A528B487 /* ScreenShare.swift */; };
+		B035332A7A24EF29879734ED /* McKennaIntro.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D7D0E1ED0FEC6E03D40AEDD /* McKennaIntro.swift */; };
 		5B236A49E20DC7CA12B8707A /* Onboarding.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5104FEF0A9DC237366105CF8 /* Onboarding.swift */; };
 		126307E730AE9D6F418261E3 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 5E28D30D4D61E2D22CF37F86 /* Assets.xcassets */; };
 		2481687917605ECCE2F2C22A /* bracketbot_0184_rigged.usdz in Resources */ = {isa = PBXBuildFile; fileRef = BA431FB9B359E3A0AF861867 /* bracketbot_0184_rigged.usdz */; };
@@ -38,6 +39,7 @@
 		B33697AF632544986693964C /* PortalViewerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortalViewerApp.swift; sourceTree = "<group>"; };
 		BA431FB9B359E3A0AF861867 /* bracketbot_0184_rigged.usdz */ = {isa = PBXFileReference; lastKnownFileType = file.usdz; path = bracketbot_0184_rigged.usdz; sourceTree = "<group>"; };
 		C38092EFE931EB56A528B487 /* ScreenShare.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenShare.swift; sourceTree = "<group>"; };
+		4D7D0E1ED0FEC6E03D40AEDD /* McKennaIntro.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = McKennaIntro.swift; sourceTree = "<group>"; };
 		5104FEF0A9DC237366105CF8 /* Onboarding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Onboarding.swift; sourceTree = "<group>"; };
 		CF63C94F0E06FB864456F332 /* PortalMap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortalMap.swift; sourceTree = "<group>"; };
 		D6933E6306AC040ABFB74C78 /* SpatialPortalBridge.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = SpatialPortalBridge.xcframework; path = ../PortalBridge/build/SpatialPortalBridge.xcframework; sourceTree = "<group>"; };
@@ -85,6 +87,7 @@
 				8FF47757AD099392D75B3200 /* PortalPose.swift */,
 				B33697AF632544986693964C /* PortalViewerApp.swift */,
 				C38092EFE931EB56A528B487 /* ScreenShare.swift */,
+				4D7D0E1ED0FEC6E03D40AEDD /* McKennaIntro.swift */,
 				5104FEF0A9DC237366105CF8 /* Onboarding.swift */,
 				A1F90986E59A331AC5AF0962 /* SemanticVolume.swift */,
 				4400D81FC657522891C44E1A /* SemanticVolumeModel.swift */,
@@ -185,6 +188,7 @@
 				EEE08B86D5CC19868B4DBB4B /* PortalPose.swift in Sources */,
 				B5FC91E8E14B70B258CF83E0 /* PortalViewerApp.swift in Sources */,
 				0A9A1BD27276FC3895F4A4EC /* ScreenShare.swift in Sources */,
+				B035332A7A24EF29879734ED /* McKennaIntro.swift in Sources */,
 				5B236A49E20DC7CA12B8707A /* Onboarding.swift in Sources */,
 				76AEBF1C9FA1B8D4D8E320D7 /* SemanticVolume.swift in Sources */,
 				BD58CFC0B92E999985C2400D /* SemanticVolumeModel.swift in Sources */,

@@ -17,6 +17,18 @@ struct PortalViewerApp: App {
 }
 
 struct ViewerScreen: View {
+    /// The first launch shows the McKenna intro and the permissions list; later launches a quick mark.
+    @AppStorage("introDone") private var introDone = false
+    @State private var showIntro = true
+    /// iOS asks before the screen can be shared, and asking takes the camera away.
+    /// Ask first; the AR session starts once it is answered.
+    private func beginCapture() {
+        screen.askFirst { allowed in
+            controller.screenAsked = true
+            controller.start()
+            if allowed { screen.start() }
+        }
+    }
     @StateObject private var controller = ViewerController()
     @StateObject private var peer = HomePeer()
     @StateObject private var screen = ScreenShare()
@@ -302,14 +314,19 @@ struct ViewerScreen: View {
             controller.messages.keep(id)
             controller.showMessageResult("Home did not delete that message: \(result.detail)")
         }
-        .onAppear {
-            // iOS asks before the screen can be shared, and asking takes the camera away.
-            // Ask first; the AR session starts once it is answered.
-            screen.askFirst { allowed in
-                controller.screenAsked = true
-                controller.start()
-                if allowed { screen.start() }
+        .overlay {
+            // McKenna opens every launch: the full intro and permissions list the
+            // first time, a quick mark after that. The camera waits for it.
+            if showIntro {
+                McKennaIntro(mode: introDone ? .quick : .firstBoot, screen: screen) {
+                    introDone = true
+                    withAnimation(.easeOut(duration: 0.35)) { showIntro = false }
+                    beginCapture()
+                }
+                .transition(.opacity)
             }
+        }
+        .onAppear {
             peer.onMap = { controller.load($0) }
             controller.onPose = { peer.publishPose($0) }
             controller.onDepth = { peer.publishDepth($0) }
