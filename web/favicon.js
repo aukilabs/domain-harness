@@ -5,7 +5,7 @@ const HUE=[[0,'#10b981'],[.2,'#3b82f6'],[.4,'#8b5cf6'],[.6,'#ec4899'],[.8,'#f59e
 export function playFaviconWrite({mark,pen,duration=1600}){
  const link=document.querySelector('link[rel="icon"]');
  if(!link||matchMedia('(prefers-reduced-motion: reduce)').matches)return;
- const still=link.getAttribute('href'),size=64,canvas=document.createElement('canvas'),ink=document.createElement('canvas');canvas.width=canvas.height=ink.width=ink.height=size;
+ const still=link.getAttribute('href'),stillType=link.getAttribute('type'),size=64,canvas=document.createElement('canvas'),ink=document.createElement('canvas');canvas.width=canvas.height=ink.width=ink.height=size;
  const ctx=canvas.getContext('2d'),inkCtx=ink.getContext('2d'),markPath=new Path2D(mark),penPath=new Path2D(pen);
  // The pen route's length, for the dash that reveals it (measured on a throwaway SVG path).
  const svg=document.createElementNS('http://www.w3.org/2000/svg','svg'),probe=document.createElementNS('http://www.w3.org/2000/svg','path');
@@ -24,8 +24,9 @@ export function playFaviconWrite({mark,pen,duration=1600}){
   inkCtx.lineWidth=34;inkCtx.lineCap='round';inkCtx.lineJoin='round';inkCtx.strokeStyle='#000';inkCtx.setLineDash([reveal,length]);inkCtx.stroke(penPath);
   inkCtx.globalCompositeOperation='source-in';const hue=inkCtx.createLinearGradient(0,0,231,118);for(const [offset,colour] of HUE)hue.addColorStop(offset,colour);inkCtx.fillStyle=hue;inkCtx.fill(markPath);
   ctx.setTransform(1,0,0,1,0,0);ctx.drawImage(ink,0,0);
-  link.setAttribute('href',canvas.toDataURL('image/png'));
-  if(t<1)requestAnimationFrame(frame);else link.setAttribute('href',still);
+  // The frames are PNGs: the link says so while they play, then goes back to the SVG icon.
+  if(t<1){link.setAttribute('type','image/png');link.setAttribute('href',canvas.toDataURL('image/png'));requestAnimationFrame(frame);}
+  else{if(stillType)link.setAttribute('type',stillType);else link.removeAttribute('type');link.setAttribute('href',still);}
  }
  // Play when the tab is actually visible, so a page opened in the background still shows it.
  const go=()=>requestAnimationFrame(frame);
