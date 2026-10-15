@@ -46,7 +46,7 @@ export function createSceneLabels({camera,controls,renderer,parent=renderer.domE
   sources.set(source,items);const ids=new Set();
   for(const list of sources.values())for(const item of list){ids.add(item.id);let label=labels.get(item.id);if(!label){label=create(item);labels.set(item.id,label);}label.item=item;describe(label);}
   for(const [id,label] of labels)if(!ids.has(id)){label.el.remove();labels.delete(id);}
-  dirty=true;clusterCache=null;
+  dirty=true;if(source==='notes')clusterCache=null;
  }
 
  // The zoom focus (last wheel or pointer position) staggers changes outward from where the user is looking.
@@ -58,6 +58,10 @@ export function createSceneLabels({camera,controls,renderer,parent=renderer.domE
  }
  const stepDown={chip:'hidden',tile:'hidden'};
  function shownForm(label){return label.demoted&&stepDown[label.base]?stepDown[label.base]:label.base;}
+ function clusterMembers(cluster){return cluster.ids.map(id=>labels.get(id)?.item).filter(Boolean);}
+ function clusterCentre(cluster){const members=clusterMembers(cluster);if(!members.length)return false;cluster.centre.set(0,0,0);for(const m of members)cluster.centre.add(m.anchor.getWorldPosition(point));cluster.centre.divideScalar(members.length);return members.every(m=>shown(m.anchor));}
+ // Where a pin is in its slide (0 at its own spot, 1 at the cluster), so a reversed slide carries on from there.
+ function slideAt(label,now){const m=label.merge;if(!m)return label.form==='merged'?1:0;const t=reduceMotion()?1:Math.min(1,(now-m.start)/MERGE_MS);return m.dir>0?easeOut(t):1-easeOut(t);}
  function clusterKey(members){return members.map(m=>m.id).join('|');}
  function decide(now){
   const notes=[...labels.values()].filter(l=>l.item.kind==='note'&&!l.item.hidden);
@@ -75,8 +79,8 @@ export function createSceneLabels({camera,controls,renderer,parent=renderer.domE
    else form=tier===0?'chip':tier===1?'tile':'hidden';
    const was=label.form;
    label.base=form;
-   if(form==='merged'&&was!=='merged'){label.merge={start:now,dir:1,key:memberOf.get(item.id)};setForm(label,'pin');label.el.dataset.merging='';label.form='merged';continue;}
-   if(was==='merged'&&form!=='merged'){const key=label.merge?.key||label.mergedInto;label.merge={start:now,dir:-1,key,centre:clusters.get(key)?.centre.clone()};label.form=form;label.el.dataset.form=form==='hidden'?'hidden':'pin';label.el.dataset.merging='';continue;}
+   if(form==='merged'&&was!=='merged'){const k=slideAt(label,now);label.merge={start:now-(1-Math.cbrt(1-k))*MERGE_MS,dir:1,key:memberOf.get(item.id)};setForm(label,'pin');label.el.dataset.merging='';label.form='merged';continue;}
+   if(was==='merged'&&form!=='merged'){const key=label.merge?.key||label.mergedInto,k=slideAt(label,now);label.merge={start:now-(1-Math.cbrt(k))*MERGE_MS,dir:-1,key,centre:clusters.get(key)?.centre.clone()};label.form=form;label.el.dataset.form=form==='hidden'?'hidden':'pin';label.el.dataset.merging='';continue;}
    setForm(label,shownForm(label));
   }
   // Cluster pins: created when their members start merging, popping in once the pins arrive.
@@ -86,8 +90,8 @@ export function createSceneLabels({camera,controls,renderer,parent=renderer.domE
    if(!cluster){
     const el=document.createElement('div');el.className='scene-label';el.dataset.kind='cluster';el.dataset.form='hidden';
     el.innerHTML='<span class="label-form label-cluster"><span class="label-count"></span></span>';el.querySelector('.label-count').textContent=g.length>99?'99+':String(g.length);layer.append(el);
-    const centre=new THREE.Vector3();for(const m of g){labels.get(m.id).item.anchor.getWorldPosition(point);centre.add(point);}centre.divideScalar(g.length);
-    cluster={el,key,centre,members:g.map(m=>labels.get(m.id).item),x:NaN,y:NaN,visible:false,rect:null,form:'hidden'};clusters.set(key,cluster);
+    // Members are kept by id and resolved each frame: a scene rebuild replaces every note's anchor.
+    cluster={el,key,centre:new THREE.Vector3(),ids:g.map(m=>m.id),x:NaN,y:NaN,visible:false,rect:null,form:'hidden'};clusters.set(key,cluster);clusterCentre(cluster);
     clearTimeout(cluster.timer);cluster.timer=setTimeout(()=>{if(clusters.get(key)===cluster){cluster.form='cluster';el.dataset.form='cluster';}},reduceMotion()?0:CLUSTER_DELAY_MS);
    }
    for(const m of g)labels.get(m.id).mergedInto=key;
@@ -128,7 +132,7 @@ export function createSceneLabels({camera,controls,renderer,parent=renderer.domE
   // Labels fade with the scene's distance fog; a faint label isn't clickable, and the selected one stays readable.
   const f=fog(),fade=(world,floor=0)=>{const alpha=f?1-smoothstep(f.near,f.far,camera.position.distanceTo(world)):1;return Math.max(floor,alpha);};
   const tint=(target,alpha)=>{const value=alpha>.99?'':alpha.toFixed(2);if(target.alpha!==value){target.alpha=value;target.el.style.opacity=value;}};
-  for(const cluster of clusters.values()){const alpha=fade(cluster.centre);cluster.faint=alpha<.5;write(cluster,alpha>.01&&cluster.members.every(m=>shown(m.anchor))?place(cluster.centre):null,still);tint(cluster,alpha);}
+  for(const cluster of clusters.values()){const live=clusterCentre(cluster),alpha=fade(cluster.centre);cluster.faint=alpha<.5;write(cluster,alpha>.01&&live?place(cluster.centre):null,still);tint(cluster,alpha);}
   for(const label of labels.values()){
    const {item,el}=label;item.anchor.getWorldPosition(at);const alpha=fade(at,item.id===selected?.5:0);label.faint=alpha<.5;
    write(label,alpha>.01&&shown(item.anchor)?place(at):null,still);tint(label,alpha);
@@ -175,7 +179,7 @@ export function createSceneLabels({camera,controls,renderer,parent=renderer.domE
   const result=label=>label.item.kind==='note'?{kind:'note',id:label.item.id,note:label.item.note}:{kind:'volume',id:label.item.id,volumeId:label.item.volumeId,anchor:label.item.anchor};
   for(const id of [selected,hovered]){const label=labels.get(id);if(label&&inside(label.rect))return result(label);}
   for(const label of all)if(label.form==='bubble'&&inside(label.rect))return result(label);
-  for(const cluster of clusters.values())if(inside(cluster.rect))return {kind:'note-cluster',notes:cluster.members.map(m=>m.note),centre:cluster.centre.clone()};
+  for(const cluster of clusters.values())if(inside(cluster.rect))return {kind:'note-cluster',notes:clusterMembers(cluster).map(m=>m.note),centre:cluster.centre.clone()};
   for(const label of all)if(label.form==='pin'&&inside(label.rect))return result(label);
   for(const label of all)if((label.form==='chip'||label.form==='tile')&&inside(label.rect))return result(label);
   return null;
