@@ -97,6 +97,35 @@ env -u SPATIAL_PEER_CONFIG SPATIAL_SIMULATED_ROBOT=1 SPATIAL_PORT=4323 cargo run
 In Maps, choose **Simulated robot · voxels** or **Simulated robot · occupancy 2D**.
 This uses isolated loopback peers; it does not connect to a real robot.
 
+Open **Devices → a peer → Traffic with Home** for a movable dashboard with receive/send
+speedometers, recent history, and process totals. The gauge maximum is a saved display
+range (1 Mbps–10 Gbps), not measured link capacity; values above it remain visible.
+Measurements cover only the selected authenticated Home/remote Peer ID pair,
+excluding HTTP, authentication, transport overhead, and retransmissions. Counters reset when Home restarts, but the server retains the last 20 launch
+summaries beside `SPATIAL_DATA` in `*.traffic-history.json`. Collection runs every
+second regardless of panel visibility; checkpoints save every five seconds and
+at graceful shutdown. Each launch keeps its last 60 samples per peer pair, receive/send peaks,
+and top 10 intervals ranked by combined throughput. The comparison table includes
+uptime averages and percentage changes; differing launch durations affect totals.
+An unclean exit can lose the final five seconds and is labeled as a last checkpoint.
+Unreadable history is preserved and a persistence warning is shown.
+
+Home exports the SDK `peer-network-traffic` Product from its `peer-network-diagnostics`
+Component (`spatial-harness.peer-traffic/v1`), with a registered observation clock,
+explicit observer/remote identities, counter-session ID, byte totals, I/O error counts,
+and opened/active stream counts. Successful writes do not prove remote receipt or
+rendering. The process retains up to 256 identity pairs and reports unattributed
+stream opens after that bound. No payloads or credentials are recorded.
+
+The panel compares the same peer pair across launches, ranks launches by peak
+receive rate, and exports recorded diagnostics as JSON. History starts with this
+version; older runs cannot be reconstructed. Closing the panel stops browser
+polling only. The read-only `/api/network-traffic` endpoint returns process session
+identity, monotonic elapsed milliseconds, cumulative bytes, and diagnostics. Pass
+`?peer_id=<remote Peer ID>` to scope the response to Home’s connection with that
+peer. No measurements returns `available:false`; aggregate history is never
+relabelled as peer traffic. History from before per-peer instrumentation is excluded.
+
 ## Connect peers
 
 `config/home-peer.example.json` is a development-lab example, not a portable
