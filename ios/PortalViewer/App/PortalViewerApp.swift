@@ -2484,10 +2484,11 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         root.addChildNode(label)
     }
 
-    /// Above a robot's head in the scene: 1.8 m up its own Z axis (robot frames are Z up).
+    /// Just above a robot's head in the scene: 1.67 m up its own Z axis (robot frames
+    /// are Z up), 10 cm over the ~1.57 m Bracketbot model. The bubble's tail points here.
     private static func robotHead(_ robot: RenderScene.PhonePose) -> [Float]? {
         guard robot.pose.translation.count == 3, robot.pose.rotation_wxyz.count == 4 else { return nil }
-        let head = robot.pose.matrix * SIMD4<Float>(0, 0, 1.8, 1)
+        let head = robot.pose.matrix * SIMD4<Float>(0, 0, 1.67, 1)
         let position = [head.x, head.y, head.z]
         return position.allSatisfy(\.isFinite) ? position : nil
     }
