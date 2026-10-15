@@ -7,6 +7,8 @@ import * as THREE from 'three';
 
 // BBOS drops a motor's torque after 15 s above 50 C (sustained_temp_limit).
 const TEMP_COOL_C = 35, TEMP_WARM_C = 42, TEMP_LIMIT_C = 50;
+// Joints at or below this get no badge; a badge appears once its motor warms past it.
+const SHOW_ABOVE_C = 30;
 const CURRENT_FULL_A = 3;
 // Above the head, in the model's ROS body frame (+Z up); the model is ~1.57 m.
 const BATTERY_HEIGHT_M = 1.70;
@@ -123,13 +125,14 @@ function remove(entry) {
 }
 
 // Show `health` ({joints: {name: {temperature_c, current_a}}, battery: {voltage,
-// percent}}) on the glyph's URDF model; null hides it. Joints the model lacks
-// are skipped, and markers for joints no longer reported are removed.
+// percent}}) on the glyph's URDF model; null hides it. Joints the model lacks or
+// at or below SHOW_ABOVE_C are skipped, and markers for joints no longer shown are removed.
 export function applyRobotHealth(glyph, health) {
  glyph.healthMarkers ??= new Map();
  const robot = glyph.robot;
  const joints = robot ? Object.fromEntries(Object.entries(health?.joints || {}).filter(([name, v]) =>
-  robot.anchor(name) && Number.isFinite(v?.temperature_c) && Number.isFinite(v?.current_a))) : {};
+  robot.anchor(name) && Number.isFinite(v?.temperature_c) && Number.isFinite(v?.current_a)
+  && v.temperature_c > SHOW_ABOVE_C)) : {};
  for (const [name, entry] of glyph.healthMarkers) {
   if (!(name in joints) || entry.dot.parent !== robot?.anchor(name)) { remove(entry); glyph.healthMarkers.delete(name); }
  }
