@@ -1501,15 +1501,16 @@ select.form-control[size]:focus{animation:none}
  opacity:1;transform:translateX(-50%) scale(1);transition:opacity .22s cubic-bezier(.2,.8,.2,1) calc(var(--delay,0ms) + 40ms),transform .22s var(--ease-spring) calc(var(--delay,0ms) + 40ms)}
 .scene-label[data-merging] .label-pin{transition:none}
 /* Note bubble: paper, rounded type, two lines at most, a 6 px tail ending on the anchor. */
-.label-bubble{bottom:6px!important;max-width:180px;padding:5px 10px;border-radius:10px;background:var(--paper);color:var(--plum);box-shadow:var(--label-shadow);
+.label-bubble{bottom:6px!important}
+.label-body{position:relative;display:block;width:max-content;max-width:180px;padding:5px 10px;border-radius:10px;background:var(--paper);color:var(--plum);box-shadow:var(--label-shadow);
  font:600 13px/16px ui-rounded,"SF Pro Rounded",system-ui,sans-serif;white-space:normal}
-.label-bubble .label-text{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;overflow-wrap:anywhere;text-align:center}
-.label-bubble::after{content:"";position:absolute;left:50%;top:100%;width:0;height:0;margin-left:-6px;border:6px solid transparent;border-bottom:0;border-top-color:var(--paper)}
+.label-body .label-text{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;overflow-wrap:anywhere;text-align:center}
+.label-body::after{content:"";position:absolute;left:50%;top:100%;width:0;height:0;margin-left:-6px;border:6px solid transparent;border-bottom:0;border-top-color:var(--paper)}
 .label-pin{bottom:0!important;justify-content:center;width:22px;height:22px;border-radius:50%;background:var(--paper);color:var(--plum);box-shadow:var(--label-shadow)}
 .label-cluster{bottom:0!important;justify-content:center;width:26px;height:26px;border-radius:50%;background:var(--paper);color:var(--plum);
  box-shadow:3px -3px 0 -1px var(--paper),3px -3px 0 0 color-mix(in srgb,var(--plum) 30%,transparent),var(--label-shadow);font:700 11px/1 ui-rounded,"SF Pro Rounded",system-ui,sans-serif;font-variant-numeric:tabular-nums}
 .scene-label[data-peer="true"]{--paper:#472652;--plum:#fff7fc}
-:root:not([data-theme="light"]) .scene-label[data-peer="true"] :is(.label-bubble,.label-pin){box-shadow:var(--label-shadow),0 0 0 1px rgba(255,247,252,.22)}
+:root:not([data-theme="light"]) .scene-label[data-peer="true"] :is(.label-body,.label-pin){box-shadow:var(--label-shadow),0 0 0 1px rgba(255,247,252,.22)}
 /* Volume chip: a violet cube tile and the name; tile only when further out. */
 .label-chip{gap:6px;height:24px;padding:0 9px 0 4px;border-radius:8px;background:var(--chip);color:var(--chip-text);box-shadow:var(--label-shadow),inset 0 0 0 1px var(--chip-rim);font:600 12px/1 system-ui,-apple-system,sans-serif}
 .label-chip .label-text{max-width:180px;overflow:hidden;text-overflow:ellipsis}
@@ -1517,11 +1518,14 @@ select.form-control[size]:focus{animation:none}
 .label-tile-only{padding:4px;border-radius:8px;background:var(--chip);box-shadow:var(--label-shadow),inset 0 0 0 1px var(--chip-rim)}
 .label-tile{display:grid;place-items:center;flex:none;width:16px;height:16px;border-radius:5px;background:linear-gradient(180deg,#8b5cf6,#6d28d9);color:#fff}
 /* Hover: a ring in the section colour (the label is raised by its z-index). */
-/* The ring follows the outline including the tail: stacked hard drop-shadows on the form (box-shadow can't reach
-   the ::after tail). */
-.scene-label.hovered :is(.label-bubble,.label-pin){--ring:#f59e0b;box-shadow:none;filter:drop-shadow(2px 0 0 var(--ring)) drop-shadow(-2px 0 0 var(--ring)) drop-shadow(0 2px 0 var(--ring)) drop-shadow(0 -2px 0 var(--ring)) drop-shadow(0 3px 6px rgba(24,24,27,.25))}
+/* Hover and selection ring: an even 2 px band all round the bubble and its tail, drawn by a layer behind the
+   bubble (its tail scaled to keep the band even along the slopes); pins are circles, so a box-shadow ring is even. */
+.scene-label.hovered{--ring:#f59e0b}.scene-label.selected{--ring:#d97706}
+.label-ring{position:absolute;inset:-2px;display:none;border-radius:12px;background:var(--ring)}
+.label-ring::after{content:"";position:absolute;left:50%;top:calc(100% - 2px);width:0;height:0;margin-left:-8.8px;border:8.8px solid transparent;border-bottom:0;border-top-color:var(--ring)}
+.scene-label:is(.hovered,.selected) .label-ring{display:block}
+.scene-label:is(.hovered,.selected) .label-pin{box-shadow:var(--label-shadow),0 0 0 2px var(--ring)}
 .scene-label.hovered :is(.label-chip,.label-tile-only){box-shadow:var(--label-shadow),inset 0 0 0 1px var(--chip-rim),0 0 0 2px #8b5cf6}
-.scene-label.selected :is(.label-bubble,.label-pin){--ring:#d97706;box-shadow:none;filter:drop-shadow(2px 0 0 var(--ring)) drop-shadow(-2px 0 0 var(--ring)) drop-shadow(0 2px 0 var(--ring)) drop-shadow(0 -2px 0 var(--ring)) drop-shadow(0 3px 6px rgba(24,24,27,.25))}
 @media(prefers-reduced-motion:reduce){.scene-label .label-form,.scene-label[data-form] .label-form{transform:translateX(-50%)!important;transition:opacity .1s linear!important}}
 /* Volume handles are placed by transform from the layer's origin every frame (semantic-volumes.js tick()); their
    opacity and scale follow the box's size on screen. A tiny box shows only the move handle and this pill. */
@@ -1545,4 +1549,6 @@ select.form-control[size]:focus{animation:none}
 .content-locator.leaving{opacity:0;transition:opacity .16s ease}
 @keyframes locator-in{from{opacity:0;scale:.6}}
 @media(prefers-reduced-motion:reduce){.content-locator.shown{animation:locator-fade .16s ease}@keyframes locator-fade{from{opacity:0}}}
-.volume-handles.saving :is(.volume-resize-handle,.volume-zoom-pill){pointer-events:none}
+.label-ring{box-shadow:var(--label-shadow)}.scene-label:is(.hovered,.selected) .label-body{box-shadow:none}
+/* Hovered and selected labels sit above every other label (the by-kind z-index rules are more specific). */
+.scene-label[data-kind].hovered{z-index:4}.scene-label[data-kind].selected{z-index:5}

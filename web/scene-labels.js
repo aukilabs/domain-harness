@@ -30,7 +30,7 @@ export function createSceneLabels({camera,controls,renderer,parent=renderer.domE
  function create(item){
   const el=document.createElement('div');el.className='scene-label';el.dataset.kind=item.kind;el.dataset.form='hidden';
   el.innerHTML=item.kind==='note'
-   ?`<span class="label-form label-bubble"><span class="label-text"></span></span><span class="label-form label-pin">${glyph(NOTE_GLYPH,12)}</span>`
+   ?`<span class="label-form label-bubble"><span class="label-ring"></span><span class="label-body"><span class="label-text"></span></span></span><span class="label-form label-pin">${glyph(NOTE_GLYPH,12)}</span>`
    :`<span class="label-form label-chip"><span class="label-tile">${glyph(CUBE,11)}</span><span class="label-text"></span><span class="label-detail"></span></span><span class="label-form label-tile-only"><span class="label-tile">${glyph(CUBE,11)}</span></span>`;
   layer.append(el);
   return {el,item,form:'hidden',text:null,size:{},x:NaN,y:NaN,visible:false,merge:null,rect:null};
