@@ -311,6 +311,7 @@ struct ViewerScreen: View {
                 if allowed { screen.start() }
             }
             peer.onMap = { controller.load($0) }
+            peer.onVoxels = { controller.applyVoxels($0) }
             controller.onPose = { peer.publishPose($0) }
             controller.onDepth = { peer.publishDepth($0) }
             controller.onPlacement = { peer.publishPlacement($0) }
@@ -1868,6 +1869,9 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private(set) var map: PortalMap?
     let view = ARSCNView(frame: .zero)
     private let root = SCNNode()
+    /// Home's voxels, kept across scene updates and redrawn a chunk at a time.
+    private let voxelChunks = VoxelChunks()
+    private var lastMiniMapVoxels = Date.distantPast
     private let visionQueue = DispatchQueue(label: "home.portal.vision")
     private var busy = false
     private var aligned = false { didSet { if calibrated != aligned { calibrated = aligned } } }
@@ -2172,14 +2176,18 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             }
         }
         self.map = map
+        // Voxels come separately, as deltas; the rest of the app reads them from the map as before.
+        if !voxelChunks.isEmpty, voxelChunks.frame == map.scenegraph.map.frame.id { self.map?.render?.voxels = voxelChunks.list() }
         if let scene = map.render, scene.frame == map.scenegraph.map.frame.id { recordMessages(scene) }
         miniMap = MiniMapData(map)
         trackedDevices = trails.record(map.render?.notes ?? [], frame: map.scenegraph.map.frame.id,
                                        ownFrame: "phone-camera:" + poseSession)
         // Everything is redrawn except the point still being carried: taking it out and putting it
         // back would restart its dust trail every time Home sends an update.
-        root.childNodes.filter { $0 !== floating && $0 !== crayonRoot && $0 !== guideRoot }.forEach { $0.removeFromParentNode() }
+        root.childNodes.filter { $0 !== floating && $0 !== crayonRoot && $0 !== guideRoot && $0 !== voxelChunks.root }.forEach { $0.removeFromParentNode() }
         if guideRoot.parent == nil { root.addChildNode(guideRoot) }
+        if voxelChunks.root.parent == nil { root.addChildNode(voxelChunks.root) }
+        voxelChunks.root.isHidden = !showVoxels
         let listed = Set(map.render?.paths?.items.map(\.id) ?? [])
         guideRoot.childNodes.filter { listed.contains($0.name ?? "") }.forEach { $0.removeFromParentNode() }
         // Home said it saved the way, yet no longer lists it: it restarted, or someone erased
@@ -2324,6 +2332,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
 
     private func renderScene(_ scene: RenderScene?) {
         guard let scene, scene.frame == map?.scenegraph.map.frame.id else { return }
+        // Voxels that arrive as deltas are drawn by voxelChunks, face by face.
+        if voxelChunks.isEmpty || voxelChunks.frame != scene.frame {
         // One indexed mesh per chunk avoids a SceneKit node for every voxel.
         let corners: [SIMD3<Float>] = [SIMD3(-1,-1,-1), SIMD3(1,-1,-1), SIMD3(1,1,-1), SIMD3(-1,1,-1),
                                        SIMD3(-1,-1,1), SIMD3(1,-1,1), SIMD3(1,1,1), SIMD3(-1,1,1)]
@@ -2379,6 +2389,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 second.name = "voxels"; second.isHidden = !showVoxels
                 root.addChildNode(second)
             }
+        }
         }
         for object in scene.objects { addLabel(object.label, at: object.position, color: Theme.uiAccent) }
         // Home's device labels stay plain; a person's note is a speech bubble.
@@ -2644,8 +2655,22 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             origin: [origin.x, origin.y, origin.z], direction: [direction.x, direction.y, direction.z])
     }
 
+    /// Changed voxel chunks from Home: redraw just those, and update the voxels the app reads.
+    func applyVoxels(_ data: Data) {
+        guard voxelChunks.apply(data) else { return }
+        if voxelChunks.root.parent == nil { root.addChildNode(voxelChunks.root) }
+        voxelChunks.root.isHidden = !showVoxels
+        guard let map, voxelChunks.frame == map.scenegraph.map.frame.id else { return }
+        self.map?.render?.voxels = voxelChunks.list()
+        // The mini map redraws from every voxel; a few times a minute is plenty.
+        if Date().timeIntervalSince(lastMiniMapVoxels) > 3, let current = self.map {
+            lastMiniMapVoxels = Date(); miniMap = MiniMapData(current)
+        }
+    }
+
     func clear() {
         clearPlacement()
+        voxelChunks.clear()
         map = nil
         miniMap = MiniMapData()
         trails = DeviceTrails(); trackedDevices = []

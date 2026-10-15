@@ -22,8 +22,6 @@ use std::{
 
 pub const SCHEMA: &str = "spatial-harness.mobile-scene/v1";
 const MAX_BYTES: usize = 24 * 1024 * 1024;
-/// How often a growing voxel map is sent to phones.
-const VOXEL_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Scene {
@@ -63,7 +61,8 @@ fn size(s: &Scene) -> usize {
 /// rest of the scene as a u32-length JSON header, then the checkpoint bytes.
 pub const ENCODING: &str = "spatial-harness.mobile-scene-packed/v1";
 pub fn pack(scene: &Scene) -> Result<Vec<u8>> {
-    let checkpoint = scene.geometry.as_ref().map(|g| g.voxels.checkpoint.as_slice()).unwrap_or_default();
+    // Phones take voxels from their own delta Product; the scene carries none.
+    let checkpoint: &[u8] = &[];
     let header = serde_json::to_vec(&Scene {
         geometry: scene.geometry.as_ref().map(crate::network::CanonicalScene::without_checkpoint),
         ..scene.shallow()
@@ -292,6 +291,11 @@ pub struct Publisher {
     /// Size and observation count of the voxel map last sent to phones.
     last_checkpoint: Option<(usize, Option<u64>)>,
     last_published: Option<Instant>,
+    voxel_tracker: crate::voxel_delta::Tracker,
+    voxel_output: ConfiguredObservable<crate::voxel_delta::Update>,
+    voxel_capture: BufferProductCapture<crate::voxel_delta::Update>,
+    /// Source sequence of the last keyframe, in the Product's Catalog metadata.
+    keyframe: Arc<std::sync::atomic::AtomicU64>,
     _components: Vec<Component>,
 }
 impl Publisher {
@@ -374,6 +378,10 @@ impl Publisher {
                 name: "geometry".into(), datatype: crate::network::SCENE_SCHEMA.into(),
                 schema: crate::network::SCENE_SCHEMA.into(),
                 access: vec![ObservationAccess::FollowNew], exposure: Exposure::Cluster,
+            }).observable(ObservableContract {
+                name: "voxels".into(), datatype: crate::voxel_delta::SCHEMA.into(),
+                schema: crate::voxel_delta::SCHEMA.into(),
+                access: vec![ObservationAccess::FollowNew], exposure: Exposure::Cluster,
             }),
         )?;
         let output = component.configured_observable(
@@ -398,7 +406,23 @@ impl Publisher {
                 modality: "scenegraph".into(), datatype: crate::network::SCENE_SCHEMA.into(),
                 schema: crate::network::SCENE_SCHEMA.into(), observes: "accumulated_home_geometry".into(), unit: Some("meters".into()),
             })).in_registered_frame(crate::conventions::registry(&owner, &frame)?))?;
+        // Phones' voxels: a keyframe now and then, otherwise only changed cells.
+        let voxel_output = component.configured_observable(ConfiguredObservableSpec::new(
+            "voxels", uuid::Uuid::new_v4().to_string(), crate::model::clock_ref(&clock),
+            PayloadContract::Structured(StructuredPayloadContract {
+                modality: "voxels".into(), datatype: crate::voxel_delta::SCHEMA.into(),
+                schema: crate::voxel_delta::SCHEMA.into(), observes: "occupied_scene_voxels".into(), unit: Some("meters".into()),
+            })).in_registered_frame(crate::conventions::registry(&owner, &frame)?))?;
         component.expose()?;
+        let keyframe = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let keyframe_metadata = keyframe.clone();
+        // Enough deltas to reach back to the last keyframe, which a new reader starts from.
+        let voxel_capture = runtime.capture_buffer_with_metadata(crate::voxel_delta::product_id(id), &voxel_output,
+            BufferLimits { max_entries: Some(crate::voxel_delta::KEYFRAME_EVERY as usize + 4), max_bytes: Some(MAX_BYTES), target_duration: None },
+            |u: &crate::voxel_delta::Update| 64 + u.set.len() * 15 + u.removed.len() * 12,
+            move |_| Ok(Some(CatalogProductMetadata { schema: crate::voxel_delta::METADATA.into(), source_sequence: 0,
+                value: json!({"keyframe_source_sequence": keyframe_metadata.load(std::sync::atomic::Ordering::Acquire)}) })))?;
+        endpoint.export_product_with_encoder(&voxel_capture.product(), crate::voxel_delta::encoder())?;
         let geometry_capture = runtime.capture_buffer(format!("home-geometry:{id}"), &geometry_output,
             limits(), |s| serde_json::to_vec(s).map_or(usize::MAX, |v| v.len()))?;
         // The retained input is bound locally by the standard SDK mapper. The
@@ -743,6 +767,10 @@ impl Publisher {
             last_content: None,
             last_checkpoint: None,
             last_published: None,
+            voxel_tracker: Default::default(),
+            voxel_output,
+            voxel_capture,
+            keyframe,
             _components: components,
         };
         publisher.tick()?;
@@ -810,9 +838,8 @@ impl Publisher {
         };
         scene.validate(&self.owner, &reference.scenegraph.map.frame.id)?;
         self.paths_publisher.publish(self.started.elapsed().as_nanos() as u64,scene.paths.clone().unwrap())?;
-        // Compare without the voxel bytes. A change to anything else (people,
-        // notes, robots) goes out at once; a map that only grew waits until
-        // two seconds after the last one, since every phone gets all of it.
+        // Phones get voxels as deltas on their own Product, so the scene itself
+        // carries no voxel bytes and goes out only when something else changed.
         let light = serde_json::to_vec(&Scene {
             geometry: scene.geometry.as_ref().map(crate::network::CanonicalScene::without_checkpoint),
             ..scene.shallow()
@@ -821,13 +848,12 @@ impl Publisher {
         let scene_observations = scene.geometry.as_ref().map(|g| g.voxels.integrated_observations);
         let voxels_changed = self.last_checkpoint != Some((checkpoint, scene_observations));
         let rest_changed = self.last_content.as_ref() != Some(&light);
-        if !rest_changed && (!voxels_changed || self.last_published.is_some_and(|t| t.elapsed() < VOXEL_INTERVAL)) {
+        if !rest_changed && !voxels_changed {
             self.occupancy.tick()?;
             return Ok(());
         }
-        let content = light;
-        if let Some(geometry) = &scene.geometry {
-            let timestamp = self.started.elapsed().as_nanos() as u64;
+        let timestamp = self.started.elapsed().as_nanos() as u64;
+        if voxels_changed && let Some(geometry) = &scene.geometry {
             for (publisher, layer) in self.voxel_layers.iter().zip(crate::voxel_layers::split(&geometry.voxels)?) {
                 publisher.publish(timestamp, layer)?;
             }
@@ -835,20 +861,33 @@ impl Publisher {
             ensure!(self._geometry_capture.errors().is_empty(), "Home geometry retention failed");
         }
         self.occupancy.tick()?;
+        let view = scene.view()?;
+        if voxels_changed {
+            let size = view["voxel_size"].as_f64().unwrap_or(crate::collaborative_mapper::HOME_VOXEL_SIZE);
+            let voxels: Vec<([f64; 3], Option<[f64; 3]>)> = view["voxels"].as_array().map(|list| list.iter().filter_map(|v| Some((
+                serde_json::from_value(v["center"].clone()).ok()?,
+                serde_json::from_value(v["linear_rgb"].clone()).ok(),
+            ))).collect()).unwrap_or_default();
+            let frame = view["frame"].as_str().unwrap_or(&frame).to_owned();
+            if let Some(update) = self.voxel_tracker.update(&frame, size, &voxels) {
+                let keyframe = update.keyframe;
+                let (observation, _) = self.voxel_output.publish(timestamp, Arc::new(update))?;
+                if keyframe { self.keyframe.store(observation.sequence, std::sync::atomic::Ordering::Release); }
+                ensure!(self.voxel_capture.errors().is_empty(), "Phone voxel retention failed");
+            }
+            self.last_checkpoint = Some((checkpoint, scene_observations));
+        }
         self.scenes
             .mobile_views
             .lock()
             .map_err(|_| anyhow!("Scene view unavailable"))?
-            .insert(self.id.clone(), scene.view()?);
-        self.output
-            .publish(self.started.elapsed().as_nanos() as u64, Arc::new(scene))?;
-        ensure!(
-            self.capture.errors().is_empty(),
-            "Mobile scene retention failed"
-        );
-        self.last_content = Some(content);
-        self.last_checkpoint = Some((checkpoint, scene_observations));
-        self.last_published = Some(Instant::now());
+            .insert(self.id.clone(), view);
+        if rest_changed {
+            self.output.publish(timestamp, Arc::new(scene))?;
+            ensure!(self.capture.errors().is_empty(), "Mobile scene retention failed");
+            self.last_content = Some(light);
+            self.last_published = Some(Instant::now());
+        }
         Ok(())
     }
 }
@@ -1044,6 +1083,64 @@ pub async fn receive_scene(
                     Some(RemoteObservationEvent::Gap(_))=>{},
                     _=>bail!("Scene stream ended"),
                 }
+            }
+        }
+    }.await;
+    let cleanup = subscription.close().await.map_err(anyhow::Error::from);
+    work.and(cleanup)
+}
+
+/// Follow the scene's phone voxels: start at Home's last keyframe, then take
+/// each delta in order. Returns on stop, or with an error the caller retries.
+pub async fn receive_voxels(
+    peer: &auki_sdk::AukiPeer,
+    home: &HomeConnection,
+    stop: &tokio_util::sync::CancellationToken,
+    mut accept: impl FnMut(&crate::voxel_delta::Update) -> Result<()>,
+) -> Result<()> {
+    let scene = home.local_scene_id().ok_or_else(|| anyhow!("Not a local scene"))?;
+    let product_id = crate::voxel_delta::product_id(scene);
+    let expected = home.validate(peer)?;
+    let client = ComponentProtocolClient::new(peer.protocols());
+    let mut failures = Vec::new();
+    let mut subscription = None;
+    for route in &home.routes {
+        let route: auki_sdk::Multiaddr = route.parse()?;
+        let attempt = async {
+            let CatalogResponse::Snapshot { snapshot } = client.catalog_exact(expected, route.clone(), None).await? else {
+                bail!("No catalog snapshot")
+            };
+            let entry = snapshot.products.iter().find(|p| p.manifest.product_id == product_id)
+                .ok_or_else(|| anyhow!("Home does not publish phone voxels"))?;
+            ensure!(entry.manifest.peer_id == home.peer_id, "Voxel owner mismatch");
+            let start = entry.metadata.as_ref().filter(|m| m.schema == crate::voxel_delta::METADATA)
+                .and_then(|m| m.value["keyframe_source_sequence"].as_u64()).filter(|s| *s > 0)
+                .map_or(ObservationStart::LatestExisting, |sequence| ObservationStart::FromSequence { sequence });
+            Ok::<_, anyhow::Error>(client.subscribe_product_exact_with_decoder(expected, route,
+                ProductReference { peer_id: home.peer_id.clone(), product_id: product_id.clone(), manifest_hash: entry.manifest_hash.clone() },
+                start, BufferLimits::entries(crate::voxel_delta::KEYFRAME_EVERY as usize + 4),
+                |u: &crate::voxel_delta::Update| 64 + u.set.len() * 15 + u.removed.len() * 12,
+                crate::voxel_delta::decoder()?).await?)
+        };
+        match tokio::select! { _=stop.cancelled()=>return Ok(()), r=tokio::time::timeout(Duration::from_secs(20),attempt)=>r } {
+            Ok(Ok(s)) => { subscription = Some(s); break; }
+            Ok(Err(e)) => failures.push(e.to_string()),
+            Err(_) => failures.push("Route timed out".into()),
+        }
+    }
+    let mut subscription = subscription.ok_or_else(|| anyhow!("Voxels unavailable: {}", failures.join("; ")))?;
+    let work = async {
+        loop {
+            let next = tokio::select! {
+                _ = stop.cancelled() => return Ok(()),
+                exit = peer.wait_stopped() => bail!("Phone peer stopped: {exit:?}"),
+                event = subscription.next() => event?,
+            };
+            match next {
+                Some(RemoteObservationEvent::Observation(o)) => accept(&o.payload)?,
+                // A gap means a missed delta: the Mirror refuses the next one until a keyframe.
+                Some(RemoteObservationEvent::Gap(_)) => {}
+                _ => bail!("Voxel stream ended"),
             }
         }
     }.await;

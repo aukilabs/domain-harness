@@ -220,6 +220,8 @@ final class HomePeer: ObservableObject {
     }
 
     var onMap: ((PortalMap) -> Void)?
+    /// Voxel chunks that changed, as the bridge hands them over.
+    var onVoxels: ((Data) -> Void)?
     /// Home's answer to a new-Portal report, for the user to see.
     var onPortalResult: ((String) -> Void)?
     private var portalDetail = ""
@@ -348,6 +350,11 @@ final class HomePeer: ObservableObject {
         let error: String?
     }
     private func poll() {
+        if let voxels = spatial_mobile_voxels() {
+            let data = Data(String(cString: voxels).utf8)
+            spatial_mobile_string_free(voxels)
+            onVoxels?(data)
+        }
         guard let pointer = spatial_mobile_poll() else { return }
         defer { spatial_mobile_string_free(pointer) }
         do {
