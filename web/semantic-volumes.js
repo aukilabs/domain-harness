@@ -28,7 +28,7 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
   button.addEventListener('pointerup',e=>finishResize(e));
   button.addEventListener('pointercancel',()=>stopResize(true));
   button.addEventListener('lostpointercapture',()=>{if(resize)stopResize(true);});
-  button.addEventListener('keydown',e=>{if(!editable()||!draft||!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key))return;e.preventDefault();const direction=['ArrowRight','ArrowUp'].includes(e.key)?1:-1,original=structuredClone(draft);if(kind==='resize')resizeFace(original,handle,direction*(e.shiftKey?.01:.1));else if(kind==='rotate')rotateCorner(original,handle,direction*(e.shiftKey?15:1)*Math.PI/180);else{original.center[e.key==='ArrowUp'||e.key==='ArrowDown'?2:0]+=direction*(e.shiftKey?.01:.1);setDraft(original);}message('Volume adjusted. Save volume to keep the change.');});
+  button.addEventListener('keydown',e=>{if(!context?.editable||!draft||!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key))return;e.preventDefault();const direction=['ArrowRight','ArrowUp'].includes(e.key)?1:-1,original=structuredClone(draft);if(kind==='resize')resizeFace(original,handle,direction*(e.shiftKey?.01:.1));else if(kind==='rotate')rotateCorner(original,handle,direction*(e.shiftKey?15:1)*Math.PI/180);else{original.center[e.key==='ArrowUp'||e.key==='ArrowDown'?2:0]+=direction*(e.shiftKey?.01:.1);setDraft(original);}nudged();});
  }
  function handleIcon(icon){
   function arrow(dx,dy){const l=Math.hypot(dx,dy);dx/=l;dy/=l;const x=dx*12,y=dy*12;return [[-x,-y,x,y],[x,y,x-dx*5.4-dy*3.9,y-dy*5.4+dx*3.9],[x,y,x-dx*5.4+dy*3.9,y-dy*5.4-dx*3.9],[-x,-y,-x+dx*5.4-dy*3.9,-y+dy*5.4+dx*3.9],[-x,-y,-x+dx*5.4+dy*3.9,-y+dy*5.4-dx*3.9]];}
@@ -92,7 +92,7 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
    h.button.style.transform=`translate(${x}px,${y}px) translate(-50%,-50%) scale(${active?1.08:.8+.2*opacity})`;h.button.style.opacity=String(opacity);
    h.button.style.visibility=opacity<.05?'hidden':'';
    // Only clearly visible handles take the pointer and focus, with a little hysteresis.
-   const live=h.live?opacity>.55:opacity>.65;if(live!==h.live){h.live=live;h.button.style.pointerEvents=live?'':'none';h.button.inert=!live;}
+   const live=h.live?opacity>.55:opacity>.65;if(live!==h.live){h.live=live;h.button.style.pointerEvents=live?'':'none';if(!live&&h.button.contains(document.activeElement))handles.find(x=>x.kind==='move')?.button.focus({preventScroll:true});h.button.inert=!live;}
    // Spring in where they stand: scale the plate and icon, never the button, whose transform carries its position
    // (a scale on the button would scale that translate too and fly it in from the corner).
    if(mounting&&opacity>.05&&!matchMedia('(prefers-reduced-motion: reduce)').matches){const grow={duration:280,delay:rank(h)*20,easing:'cubic-bezier(.34,1.56,.64,1)',fill:'backwards'};
@@ -128,6 +128,9 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
   let delta=p.sub(resize.point).dot(resize.axis)*h.sign;if(e.shiftKey)delta=Math.round(delta*10)/10;resizeFace(original,h,delta);
  }
  function stopResize(restore=false){if(!resize)return;const r=resize;resize=null;if(restore){draft=r.original;fill(draft);draw();}if(r.h.button.hasPointerCapture(r.pointerId))r.h.button.releasePointerCapture(r.pointerId);controls.enabled=true;tick();}
+ // Arrow-key nudges save themselves in view mode (there's no Save button there), half a second after the last key.
+ let nudgeTimer=0;
+ function nudged(){if(!(editing&&cardMode==='view')){message('Volume adjusted. Save volume to keep the change.');return;}message('Volume adjusted.');clearTimeout(nudgeTimer);nudgeTimer=setTimeout(()=>{if(!draft||!editing||cardMode!=='view')return;if(pending)saveQueued=true;else{saveQueued=false;persist(false,true);}},500);}
  function finishResize(e){if(!resize||e.pointerId!==resize.pointerId)return;moveResize(e);stopResize();if(editing&&cardMode==='view'){if(pending)saveQueued=true;else{saveQueued=false;persist(false,true);}}else message(editing?'Handle change pending · Save volume to keep it.':'Volume adjusted. Add a title and save to create it.');}
  // Panel: create, show/hide, list. Detail and editing live in the inspector card.
  const newVolume=actionButton('New volume',{variant:'primary',iconPath:icons.plus,id:'volume-draw'});
@@ -231,7 +234,7 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
  }
  function endDrawing(){stopResize();drawing=false;start=null;controls.enabled=true;renderer.domElement.style.cursor='';banner.hidden=true;tick();buttons();}
  // Resets editing state. `fromInspector` means the card was already closed by the app.
- function cancel(fromInspector=false){endDrawing();selectionGeneration++;saveQueued=false;draft=null;editing=null;conflicted=false;form.hidden=true;const open=cardMode;cardMode=null;if(open&&!fromInspector)inspector.close();draw();showList();buttons();}
+ function cancel(fromInspector=false){endDrawing();selectionGeneration++;saveQueued=false;clearTimeout(nudgeTimer);draft=null;editing=null;conflicted=false;form.hidden=true;const open=cardMode;cardMode=null;if(open&&!fromInspector)inspector.close();draw();showList();buttons();}
  function select(v){if(pending)return;cancel();openPanel('volumes');editing=v.id;draft=context?.editable?structuredClone(v):null;fill(v);focus(v);renderCard('view');message('');draw();showList();}
  function begin(at=[controls.target.x,0,controls.target.z],title=''){if(!editable())return;cancel();draft={id:'',title,description:'',center:[at[0],1,at[2]],size:[2,2,1.2],yaw:0};fill(draft);focus(draft);draw();renderCard('create');message('');}
  // Draw mode: drag the front edge on the ground; a banner explains and offers the keyboard path.
@@ -299,7 +302,7 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
   // priority objects go to the normal scene picker before this capture-phase listener claims the click.
   const tagged=priorityHit(e),labelled=tagged?.kind==='volume'&&items.find(v=>v.id===tagged.volumeId);
   if(labelled){e.semanticVolume=true;select(labelled);return;}
-  if(tagged&&tagged.kind!=='volume')return;
+  if(tagged)return;
   const priority=priorityPickObjects().filter(o=>{for(let p=o;p;p=p.parent){if(!p.visible)return false;}return true;});
   if(ray.intersectObjects(priority).length)return;
   const hit=ray.intersectObjects([...group.children,...preview.children]).find(h=>h.object.userData.volume);if(hit){e.semanticVolume=true;select(hit.object.userData.volume);}
