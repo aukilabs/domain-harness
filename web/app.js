@@ -874,6 +874,8 @@ renderer.domElement.addEventListener('pointerup',e=>{
  if(pick){picked(e);return;}
  if(placingNote){const target=placementTarget;stopNotePlacement();const box=renderer.domElement.getBoundingClientRect(),pick=new THREE.Raycaster();pick.setFromCamera(new THREE.Vector2((e.clientX-box.left)/box.width*2-1,1-(e.clientY-box.top)/box.height*2),camera);const request={source:'scene',frame:current.frame,origin:pick.ray.origin.toArray(),direction:pick.ray.direction.toArray()};if(target)target(request);else beginLabel(request);return;}
  const r=renderer.domElement.getBoundingClientRect(), ray=new THREE.Raycaster();ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),camera);
+ const phone=ray.intersectObjects(phoneTrails.group.children,true).filter(h=>h.object.isSprite).map(h=>{for(let o=h.object;o;o=o.parent)if(o.userData.peer)return o.userData.peer;}).find(Boolean);
+ if(phone&&isLocalScene()){showPeerCard(phone);return;}
  const hits=ray.intersectObjects([...selectable,...crayon.objects()].filter(o=>{for(let p=o;p;p=p.parent){if(!p.visible)return false;}return true;}));if(!hits.length){clearSelection();return;}const h=hits.find(h=>h.object.userData.kind==='note')||hits.find(h=>h.object.userData.kind==='path')||hits.find(h=>h.object.userData.kind==='portal')||hits[0],d=h.object.userData;
  if(d.kind==='voxels'){const v=current.voxels[h.instanceId];showSelection('Occupied voxel','','',{kind:'Voxel',facts:[['Position',xyz(v.center),true],['Evidence',String(v.evidence)],['Cell size','10 cm']]});if(isLocalScene())$('selection').append(robotGoControls({kind:'position',position:v.center}));}
  if(d.kind==='occupancy'){const t=current.occupancy_tiles[h.instanceId],state=t.value===100?'Occupied':t.value===0?'Free':'Unknown';showSelection(state+' cell','','',{kind:'Occupancy',facts:[['State',state],['Position',xyz(t.center),true],['Value',String(t.value)],['Sample','10 cm · retrieved in 2 m cells']]});if(isLocalScene())$('selection').append(robotGoControls({kind:'position',position:t.center}));}
@@ -1042,6 +1044,7 @@ function showRobotCard(name,state,key){
  robotCard(name,'',state.status,{kind:'Robot',facts:[['Position',xyz(state.pose.translation,3),true],['Pose','Calibrated robot base · arrow points forward · illustrative glyph']]});
  const peer=key?.startsWith('body:')?key.slice(5):null;if(!peer)return;
  const robot={peer_id:peer,name},canPoint=pointingRobots().some(r=>r.peer_id===peer),canSend=navigatingRobots().some(r=>r.peer_id===peer);
+ const greeters=greetingRobots().filter(r=>r.peer_id!==peer);
  const driving=keyDrive.peer===peer,again=()=>showRobotCard(name,state,key);
  const buttons=[];
  if(canPoint)buttons.push(actionButton('Point at…',{iconPath:POINT_ICON,onClick:()=>startPick(robot,'point')}));
@@ -1050,6 +1053,7 @@ function showRobotCard(name,state,key){
  if(isLocalScene())buttons.push(actionButton(driving?'Stop driving (Esc)':'Drive with keyboard',{variant:driving?'danger-ghost':'secondary',onClick:()=>{driving?stopKeyDrive():startKeyDrive(peer);again();}}));
  const status=document.createElement('p');status.className='form-status';status.setAttribute('role','status');
  if(driving)status.textContent='WASD or arrow keys · Esc stops';
+ if(greeters.length)buttons.push(actionButton('Go say hi',{iconPath:WAVE_ICON,onClick:()=>confirmGreet(robot,greeters)}));
  if(canSend||driving)buttons.push(actionButton('Stop',{variant:'danger-ghost',onClick:()=>{stopKeyDrive();if(canSend)stopRobots([robot],status);else again();}}));
  if(buttons.length)$('selection').append(cardActions(...buttons),status);
 }
@@ -1134,6 +1138,47 @@ async function stopRobots(robots,status){
  for(const r of robots){
   try{const result=await api('/api/robots/stop',{robot:r.peer_id});status.textContent=result.summary;}
   catch(e){status.textContent='Not stopped · '+e.message;}
+ }
+}
+// Greeting: a robot that can navigate and greet goes to a peer, following them
+// as they move, stops within reach and says hi (Home's greet_peer). Confirm first.
+const GREET_INSTRUCTION='spatial-harness.greet/v1';
+const WAVE_ICON='M6 9.5V4a1.2 1.2 0 0 1 2.4 0v4.5M8.4 8V3a1.2 1.2 0 0 1 2.4 0v5M10.8 8V4a1.2 1.2 0 0 1 2.4 0v6.5a5 5 0 0 1-9.4 2.4L2.4 9.6a1.2 1.2 0 0 1 2-1.3L6 10';
+function greetingRobots(){const greets=new Set(robotsWith(GREET_INSTRUCTION).map(r=>r.peer_id));return navigatingRobots().filter(r=>greets.has(r.peer_id));}
+function showPeerCard(peer){
+ robotCard(peer.name,'','Phone',{kind:'Peer',facts:[['Peer ID',peer.peer_id,true]]});
+ const robots=greetingRobots().filter(r=>r.peer_id!==peer.peer_id);
+ const note=document.createElement('p');note.className='form-status';
+ if(!robots.length)note.textContent='No robot here can come and greet (needs navigate and greet).';
+ $('selection').append(cardActions(...robots.map(r=>actionButton(robots.length===1?'Go say hi':`${r.name}: go say hi`,{iconPath:WAVE_ICON,onClick:()=>confirmGreet(peer,[r])}))),note);
+}
+let greetWatch=0;
+function confirmGreet(peer,robots){
+ if(robots.length>1){
+  robotCard(`Greet ${peer.name} with which robot?`,'','Home asks again before it moves.',{kind:'Robot'});
+  $('selection').append(cardActions(actionButton('Cancel',{onClick:clearSelection}),...robots.map(r=>actionButton(r.name,{variant:'primary',onClick:()=>confirmGreet(peer,[r])}))));return;
+ }
+ const robot=robots[0],at=declaredBodies.entries.find(e=>e.peer_id===robot.peer_id)?.pose?.translation;
+ robotCard(`Send ${robot.name} to say hi to ${peer.name}?`,'',`The robot drives over, following ${peer.name} if they move, stops within 1 m and says hi.`,{kind:'Robot',facts:at?[[`${robot.name} at`,xyz(at)]]:[]});
+ const status=statusLine(),cancel=actionButton('Cancel',{onClick:clearSelection});
+ const go=actionButton('Go say hi',{variant:'primary',iconPath:WAVE_ICON,onClick:async()=>{
+  go.disabled=cancel.disabled=true;status.textContent=`Sending ${robot.name}…`;
+  try{const r=await api(localSceneUrl()+'/greet-peer',{robot:robot.peer_id,peer:peer.peer_id});status.textContent=r.summary;
+   go.replaceWith(actionButton('Stop',{variant:'danger-ghost',onClick:async()=>{try{await api('/api/greet-peer/stop',{robot:robot.peer_id});}catch(e){status.textContent='Not stopped · '+e.message;}}}));
+   watchGreeting(robot,status);}
+  catch(e){status.textContent='Not sent · '+e.message;go.disabled=false;}
+  finally{cancel.disabled=false;}
+ }});
+ $('selection').append(cardActions(cancel,go),status);go.focus();
+}
+// Follow the greeting job on the card that started it, until it ends or the card changes.
+async function watchGreeting(robot,status){
+ const watch=++greetWatch;
+ while(watch===greetWatch&&status.isConnected){
+  try{const job=(await api('/api/greet-peer')).greetings.find(g=>g.robot_peer_id===robot.peer_id);
+   if(job){status.textContent=job.detail;if(['greeted','stopped','failed'].includes(job.phase)){toast(job.detail);break;}}}
+  catch{}
+  await new Promise(r=>setTimeout(r,1000));
  }
 }
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&pick){e.preventDefault();stopPick();clearSelection();}});

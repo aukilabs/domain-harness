@@ -27,6 +27,7 @@ pub mod rgbd;
 pub mod runner_pose;
 pub mod robot_presence;
 pub mod greet;
+pub mod peer_greeter;
 pub mod robot_state;
 pub mod robot_states;
 pub mod runner_voxels;
