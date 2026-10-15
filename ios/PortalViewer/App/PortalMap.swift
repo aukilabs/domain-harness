@@ -129,10 +129,15 @@ struct HomeProfile: Decodable {
     }
 
     /// The local scene this profile selects, matching Home's `frame_scene_id`:
-    /// `local-scene:<id>:origin`, or the older `local-scene:<id>:portal-<CODE>`.
+    /// `local-scene:<id>:epoch-<uuid>`, `local-scene:<id>:origin`, or the older
+    /// `local-scene:<id>:portal-<CODE>`.
     var sceneID: String? {
         guard frame.hasPrefix("local-scene:") else { return nil }
         let rest = String(frame.dropFirst("local-scene:".count))
+        if let range = rest.range(of: ":epoch-") {
+            let id = String(rest[..<range.lowerBound])
+            return Self.validSceneID(id) && UUID(uuidString: String(rest[range.upperBound...])) != nil ? id : nil
+        }
         if rest.hasSuffix(":origin") {
             let id = String(rest.dropLast(":origin".count))
             return Self.validSceneID(id) ? id : nil
