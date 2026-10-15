@@ -47,6 +47,10 @@ impl Frames {
         self.transforms.retain(|t| t.product.producer.output_id != id);
         self.transforms.push(transform);
     }
+    /// Frames this peer relates whose ID is `id`, by full reference.
+    pub fn find(&self, id: &str) -> Vec<FrameRef> {
+        self.frames.iter().filter(|f| f.frame_id == id).map(FrameRef::from).collect()
+    }
     fn definition(&self, f: &FrameRef) -> Option<&FrameRegistryEntry> {
         self.frames.iter().find(|d| FrameRef::from(*d) == *f)
     }

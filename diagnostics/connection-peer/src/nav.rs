@@ -99,7 +99,144 @@ impl Drop for Adapter {
     }
 }
 
+/// Everything one navigation goal needs, shared by the Operables and the debug inbox.
+struct Goals {
+    known: Arc<Mutex<Frames>>,
+    adapter: Arc<Adapter>,
+    nav: FrameRef,
+    base: FrameRef,
+    clock: ClockReference,
+    session: String,
+}
+impl Goals {
+    fn go(&self, request: Navigate, caller: &str) -> Result<NavigateAccepted> {
+        uuid::Uuid::parse_str(&request.request_id).context("request_id must be a UUID")?;
+        let (points, h, resolved_from) = {
+            let known = self.known.lock().map_err(|_| anyhow!("Frames unavailable"))?;
+            let now = now_ns();
+            let (nav_from_goal, mut used) = chain(&known, &request.frame, &self.nav, &self.clock, &self.session, now)?;
+            let (nav_from_base, robot_used) = chain(&known, &self.base, &self.nav, &self.clock, &self.session, now)?;
+            used.extend(robot_used);
+            let robot = through(&nav_from_base, [0.; 3])?;
+            let points = request
+                .waypoints
+                .iter()
+                .map(|p| through(&nav_from_goal, *p).map(|q| [q[0], q[1]]))
+                .collect::<Result<Vec<_>>>()?;
+            let (points, h) = waypoints([robot[0], robot[1]], &points)?;
+            (points, h, used)
+        };
+        let mut list: Vec<serde_json::Value> = points.iter().map(|p| serde_json::json!([p[0], p[1], null])).collect();
+        let last = points[points.len() - 1];
+        *list.last_mut().unwrap() = serde_json::json!([last[0], last[1], h]);
+        let reply = self
+            .adapter
+            .ask(serde_json::json!({"op":"go","request_id":request.request_id,"waypoints":list}), &request.request_id)?;
+        ensure!(reply.phase == "accepted", "{}", reply.reason.unwrap_or_else(|| "Nav refused the goal".into()));
+        crate::diagnostic_log!(
+            "navigate {} from {caller}: {} waypoints in {}, final heading {:.0}°",
+            request.request_id, points.len(), request.frame.id, h.to_degrees()
+        );
+        Ok(NavigateAccepted {
+            request_id: request.request_id,
+            frame: request.frame,
+            nav_frame: self.nav.clone(),
+            waypoints_nav: points,
+            final_heading_rad: h,
+            executes: true,
+            clock: self.clock.clone(),
+            resolved_from,
+        })
+    }
+    fn stop(&self, request_id: &str) -> Result<Cancelled> {
+        uuid::Uuid::parse_str(request_id).context("request_id must be a UUID")?;
+        let reply = self.adapter.ask(serde_json::json!({"op":"stop","request_id":request_id}), request_id)?;
+        ensure!(reply.phase == "stopped", "{}", reply.reason.unwrap_or_else(|| "Nav did not stop".into()));
+        Ok(Cancelled { request_id: request_id.into(), stopped: true })
+    }
+}
+
+/// Local debug entry, reachable only by someone logged in on the robot: a
+/// `navigate-debug/request.json` naming a frame this robot relates by its ID
+/// and a point in it (or `"op": "stop"`) runs the same goal path as the
+/// Operable; the outcome lands in `navigate-debug/response.json`.
+pub const INBOX: &str = "navigate-debug";
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DebugRequest {
+    request_id: String,
+    #[serde(default)]
+    op: Option<String>,
+    #[serde(default)]
+    frame_id: Option<String>,
+    #[serde(default)]
+    point: Option<[f64; 3]>,
+}
+struct Inbox {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+impl Inbox {
+    fn start(goals: Arc<Goals>) -> Self {
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopping = stop.clone();
+        let thread = std::thread::spawn(move || {
+            let dir = std::path::PathBuf::from(INBOX);
+            let _ = std::fs::create_dir_all(&dir);
+            while !stopping.load(std::sync::atomic::Ordering::Relaxed) {
+                let request_path = dir.join("request.json");
+                if let Ok(bytes) = std::fs::read(&request_path) {
+                    let _ = std::fs::remove_file(&request_path);
+                    let response = Self::handle(&goals, &bytes);
+                    let temporary = dir.join("response.tmp");
+                    if std::fs::write(&temporary, serde_json::to_vec_pretty(&response).unwrap_or_default()).is_ok() {
+                        let _ = std::fs::rename(&temporary, dir.join("response.json"));
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(300));
+            }
+        });
+        Self { stop, thread: Some(thread) }
+    }
+    fn handle(goals: &Goals, bytes: &[u8]) -> serde_json::Value {
+        let run = || -> Result<serde_json::Value> {
+            ensure!(bytes.len() <= 4096, "Debug request too large");
+            let request: DebugRequest = serde_json::from_slice(bytes)?;
+            if request.op.as_deref() == Some("stop") {
+                return Ok(serde_json::to_value(goals.stop(&request.request_id)?)?);
+            }
+            ensure!(request.op.as_deref().is_none_or(|op| op == "go"), "op must be go or stop");
+            let id = request.frame_id.context("frame_id is required")?;
+            let point = request.point.context("point is required")?;
+            let frame = {
+                let known = goals.known.lock().map_err(|_| anyhow!("Frames unavailable"))?;
+                let found = known.find(&id);
+                match found.as_slice() {
+                    [one] => one.clone(),
+                    [] => anyhow::bail!("This robot relates no frame {id}; is it aligned to that scene?"),
+                    _ => anyhow::bail!("Several frames are called {id}"),
+                }
+            };
+            let accepted = goals.go(Navigate { request_id: request.request_id, frame, waypoints: vec![point] }, "local debug")?;
+            Ok(serde_json::to_value(accepted)?)
+        };
+        match run() {
+            Ok(result) => serde_json::json!({"ok": true, "result": result}),
+            Err(e) => serde_json::json!({"ok": false, "error": format!("{e:#}")}),
+        }
+    }
+}
+impl Drop for Inbox {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
 pub struct Navigator {
+    _inbox: Inbox,
     _component: Component,
     _navigate: Operable<Navigate, NavigateAccepted>,
     _cancel: Operable<Cancel, Cancelled>,
@@ -232,82 +369,35 @@ impl Navigator {
         let component = p.runtime.component(
             ComponentSpec::new(COMPONENT).operable(contract()).operable(cancel_contract()),
         )?;
-        let nav_ref: FrameRef = (&nav_frame).into();
-        let base: FrameRef = (&p.contract.from_frame).into();
-        let clock = p.contract.clock.clone();
-        let session = p.contract.session_id.clone();
+        let goals = Arc::new(Goals {
+            known,
+            adapter,
+            nav: (&nav_frame).into(),
+            base: (&p.contract.from_frame).into(),
+            clock: p.contract.clock.clone(),
+            session: p.contract.session_id.clone(),
+        });
         let (only_home, also_home) = (home.clone(), home);
-        let go = adapter.clone();
+        let (go, stop) = (goals.clone(), goals.clone());
+        let rejected = |e: anyhow::Error| InvocationError::Rejected(format!("{e:#}"));
         let navigate = component.operable_ordered(
             OPERATION,
             InvocationOrdering::SerialInAcceptanceOrder,
             // Navigation goals come only from the Home this robot is paired with.
             move |ctx| ctx.caller_peer_id == only_home,
-            move |ctx, request: Navigate| {
-                let rejected = |e: anyhow::Error| InvocationError::Rejected(format!("{e:#}"));
-                let resolve = || -> Result<(Vec<[f64; 2]>, f64, Vec<crate::point_at::Used>)> {
-                    uuid::Uuid::parse_str(&request.request_id).context("request_id must be a UUID")?;
-                    let known = known.lock().map_err(|_| anyhow!("Frames unavailable"))?;
-                    let now = now_ns();
-                    let (nav_from_goal, mut used) = chain(&known, &request.frame, &nav_ref, &clock, &session, now)?;
-                    let (nav_from_base, robot_used) = chain(&known, &base, &nav_ref, &clock, &session, now)?;
-                    used.extend(robot_used);
-                    let robot = through(&nav_from_base, [0.; 3])?;
-                    let points = request
-                        .waypoints
-                        .iter()
-                        .map(|p| through(&nav_from_goal, *p).map(|q| [q[0], q[1]]))
-                        .collect::<Result<Vec<_>>>()?;
-                    let (points, h) = waypoints([robot[0], robot[1]], &points)?;
-                    Ok((points, h, used))
-                };
-                let (points, h, resolved_from) = resolve().map_err(rejected)?;
-                let mut list: Vec<serde_json::Value> =
-                    points.iter().map(|p| serde_json::json!([p[0], p[1], null])).collect();
-                *list.last_mut().unwrap() = serde_json::json!([points[points.len() - 1][0], points[points.len() - 1][1], h]);
-                let reply = go
-                    .ask(serde_json::json!({"op":"go","request_id":request.request_id,"waypoints":list}), &request.request_id)
-                    .map_err(rejected)?;
-                if reply.phase != "accepted" {
-                    return Err(rejected(anyhow!(reply.reason.unwrap_or_else(|| "Nav refused the goal".into()))));
-                }
-                crate::diagnostic_log!(
-                    "navigate {} from {}: {} waypoints in {}, final heading {:.0}°",
-                    request.request_id, ctx.caller_peer_id, points.len(), request.frame.id, h.to_degrees()
-                );
-                Ok(NavigateAccepted {
-                    request_id: request.request_id,
-                    frame: request.frame,
-                    nav_frame: nav_ref.clone(),
-                    waypoints_nav: points,
-                    final_heading_rad: h,
-                    executes: true,
-                    clock: clock.clone(),
-                    resolved_from,
-                })
-            },
+            move |ctx, request: Navigate| go.go(request, &ctx.caller_peer_id).map_err(rejected),
         )?;
-        let stop = adapter;
         let cancel = component.operable_ordered(
             CANCEL,
             InvocationOrdering::SerialInAcceptanceOrder,
             move |ctx| ctx.caller_peer_id == also_home,
-            move |_ctx, request: Cancel| {
-                let rejected = |e: anyhow::Error| InvocationError::Rejected(format!("{e:#}"));
-                uuid::Uuid::parse_str(&request.request_id).map_err(|_| rejected(anyhow!("request_id must be a UUID")))?;
-                let reply = stop
-                    .ask(serde_json::json!({"op":"stop","request_id":request.request_id}), &request.request_id)
-                    .map_err(rejected)?;
-                if reply.phase != "stopped" {
-                    return Err(rejected(anyhow!(reply.reason.unwrap_or_else(|| "Nav did not stop".into()))));
-                }
-                Ok(Cancelled { request_id: request.request_id, stopped: true })
-            },
+            move |_ctx, request: Cancel| stop.stop(&request.request_id).map_err(rejected),
         )?;
+        let inbox = Inbox::start(goals);
         component.expose()?;
         p.endpoint.export_operable(&navigate)?;
         p.endpoint.export_operable(&cancel)?;
-        Ok(Self { _component: component, _navigate: navigate, _cancel: cancel, _mount: mount, _capture: capture })
+        Ok(Self { _component: component, _navigate: navigate, _cancel: cancel, _mount: mount, _capture: capture, _inbox: inbox })
     }
 }
 
