@@ -309,15 +309,18 @@ scene.add(new THREE.HemisphereLight(0xffffff,0x1a2438,1.7));
 const sun=new THREE.DirectionalLight(0xffffff,2.4);sun.position.set(-3,7,4);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);Object.assign(sun.shadow.camera,{left:-5,right:5,top:5,bottom:-5,near:.1,far:20});sun.shadow.bias=-.0005;scene.add(sun);
 const ground=new THREE.Mesh(new THREE.PlaneGeometry(200,200),new THREE.MeshStandardMaterial({color:document.documentElement.dataset.theme==='light'?'#e0e3e8':'#101014',roughness:1}));ground.rotation.x=-Math.PI/2;ground.position.y=-.15;ground.receiveShadow=true;scene.add(ground);
 // Ground grid: line grids (0.5 m minor, 2.5 m major) that follow the camera in whole major cells, so they
-// never run out and never swim. A small shader patch fades each line with distance from the camera; lines
-// only cost their own pixels, which keeps software-rendered browsers (and the browser tests) fast.
+// never run out and never swim. A small shader patch fades each line toward the horizon; lines only cost
+// their own pixels, which keeps software-rendered browsers (and the browser tests) fast.
 // `grid.material.opacity` stays the opacity setting and drives both layers.
-const gridFade={uCam:{value:new THREE.Vector3()},uFadeFar:{value:40}};
-// Fades a line material with distance from the camera; `reach` scales how far out it stays visible.
-function fadeWithDistance(material,reach){
- material.onBeforeCompile=shader=>{Object.assign(shader.uniforms,gridFade,{uReach:{value:reach}});
+const gridFade={uCam:{value:new THREE.Vector3()},uCentre:{value:new THREE.Vector2()},uFadeFar:{value:40}};
+// Fades a line material toward the horizon. The fade is measured in 3D from the camera and scaled by the
+// distance to what it looks at, so everything between the camera and its target stays crisp at any tilt
+// (a flat distance from the camera faded the floor right in front of a downward look). `reach` scales how
+// far past the target a layer carries; `limit` is the layer's half-extent, faded softly so its end never shows.
+function fadeWithDistance(material,reach,limit){
+ material.onBeforeCompile=shader=>{Object.assign(shader.uniforms,gridFade,{uReach:{value:reach},uLimit:{value:limit}});
   shader.vertexShader='varying vec3 vGridWorld;\n'+shader.vertexShader.replace('#include <project_vertex>','#include <project_vertex>\nvGridWorld=(modelMatrix*vec4(position,1.)).xyz;');
-  shader.fragmentShader='varying vec3 vGridWorld;uniform vec3 uCam;uniform float uFadeFar;uniform float uReach;\n'+shader.fragmentShader.replace('#include <color_fragment>','#include <color_fragment>\ndiffuseColor.a*=1.-smoothstep(uFadeFar*uReach*.35,uFadeFar*uReach,distance(uCam.xz,vGridWorld.xz));');};
+  shader.fragmentShader='varying vec3 vGridWorld;uniform vec3 uCam;uniform vec2 uCentre;uniform float uFadeFar;uniform float uReach;uniform float uLimit;\n'+shader.fragmentShader.replace('#include <color_fragment>','#include <color_fragment>\ndiffuseColor.a*=(1.-smoothstep(uFadeFar*(1.+.4*uReach),uFadeFar*(1.+1.8*uReach),distance(uCam,vGridWorld)))*(1.-smoothstep(uLimit*.6,uLimit*.95,distance(uCentre,vGridWorld.xz)));');};
  return material;
 }
 // Each line is split into short pieces: the fade reads each fragment's world position, and one line hundreds of
@@ -326,11 +329,11 @@ function lineGrid(spacing,extent,reach,piece){
  const points=[],half=extent/2;
  for(let v=-half;v<=half+1e-6;v+=spacing)for(let a=-half;a<half-1e-6;a+=piece){const b=Math.min(half,a+piece);points.push(a,0,v,b,0,v,v,0,a,v,0,b);}
  const geometry=new THREE.BufferGeometry();geometry.setAttribute('position',new THREE.Float32BufferAttribute(points,3));
- return new THREE.LineSegments(geometry,fadeWithDistance(new THREE.LineBasicMaterial({color:'#52525b',transparent:true,depthWrite:false}),reach));
+ return new THREE.LineSegments(geometry,fadeWithDistance(new THREE.LineBasicMaterial({color:'#52525b',transparent:true,depthWrite:false}),reach,half));
 }
-const gridMinor=lineGrid(.5,90,.45,1),gridMajor=lineGrid(2.5,400,1,5);
+const gridMinor=lineGrid(.5,90,1,1),gridMajor=lineGrid(2.5,400,3,5);
 const axisPoints=[];for(let a=-200;a<200;a+=5)axisPoints.push(a,0,0,a+5,0,0,0,0,a,0,0,a+5);
-const gridAxes=new THREE.LineSegments(new THREE.BufferGeometry().setAttribute('position',new THREE.Float32BufferAttribute(axisPoints,3)),fadeWithDistance(new THREE.LineBasicMaterial({color:'#4f8ef7',transparent:true,depthWrite:false}),1));
+const gridAxes=new THREE.LineSegments(new THREE.BufferGeometry().setAttribute('position',new THREE.Float32BufferAttribute(axisPoints,3)),fadeWithDistance(new THREE.LineBasicMaterial({color:'#4f8ef7',transparent:true,depthWrite:false}),3,200));
 gridAxes.position.y=-.139;
 const grid=new THREE.Group();grid.add(gridMinor,gridMajor);grid.position.y=-.14;
 // One opacity for the whole grid (the Settings slider): minor lines at half strength, major and axes at full.
@@ -338,7 +341,7 @@ grid.material={get opacity(){return gridMajor.material.opacity;},set opacity(v){
 grid.material.opacity=.32;
 // Follow the camera in whole major cells so the lines stay put in the world while the grid never ends.
 gridMajor.onBeforeRender=()=>{const snap=2.5;grid.position.x=Math.round(controls.target.x/snap)*snap;grid.position.z=Math.round(controls.target.z/snap)*snap;grid.updateMatrixWorld();
- gridFade.uCam.value.copy(camera.position);gridFade.uFadeFar.value=Math.max(8,camera.position.distanceTo(controls.target)*1.15);};
+ gridFade.uCam.value.copy(camera.position);gridFade.uCentre.value.set(controls.target.x,controls.target.z);gridFade.uFadeFar.value=Math.max(4,camera.position.distanceTo(controls.target));};
 // The axes mark the world origin, so they stay put rather than following the camera.
 scene.add(grid,gridAxes);
 // The demo floor plane dissolves into the background the same way, instead of ending in a hard edge.
