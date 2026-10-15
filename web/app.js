@@ -595,6 +595,8 @@ function noteAnchorText(note){
 }
 function cardActions(...buttons){const row=document.createElement('div');row.className='card-actions';row.append(...buttons);return row;}
 function showNoteSelection(note){
+ // Close an open volume first (its handles and edits), as showSelection() would if the mode were still 'volume'.
+ if(noteCardMode==='volume')semanticVolumes.closed();
  noteCardMode='view';
  showSelection(noteTitle(note),'',noteAnchorText(note),{kind:'Note'});
  selectedNoteId=note.id;const card=$('selection');card.dataset.noteId=note.id;
