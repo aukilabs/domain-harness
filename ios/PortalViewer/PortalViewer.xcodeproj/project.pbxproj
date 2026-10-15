@@ -14,7 +14,6 @@
 		2F00069261E099226C9BD6C9 /* PortalMap.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF63C94F0E06FB864456F332 /* PortalMap.swift */; };
 		76AEBF1C9FA1B8D4D8E320D7 /* SemanticVolume.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1F90986E59A331AC5AF0962 /* SemanticVolume.swift */; };
 		7F41A3FEC846F6B3880A9B3A /* HomePeer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 923BCD5A09BD097EE8206E8E /* HomePeer.swift */; };
-		ABE5898E17F62CE5340CD95C /* robot.urdf in Resources */ = {isa = PBXBuildFile; fileRef = 9CAC97C78FD44B66249FFD11 /* robot.urdf */; };
 		B5FC91E8E14B70B258CF83E0 /* PortalViewerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B33697AF632544986693964C /* PortalViewerApp.swift */; };
 		BBD894698F7A607B9DBD5CF9 /* SpatialPortalBridge.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D6933E6306AC040ABFB74C78 /* SpatialPortalBridge.xcframework */; };
 		BD58CFC0B92E999985C2400D /* SemanticVolumeModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4400D81FC657522891C44E1A /* SemanticVolumeModel.swift */; };
@@ -33,7 +32,6 @@
 		8E4554C6754FD11EA49048B5 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		8FF47757AD099392D75B3200 /* PortalPose.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortalPose.swift; sourceTree = "<group>"; };
 		923BCD5A09BD097EE8206E8E /* HomePeer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomePeer.swift; sourceTree = "<group>"; };
-		9CAC97C78FD44B66249FFD11 /* robot.urdf */ = {isa = PBXFileReference; path = robot.urdf; sourceTree = "<group>"; };
 		A1F90986E59A331AC5AF0962 /* SemanticVolume.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SemanticVolume.swift; sourceTree = "<group>"; };
 		B33697AF632544986693964C /* PortalViewerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortalViewerApp.swift; sourceTree = "<group>"; };
 		BA431FB9B359E3A0AF861867 /* bracketbot_0184_rigged.usdz */ = {isa = PBXFileReference; lastKnownFileType = file.usdz; path = bracketbot_0184_rigged.usdz; sourceTree = "<group>"; };
@@ -60,7 +58,6 @@
 			children = (
 				A7988369933F8FE8153DB769 /* App */,
 				72B20422B48B789027D9077B /* Resources */,
-				DCF06EED2E487D5DEDA88BE9 /* robot */,
 				BC96395D20B07A0008672331 /* Frameworks */,
 				F41E3BF819CA5A1A5A8C8EDD /* Products */,
 			);
@@ -99,15 +96,6 @@
 				D6933E6306AC040ABFB74C78 /* SpatialPortalBridge.xcframework */,
 			);
 			name = Frameworks;
-			sourceTree = "<group>";
-		};
-		DCF06EED2E487D5DEDA88BE9 /* robot */ = {
-			isa = PBXGroup;
-			children = (
-				9CAC97C78FD44B66249FFD11 /* robot.urdf */,
-			);
-			name = robot;
-			path = ../../web/robot;
 			sourceTree = "<group>";
 		};
 		F41E3BF819CA5A1A5A8C8EDD /* Products */ = {
@@ -180,7 +168,6 @@
 			files = (
 				CE88F9F57B642D17A46C0710 /* auki.png in Resources */,
 				2481687917605ECCE2F2C22A /* bracketbot_0184_rigged.usdz in Resources */,
-				ABE5898E17F62CE5340CD95C /* robot.urdf in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

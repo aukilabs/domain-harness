@@ -205,18 +205,8 @@ struct RenderScene: Decodable, Equatable {
         let name: String?
         let state: String?
         let pose: Portal.Pose
-        /// A robot's joint angles and motor health, when its runner reports them.
-        var joints: RobotJoints? = nil
+        /// A robot's motor health, when it reports it; the app shows its battery.
         var health: RobotHealth? = nil
-        /// Set for a robot that declares its body through the registry: its pose is
-        /// then the body's base frame (the URDF root link), not `robot.base`.
-        var registry: Bool? = nil
-        /// Where the robot's URDF root link is, from this pose. `robot.base` is Z up
-        /// with +X right, so the URDF model stands on it turned a quarter turn about
-        /// up, as in the Home viewer; a registry pose is the root link itself.
-        var urdfRoot: simd_float4x4 {
-            registry == true ? pose.matrix : pose.matrix * simd_float4x4(simd_quatf(angle: .pi / 2, axis: SIMD3(0, 0, 1)))
-        }
     }
     struct Mapping: Decodable, Equatable {
         let robot_pose: RobotPose?

@@ -394,49 +394,10 @@ let robotLabel = """
  "native_pose":{},"received_age_ms":120}}
 """
 let robotNote = try JSONDecoder().decode(RenderScene.Note.self, from: Data(robotLabel.utf8))
-check(robotNote.robot_pose?.joints?.positions["rj1"] == 0.4, "robot joint angles decode from Home's label")
+let registryNote = try JSONDecoder().decode(RenderScene.Note.self, from: Data(
+    robotLabel.replacingOccurrences(of: "\"native_pose\":{}", with: "\"native_pose\":{},\"registry\":true").utf8))
+check(registryNote.robot_pose?.health?.battery?.percent == 18, "a registry robot's label decodes with its battery")
 check(robotNote.robot_pose?.health?.battery?.percent == 18 && robotNote.robot_pose?.health?.joints?.count == 2,
       "robot health decodes from Home's label")
 check(deviceNote(0).robot_pose?.health == nil, "a robot without health still decodes")
-let hottest = robotNote.robot_pose?.health?.warning
-check(hottest?.joint == "rj5" && hottest?.level == .warm, "the hottest joint above 42 C is called out")
-check(RobotHealth(timestamp_ns: 0, joints: ["rj1": .init(temperature_c: 40, current_a: 0)]).warning == nil,
-      "joints at or below 42 C raise no warning")
-check(RobotHealth.level(celsius: 50) == .hot && RobotHealth.level(celsius: 42) == .ok && RobotHealth.level(celsius: 42.5) == .warm,
-      "temperature levels match the Home viewer")
-check(RobotHealth.level(batteryPercent: 50) == .ok && RobotHealth.level(batteryPercent: 19.9) == .hot
-      && RobotHealth.level(batteryPercent: 20) == .warm, "battery levels match the Home viewer")
-check(RobotHealth.color(celsius: 20) == RobotHealth.color(celsius: 35) && RobotHealth.color(celsius: 60) == RobotHealth.color(celsius: 50),
-      "temperature colour is green when cool and red at the limit")
 print("Robot health checks passed")
-
-// The phone places joints exactly as the Home viewer's URDF model does
-// (Tests/robot-joints.json comes from web/robot-model.js; see robot-joints-fixture.mjs).
-let kinematics = try RobotKinematics.load(Data(contentsOf: URL(fileURLWithPath: "../../web/robot/robot.urdf")))
-struct JointFixture: Decodable { let angles: [String: Double]; let positions: [String: [Double]] }
-let fixtures = try JSONDecoder().decode([String: JointFixture].self,
-                                        from: Data(contentsOf: URL(fileURLWithPath: "Tests/robot-joints.json")))
-for (label, fixture) in fixtures {
-    let frames = kinematics.frames(fixture.angles)
-    check(Set(frames.keys) == Set(fixture.positions.keys), "\(label): same movable joints as the Home viewer")
-    for (name, expected) in fixture.positions {
-        let p = frames[name]!.columns.3
-        check(simd_distance(SIMD3(p.x, p.y, p.z), SIMD3(expected[0], expected[1], expected[2])) < 1e-4,
-              "\(label): \(name) is where the Home viewer puts it")
-    }
-}
-let atRest = kinematics.frames([:]), clamped = kinematics.frames(["rj5": 100])
-check(clamped["rj6"] == kinematics.frames(["rj5": 2.094395])["rj6"], "joint angles are clamped to the URDF limits")
-check(kinematics.frames(["left_left_gripper": 0.01])["left_right_gripper"] != atRest["left_right_gripper"],
-      "a mimic joint follows its leader")
-print("Robot kinematics checks passed")
-
-// A registry robot's pose is its URDF root link; a presence robot's is robot.base.
-let registryLabel = robotLabel.replacingOccurrences(of: "\"native_pose\":{}", with: "\"native_pose\":{},\"registry\":true")
-let registryNote = try JSONDecoder().decode(RenderScene.Note.self, from: Data(registryLabel.utf8))
-let presenceRoot = robotNote.robot_pose!.urdfRoot, registryRoot = registryNote.robot_pose!.urdfRoot
-check(registryNote.robot_pose?.registry == true && registryRoot == registryNote.robot_pose!.pose.matrix,
-      "a registry robot's pose places its URDF root directly")
-check(abs(presenceRoot.columns.0.y - 1) < 1e-6 && presenceRoot.columns.3 == robotNote.robot_pose!.pose.matrix.columns.3,
-      "a presence robot's URDF root is turned a quarter turn on robot.base")
-print("Registry robot placement checks passed")

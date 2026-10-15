@@ -7,12 +7,7 @@ targets:
   PortalViewer:
     type: application
     platform: iOS
-    sources:
-      - App
-      - Resources
-      # The Home viewer's URDF, so AR places joints exactly as the web model does.
-      - path: ../../web/robot/robot.urdf
-        buildPhase: resources
+    sources: [App, Resources]
     dependencies:
       - framework: ../PortalBridge/build/SpatialPortalBridge.xcframework
         embed: false
