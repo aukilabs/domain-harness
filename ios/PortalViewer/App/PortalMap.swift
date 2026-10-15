@@ -205,6 +205,8 @@ struct RenderScene: Decodable, Equatable {
         let name: String?
         let state: String?
         let pose: Portal.Pose
+        /// A robot's motor health, when it reports it; the app shows its battery.
+        var health: RobotHealth? = nil
     }
     struct Mapping: Decodable, Equatable {
         let robot_pose: RobotPose?

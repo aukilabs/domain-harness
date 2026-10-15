@@ -383,3 +383,21 @@ check(gate.step(at: 0, tracking: true, headingError: nil, hasFix: true) == .wait
       && gate.step(at: 14.5, tracking: true, headingError: 5, hasFix: false) == .waiting
       && gate.step(at: 15, tracking: true, headingError: 90, hasFix: true) == .gaveUp, "without a compass, tracking and a fix, the search gives up")
 print("Geo reference checks passed")
+
+// A robot label as Home relays it, with the runner's joint angles and motor health.
+let robotLabel = """
+{"id":"robot-name:r1","text":"Bracketbot 184","position":[1,0,2],"height_m":0,"robot_pose":{"peer_id":"r1","name":"Bracketbot 184",
+ "pose":{"from_frame_id":"robot.base","to_frame_id":"home","translation":[1,0,2],"rotation_wxyz":[1,0,0,0]},
+ "joints":{"timestamp_ns":5,"positions":{"rj1":0.4}},
+ "health":{"timestamp_ns":6,"joints":{"rj1":{"temperature_c":36.5,"current_a":0.8},"rj5":{"temperature_c":47,"current_a":1.2}},
+           "battery":{"voltage":24.1,"percent":18}},
+ "native_pose":{},"received_age_ms":120}}
+"""
+let robotNote = try JSONDecoder().decode(RenderScene.Note.self, from: Data(robotLabel.utf8))
+let registryNote = try JSONDecoder().decode(RenderScene.Note.self, from: Data(
+    robotLabel.replacingOccurrences(of: "\"native_pose\":{}", with: "\"native_pose\":{},\"registry\":true").utf8))
+check(registryNote.robot_pose?.health?.battery?.percent == 18, "a registry robot's label decodes with its battery")
+check(robotNote.robot_pose?.health?.battery?.percent == 18 && robotNote.robot_pose?.health?.joints?.count == 2,
+      "robot health decodes from Home's label")
+check(deviceNote(0).robot_pose?.health == nil, "a robot without health still decodes")
+print("Robot health checks passed")
