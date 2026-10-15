@@ -1488,7 +1488,7 @@ select.form-control[size]:focus{animation:none}
    matching the phone's AR); volume chips are white in light mode and dark glass in dark mode. */
 .scene-labels{position:absolute;inset:0;z-index:4;overflow:hidden;pointer-events:none;contain:strict}
 .scene-labels[hidden]{display:none}
-.scene-label{position:absolute;left:0;top:0;width:0;height:0;will-change:transform;
+.scene-label{position:absolute;left:0;top:0;width:0;height:0;
  --paper:#fff7fc;--plum:#472652;--label-shadow:0 3px 10px rgba(24,24,27,.18),0 1px 2px rgba(24,24,27,.12);
  --chip:rgba(255,255,255,.97);--chip-text:#18181b;--chip-detail:#71717a;--chip-rim:rgba(24,24,27,.09)}
 :root:not([data-theme="light"]) .scene-label{--paper:#f6eef4;--label-shadow:0 4px 12px rgba(0,0,0,.5),0 1px 2px rgba(0,0,0,.4);

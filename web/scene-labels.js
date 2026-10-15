@@ -16,15 +16,16 @@ import { zoomTier, clusterNotes } from './note-lod.js';
 // world position is the label's point and its ancestors' visibility is the label's visibility.
 const NOTE_GLYPH='M4 2h10v14H4ZM6 6h6M6 9h6M6 12h4',CUBE='M9 1.5 15.5 5v8L9 16.5 2.5 13V5ZM2.5 5 9 8.5l6.5-3.5M9 8.5v8';
 const glyph=(d,size)=>`<svg width="${size}" height="${size}" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;
-const reduceMotion=()=>matchMedia('(prefers-reduced-motion: reduce)').matches;
+const motionQuery=matchMedia('(prefers-reduced-motion: reduce)'),reduceMotion=()=>motionQuery.matches;
 const smoothstep=(a,b,x)=>{const t=Math.min(1,Math.max(0,(x-a)/(b-a)));return t*t*(3-2*t);};
 const easeOut=t=>1-Math.pow(1-Math.min(1,Math.max(0,t)),3);
 const MERGE_MS=260,CLUSTER_DELAY_MS=180;
 
-export function createSceneLabels({camera,controls,renderer,parent=renderer.domElement.parentElement,hidden=()=>false,fog=()=>null}){
+export function createSceneLabels({camera,controls,renderer,parent=renderer.domElement.parentElement,hidden=()=>false,fog=()=>null,rects=()=>null}){
  const layer=document.createElement('div');layer.className='scene-labels';layer.setAttribute('aria-hidden','true');parent.append(layer);
  const sources=new Map(),labels=new Map(),clusters=new Map(),point=new THREE.Vector3(),at=new THREE.Vector3();
- let tier=0,selected=null,hovered=null,mask=null,moving=false,dirty=true,declutterAt=0,settled=false,clusterCache=null,focus=null,lastView='',restSince=0,host=null,canvasRect=null;
+ const lastWorld=new THREE.Matrix4(),lastProjection=new THREE.Matrix4();let lastSize=0;
+ let tier=0,selected=null,hovered=null,mask=null,moving=false,dirty=true,declutterAt=0,settled=false,clusterCache=null,focus=null,restSince=0,host=null,canvasRect=null;
 
  function shown(anchor){if(!anchor.parent)return false;for(let o=anchor;o;o=o.parent)if(!o.visible)return false;return true;}
  function create(item){
@@ -122,13 +123,15 @@ export function createSceneLabels({camera,controls,renderer,parent=renderer.domE
 
  function tick(now=performance.now()){
   layer.hidden=hidden();if(layer.hidden)return;
-  canvasRect=renderer.domElement.getBoundingClientRect();host=layer.getBoundingClientRect();
+  // The layer fills the canvas's host, so the host rect the app measured this frame stands in for it.
+  const shared=rects();canvasRect=shared?.canvas||renderer.domElement.getBoundingClientRect();host=shared?.host||layer.getBoundingClientRect();
   const distance=camera.position.distanceTo(controls.target),mpp=2*distance*Math.tan(THREE.MathUtils.degToRad(camera.fov/2))/Math.max(1,canvasRect.height);
   const nextTier=zoomTier(mpp,tier);if(nextTier!==tier){tier=nextTier;dirty=true;}
   // Positions snap to device pixels once the view has been still for 100 ms; while it moves they stay sub-pixel.
-  const view=camera.matrixWorld.elements.join(',')+camera.projectionMatrix.elements.join(',')+canvasRect.width+'x'+canvasRect.height;
-  if(view!==lastView){lastView=view;restSince=now;}const still=now-restSince>100;moving=!still;
+  if(!lastWorld.equals(camera.matrixWorld)||!lastProjection.equals(camera.projectionMatrix)||lastSize!==canvasRect.width+canvasRect.height*1e5){lastWorld.copy(camera.matrixWorld);lastProjection.copy(camera.projectionMatrix);lastSize=canvasRect.width+canvasRect.height*1e5;restSince=now;}const still=now-restSince>100;moving=!still;
   if(dirty){dirty=false;decide(now);}
+  // Measure any label whose size isn't known yet in one read pass, before this frame writes positions.
+  for(const label of labels.values())if(label.visible)for(const form of [label.form,label.base])if(formNode[form]&&!label.size[form]?.w)measure(label,form);
   // Labels fade with the scene's distance fog; a faint label isn't clickable, and the selected one stays readable.
   const f=fog(),fade=(world,floor=0)=>{const alpha=f?1-smoothstep(f.near,f.far,camera.position.distanceTo(world)):1;return Math.max(floor,alpha);};
   const tint=(target,alpha)=>{const value=alpha>.99?'':alpha.toFixed(2);if(target.alpha!==value){target.alpha=value;target.el.style.opacity=value;}};

@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { icons, icon, sectionHeader, listRow, actionButton, markSelected } from './panel-ui.js';
 
 // Semantic boxes are independent of transient voxel and robot-occupancy layers.
-export function createSemanticVolumes({scene, camera, renderer, controls, panel, api, label, clear, openPanel, inspector, toast=()=>{}, flyTo=null, priorityPickObjects=()=>[], labels=null, priorityHit=()=>null, safeArea=null}) {
+export function createSemanticVolumes({scene, camera, renderer, controls, panel, api, label, clear, openPanel, inspector, toast=()=>{}, flyTo=null, priorityPickObjects=()=>[], labels=null, priorityHit=()=>null, safeArea=null, rects=()=>null}) {
  const group=new THREE.Group(),preview=new THREE.Group();scene.add(group,preview);
  let context=null,items=[],draft=null,editing=null,drawing=false,start=null,press=null,pending=false,signature='',resize=null,conflicted=false;
  const handleLayer=document.createElement('div');handleLayer.className='volume-handles';renderer.domElement.parentElement.append(handleLayer);
@@ -70,7 +70,7 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
   // Handles stay up while a change saves, so releasing a drag doesn't flash them out, and can be dragged again at once.
   const visible=draft&&context?.editable&&!drawing&&preview.visible;
   if(!visible){for(const h of handles)h.button.hidden=true;zoomPill.hidden=true;shownDraft=null;return;}
-  const rect=renderer.domElement.getBoundingClientRect(),parent=handleLayer.parentElement.getBoundingClientRect(),ox=rect.left-parent.left,oy=rect.top-parent.top;
+  const shared=rects(),rect=shared?.canvas||renderer.domElement.getBoundingClientRect(),parent=shared?.host||handleLayer.parentElement.getBoundingClientRect(),ox=rect.left-parent.left,oy=rect.top-parent.top;
   const screen=p=>{const q=p.clone().project(camera);return {x:ox+(q.x+1)*rect.width/2,y:oy+(1-q.y)*rect.height/2,on:q.z>-1&&q.z<1};};
   // S: the box's size on screen, the square root of the area its 8 corners cover.
   let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;

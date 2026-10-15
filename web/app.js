@@ -358,7 +358,7 @@ fadeWithDistance(ground.material,1.3,100);ground.material.transparent=true;groun
 const groups=Object.fromEntries(['voxels','portals','objects','rays','notes'].map(k=>[k,new THREE.Group()]));Object.values(groups).forEach(g=>scene.add(g));
 // Note and volume labels are HTML over the canvas (scene-labels.js): one zoom tier for the whole scene, animated
 // changes of form and fixed stacking. They never take the pointer: canvas clicks ask labelHit(), once per event.
-const sceneLabels=createSceneLabels({camera,controls,renderer,hidden:()=>map2D?.isActive(),fog:()=>scene.fog});
+const sceneLabels=createSceneLabels({camera,controls,renderer,hidden:()=>map2D?.isActive(),fog:()=>scene.fog,rects:()=>frameRects});
 const labelHit=e=>e.labelHit!==undefined?e.labelHit:(e.labelHit=sceneLabels.hitTest(e.clientX,e.clientY));
 // A cluster flies in to where its notes show as pins again: 80% of the pin tier's scale.
 function openCluster(centre){const height=renderer.domElement.clientHeight||700,distance=Math.max(controls.minDistance,TIERS[0].up*.8*height/(2*Math.tan(THREE.MathUtils.degToRad(camera.fov/2))));
@@ -405,7 +405,7 @@ const volumeInspector={element:$('selection'),
   const close=document.createElement('button');close.type='button';close.className='inspector-close';close.setAttribute('aria-label','Close inspector');close.append(icon(icons.close));close.onclick=closeCard;
   card.replaceChildren(close,...nodes);card.hidden=false;noteCardMode='volume';},
  close(){if(noteCardMode==='volume'){noteCardMode='view';$('selection').hidden=true;}}};
-const semanticVolumes=createSemanticVolumes({scene,camera,renderer,controls,panel:panelBodies.volumes,api,label,labels:sceneLabels,priorityHit:labelHit,safeArea:()=>sceneSafeArea(),clear,openPanel,inspector:volumeInspector,toast,flyTo:(position,target)=>cameraPan.start(position,target),priorityPickObjects:()=>crayon.objects()});
+const semanticVolumes=createSemanticVolumes({scene,camera,renderer,controls,panel:panelBodies.volumes,api,label,labels:sceneLabels,priorityHit:labelHit,safeArea:()=>sceneSafeArea(),rects:()=>frameRects,clear,openPanel,inspector:volumeInspector,toast,flyTo:(position,target)=>cameraPan.start(position,target),priorityPickObjects:()=>crayon.objects()});
 // The volume tool draws on the 3D floor, so it can't start while the 2D plan is open.
 $('volume-draw').addEventListener('click',e=>{if(map2D.isActive())e.stopImmediatePropagation();},true);
 $('map-select').addEventListener('change',()=>{semanticVolumes.reset();try{localStorage.setItem('home.lastScene',$('map-select').value);}catch{}});
@@ -1006,19 +1006,19 @@ renderer.domElement.parentElement.addEventListener('wheel',e=>{
 },{capture:true,passive:false});
 renderer.domElement.addEventListener('pointerdown',()=>{wheelZoom=0;},true);
 $('map-select').addEventListener('change',()=>{wheelZoom=0;});
-const wheelRay=new THREE.Vector3(),wheelView=new THREE.Vector3(),wheelPlane=new THREE.Plane(),wheelHit=new THREE.Vector3();
+const wheelRay=new THREE.Vector3(),wheelView=new THREE.Vector3(),wheelPlane=new THREE.Plane(),wheelHit=new THREE.Vector3(),wheelLine=new THREE.Ray();
 function applyWheelZoom(now){
  if(!wheelZoom){wheelLast=0;return;}
  const dt=Math.min(64,wheelLast?now-wheelLast:16);wheelLast=now;
  const step=wheelTau?wheelZoom*(1-Math.exp(-dt/wheelTau)):wheelZoom;wheelZoom=Math.abs(wheelZoom-step)<1e-4?0:wheelZoom-step;
  const before=camera.position.distanceTo(controls.target),after=THREE.MathUtils.clamp(before*Math.exp(step),controls.minDistance,controls.maxDistance);
  if(Math.abs(after-before)<1e-6){wheelZoom=0;return;}
- const r=renderer.domElement.getBoundingClientRect();
+ const r=frameRects.canvas||renderer.domElement.getBoundingClientRect();
  wheelRay.set((wheelAt[0]-r.left)/r.width*2-1,1-(wheelAt[1]-r.top)/r.height*2,.5).unproject(camera).sub(camera.position).normalize();
  camera.position.addScaledVector(wheelRay,before-after);camera.updateMatrixWorld();
  wheelView.set(0,0,-1).transformDirection(camera.matrixWorld);
  if(Math.abs(camera.up.dot(wheelView))<Math.cos(THREE.MathUtils.degToRad(70)))camera.lookAt(controls.target);
- else{wheelPlane.setFromNormalAndCoplanarPoint(camera.up,controls.target);if(new THREE.Ray(camera.position,wheelView).intersectPlane(wheelPlane,wheelHit))controls.target.copy(wheelHit);}
+ else{wheelPlane.setFromNormalAndCoplanarPoint(camera.up,controls.target);if(wheelLine.set(camera.position,wheelView).intersectPlane(wheelPlane,wheelHit))controls.target.copy(wheelHit);}
 }
 // Far away, content fades into the background instead of meeting the far plane: linear fog scaled to the orbit
 // distance (always ending before the far plane), so the store stays clear at any normal zoom and dissolves only
@@ -1026,7 +1026,7 @@ function applyWheelZoom(now){
 // orbit target is leashed to within 80 m of the content so it can't drift off for good.
 function updateFog(){const end=THREE.MathUtils.clamp(6.4*camera.position.distanceTo(controls.target),50,camera.far*.92);scene.fog.near=end*.5;scene.fog.far=end;}
 let cameraFlying=false;
-const contentLocator=createContentLocator({camera,renderer,fog:()=>scene.fog,blocked:()=>cameraFlying||map2D.isActive()||attachedCamera.isActive()||!current,
+const contentLocator=createContentLocator({camera,renderer,rects:()=>frameRects,fog:()=>scene.fog,blocked:()=>cameraFlying||map2D.isActive()||attachedCamera.isActive()||!current,
  safeArea:sceneSafeArea,
  // Back to the content: same heading, a downward tilt between 35° and 60°, far enough to see all of it.
  fly:(centre,radius)=>{const distance=THREE.MathUtils.clamp(radius*2.4,6,60),offset=camera.position.clone().sub(controls.target),flat=new THREE.Vector3(offset.x,0,offset.z);
@@ -1051,7 +1051,10 @@ function setContentBounds(data){
 // (and detaching an attached camera) lift that limit, so the floor is also held here, every frame.
 // It runs last before drawing (after the ghost camera's own moves), and the orbit target can't sink below the floor either.
 function keepAboveGrid(){if(attachedCamera.isActive()||map2D.isActive())return;const floor=grid.position.y+.05;if(camera.position.y<floor)camera.position.y=floor;if(controls.target.y<grid.position.y)controls.target.y=grid.position.y;}
-renderer.setAnimationLoop(now=>{easeViewOffset();cameraFlying=cameraPan.tick(now);if(!cameraFlying&&!attachedCamera.isActive()){applyWheelZoom(now);controls.update();}else wheelZoom=0;ghostCamera.tick(now);keepAboveGrid();updateFog();if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);updateFlatten();
+// The canvas and its host are measured once per frame, before any overlay writes, and shared with the overlays
+// (labels, volume handles, locator, wheel zoom), so the frame forces at most one layout.
+const frameRects={canvas:null,host:null};
+renderer.setAnimationLoop(now=>{frameRects.canvas=renderer.domElement.getBoundingClientRect();frameRects.host=renderer.domElement.parentElement.getBoundingClientRect();easeViewOffset();cameraFlying=cameraPan.tick(now);if(!cameraFlying&&!attachedCamera.isActive()){applyWheelZoom(now);controls.update();}else wheelZoom=0;ghostCamera.tick(now);keepAboveGrid();updateFog();if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);updateFlatten();
  // Volume handles are HTML placed from this frame's camera: settle its matrices and projection first so they never trail a glide.
  camera.updateMatrixWorld();semanticVolumes.tick();sceneLabels.setSelected(selectedNoteId?'note:'+selectedNoteId:null);sceneLabels.tick(now);if(hoverAt&&sceneLabels.moving)updateHover();contentLocator.tick(now);renderer.render(scene,camera);});
 refresh().catch(e=>{$('notice').textContent=e.message;$('notice').classList.add('error');});setInterval(()=>{if(!busy)refresh().catch(()=>{});},500);
