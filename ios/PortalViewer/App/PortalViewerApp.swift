@@ -2262,8 +2262,9 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         for kept in unsynced where kept.frame == scene.frame { addBubble(kept.text, at: kept.position, photo: photos[kept.id]) }
         for note in scene.notes {
             guard let robot = note.robot_pose, robot.pose.translation.count == 3, robot.pose.rotation_wxyz.count == 4 else { continue }
-            root.addChildNode(robotBody(at: robot.pose.matrix))
-            addRobotHealth(robot, base: robot.pose.matrix)
+            // The model template is already turned onto robot.base; undo that from the root link.
+            root.addChildNode(robotBody(at: robot.urdfRoot * simd_float4x4(simd_quatf(angle: -.pi / 2, axis: SIMD3(0, 0, 1)))))
+            addRobotHealth(robot)
         }
         if let runners = scene.local_mapping?.runners, !runners.isEmpty {
             for (id, runner) in runners { addRobot(runner.robot_pose, name: String(id.suffix(8))) }
@@ -2399,12 +2400,11 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     /// joint coloured by motor temperature (with the temperature beside warm and
     /// hot ones), and above the head the battery and the hottest joint if it is warm.
     /// Joints are placed by the Home viewer's URDF at the robot's reported angles.
-    private func addRobotHealth(_ robot: RenderScene.PhonePose, base: simd_float4x4) {
+    private func addRobotHealth(_ robot: RenderScene.PhonePose) {
         guard let health = robot.health else { return }
-        // The URDF model stands on the base turned a quarter turn about up, as in the Home viewer.
         let holder = SCNNode()
         holder.name = "robot-health"
-        holder.simdTransform = base * simd_float4x4(simd_quatf(angle: .pi / 2, axis: SIMD3(0, 0, 1)))
+        holder.simdTransform = robot.urdfRoot
         if let joints = health.joints, let kinematics = RobotKinematics.bracketbot {
             let frames = kinematics.frames(robot.joints?.positions ?? [:])
             for (name, joint) in joints {

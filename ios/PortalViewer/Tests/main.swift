@@ -430,3 +430,13 @@ check(clamped["rj6"] == kinematics.frames(["rj5": 2.094395])["rj6"], "joint angl
 check(kinematics.frames(["left_left_gripper": 0.01])["left_right_gripper"] != atRest["left_right_gripper"],
       "a mimic joint follows its leader")
 print("Robot kinematics checks passed")
+
+// A registry robot's pose is its URDF root link; a presence robot's is robot.base.
+let registryLabel = robotLabel.replacingOccurrences(of: "\"native_pose\":{}", with: "\"native_pose\":{},\"registry\":true")
+let registryNote = try JSONDecoder().decode(RenderScene.Note.self, from: Data(registryLabel.utf8))
+let presenceRoot = robotNote.robot_pose!.urdfRoot, registryRoot = registryNote.robot_pose!.urdfRoot
+check(registryNote.robot_pose?.registry == true && registryRoot == registryNote.robot_pose!.pose.matrix,
+      "a registry robot's pose places its URDF root directly")
+check(abs(presenceRoot.columns.0.y - 1) < 1e-6 && presenceRoot.columns.3 == robotNote.robot_pose!.pose.matrix.columns.3,
+      "a presence robot's URDF root is turned a quarter turn on robot.base")
+print("Registry robot placement checks passed")
