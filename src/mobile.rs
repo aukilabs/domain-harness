@@ -1360,7 +1360,7 @@ impl MobileClient {
                 self.status("connecting", "Connecting to Home over authenticated P2P");
             }
             let result =
-                receive_portals(peer, home, &self.stop, Duration::from_secs(45), |portals| {
+                receive_portals(peer, home, &self.stop, None, |portals| {
                     let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
                     state.version += 1;
                     state.state = "live";
@@ -1397,19 +1397,20 @@ impl MobileClient {
                     _ = tokio::time::sleep(Duration::from_secs(2 * failures)) => {},
                 }
             }
-            // Renew an idle subscription to detect silent partitions and discover
-            // a replacement Product after Home restarts. Maps are full replacements.
+            // No idle refresh by default: a quiet scene is not a disconnect. The
+            // subscription ends only on an error, which retries. Maps are full replacements.
         }
     }
 }
 
 /// One validated subscription, shared by the iPhone bridge and loopback tests.
-/// Returns after an idle refresh deadline or Stop; always closes its subscription.
+/// Returns after Stop, or after `idle_refresh` without a change when one is set;
+/// `None` never times out a live stream. Always closes its subscription.
 pub async fn receive_portals(
     peer: &AukiPeer,
     home: &HomeConnection,
     stop: &CancellationToken,
-    idle_refresh: Duration,
+    idle_refresh: Option<Duration>,
     mut accept: impl FnMut(serde_json::Value),
 ) -> Result<()> {
     if home.local_scene_id().is_some() {
@@ -1424,14 +1425,14 @@ pub async fn receive_portals(
         let mut received = false;
         loop {
             let deadline = if !received {
-                Duration::from_secs(30)
+                Some(Duration::from_secs(30))
             } else {
                 idle_refresh
             };
             let event = tokio::select! {
                 _ = stop.cancelled() => return Ok(()),
                 exit = peer.wait_stopped() => bail!("Phone peer stopped: {exit:?}"),
-                event = tokio::time::timeout(deadline, subscription.next()) => event,
+                event = crate::local_mobile::next_within(deadline, subscription.next()) => event,
             };
             let event = match event {
                 Ok(event) => event?,

@@ -1935,7 +1935,7 @@ async fn authenticate_stream(
         requirements,
     )
     .await?;
-    Ok(AuthenticatedStream::new(stream, remote))
+    Ok(AuthenticatedStream::new(stream, remote, local_peer_id))
 }
 
 #[cfg(test)]

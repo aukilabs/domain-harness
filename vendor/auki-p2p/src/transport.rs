@@ -2462,7 +2462,7 @@ async fn authenticate(
         requirements,
     )
     .await?;
-    Ok(AuthenticatedStream::new(inner, remote))
+    Ok(AuthenticatedStream::new(inner, remote, local_peer_id))
 }
 
 #[cfg(test)]

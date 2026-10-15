@@ -1,3 +1,4 @@
+import { createNetworkTraffic } from './network-traffic.js';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createArOverlay } from './ar.js';
@@ -210,6 +211,7 @@ const disconnectRobots=document.createElement('button');disconnectRobots.id='dis
 disconnectRobots.onclick=async()=>{disconnectRobots.disabled=true;try{await api('/api/simulation/disconnect',{});}catch(e){disconnectRobots.disabled=false;showAvailability(e.message);}};
 const notesBody=panelBodies.notes;
 const tagsBody=panelBodies.tags;
+const inspectTraffic=createNetworkTraffic();
 let fleetNetwork=null,fleetSignature='',peerRefreshBusy=false;
 const componentControlResults=new Map();
 let componentControlPending=false;
@@ -1620,6 +1622,13 @@ function renderDeviceDetail(peer,feeds,openedTechnical){
   if(catalogNote.textContent)statusBox.append(catalogNote);
  }
  view.append(statusBox);
+ if(!peer.self){
+  const traffic=document.createElement('section');traffic.setAttribute('aria-label','Network diagnostics');traffic.append(sectionHeader('Network diagnostics'));
+  const button=actionButton('Traffic with Home',{onClick:()=>inspectTraffic(peer.peer_id,deviceName(peer),button)});button.dataset.focusKey='traffic:'+peer.peer_id;
+  const hint=document.createElement('p');hint.className='device-note';hint.textContent='Peer-scoped observable · rates, peaks, I/O errors and launch comparisons measured by Home.';
+  traffic.append(button,hint);view.append(traffic);
+ }
+
  // Cameras.
  const cameras=document.createElement('section');cameras.setAttribute('aria-label','Camera feeds');cameras.append(sectionHeader('Cameras',feeds.length));
  for(const option of feeds.sort((a,b)=>a.textContent.localeCompare(b.textContent))){
@@ -1898,6 +1907,7 @@ const opacityLabel=document.createElement('label');opacityLabel.className='layer
  body.replaceChildren(layers,display,demo);
  applyTheme(document.documentElement.dataset.theme==='light');
 }
+
 
 let createdFiducialKey=null;
 // Tags: list first; "New tag" reveals the generate form; each row expands to print, download and measure.

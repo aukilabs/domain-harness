@@ -64,7 +64,7 @@ async fn sdk_first_writer_wins_and_reset_preserves_authored_content()->Result<()
         let stop=tokio_util::sync::CancellationToken::new();
         let mut published=None;
         tokio::time::timeout(std::time::Duration::from_secs(5),
-            spatial_home::mobile::receive_portals(&pair.b,&home,&stop,std::time::Duration::from_secs(5),|value| {
+            spatial_home::mobile::receive_portals(&pair.b,&home,&stop,Some(std::time::Duration::from_secs(5)),|value| {
                 published=Some(value);stop.cancel();
             })).await??;
         let published=published.expect("Home must publish its accepted origin");
