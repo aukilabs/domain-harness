@@ -20,11 +20,11 @@ for(const mode of ['move','stale','2d','invalid','look-up'])test(`chat map-camer
  await expect(page.locator('#map-select option[value="demo"]')).toHaveText('Home Server');
  await expect(page.locator('#connection')).toHaveText('Home Server online');
  if(mode==='2d'){await page.locator('#top').click();await expect(page.getByLabel('2D occupancy map',{exact:true})).toBeVisible();}
- await page.locator('#scene-chat-input').fill('Move the map camera to [2,3,4] looking at [0,1,0]');
+ await page.locator('#agent-toggle').click();await page.locator('#scene-chat-input').fill('Move the map camera to [2,3,4] looking at [0,1,0]');
  await page.locator('#scene-chat-form button[type="submit"]').click();
  await expect(page.locator('#scene-chat-history')).toContainText(stale?'Map camera not moved: Selected scene changed':invalid?'Map camera not moved: Invalid camera target distance':'Map camera moved.');
  await page.waitForTimeout(500); // Several animation ticks must not restore old damping/aim.
- await page.locator('#scene-chat-input').fill('What is my view?');
+ await page.locator('#agent-toggle').click();await page.locator('#scene-chat-input').fill('What is my view?');
  await page.locator('#scene-chat-form button[type="submit"]').click();
  await expect.poll(()=>requests.length).toBe(2);
  const actual=requests[1].viewer,expected=(stale||invalid)?requests[0].viewer:{camera_position:position,camera_target:lookAt};

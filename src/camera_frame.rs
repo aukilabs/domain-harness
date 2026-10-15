@@ -63,3 +63,24 @@ pub fn browser_packet(metadata:&serde_json::Value,image:&[u8])->Result<Vec<u8>> 
     let mut packet=Vec::with_capacity(4+meta.len()+image.len());
     packet.extend_from_slice(&(meta.len() as u32).to_le_bytes());packet.extend_from_slice(&meta);packet.extend_from_slice(image);Ok(packet)
 }
+
+/// The QR localizer's calibration for a camera Product in either camera codec.
+/// The pinned `Calibration::for_product` accepts only the legacy JSON schema;
+/// geometry does not depend on the codec, so bind the same fields to the real
+/// binary Product here rather than relabel it.
+pub fn localizer_calibration(id: &str, product: &auki_components::RetainedProduct<VideoFrame>,
+    intrinsics: auki_qr_localizer::Intrinsics) -> Result<auki_qr_localizer::Calibration> {
+    let PayloadContract::Camera(c) = &product.producer.payload else { anyhow::bail!("Not a camera Product") };
+    ensure!(c.datatype == <VideoFrame as auki_components::ContractType>::DATATYPE && supported(&c.schema), "Unsupported camera contract");
+    ensure!(!id.is_empty() && [intrinsics.fx, intrinsics.fy, intrinsics.cx, intrinsics.cy].iter().all(|v| v.is_finite())
+        && intrinsics.fx > 0. && intrinsics.fy > 0., "Invalid camera intrinsics");
+    Ok(auki_qr_localizer::Calibration {
+        id: id.into(),
+        camera_product: product.reference(),
+        camera_frame_id: product.producer.spatial_frame_id.clone().ok_or_else(|| anyhow::anyhow!("Camera frame missing"))?,
+        clock: product.producer.clock.clone(),
+        width: c.width, height: c.height,
+        fx: intrinsics.fx, fy: intrinsics.fy, cx: intrinsics.cx, cy: intrinsics.cy,
+        distortion: intrinsics.distortion,
+    })
+}

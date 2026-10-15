@@ -29,7 +29,7 @@ test('all saved local scenes are selectable and isolated',async({page,request})=
  expect(nacs.scenegraph.anchors.RG3E3LUITXC.pose_in_map.rotation_wxyz).toEqual([Math.SQRT1_2,-Math.SQRT1_2,0,0]);
  expect(Object.keys(nacs.scenegraph.anchors)).toHaveLength(1);
  await page.getByRole('button',{name:'Notes',exact:true}).click();
- await expect(page.getByRole('button',{name:'+ New note',exact:true})).toHaveCount(0);
+ await expect(page.getByRole('button',{name:'New note',exact:true})).toBeEnabled();
  await page.getByRole('button',{name:'Maps',exact:true}).click();
  await page.locator('[data-map="demo"]').click();
  await expect(page.locator('#anchor-count')).toHaveText('13');

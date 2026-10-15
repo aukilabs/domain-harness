@@ -82,7 +82,7 @@ fn valid(x: f64) -> std::sync::Arc<Update> {
     .into()
 }
 
-async fn exercise(extra_mount: bool, binary: bool) -> Result<()> {
+async fn exercise(extra_mount: bool) -> Result<()> {
     let pair = support::LocalPair::start().await?;
     let result = async {
         let owner = pair.b.peer_id().to_string();
@@ -115,7 +115,7 @@ async fn exercise(extra_mount: bool, binary: bool) -> Result<()> {
         registry::frame(&home_defs,&home_frame)?;
         let c = registry_ar::CameraContract {sensor:auki_registry::RegistryRef {peer_id:owner.clone(),id:sensor.sensor_id.clone(),hash:sensor.hash()},
             frame:(&frame).into(),clock:clock.clone(),session_id:"s".into()};
-        let schema=if binary {spatial_home::camera_frame::SCHEMA}else{spatial_home::camera_frame::LEGACY_SCHEMA};
+        let schema=spatial_home::camera_frame::SCHEMA;
         let component = runtime.component(ComponentSpec::new("image-source").observable(ObservableContract {
             name:"pixels".into(),datatype:VideoFrame::DATATYPE.into(),schema:schema.into(),
             access:vec![ObservationAccess::FollowNew],exposure:Exposure::Cluster }))?;
@@ -126,8 +126,7 @@ async fn exercise(extra_mount: bool, binary: bool) -> Result<()> {
         let capture = runtime.capture_buffer_with_metadata("arbitrary-image-product",&output,
             BufferLimits {max_entries:Some(2),max_bytes:None,target_duration:None},|f:&VideoFrame|f.bytes.len(),
             move |o| Ok(Some(CatalogProductMetadata {schema:registry_ar::CAMERA_METADATA.into(),source_sequence:o.sequence,value:serde_json::to_value(&c).map_err(|e| e.to_string())?})))?;
-        if binary {endpoint.export_product_with_encoder(&capture.product(),spatial_home::camera_frame::encoder())?;}
-        else {endpoint.export_product(&capture.product())?;}
+        endpoint.export_product_with_encoder(&capture.product(),spatial_home::camera_frame::encoder())?;
         let t = 9_007_199_254_740_993;
         let _mount = if extra_mount {
             let m = transform(&runtime,&endpoint,&frame,&base,&clock,Lifetime::Held,"mount")?;
@@ -223,15 +222,11 @@ async fn exercise(extra_mount: bool, binary: bool) -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_edge_camera_chain_over_authenticated_sdk() -> Result<()> {
-    exercise(false,false).await
+    exercise(false).await
 }
 
+// Cameras are binary on the wire; a JSON camera export is refused at the endpoint.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn three_edge_camera_chain_over_authenticated_sdk() -> Result<()> {
-    exercise(true,false).await
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn binary_camera_uses_same_capture_matched_registry_chain()->Result<()> {
-    exercise(true,true).await
+    exercise(true).await
 }

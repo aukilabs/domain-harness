@@ -130,8 +130,8 @@ def main():
             entry.size = len(config)
             archive.addfile(entry, io.BytesIO(config))
             for name in ('bracketbot-python.py', 'bracketbot_slam_led_diagnostic.py', 'diagnostic-camera.py', 'diagnostic-depth.py', 'bracketbot_capture.py',
-                         'diagnostic-arm.py', 'bracketbot_point.py', 'bracketbot_aim.py',
-                         'drive-bracketbot.py', 'bracketbot_drive.py', 'diagnostic-nav.py', 'diagnostic-robot-state.py'):
+                         'diagnostic-arm.py', 'bracketbot_point.py', 'bracketbot_aim.py', 'diagnostic-robot-state.py',
+                         'drive-bracketbot.py', 'bracketbot_drive.py', 'diagnostic-nav.py', 'play-bracketbot-speech.py'):
                 archive.add(repo/'scripts'/name, arcname='scripts/'+name)
         payload.seek(0)
         if not args.start_staged:

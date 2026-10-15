@@ -174,6 +174,8 @@ pub struct MobileState {
 
     /// Validated Portal snapshot plus renderable scene geometry, in Home metres.
     pub portals: Option<serde_json::Value>,
+    /// Onboarding this phone hosts or takes part in. Filled in by `snapshot`.
+    pub onboarding: Option<serde_json::Value>,
 }
 
 pub struct MobileClient {
@@ -219,6 +221,13 @@ pub struct MobileClient {
     origin_reports: tokio::sync::mpsc::Sender<crate::scene_origin::Observation>,
     origin_receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::scene_origin::Observation>>>,
     receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::mobile_notes::PlaceNote>>>,
+    onboarding: crate::mobile_onboarding::Shared,
+    /// The connected Home and how other phones reach this one. None until connected.
+    connection: Mutex<Option<(crate::network::HomeConnection, crate::onboarding::Host)>>,
+    invitations: tokio::sync::watch::Sender<Option<crate::onboarding::Invitation>>,
+    sightings: tokio::sync::mpsc::Sender<crate::mobile_onboarding::Sighting>,
+    sighting_receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::mobile_onboarding::Sighting>>>,
+    seen: Mutex<crate::onboarding::Seen>,
 }
 impl Default for MobileClient {
     fn default() -> Self {
@@ -229,7 +238,14 @@ impl Default for MobileClient {
         let (route_asks, route_receiver) = tokio::sync::mpsc::channel(4);
         let (pose_log, pose_log_receiver) = tokio::sync::mpsc::channel(256);
         let (origin_reports, origin_receiver) = tokio::sync::mpsc::channel(1);
+        let (sightings, sighting_receiver) = tokio::sync::mpsc::channel(4);
         Self {
+            onboarding: Default::default(),
+            connection: Mutex::new(None),
+            invitations: tokio::sync::watch::channel(None).0,
+            sightings,
+            sighting_receiver: Mutex::new(Some(sighting_receiver)),
+            seen: Default::default(),
             pose_log,
             pose_log_receiver: Mutex::new(Some(pose_log_receiver)),
             depth_image: tokio::sync::watch::channel(None).0,
@@ -273,6 +289,7 @@ impl Default for MobileClient {
                 detail: "Signing in to Auki development services".into(),
 
                 portals: None,
+                onboarding: None,
             }),
             finished: AtomicBool::new(false),
         }
@@ -343,6 +360,12 @@ impl MobileClient {
     }
     pub fn update_pose(&self, mut sample: Option<crate::mobile_pose::Sample>) {
         if let Some(sample)=&mut sample {sample.camera_configuration_id=self.camera_configuration.borrow().as_ref().filter(|c|c.configuration.session==sample.session).map(|c|c.id.clone());}
+        if let Ok(mut history) = self.onboarding.history.lock() {
+            match &sample {
+                Some(sample) => history.push(&sample.session, sample.timestamp_ns, crate::local_mapper::from_rigid(&sample.pose)),
+                None => history.lose(),
+            }
+        }
         // Capture-time compact pose history; no legacy Home presence push.
         let _ = self.pose_log.try_send(sample.clone());
         self.pose.send_replace(sample);
@@ -357,6 +380,7 @@ impl MobileClient {
     pub fn set_asleep(&self, asleep: bool) {
         self.asleep.store(asleep, Ordering::Release);
         if asleep {
+            if let Ok(mut history) = self.onboarding.history.lock() { history.lose(); }
             let _ = self.pose_log.try_send(None);
             self.pose.send_replace(None);
         }
@@ -409,7 +433,70 @@ impl MobileClient {
         self.finished.load(Ordering::Acquire)
     }
     pub fn snapshot(&self) -> MobileState {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        // Both only grow, so the sum moves whenever either does.
+        state.version += self.onboarding.revision.load(Ordering::Acquire);
+        state.onboarding = self.onboarding.snapshot();
+        state
+    }
+
+    /// Start showing the way into this phone's scene. Needs a live connection
+    /// and a place in the scene. Returns the invitation QR text.
+    pub fn host_onboarding(&self, alias: &str, wifi: Option<crate::onboarding::Wifi>, display: crate::onboarding::Display) -> Result<String> {
+        ensure!(self.snapshot().state == "live", "Connect to Home first");
+        let placement = self.placement.borrow().clone();
+        let history = self.onboarding.history.lock().map_err(|_| anyhow::anyhow!("Pose history unavailable"))?.session().to_owned();
+        ensure!(placement.as_ref().is_some_and(|p| p.session == history), "Calibrate this phone into the scene first");
+        let marker_in_camera = display.marker_in_camera()?;
+        let (home, host) = self.connection.lock().unwrap_or_else(|e| e.into_inner()).clone()
+            .ok_or_else(|| anyhow::anyhow!("Connect to Home first"))?;
+        let invitation = crate::onboarding::Invitation::new(alias, home.clone(), host, wifi)?;
+        let text = invitation.encode()?;
+        *self.onboarding.hosting.lock().map_err(|_| anyhow::anyhow!("Onboarding unavailable"))? = Some(crate::onboarding::Hosting {
+            session: invitation.session.clone(), alias: invitation.alias.clone(), invitation: text.clone(),
+            marker: invitation.marker_payload(), marker_in_camera, scene_peer_id: home.peer_id, scene_frame: home.frame,
+            joiner: None, stage: None, detail: "Display marker to device to begin onboarding".into(),
+        });
+        self.onboarding.touch();
+        Ok(text)
+    }
+    /// Stop hosting or joining. A joiner keeps any place it already found.
+    pub fn stop_onboarding(&self) {
+        if let Ok(mut hosting) = self.onboarding.hosting.lock() { *hosting = None; }
+        let session = self.invitations.send_replace(None).map(|i| i.session);
+        if let Some(session) = session { self.seen.lock().unwrap_or_else(|e| e.into_inner()).forget(&session); }
+        if let Ok(mut joining) = self.onboarding.joining.lock() { *joining = None; }
+        self.onboarding.touch();
+    }
+    /// A scanned invitation. Starts joining the first time a session is seen,
+    /// if this phone is connected to the invitation's Home. Ok(false) when it
+    /// was seen before.
+    pub fn join_onboarding(&self, text: &str) -> Result<bool> {
+        let invitation = crate::onboarding::Invitation::parse(text)?;
+        let connected = self.connection.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        ensure!(self.snapshot().state == "live" && connected.as_ref().is_some_and(|(home, _)|
+            home.peer_id == invitation.home.peer_id && home.frame == invitation.home.frame),
+            "Connect to the invitation's Home scene first");
+        if !self.seen.lock().unwrap_or_else(|e| e.into_inner()).first(&invitation.session) {
+            return Ok(false);
+        }
+        *self.onboarding.joining.lock().map_err(|_| anyhow::anyhow!("Onboarding unavailable"))? = Some(crate::mobile_onboarding::Joining {
+            session: invitation.session.clone(), alias: invitation.alias.clone(), marker: None, looking: false,
+            stage: None, detail: "Joining".into(), sightings: 0, clock: None, alignment: None,
+        });
+        self.set_name(invitation.alias.clone());
+        self.invitations.send_replace(Some(invitation));
+        self.onboarding.touch();
+        Ok(true)
+    }
+    /// A camera frame while joining. Finds the host's marker and queues it.
+    pub fn onboarding_frame(&self, luma: &[u8], frame: &crate::mobile_onboarding::Frame) -> Result<bool> {
+        let marker = self.onboarding.joining.lock().ok()
+            .and_then(|j| j.as_ref().filter(|j| j.looking).and_then(|j| j.marker.clone()));
+        let Some(marker) = marker else { return Ok(false) };
+        let Some(sighting) = crate::mobile_onboarding::sight(luma, frame, &marker)? else { return Ok(false) };
+        let _ = self.sightings.try_send(sighting);
+        Ok(true)
     }
     fn status(&self, state: &'static str, detail: impl Into<String>) {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -503,6 +590,37 @@ impl MobileClient {
                 // sample deadlines cannot repeatedly cancel cold discovery.
                 tokio::select! { _ = self.stop.cancelled() => return Ok(()), _ = operations.warm() => {} }
                 let products = crate::mobile_products::MobileProducts::mount(&peer)?;
+                // How a phone being onboarded reaches this one: its own addresses on the network.
+                let routes: Vec<String> = peer.listen_addresses().iter().map(ToString::to_string)
+                    .filter(|r| !r.contains("/127.0.0.1/") && !r.contains("/0.0.0.0/")).take(4).collect();
+                *self.connection.lock().unwrap_or_else(|e| e.into_inner()) = (!routes.is_empty()).then(|| (home.clone(),
+                    crate::onboarding::Host { peer_id: peer.peer_id().to_string(), routes }));
+                let onboarding_display = crate::mobile_onboarding::Display::mount(&products, &self.onboarding, self.placement.subscribe())?;
+                let mut invitations = self.invitations.subscribe();
+                let mut sightings = self.sighting_receiver.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap();
+                let join_work = async {
+                    loop {
+                        if invitations.changed().await.is_err() { break; }
+                        let Some(invitation) = invitations.borrow_and_update().clone() else { continue };
+                        let joined = tokio::select! {
+                            result = tokio::time::timeout(Duration::from_secs(120),
+                                crate::mobile_onboarding::join(&peer, &home, &invitation, &self.onboarding, &mut sightings)) =>
+                                result.unwrap_or_else(|_| Err(anyhow::anyhow!("Onboarding timed out; scan the code again"))),
+                            // Stopped or replaced by another invitation.
+                            _ = invitations.changed() => { invitations.mark_changed(); continue }
+                        };
+                        match joined {
+                            // The app adopts it as its own calibration, which publishes it as usual.
+                            Ok(alignment) => self.update_placement(Some(crate::mobile_declared::Placement {
+                                session: alignment.portal_to_session.to_frame_id.trim_start_matches("phone-ar:").to_owned(),
+                                timestamp_ns: alignment.timestamp_ns, session_to_scene: alignment.session_to_home.clone() })),
+                            Err(error) => {
+                                self.onboarding.join(|j| { j.looking = false; j.stage = Some(crate::onboarding::Stage::Failed); j.detail = error.to_string(); });
+                                self.seen.lock().unwrap_or_else(|e| e.into_inner()).forget(&invitation.session);
+                            }
+                        }
+                    }
+                };
                 // What this phone declares in its own Catalog. The camera is
                 // declared at connect; pose and depth as soon as the AR session
                 // is known. Frames are still captured and sent only on demand.
@@ -1019,12 +1137,15 @@ impl MobileClient {
                     _ = pose_product_work => Ok(()),
                     _ = depth_image_work => Ok(()),
                     _ = depth_work => Ok(()),
+                    _ = join_work => Ok(()),
                     _ = self.follow_geometry(&peer, &home) => Ok(()),
                     result = self.follow(&peer, &home) => result,
                     _ = commands => Ok(()),
                 };
                 self.camera_demand.store(false, Ordering::Release);
                 self.screen_demand.store(false, Ordering::Release);
+                drop(onboarding_display);
+                *self.connection.lock().unwrap_or_else(|e| e.into_inner()) = None;
                 if let Some(screen) = screen.take() { let _ = screen.close(); }
                 let Declared { camera, depth_image, pose: pose_publisher, placed } = std::mem::replace(
                     &mut *declared(), Declared { camera: None, depth_image: None, pose: None, placed: None });

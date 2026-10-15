@@ -270,7 +270,8 @@ pub struct Pointer {
 impl Pointer {
     /// `arm` is None to resolve only, or Some(execute) to plan with the arm
     /// adapter and, when `execute`, move.
-    pub fn mount(p: &crate::poses::Publisher, known: Arc<Mutex<Frames>>, arm: Option<bool>) -> Result<Self> {
+    pub fn mount(p: &crate::poses::Publisher, known: Arc<Mutex<Frames>>, arm: Option<bool>,
+        reports: tokio::sync::mpsc::UnboundedSender<crate::arm::Reply>) -> Result<Self> {
         let base: FrameRef = (&p.contract.from_frame).into();
         let clock = p.contract.clock.clone();
         let session = p.contract.session_id.clone();
@@ -282,7 +283,7 @@ impl Pointer {
                     if let Ok(mut busy) = released.lock() {
                         busy.release(id);
                     }
-                })?;
+                }, reports)?;
                 known.lock().unwrap().insert(&[&arm.frame], crate::pointer::Transform {
                     contract: arm.transform.contract.clone(),
                     product: arm.transform.product.clone(),

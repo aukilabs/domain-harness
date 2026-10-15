@@ -30,6 +30,10 @@ fn read_names(path: &str) -> BTreeMap<String, String> {
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default()
 }
+/// The name a phone gave itself (its Status tab), or the one checked in for it.
+pub fn saved_name(peer: &str) -> Option<String> {
+    NAMES.read().unwrap_or_else(|e| e.into_inner()).get(peer).cloned()
+}
 pub fn display_name(peer: &str) -> String {
     if let Ok(aliases)=crate::peer_aliases::all(){if let Some(alias)=aliases.get(peer){return alias.clone();}}
     let names = NAMES.read().unwrap_or_else(|e| e.into_inner());

@@ -22,6 +22,8 @@ use std::{
 
 pub const SCHEMA: &str = "spatial-harness.mobile-scene/v1";
 const MAX_BYTES: usize = 24 * 1024 * 1024;
+/// How often a growing voxel map is sent to phones.
+const VOXEL_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Scene {
@@ -52,7 +54,57 @@ fn legacy_volume_layer<S:serde::Serializer>(volumes:&Option<crate::semantic_volu
     value.serialize(s)
 }
 fn size(s: &Scene) -> usize {
-    serde_json::to_vec(s).map_or(usize::MAX, |v| v.len())
+    pack(s).map_or(usize::MAX, |v| v.len())
+}
+
+/// The scene on the wire to phones. Its voxel map is an SDK checkpoint of
+/// raw bytes, which JSON would write as a list of numbers (about four
+/// characters a byte, 2.5 MB a second at 17k voxels). Instead: "MSC1", the
+/// rest of the scene as a u32-length JSON header, then the checkpoint bytes.
+pub const ENCODING: &str = "spatial-harness.mobile-scene-packed/v1";
+pub fn pack(scene: &Scene) -> Result<Vec<u8>> {
+    let checkpoint = scene.geometry.as_ref().map(|g| g.voxels.checkpoint.as_slice()).unwrap_or_default();
+    let header = serde_json::to_vec(&Scene {
+        geometry: scene.geometry.as_ref().map(crate::network::CanonicalScene::without_checkpoint),
+        ..scene.shallow()
+    })?;
+    ensure!(header.len() <= MAX_BYTES && checkpoint.len() <= MAX_BYTES, "Mobile scene too large");
+    let mut bytes = Vec::with_capacity(8 + header.len() + checkpoint.len());
+    bytes.extend_from_slice(b"MSC1");
+    bytes.extend_from_slice(&(header.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&header);
+    bytes.extend_from_slice(checkpoint);
+    Ok(bytes)
+}
+pub fn unpack(bytes: &[u8]) -> Result<Scene> {
+    ensure!(bytes.len() >= 8 && &bytes[..4] == b"MSC1", "Invalid mobile scene packet");
+    let n = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    ensure!(n <= MAX_BYTES && bytes.len() >= 8 + n, "Invalid mobile scene header");
+    let mut scene: Scene = serde_json::from_slice(&bytes[8..8 + n])?;
+    let checkpoint = &bytes[8 + n..];
+    match scene.geometry.as_mut() {
+        Some(g) => g.voxels.checkpoint = checkpoint.to_vec(),
+        None => ensure!(checkpoint.is_empty(), "Voxel bytes without geometry"),
+    }
+    Ok(scene)
+}
+pub fn encoder() -> auki_component_protocol::ObservationEncoder<Scene> {
+    auki_component_protocol::ObservationEncoder::new(ENCODING, |s| pack(s).map_err(|e| e.to_string())).expect("static mobile scene codec")
+}
+pub fn decoder() -> Result<auki_component_protocol::ObservationDecoder<Scene>> {
+    Ok(auki_component_protocol::ObservationDecoder::new(ENCODING, |b| unpack(b).map_err(|e| e.to_string()))?)
+}
+impl Scene {
+    /// Everything but the geometry, which can be megabytes.
+    fn shallow(&self) -> Self {
+        Self {
+            schema: self.schema.clone(), authority_peer_id: self.authority_peer_id.clone(),
+            publication_clock: self.publication_clock.clone(), portals: self.portals.clone(), geometry: None,
+            notes: self.notes.clone(), semantic_volumes: self.semantic_volumes.clone(), volumes: self.volumes.clone(),
+            presence: self.presence.clone(), robot_presence: self.robot_presence.clone(), paths: self.paths.clone(),
+            paths_product: self.paths_product.clone(),
+        }
+    }
 }
 fn limits() -> BufferLimits {
     BufferLimits {
@@ -237,6 +289,9 @@ pub struct Publisher {
     started: Instant,
     last_tick: Option<Instant>,
     last_content: Option<Vec<u8>>,
+    /// Size and observation count of the voxel map last sent to phones.
+    last_checkpoint: Option<(usize, Option<u64>)>,
+    last_published: Option<Instant>,
     _components: Vec<Component>,
 }
 impl Publisher {
@@ -357,7 +412,7 @@ impl Publisher {
             limits(),
             size,
         )?;
-        endpoint.export_product(&capture.product())?;
+        endpoint.export_product_with_encoder(&capture.product(), encoder())?;
         let voxel_layers = ["occupied-voxels", "observed-free-voxels"].map(|name|
             crate::voxel_layers::Publisher::mount(runtime, endpoint, id, name,
                 crate::model::clock_ref(&clock), crate::conventions::registry(&owner, &frame)?));
@@ -690,6 +745,8 @@ impl Publisher {
             started,
             last_tick: None,
             last_content: None,
+            last_checkpoint: None,
+            last_published: None,
             _components: components,
         };
         publisher.tick()?;
@@ -757,11 +814,22 @@ impl Publisher {
         };
         scene.validate(&self.owner, &reference.scenegraph.map.frame.id)?;
         self.paths_publisher.publish(self.started.elapsed().as_nanos() as u64,scene.paths.clone().unwrap())?;
-        let content = serde_json::to_vec(&scene)?;
-        if self.last_content.as_ref() == Some(&content) {
+        // Compare without the voxel bytes. A change to anything else (people,
+        // notes, robots) goes out at once; a map that only grew waits until
+        // two seconds after the last one, since every phone gets all of it.
+        let light = serde_json::to_vec(&Scene {
+            geometry: scene.geometry.as_ref().map(crate::network::CanonicalScene::without_checkpoint),
+            ..scene.shallow()
+        })?;
+        let checkpoint = scene.geometry.as_ref().map(|g| g.voxels.checkpoint.len()).unwrap_or(0);
+        let scene_observations = scene.geometry.as_ref().map(|g| g.voxels.integrated_observations);
+        let voxels_changed = self.last_checkpoint != Some((checkpoint, scene_observations));
+        let rest_changed = self.last_content.as_ref() != Some(&light);
+        if !rest_changed && (!voxels_changed || self.last_published.is_some_and(|t| t.elapsed() < VOXEL_INTERVAL)) {
             self.occupancy.tick()?;
             return Ok(());
         }
+        let content = light;
         if let Some(geometry) = &scene.geometry {
             let timestamp = self.started.elapsed().as_nanos() as u64;
             for (publisher, layer) in self.voxel_layers.iter().zip(crate::voxel_layers::split(&geometry.voxels)?) {
@@ -783,6 +851,8 @@ impl Publisher {
             "Mobile scene retention failed"
         );
         self.last_content = Some(content);
+        self.last_checkpoint = Some((checkpoint, scene_observations));
+        self.last_published = Some(Instant::now());
         Ok(())
     }
 }
@@ -928,7 +998,7 @@ pub async fn receive_scene(
                 "Scene owner mismatch"
             );
             let stream = client
-                .subscribe_product_exact(
+                .subscribe_product_exact_with_decoder(
                     expected,
                     route,
                     ProductReference {
@@ -939,6 +1009,7 @@ pub async fn receive_scene(
                     ObservationStart::LatestExisting,
                     limits(),
                     size,
+                    decoder()?,
                 )
                 .await?;
             Ok::<_, anyhow::Error>(stream)

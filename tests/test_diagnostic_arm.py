@@ -41,7 +41,8 @@ class FakeArms:
         self.arms = {'arm_right': dict(fk=fk, cfg=None)}
         self.state = state_record(np.array(HOME['arm_right'] if pos is None else pos), vel)
 
-    def healthy(self, name, arm_max_age=.25):
+    def healthy(self, name, arm_max_age=.25, temp_limit=arm.TEMP_LIMIT_C):
+        self.temp_limit = temp_limit
         return self.state
 
 
@@ -100,6 +101,39 @@ class DiagnosticArmTests(unittest.TestCase):
             arm.plan(FakeArms(vel=.1), 'arm_right', np.array([2., -.6, 1.2]))
         with self.assertRaises(ValueError):
             arm.plan(FakeArms(), 'arm_right', np.array([.6, 1.5, .73]))
+
+    def test_plan_keeps_temperature_headroom_for_the_move(self):
+        arms = FakeArms()
+        arm.plan(arms, 'arm_right', np.array([2., -.6, 1.2]))
+        self.assertEqual(arms.temp_limit, arm.TEMP_LIMIT_C-arm.PLAN_TEMP_MARGIN_C)
+
+    def test_protection_names_the_joint_and_its_reading(self):
+        class Config:
+            joint_names = ['lj0', 'lj1']
+            hard_current_limit = [13.2, 1.96]
+        arms = arm.Arms.__new__(arm.Arms)
+        arms.arms = {'arm_left': dict(cfg=Config(), state='state')}
+        arms.imu, arms.battery, arms.low_voltage = 'imu', 'battery', 17.8
+        feedback = dict(imu=dict(rpy=np.zeros(3)), battery=dict(voltage=20.),
+                        state=dict(pos=np.zeros(2), vel=np.zeros(2), temp=np.array([48., 30.]), current=np.array([4.5, 0.])))
+        arms.fresh = lambda reader, *_: feedback[reader]
+        arms.healthy('arm_left')
+        with self.assertRaisesRegex(arm.ArmProtection, r'lj0 at 48 C \(limit 47 C\)') as hot:
+            arms.healthy('arm_left', temp_limit=47.)
+        self.assertEqual(hot.exception.code, 'hot')
+        feedback['state']['current'] = np.array([4.5, 1.7])
+        with self.assertRaisesRegex(arm.ArmProtection, r'lj1 drawing 1.7 A \(limit 1.6 A\)') as current:
+            arms.healthy('arm_left')
+        self.assertEqual(current.exception.code, 'current')
+        # Newer BBOS declares no current limit: no current margin, but heat still trips.
+        class NewerConfig:
+            joint_names = ['lj0', 'lj1']
+        arms.arms['arm_left']['cfg'] = NewerConfig()
+        feedback['state']['current'] = np.array([40., 40.])
+        arms.healthy('arm_left')
+        with self.assertRaises(arm.ArmProtection) as hot:
+            arms.healthy('arm_left', temp_limit=47.)
+        self.assertEqual(hot.exception.code, 'hot')
 
 
 if __name__ == '__main__':

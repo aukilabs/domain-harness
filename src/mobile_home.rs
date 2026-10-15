@@ -95,6 +95,19 @@ impl HomeOperations {
         })
     }
 
+    /// The same Catalog-resolved operations on another peer of the Domain, such
+    /// as the phone showing an onboarding marker. The SDK authenticates it.
+    pub fn for_peer(peer: &AukiPeer, peer_id: &str, routes: &[String], frame: &str) -> Result<Self> {
+        ensure!(!routes.is_empty() && routes.len() <= 16, "Peer needs 1–16 routes");
+        Ok(Self {
+            client: ComponentProtocolClient::new(peer.protocols()),
+            expected: peer_id.parse()?,
+            routes: routes.iter().map(|r| r.parse().map_err(anyhow::Error::from)).collect::<Result<_>>()?,
+            frame: frame.into(),
+            cache: Mutex::new(Cache::default()),
+        })
+    }
+
     async fn discover(&self, preferred: Option<Multiaddr>) -> Result<Resolved> {
         let mut routes = self.routes.clone();
         if let Some(route) = preferred {

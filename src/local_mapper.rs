@@ -672,7 +672,7 @@ impl LocalMap {
             if !channel.exported
                 && let Some(capture) = &channel.capture
             {
-                endpoint.export_product(&capture.product())?;
+                endpoint.export_product_with_encoder(&capture.product(), crate::camera_frame::encoder())?;
                 channel.exported = true;
             }
         }
@@ -1159,7 +1159,7 @@ impl LocalMap {
                 ObservableContract {
                     name: "frames".into(),
                     datatype: VideoFrame::DATATYPE.into(),
-                    schema: "auki.video-frame/v1".into(),
+                    schema: crate::camera_frame::SCHEMA.into(),
                     access: vec![ObservationAccess::FollowNew],
                     exposure: Exposure::Cluster,
                 },
@@ -1171,7 +1171,7 @@ impl LocalMap {
                     self.clock.clone(),
                     PayloadContract::Camera(CameraPayloadContract {
                         datatype: VideoFrame::DATATYPE.into(),
-                        schema: "auki.video-frame/v1".into(),
+                        schema: crate::camera_frame::SCHEMA.into(),
                         encoding: "luma8".into(),
                         width: s.width,
                         height: s.height,
@@ -1191,7 +1191,7 @@ impl LocalMap {
                 BufferLimits::entries(2),
                 |f: &VideoFrame| f.bytes.len(),
             )?;
-            channel.calibration = Some(auki_qr_localizer::Calibration::for_product(
+            channel.calibration = Some(crate::camera_frame::localizer_calibration(
                 &s.calibration.sensor_frame,
                 &capture.product(),
                 auki_qr_localizer::Intrinsics {

@@ -1566,6 +1566,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/robot-model.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/robot-model.js")) }))
         .route("/robot-health.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/robot-health.js")) }))
         .route("/robot/{*path}", get(robot_asset))
+        .route("/brand/mckenna.svg", get(|| async { ([(header::CONTENT_TYPE, "image/svg+xml")], include_str!("../web/brand/mckenna.svg")) }))
+        .route("/brand/mckenna-mark.svg", get(|| async { ([(header::CONTENT_TYPE, "image/svg+xml")], include_str!("../web/brand/mckenna-mark.svg")) }))
+        .route("/brand/mckenna-favicon.svg", get(|| async { ([(header::CONTENT_TYPE, "image/svg+xml")], include_str!("../web/brand/mckenna-favicon.svg")) }))
+        .route("/brand/nils-pihl.jpg", get(|| async { ([(header::CONTENT_TYPE, "image/jpeg")], include_bytes!("../web/brand/nils-pihl.jpg").as_slice()) }))
         .route("/api/sensors", get(sensor_preview))
         .route("/api/component-enabled", post(component_enabled))
         .route("/camera-frame.js", get(|| async { ([(header::CONTENT_TYPE,"text/javascript")],include_str!("../web/camera-frame.js")) }))
@@ -1577,6 +1581,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/scene", get(scene))
         .route("/api/semantic-volumes", get(get_volumes).post(create_volume))
         .route("/api/semantic-volumes/{id}", axum::routing::patch(update_volume).delete(delete_volume))
+        .route("/panel-ui.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/panel-ui.js")) }))
+        .route("/agent-bar.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/agent-bar.js")) }))
         .route("/semantic-volumes.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/semantic-volumes.js")) }))
         .route("/map-2d.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/map-2d.js")) }))
         .route("/crayon.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/crayon.js")) }))
@@ -1632,6 +1638,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/detections", post(detect))
         .route("/api/raycast", post(cast))
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
+        .layer(axum::middleware::from_fn(dev_web_files))
         .with_state(state);
     println!(
         "Spatial Home: http://127.0.0.1:{port} (listening on {bind}:{port}) — SDK PR #425; P2P {}",
@@ -1701,4 +1708,35 @@ mod ui_access_tests {
             assert!(ui_write(&request(host, None), "").is_err());
         }
     }
+}
+
+/// Development: with `SPATIAL_WEB_DIR` set, the viewer's files are read from that folder on each
+/// request, so editing the web UI needs a reload rather than a rebuild and restart (which would
+/// lose Home's in-memory map). Unset, the files built into Home are served as usual.
+async fn dev_web_files(request: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if let Ok(dir) = std::env::var("SPATIAL_WEB_DIR") {
+        let path = request.uri().path();
+        let relative = if path == "/" { "index.html" } else { path.trim_start_matches('/') };
+        let served = request.method() == axum::http::Method::GET
+            && !relative.starts_with("api/")
+            && relative.split('/').all(|part| !part.is_empty() && part != ".." && !part.starts_with('.'));
+        let file = std::path::Path::new(&dir).join(relative);
+        if served && file.is_file() {
+            if let Ok(bytes) = tokio::fs::read(&file).await {
+                let kind = match file.extension().and_then(|e| e.to_str()) {
+                    Some("html") => "text/html; charset=utf-8",
+                    Some("js" | "mjs") => "text/javascript",
+                    Some("css") => "text/css",
+                    Some("svg") => "image/svg+xml",
+                    Some("png") => "image/png",
+                    Some("jpg" | "jpeg") => "image/jpeg",
+                    Some("json") => "application/json",
+                    _ => "application/octet-stream",
+                };
+                return ([(header::CONTENT_TYPE, kind), (header::CACHE_CONTROL, "no-store")], bytes).into_response();
+            }
+        }
+    }
+    next.run(request).await
 }

@@ -117,7 +117,7 @@ impl Publisher {
         )?;
         component.expose()?;
         let capture = runtime.capture_buffer(PRODUCT, &output, BufferLimits::entries(3), size)?;
-        endpoint.export_product(&capture.product())?;
+        endpoint.export_product_with_encoder(&capture.product(), encoder())?;
         Ok(Self {
             output,
             _component: component,
@@ -149,7 +149,51 @@ impl Publisher {
     }
 }
 fn size(sample: &Capture) -> usize {
-    serde_json::to_vec(sample).map_or(usize::MAX, |s| s.len())
+    64 + sample.hit_points_m.len() * 27
+}
+
+/// The capture on the wire: never JSON for the points. "RGD1", a u32-length
+/// JSON header (times and calibration, a few hundred bytes), the point count
+/// (u32), then each point as 3 × f64 metres and its sRGB colour as 3 bytes.
+pub const ENCODING: &str = "spatial-harness.rgbd-packed/v1";
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Header { timestamp_ns: u64, rgb_timestamp_ns: u64, transform_timestamp_ns: u64, calibration: SensorCalibration }
+pub fn pack(c: &Capture) -> Result<Vec<u8>> {
+    ensure!(c.hit_points_m.len() == c.hit_colors_srgb.len() && c.hit_points_m.len() <= 384, "invalid RGB-D point/color count");
+    let header = serde_json::to_vec(&Header { timestamp_ns: c.timestamp_ns, rgb_timestamp_ns: c.rgb_timestamp_ns,
+        transform_timestamp_ns: c.transform_timestamp_ns, calibration: c.calibration.clone() })?;
+    ensure!(header.len() <= 4096, "RGB-D header too large");
+    let mut bytes = Vec::with_capacity(12 + header.len() + c.hit_points_m.len() * 27);
+    bytes.extend_from_slice(b"RGD1");
+    bytes.extend_from_slice(&(header.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&header);
+    bytes.extend_from_slice(&(c.hit_points_m.len() as u32).to_le_bytes());
+    for p in &c.hit_points_m { for v in p { bytes.extend_from_slice(&v.to_le_bytes()); } }
+    for color in &c.hit_colors_srgb { bytes.extend_from_slice(color); }
+    Ok(bytes)
+}
+pub fn unpack(bytes: &[u8]) -> Result<Capture> {
+    ensure!(bytes.len() >= 12 && &bytes[..4] == b"RGD1", "Invalid RGB-D packet");
+    let n = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    ensure!(n <= 4096 && bytes.len() >= 12 + n, "Invalid RGB-D header");
+    let header: Header = serde_json::from_slice(&bytes[8..8 + n])?;
+    let count = u32::from_le_bytes(bytes[8 + n..12 + n].try_into().unwrap()) as usize;
+    let body = &bytes[12 + n..];
+    ensure!(count <= 384 && body.len() == count * 27, "Invalid RGB-D point count");
+    let f = |at: usize| f64::from_le_bytes(body[at..at + 8].try_into().unwrap());
+    Ok(Capture {
+        timestamp_ns: header.timestamp_ns, rgb_timestamp_ns: header.rgb_timestamp_ns,
+        transform_timestamp_ns: header.transform_timestamp_ns, calibration: header.calibration,
+        hit_points_m: (0..count).map(|i| std::array::from_fn(|k| f(i * 24 + k * 8))).collect(),
+        hit_colors_srgb: (0..count).map(|i| body[count * 24 + i * 3..count * 24 + i * 3 + 3].try_into().unwrap()).collect(),
+    })
+}
+pub fn encoder() -> ObservationEncoder<Capture> {
+    ObservationEncoder::new(ENCODING, |c| pack(c).map_err(|e| e.to_string())).expect("static RGB-D codec")
+}
+pub fn decoder() -> Result<ObservationDecoder<Capture>> {
+    Ok(ObservationDecoder::new(ENCODING, |b| unpack(b).map_err(|e| e.to_string()))?)
 }
 
 pub async fn fetch(
@@ -177,7 +221,7 @@ pub async fn fetch(
                 .ok_or_else(|| anyhow!("RGB-D Component not published yet"))?;
             Ok::<_, anyhow::Error>(
                 client
-                    .observations_exact(
+                    .observations_exact_with_decoder(
                         expected,
                         route.parse()?,
                         ObservationRequest {
@@ -188,6 +232,7 @@ pub async fn fetch(
                             },
                             selection: ObservationSelection::LatestExisting,
                         },
+                        decoder()?,
                     )
                     .await?,
             )

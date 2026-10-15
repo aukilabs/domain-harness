@@ -170,3 +170,42 @@ export function applyRobotHealth(glyph, health) {
  }
  drawBattery(glyph.batteryBadge, battery.percent, battery.voltage);
 }
+
+// The latest pointing request above the battery: blue while the arm works,
+// red with the robot's own reason when it refused or stopped.
+const POINTING_TEXT = {planned: 'Pointing: planned', moving: 'Pointing…', holding: 'Pointing', returning: 'Pointing: returning', done: 'Pointing: done'};
+function drawPointing(s, pointing) {
+ const failed = pointing.phase === 'rejected' || pointing.phase === 'fault';
+ const title = failed ? (pointing.phase === 'fault' ? 'Pointing stopped' : 'Pointing refused') : (POINTING_TEXT[pointing.phase] || pointing.phase);
+ const detail = failed ? (pointing.reason || pointing.code || '') : (pointing.arm || '').replace('arm_', '') + (pointing.arm ? ' arm' : '');
+ const key = `${title}|${detail}`;
+ if (s.userData.key === key) return;
+ s.userData.key = key;
+ const canvas = s.material.map.image, ctx = canvas.getContext('2d');
+ ctx.clearRect(0, 0, canvas.width, canvas.height);
+ pill(ctx, 2, 4, canvas.width - 4, canvas.height - 8);
+ ctx.fillStyle = failed ? '#ef4444' : '#38bdf8';
+ ctx.beginPath(); ctx.arc(34, canvas.height / 2, 14, 0, Math.PI * 2); ctx.fill();
+ ctx.textBaseline = 'middle';
+ ctx.fillStyle = failed ? '#fca5a5' : '#e0f2fe'; ctx.font = '700 28px system-ui, sans-serif';
+ ctx.fillText(title, 62, canvas.height / 2 - 14);
+ ctx.fillStyle = '#cbd5e1'; ctx.font = '500 22px system-ui, sans-serif';
+ let text = detail;
+ while (text.length > 4 && ctx.measureText(text).width > canvas.width - 80) text = text.slice(0, -2);
+ ctx.fillText(text === detail ? text : text + '…', 62, canvas.height / 2 + 16);
+ s.material.map.needsUpdate = true;
+}
+
+// Show `pointing` ({request_id, phase, arm, reason, code}) on the glyph's model; null hides it.
+export function applyPointingStatus(glyph, pointing) {
+ if (!glyph.robot || !pointing?.phase) {
+  if (glyph.pointingBadge) { dispose(glyph.pointingBadge); glyph.pointingBadge = null; }
+  return;
+ }
+ if (!glyph.pointingBadge) {
+  glyph.pointingBadge = sprite(480, 96, 0.11, new THREE.Vector2(0.5, 0));
+  glyph.pointingBadge.position.set(0, 0, BATTERY_HEIGHT_M + 0.13);
+  glyph.group.add(glyph.pointingBadge);
+ }
+ drawPointing(glyph.pointingBadge, pointing);
+}

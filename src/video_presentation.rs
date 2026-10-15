@@ -164,7 +164,8 @@ pub async fn resolve(
             json!({"rotation_clockwise_deg":rotation,"source":"capture_pose","timestamp_ns":timestamp.to_string(),"reference_frame":c.to_frame}),
         )
     };
-    match tokio::time::timeout(std::time::Duration::from_millis(200), work).await {
+    // A phone's pose comes over Wi-Fi; 200 ms missed often enough to lay its picture on its side.
+    match tokio::time::timeout(std::time::Duration::from_millis(800), work).await {
         Ok(Ok(value)) => value,
         Ok(Err(e)) => json!({"source":"unavailable","detail":e.to_string()}),
         Err(_) => json!({"source":"unavailable","detail":"Orientation lookup timed out"}),

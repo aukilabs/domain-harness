@@ -16,6 +16,9 @@ async fn home_follows_the_diagnostic_body_on_its_pose_base_frame() -> anyhow::Re
     // Catalog metadata, and so the declared body, appears with the first observation.
     robot.publish(serde_json::from_value(serde_json::json!({"kind":"joints","timestamp_ns":1_000,"positions":{"left_shoulder":0.}}))?)?;
     robot.publish(serde_json::from_value(serde_json::json!({"kind":"health","timestamp_ns":1_000,"joints":{},"battery":{"voltage":19.,"percent":50.}}))?)?;
+    let fault=|id:&str|robot_state::Pointing{request_id:id.into(),phase:"fault".into(),arm:Some("arm_left".into()),
+        reason:Some("lj0 at 50 C (limit 50 C)".into()),code:Some("hot".into())};
+    robot.publish_pointing(fault("first"))?;
     let routes=pair.b.listen_addresses().iter().map(ToString::to_string).collect::<Vec<_>>();
     let row=spatial_home::device_catalogs::fetch(&pair.a,pair.b.peer_id(),&routes).await;
     let owner=pair.b.peer_id().to_string();
@@ -32,8 +35,10 @@ async fn home_follows_the_diagnostic_body_on_its_pose_base_frame() -> anyhow::Re
         robot.publish(serde_json::from_value(serde_json::json!({"kind":"joints","timestamp_ns":t,"positions":{"left_shoulder":0.25}}))?)?;
         robot.publish(serde_json::from_value(serde_json::json!({"kind":"health","timestamp_ns":t,
             "joints":{"left_shoulder":{"temperature_c":44.5,"current_a":1.2}},"battery":{"voltage":19.1,"percent":59.0}}))?)?;
+        robot.publish_pointing(fault("live"))?;
         let view=states.view();
-        if !view["robots"][0]["joints"].is_null() && !view["robots"][0]["health"].is_null() {break view;}
+        let robot_view=&view["robots"][0];
+        if !robot_view["joints"].is_null() && !robot_view["health"].is_null() && !robot_view["pointing"].is_null() {break view;}
         anyhow::ensure!(t<1_200,"Home did not receive robot state: {view}");
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     };
@@ -45,6 +50,9 @@ async fn home_follows_the_diagnostic_body_on_its_pose_base_frame() -> anyhow::Re
     assert_eq!(robot_view["session_id"],publisher.contract.session_id);
     assert_eq!(robot_view["joints"]["state"]["positions"]["left_shoulder"],0.25);
     assert_eq!(robot_view["health"]["state"]["battery"]["percent"],59.0);
+    assert_eq!(robot_view["pointing"]["state"]["phase"],"fault");
+    assert_eq!(robot_view["pointing"]["state"]["code"],"hot");
+    assert_eq!(robot_view["pointing"]["state"]["reason"],"lj0 at 50 C (limit 50 C)");
     assert!(robot_view["joints"]["age_ms"].as_u64().unwrap()<2_000);
     // A stale or repeated timestamp is never published over newer state.
     robot.publish(serde_json::from_value(serde_json::json!({"kind":"joints","timestamp_ns":5,"positions":{"left_shoulder":9.0}}))?)?;
