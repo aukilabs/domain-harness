@@ -15,6 +15,7 @@
 		2481687917605ECCE2F2C22A /* bracketbot_0184_rigged.usdz in Resources */ = {isa = PBXBuildFile; fileRef = BA431FB9B359E3A0AF861867 /* bracketbot_0184_rigged.usdz */; };
 		2DC11F9A3C2824AFF300B427 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E4554C6754FD11EA49048B5 /* Theme.swift */; };
 		2F00069261E099226C9BD6C9 /* PortalMap.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF63C94F0E06FB864456F332 /* PortalMap.swift */; };
+		2A95B8380B6EFAC3B646A123 /* RobotHealth.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB2B945385636185BD39367D /* RobotHealth.swift */; };
 		76AEBF1C9FA1B8D4D8E320D7 /* SemanticVolume.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1F90986E59A331AC5AF0962 /* SemanticVolume.swift */; };
 		7F41A3FEC846F6B3880A9B3A /* HomePeer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 923BCD5A09BD097EE8206E8E /* HomePeer.swift */; };
 		B5FC91E8E14B70B258CF83E0 /* PortalViewerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B33697AF632544986693964C /* PortalViewerApp.swift */; };
@@ -44,6 +45,7 @@
 		630D038DE0F37FFCF3EFD8E1 /* VoxelChunks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoxelChunks.swift; sourceTree = "<group>"; };
 		5104FEF0A9DC237366105CF8 /* Onboarding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Onboarding.swift; sourceTree = "<group>"; };
 		CF63C94F0E06FB864456F332 /* PortalMap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortalMap.swift; sourceTree = "<group>"; };
+		CB2B945385636185BD39367D /* RobotHealth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RobotHealth.swift; sourceTree = "<group>"; };
 		D6933E6306AC040ABFB74C78 /* SpatialPortalBridge.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = SpatialPortalBridge.xcframework; path = ../PortalBridge/build/SpatialPortalBridge.xcframework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -86,6 +88,7 @@
 				53473FD966BA04F1FC85EED6 /* GeoReference.swift */,
 				923BCD5A09BD097EE8206E8E /* HomePeer.swift */,
 				CF63C94F0E06FB864456F332 /* PortalMap.swift */,
+				CB2B945385636185BD39367D /* RobotHealth.swift */,
 				8FF47757AD099392D75B3200 /* PortalPose.swift */,
 				B33697AF632544986693964C /* PortalViewerApp.swift */,
 				C38092EFE931EB56A528B487 /* ScreenShare.swift */,
@@ -188,6 +191,7 @@
 				D8B75E2AFC86238BBCF46EF0 /* GeoReference.swift in Sources */,
 				7F41A3FEC846F6B3880A9B3A /* HomePeer.swift in Sources */,
 				2F00069261E099226C9BD6C9 /* PortalMap.swift in Sources */,
+				2A95B8380B6EFAC3B646A123 /* RobotHealth.swift in Sources */,
 				EEE08B86D5CC19868B4DBB4B /* PortalPose.swift in Sources */,
 				B5FC91E8E14B70B258CF83E0 /* PortalViewerApp.swift in Sources */,
 				0A9A1BD27276FC3895F4A4EC /* ScreenShare.swift in Sources */,

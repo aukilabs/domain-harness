@@ -833,8 +833,20 @@ impl Publisher {
                 .presence
                 .lock().map_err(|_| anyhow!("Phone presence unavailable"))?
                 .snapshot_in_frame(Instant::now(), &reference.scenegraph.map.frame.id),
-            robot_presence: state.robot_presence.lock().map_err(|_|anyhow!("Robot presence unavailable"))?
-                .snapshot(Instant::now(), &reference.scenegraph.map.frame.id),
+            robot_presence: {
+                let frame = &reference.scenegraph.map.frame.id;
+                let mut presence = state.robot_presence.lock().map_err(|_|anyhow!("Robot presence unavailable"))?
+                    .snapshot(Instant::now(), frame);
+                // Robots that declare their body through the registry, so phones see them too.
+                let registry = self.scenes.registry_robots.lock().map_err(|_|anyhow!("Registry robots unavailable"))?
+                    .get(frame).cloned().unwrap_or_default();
+                if let Some(poses) = presence["poses"].as_array_mut() {
+                    let added: Vec<_> = registry.into_iter()
+                        .filter(|r| !poses.iter().any(|p| p["peer_id"] == r["peer_id"])).collect();
+                    poses.extend(added);
+                }
+                presence
+            },
         };
         scene.validate(&self.owner, &reference.scenegraph.map.frame.id)?;
         self.paths_publisher.publish(self.started.elapsed().as_nanos() as u64,scene.paths.clone().unwrap())?;

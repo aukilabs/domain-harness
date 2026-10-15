@@ -29,6 +29,7 @@ pub mod runner_pose;
 pub mod robot_presence;
 pub mod robot_state;
 pub mod robot_states;
+pub mod registry_robots;
 pub mod runner_voxels;
 pub mod scene_mirror;
 pub mod shared_inputs;

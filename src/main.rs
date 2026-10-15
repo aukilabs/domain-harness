@@ -1506,6 +1506,11 @@ async fn main() -> anyhow::Result<()> {
     } else {
         None
     };
+    tokio::spawn({
+        let (scenes, states, network, previews, stop) =
+            (local_scenes.clone(), robot_states.clone(), peer_rx.clone(), preview_tx.clone(), shutdown.clone());
+        async move { spatial_home::registry_robots::serve(scenes, states, network, previews, stop).await }
+    });
     let state = Arc::new(AppState {
         local_scenes,
         simulation_disconnect,
