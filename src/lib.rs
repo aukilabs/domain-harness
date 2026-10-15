@@ -83,6 +83,7 @@ pub mod drive_contract;
 pub mod mobile_drive;
 pub mod mobile_calibration;
 pub mod onboarding;
+pub mod voxel_delta;
 pub mod mobile_onboarding;
 
 pub mod fiducials;

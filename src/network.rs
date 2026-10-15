@@ -101,7 +101,10 @@ impl CanonicalScene {
             expected == self.voxels.definition.frame,
             "voxel axis convention mismatch"
         );
-        self.voxels.accumulator()?;
+        // A phone's scene carries no voxel checkpoint: its voxels come as deltas.
+        if !self.voxels.checkpoint.is_empty() {
+            self.voxels.accumulator()?;
+        }
         ensure!(
             serde_json::to_vec(self)?.len() <= MAX_SCENE_BYTES,
             "scene exceeds publication limit"
