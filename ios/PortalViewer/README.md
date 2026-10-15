@@ -68,9 +68,8 @@ in the app's protected Application Support directory and excluded from backups.
 The authentication service endpoints are fixed in Rust; a pairing file cannot
 redirect credentials to another host.
 
-Transient subscription failures retry twice before showing an error. A stream
-idle for 45 seconds is closed and rediscovered to detect silent disconnection and
-Home publication restarts. Initial scene receipt has a 30-second deadline; a
+Transient subscription failures retry twice before showing an error. A quiet
+stream stays open with no idle timeout; it reconnects only after an error. Initial scene receipt has a 30-second deadline; a
 connection attempt has a 60-second overall deadline. Reconnection status labels
 any retained AR map as cached. Unchanged Portal data does not reset AR alignment.
 Changed Portal geometry or frames require scanning again.

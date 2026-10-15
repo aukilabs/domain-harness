@@ -877,7 +877,7 @@ pub async fn fetch_home_portals(peer: &AukiPeer, home: &HomeConnection) -> Resul
     let stop = tokio_util::sync::CancellationToken::new();
     let mut received = None;
     tokio::time::timeout(std::time::Duration::from_secs(45),
-        crate::mobile::receive_portals(peer, home, &stop, std::time::Duration::from_millis(50), |value| {
+        crate::mobile::receive_portals(peer, home, &stop, Some(std::time::Duration::from_millis(50)), |value| {
             received = Some(value);
             stop.cancel();
         })).await??;

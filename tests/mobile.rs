@@ -19,7 +19,7 @@ async fn mobile_receives_initial_and_live_portals_and_awaits_cancellation() -> R
         let home = HomeConnection::direct(&pair.a);
         let stop = CancellationToken::new();
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-        let consume = receive_portals(&pair.b, &home, &stop, Duration::from_secs(30), |portals| {
+        let consume = receive_portals(&pair.b, &home, &stop, Some(Duration::from_secs(30)), |portals| {
             sender.send(portals).unwrap();
         });
         let check = async {
@@ -77,7 +77,7 @@ async fn mobile_idle_refresh_rediscovers_restarted_home_product() -> Result<()> 
                     &pair.b,
                     &home,
                     &CancellationToken::new(),
-                    Duration::from_millis(100),
+                    Some(Duration::from_millis(100)),
                     |_| count += 1,
                 ),
             )
@@ -101,7 +101,7 @@ async fn mobile_rejects_wrong_transport_domain_without_delivering_a_scene() -> R
         &pair.b,
         &home,
         &CancellationToken::new(),
-        Duration::from_millis(100),
+        Some(Duration::from_millis(100)),
         |_| panic!("wrong-Domain data reached Swift"),
     )
     .await;

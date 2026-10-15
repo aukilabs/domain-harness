@@ -35,7 +35,7 @@ async fn read(peer: &auki_sdk::AukiPeer, home: &HomeConnection) -> Result<serde_
             peer,
             home,
             &CancellationToken::new(),
-            Duration::from_millis(50),
+            Some(Duration::from_millis(50)),
             |v| value = Some(v),
         ),
     )
