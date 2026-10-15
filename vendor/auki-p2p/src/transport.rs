@@ -1174,6 +1174,23 @@ impl ReservationRuntime {
         self.maybe_finish_cancellation(peer_id);
     }
 
+    /// Local change (domain-harness): an open direct connection to `peer_id`
+    /// that was dialed for exactly `address`, for a direct exact-route stream
+    /// to use instead of dialing again. Never another route's connection: a
+    /// caller that moves to another address may be leaving a dead one.
+    /// Streams still authenticate.
+    fn reusable_direct_connection(&self, peer_id: PeerId, address: &Multiaddr) -> Option<ConnectionId> {
+        // A relay server's direct connection belongs to its reservation.
+        if self.cancellation_barriers.contains_key(&peer_id) || self.state.handle_for_relay(peer_id).is_some() {
+            return None;
+        }
+        let connections = self.direct_connections.get(&peer_id)?;
+        connections
+            .iter()
+            .find(|c| c.requested_address.as_ref() == Some(address))
+            .map(|c| c.connection_id)
+    }
+
     fn selected_direct_connection(
         &self,
         peer_id: PeerId,
@@ -2017,6 +2034,16 @@ async fn run_swarm(
                         } else {
                             None
                         };
+                        // Local change (domain-harness): every direct exact-route request
+                        // used to dial a fresh connection (PeerCondition::Always + a new
+                        // port), so a Home kept 100+ connections open to one phone.
+                        if let Some(connection_id) = requested_direct_address
+                            .as_ref()
+                            .and_then(|address| reservations.reusable_direct_connection(peer_id, address))
+                        {
+                            let _ = response.send(Ok((connection_id, None)));
+                            continue;
+                        }
                         let dial = DialOpts::peer_id(peer_id)
                                 .condition(PeerCondition::Always)
                                 .allocate_new_port()
