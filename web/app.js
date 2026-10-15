@@ -858,6 +858,7 @@ renderer.domElement.addEventListener('pointerup',e=>{
  if(e.semanticVolume)return;
  if(e.button!==0)return;
  if(!current||!pointerStart||Math.hypot(e.clientX-pointerStart[0],e.clientY-pointerStart[1])>4)return;
+ if(pointPick){const robot=pointPick;stopPointPick();const point=scenePoint(e);if(point)confirmPointAt(point,[robot]);return;}
  if(placingNote){const target=placementTarget;stopNotePlacement();const box=renderer.domElement.getBoundingClientRect(),pick=new THREE.Raycaster();pick.setFromCamera(new THREE.Vector2((e.clientX-box.left)/box.width*2-1,1-(e.clientY-box.top)/box.height*2),camera);const request={source:'scene',frame:current.frame,origin:pick.ray.origin.toArray(),direction:pick.ray.direction.toArray()};if(target)target(request);else beginLabel(request);return;}
  const r=renderer.domElement.getBoundingClientRect(), ray=new THREE.Raycaster();ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),camera);
  const hits=ray.intersectObjects([...selectable,...crayon.objects()].filter(o=>{for(let p=o;p;p=p.parent){if(!p.visible)return false;}return true;}));if(!hits.length){clearSelection();return;}const h=hits.find(h=>h.object.userData.kind==='note')||hits.find(h=>h.object.userData.kind==='path')||hits.find(h=>h.object.userData.kind==='portal')||hits[0],d=h.object.userData;
@@ -1016,11 +1017,50 @@ function glyphFor(key,name){
  }
  return glyph;
 }
-function focusPose(name,state){
+function focusPose(name,state,key){
  if(!state.pose)return;
  const target=new THREE.Vector3(...state.pose.translation).add(new THREE.Vector3(0,.3,0));cameraPan.start(target.clone().add(new THREE.Vector3(2,2.4,2.7)),target);
  showSelection(name,'',state.status,{kind:'Robot',facts:[['Position',xyz(state.pose.translation,3),true],['Pose','Calibrated robot base · arrow points forward · illustrative glyph']]});
+ const peer=key?.startsWith('body:')?key.slice(5):null,robot=peer&&pointingRobots().find(r=>r.peer_id===peer);
+ if(robot)$('selection').append(cardActions(actionButton('Point at…',{variant:'primary',iconPath:POINT_ICON,onClick:()=>startPointPick(robot)})));
 }
+// Pointing a robot at a spot: robots that advertise point_at, a confirm on the card
+// (the arm moves), then Home's /api/robot-point, the same path the chat tool uses.
+const POINT_AT_INSTRUCTION='spatial-harness.point-at/v1';
+const POINT_ICON='M9 1.5v3M9 13.5v3M1.5 9h3M13.5 9h3M9 5.5a3.5 3.5 0 1 0 0 7a3.5 3.5 0 1 0 0-7';
+function pointingRobots(){
+ return (fleetNetwork?.peers||[]).filter(p=>(p.catalog?.components||[]).some(c=>(c.manifest?.operables||[]).some(o=>o?.instruction===POINT_AT_INSTRUCTION)))
+  .map(p=>({peer_id:p.peer_id,name:fleetNetwork?.aliases?.[p.peer_id]||p.name||p.peer_id}));
+}
+let pointPick=null;  // the robot waiting for a clicked spot
+function startPointPick(robot){
+ pointPick=robot;renderer.domElement.style.cursor='crosshair';
+ showSelection(`Point ${robot.name} at…`,'','Click a spot in the scene. Nothing moves until you confirm.',{kind:'Robot'});
+ $('selection').append(cardActions(actionButton('Cancel',{onClick:()=>{stopPointPick();clearSelection();}})));
+}
+function stopPointPick(){pointPick=null;renderer.domElement.style.cursor='';}
+// The scene point under the pointer: the first visible pickable hit, else the ground plane.
+function scenePoint(e){
+ const r=renderer.domElement.getBoundingClientRect(),ray=new THREE.Raycaster();ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,1-(e.clientY-r.top)/r.height*2),camera);
+ const hit=ray.intersectObjects(selectable.filter(o=>{for(let p=o;p;p=p.parent)if(!p.visible)return false;return true;}))[0];
+ return hit?hit.point.clone():ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,1,0),0),new THREE.Vector3());
+}
+function confirmPointAt(point,robots){
+ if(!robots.length){toast('No robot here advertises pointing');return;}
+ const scene=activeMap,target=point.toArray().map(n=>Math.round(n*1000)/1000),facts=[['Target',xyz(target),true]];
+ for(const r of robots){const at=declaredBodies.entries.find(e=>e.peer_id===r.peer_id)?.pose?.translation;if(at)facts.push([`${r.name} distance`,new THREE.Vector3(...at).distanceTo(point).toFixed(2)+' m']);}
+ showSelection(robots.length===1?`Point ${robots[0].name} here?`:'Point a robot here?','','The arm will move. Clear the space in front of the robot first.',{kind:'Robot',facts});
+ const status=document.createElement('p');status.className='form-status';status.setAttribute('role','status');
+ const cancel=actionButton('Cancel',{onClick:clearSelection});
+ const buttons=robots.map(r=>actionButton(robots.length===1?'Point':`Point with ${r.name}`,{variant:'primary',iconPath:POINT_ICON,onClick:async()=>{
+  for(const b of [cancel,...buttons])b.disabled=true;status.textContent=`Asking ${r.name}…`;
+  try{const result=await api('/api/robot-point',{scene,robot:r.peer_id,position:target});status.textContent=result.summary||'Accepted';toast(result.summary||`${r.name} accepted`);}
+  catch(e){status.textContent=e.message;}
+  finally{for(const b of [cancel,...buttons])b.disabled=false;}
+ }}));
+ $('selection').append(cardActions(cancel,...buttons),status);buttons[0].focus();
+}
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&pointPick){e.preventDefault();stopPointPick();clearSelection();}});
 function renderRunners(entries){
  const keys=new Set(entries.map(e=>e.key));
  for(const [key,glyph] of robots)if(!keys.has(key)){scene.remove(glyph.group);clear(glyph.group);robots.delete(key);poseUpdates.delete(key);}
@@ -1047,7 +1087,7 @@ function renderRunners(entries){
   row.dataset.position=state.pose?JSON.stringify(glyph.group.position.toArray()):'';row.dataset.rotation=state.pose?JSON.stringify(glyph.group.quaternion.toArray()):'';
   row.children[0].textContent=entry.name+' · '+state.status;row.children[0].style.color=state.status==='live'?glyph.color:'#84908f';
   row.children[1].textContent=state.pose?`[${state.pose.translation.map(n=>n.toFixed(3)).join(', ')}] m${state.status==='stale'?' · last known':''}`:'Waiting for calibrated pose';
-  row.children[2].disabled=!state.pose;row.children[2].onclick=()=>focusPose(entry.name,state);
+  row.children[2].disabled=!state.pose;row.children[2].onclick=()=>focusPose(entry.name,state,entry.key);
  });
  list.hidden=entries.length<2;
  $('runner-card').dataset.poseCount=String(entries.filter(e=>e.state.pose).length);
@@ -1711,6 +1751,7 @@ function openSpotMenu(e){
   spotTool('New note here',icons.note,'amber',at=>beginLabel(at.request),writable&&!newNoteButton.disabled),
   spotTool('Draw a path',icons.pen,'amber',()=>{if($('crayon').getAttribute('aria-pressed')!=='true')$('crayon').click();},!$('crayon').disabled),
   spotTool('New volume here','M9 1.5 15.5 5v8L9 16.5 2.5 13V5ZM2.5 5 9 8.5l6.5-3.5M9 8.5v8','violet',at=>semanticVolumes.beginAt(at.point.toArray()),!$('volume-draw').disabled),
+  spotTool('Point a robot here',POINT_ICON,'cyan',at=>confirmPointAt(at.point,pointingRobots()),pointingRobots().length>0),
   divider,ask);
  spotMenu.hidden=false;
  const box=spotMenu.getBoundingClientRect(),x=Math.min(Math.max(8,e.clientX-box.width/2),innerWidth-box.width-8),y=e.clientY-box.height-22<8?e.clientY+22:e.clientY-box.height-22;

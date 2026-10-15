@@ -1008,6 +1008,17 @@ async fn robot_asset(axum::extract::Path(path): axum::extract::Path<String>) -> 
 }
 /// Resolve a chat pointing target from current scene state, declare its frame,
 /// and ask the robot through the `point_at` operable it advertises.
+/// The viewer's "Point here": one robot, one position in a local scene. Same
+/// resolution and `point_at` path as the chat tool, so the robot decides.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RobotPoint { scene: String, robot: String, position: [f64; 3] }
+async fn robot_point(State(s): State<Shared>, headers: HeaderMap, Json(request): Json<RobotPoint>) -> ApiResult {
+    local_write(&headers)?;
+    let (key, frame) = volume_context(&s, &request.scene)?;
+    let target = json!({"robot": request.robot, "target": {"kind": "position", "position": request.position}});
+    Ok(Json(point_robot_at(&s, &key, &frame, target).await?))
+}
 async fn point_robot_at(s:&Shared,key:&str,frame:&str,args:Value)->anyhow::Result<Value> {
 
                 // Home resolves the target from current scene state and declares its frame;
@@ -1445,6 +1456,7 @@ async fn main() -> anyhow::Result<()> {
     });
     let app = Router::new()
         .route("/api/chat",post(chat_message))
+        .route("/api/robot-point", post(robot_point))
         .route(
             "/api/simulation/disconnect",
             post(disconnect_simulated_robots),
