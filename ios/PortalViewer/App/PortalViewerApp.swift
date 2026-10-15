@@ -320,10 +320,14 @@ struct ViewerScreen: View {
             if showIntro {
                 McKennaIntro(mode: introDone ? .quick : .firstBoot, screen: screen) {
                     introDone = true
-                    withAnimation(.easeOut(duration: 0.35)) { showIntro = false }
+                    showIntro = false
                     beginCapture()
                 }
-                .transition(.opacity)
+                // Gone at once, and never catching a tap once hidden: a fading copy
+                // left on top (its compass redraws every frame) swallowed every tap.
+                .allowsHitTesting(showIntro)
+                .onAppear { print("[intro] shown") }
+                .onDisappear { print("[intro] gone") }
             }
         }
         .onAppear {
