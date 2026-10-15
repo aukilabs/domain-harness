@@ -293,9 +293,31 @@ pub async fn join(
     Ok(alignment)
 }
 
+/// A code's modules, row by row, quiet zone excluded, so the app can draw it
+/// at an exact physical size. Medium error correction.
+pub fn qr_modules(text: &str) -> Result<(usize, Vec<bool>)> {
+    ensure!(text.len() <= 2048, "Too much text for a code");
+    let code = qrcode::QrCode::with_error_correction_level(text, qrcode::EcLevel::M)?;
+    Ok((code.width(), code.to_colors().into_iter().map(|c| c == qrcode::Color::Dark).collect()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::onboarding::marker_payload;
+
+    #[test]
+    fn marker_is_short_alphanumeric_and_not_a_portal() {
+        let payload = marker_payload("5f1c2a9e-3b7d-4c11-9a2e-0f6b7d8e9a10");
+        assert_eq!(payload, "ONB:5F1C2A9E3B7D4C11");
+        assert!(crate::local_mapper::portal_code(&payload).is_none());
+        let code = qrcode::QrCode::with_error_correction_level(&payload, qrcode::EcLevel::M).unwrap();
+        assert_eq!(code.width(), 21, "version 1 keeps the modules large");
+        let (width, modules) = super::qr_modules(&payload).unwrap();
+        assert_eq!((width, modules.len()), (21, 21 * 21));
+        assert!(modules[0] && modules[20] && !modules[21 * 7], "finder corners dark, separator light");
+    }
+
 
     #[test]
     fn snapshot_never_carries_the_invitation_for_a_joiner_and_shows_the_host_its_qr() {

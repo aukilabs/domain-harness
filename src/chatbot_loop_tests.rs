@@ -8,7 +8,10 @@ fn request(text:&str)->Request {
 }
 fn call(name:&str,args:Value)->Value {json!({"function":{"name":name,"arguments":args}})}
 fn calls(calls:Vec<Value>)->Result<Value> {Ok(json!({"message":{"role":"assistant","content":"","tool_calls":calls}}))}
-fn answer(text:&str)->Result<Value> {Ok(json!({"message":{"role":"assistant","content":text}}))}
+fn plain_answer(text:&str)->Result<Value> {Ok(json!({"message":{"role":"assistant","content":text}}))}
+fn answer(text:&str)->Result<Value> {
+ if text.starts_with('{') {plain_answer(text)}else{plain_answer(&json!({"answer":text,"explanation":""}).to_string())}
+}
 fn create()->Value {call("create_note",json!({"name":"cheese","description":"","position":[1,0,2]}))}
 fn view()->Value {call("move_camera",json!({"position":[3,2,4],"look_at":[1,0,2]}))}
 fn snapshot()->Value {json!({"notes":[],"semantic_volumes":{"items":[]},"peers":[{"peer_id":"unrelated-offline","status":"unavailable"},{"peer_id":"requested","alias":"Broom boy","status":"connected"}]})}
@@ -27,6 +30,95 @@ async fn script(text:&str,mut replies:VecDeque<Result<Value>>,mut handler:impl F
 fn receipt(name:&str,args:Value)->Result<Value> {
  if is_ui_action(name) {Ok(json!({"type":name,"scene":"test-scene","frame":"test-frame","args":args}))}
  else {Ok(json!({"id":"note-id","summary":format!("Saved {name}"),"after":args}))}
+}
+
+#[tokio::test]
+async fn final_answers_separate_the_conclusion_from_supporting_calculations() {
+ let conclusion="F26ZSPXNEO7 and NV16FWJ9G2X are closest, about 1.19 m apart.";
+ let explanation="Compared all three Euclidean distances: 2.08 m, 1.19 m and 1.45 m.";
+ let (result,executed,prompts)=script("Which portals are closest?",VecDeque::from([
+  answer(&json!({"answer":conclusion,"explanation":explanation}).to_string())
+ ]),|_,_|panic!("No effects expected")).await;
+ assert_eq!(result["reply"],conclusion);assert_eq!(result["explanation"],explanation);
+ assert_eq!(executed.len(),1);
+ assert!(prompts[0].iter().any(|m|m["content"]==FINAL_REPLY_GUIDANCE));
+ assert!(!prompts[0].iter().any(|m|m["content"]==ANSWER_FORMAT));
+}
+
+#[tokio::test]
+async fn long_plain_answers_get_one_tool_free_formatting_attempt() {
+ let long="Here are the distances.\nA to B: 1 m. A to C: 3 m. B to C: 2 m.\nA and B are closest.";
+ let mut responses=VecDeque::from([plain_answer(long),answer(r#"{"answer":"A and B are closest, 1 m apart.","explanation":"All pairs: AB 1 m, AC 3 m, BC 2 m."}"#)]);
+ let mut prompts=Vec::new();
+ let result=run_chat(request("Which pair is closest?"),"fixture".into(),|_,_|ready(Ok(snapshot())),|_|ready(Err(anyhow::anyhow!("No camera expected"))),|messages,tools|{
+  prompts.push((messages,tools));ready(responses.pop_front().unwrap())
+ }).await.unwrap();
+ assert_eq!(result["reply"],"A and B are closest, 1 m apart.");
+ assert_eq!(prompts.len(),2);assert_eq!(prompts[1].1,json!([]));
+ assert!(prompts[0].0.iter().any(|m|m["content"]==FINAL_REPLY_GUIDANCE));
+ assert!(!prompts[0].0.iter().any(|m|m["content"]==ANSWER_FORMAT));
+ assert!(prompts[1].0.iter().any(|m|m["content"].as_str().is_some_and(|s|s.starts_with(ANSWER_FORMAT))));
+ assert_eq!(prompts[1].0.last().unwrap()["content"],long);
+ assert!(prompts[1].0.iter().any(|m|m["content"].as_str().is_some_and(|s|s.contains("CURRENT SAVED STATE"))));
+}
+
+#[tokio::test]
+async fn plain_short_answers_still_get_a_chance_to_supply_an_explanation() {
+ let (result,executed,prompts)=script("Which pair is closest?",VecDeque::from([
+  plain_answer("A and B, 1 m apart."),answer(r#"{"answer":"A and B, 1 m apart.","explanation":"The other two pairs are 2 m and 3 m apart."}"#)
+ ]),|_,_|panic!("Formatting must not dispatch tools")).await;
+ assert_eq!(executed.len(),1);assert_eq!(prompts.len(),2);
+ assert_eq!(result["reply"],"A and B, 1 m apart.");
+ assert!(result["explanation"].as_str().unwrap().contains("2 m and 3 m"));
+}
+
+#[tokio::test]
+async fn malformed_formatting_does_not_hide_the_original_or_execute_tools() {
+ let original="First paragraph.\nSecond paragraph.\nThe conclusion is uncertain.";
+ for formatted in [answer("{\"answer\":"),calls(vec![create()]),Err(anyhow::anyhow!("Formatting timed out"))] {
+  let (result,executed,prompts)=script("Explain the scene",VecDeque::from([plain_answer(original),formatted]),|_,_|panic!("Must not execute formatter tools")).await;
+  assert_eq!(executed.len(),1);assert_eq!(prompts.len(),2);
+  assert_eq!(result["explanation"],original);
+  assert!(result["reply"].as_str().unwrap().contains("could not be shortened"));
+ }
+}
+
+#[tokio::test]
+async fn explanations_cannot_smuggle_unconfirmed_edit_claims() {
+ let unsupported=r#"{"answer":"Done.","explanation":"Created note cheese and a volume."}"#;
+ let (result,_,_)=script("Create a note",VecDeque::from([answer(unsupported),answer(unsupported),answer(unsupported)]),|_,_|panic!("No tool call provided")).await;
+ assert_eq!(result["status"],"incomplete");assert!(result.get("explanation").is_none());
+ assert!(result["reply"].as_str().unwrap().contains("without a saved receipt"));
+ let (result,_,_)=script("Create a note",VecDeque::from([calls(vec![create()]),answer(unsupported)]),receipt).await;
+ assert_eq!(result["reply"],"Saved create_note");assert!(result.get("explanation").is_none());
+}
+
+#[tokio::test]
+async fn compact_vision_keeps_both_parts_out_of_the_action_planner() {
+ let mut responses=VecDeque::from([
+  calls(vec![call("capture_camera_frame",json!({"peer_id":"requested","product_id":"camera"}))]),
+  answer(r#"{"answer":"A yellow chair.","explanation":"IMAGE-ONLY-EVIDENCE"}"#),answer("Finished.")
+ ]);
+ let mut prompts=Vec::new();
+ let result=run_chat(request("Describe the camera"),"fixture".into(),|_,_|ready(Ok(snapshot())),|_|ready(Ok(json!({"image":"fixture","peer_id":"requested"}))),|messages,_|{
+  prompts.push(messages);ready(responses.pop_front().unwrap())
+ }).await.unwrap();
+ assert_eq!(result["reply"],"A yellow chair.");assert_eq!(result["explanation"],"IMAGE-ONLY-EVIDENCE");
+ assert_eq!(result["camera_description"],"A yellow chair.");
+ let planner=serde_json::to_string(&prompts[2]).unwrap();
+ assert!(!planner.contains("yellow chair"));assert!(!planner.contains("IMAGE-ONLY-EVIDENCE"));
+}
+
+#[tokio::test]
+async fn portal_inventory_keeps_anchors_frame_and_room_geometry() {
+ let scene=json!({"frame":"home-frame","anchors":[{"portal_id":"portal-A","position":[1,0,2]}],"semantic_volumes":{"items":[{"id":"kitchen-id","title":"Kitchen","center":[1,1,2],"size":[4,2,6],"yaw":0.5}]}});
+ let mut prompts=Vec::new();
+ run_chat(request("Is there a portal in the Kitchen?"),"fixture".into(),|_,_|ready(Ok(scene.clone())),|_|ready(Err(anyhow::anyhow!("No camera"))),|messages,_|{
+  prompts=messages;ready(answer("Yes."))
+ }).await.unwrap();
+ let state=prompts.iter().filter_map(|m|m["content"].as_str()).find(|s|s.starts_with("CURRENT SAVED STATE")).unwrap();
+ assert!(state.contains("portal-A"));assert!(state.contains("home-frame"));assert!(state.contains("\"size\":[4,2,6]"));assert!(state.contains("\"yaw\":0.5"));
+ assert!(prompts.iter().any(|m|m["content"].as_str().is_some_and(|s|s.contains("Missing fields are not evidence")&&s.contains("without asking permission")&&s.contains("already called inspect_scenegraph"))));
 }
 
 #[tokio::test]

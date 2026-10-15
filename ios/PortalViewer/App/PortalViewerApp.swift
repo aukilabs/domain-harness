@@ -17,6 +17,18 @@ struct PortalViewerApp: App {
 }
 
 struct ViewerScreen: View {
+    /// The first launch shows the McKenna intro and the permissions list; later launches a quick mark.
+    @AppStorage("introDone") private var introDone = false
+    @State private var showIntro = true
+    /// iOS asks before the screen can be shared, and asking takes the camera away.
+    /// Ask first; the AR session starts once it is answered.
+    private func beginCapture() {
+        screen.askFirst { allowed in
+            controller.screenAsked = true
+            controller.start()
+            if allowed { screen.start() }
+        }
+    }
     @StateObject private var controller = ViewerController()
     @StateObject private var peer = HomePeer()
     @StateObject private var screen = ScreenShare()
@@ -104,6 +116,16 @@ struct ViewerScreen: View {
                     .accessibilityValue(controller.voxelLook == .camera ? "Camera only"
                                         : controller.voxelLook == .voxels ? "Voxels only" : "Voxels over the camera")
                     .accessibilityHint("Changes what the camera view shows")
+                    // Show or hide the scene's volumes in AR.
+                    Button { controller.showVolumesInAR.toggle() } label: {
+                        Image(systemName: controller.showVolumesInAR ? "cube.fill" : "cube")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(controller.showVolumesInAR ? Theme.accent : Theme.dim)
+                            .frame(width: 36, height: 36).background(Theme.paper, in: Circle())
+                            .shadow(color: Theme.glow, radius: 4, y: 2)
+                    }
+                    .padding(.top, 10)
+                    .accessibilityLabel(controller.showVolumesInAR ? "Hide volumes" : "Show volumes")
                     // Draw on the scene with a finger, as Home's Crayon does.
                     Button { controller.drawing.toggle() } label: {
                         Image(systemName: "scribble.variable").font(.system(size: 16, weight: .semibold))
@@ -302,15 +324,21 @@ struct ViewerScreen: View {
             controller.messages.keep(id)
             controller.showMessageResult("Home did not delete that message: \(result.detail)")
         }
-        .onAppear {
-            // iOS asks before the screen can be shared, and asking takes the camera away.
-            // Ask first; the AR session starts once it is answered.
-            screen.askFirst { allowed in
-                controller.screenAsked = true
-                controller.start()
-                if allowed { screen.start() }
+        // McKenna opens every launch: the full intro and permissions list the first
+        // time, a quick mark after that. Its own full-screen layer, which iOS removes
+        // completely when it closes; drawn over the app it could linger and eat taps.
+        .fullScreenCover(isPresented: $showIntro) {
+            McKennaIntro(mode: introDone ? .quick : .firstBoot, screen: screen) {
+                introDone = true
+                showIntro = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { beginCapture() }
             }
+            .onAppear { print("[intro] shown") }
+            .onDisappear { print("[intro] gone") }
+        }
+        .onAppear {
             peer.onMap = { controller.load($0) }
+            peer.onVoxels = { controller.applyVoxels($0) }
             controller.onPose = { peer.publishPose($0) }
             controller.onDepth = { peer.publishDepth($0) }
             controller.onPlacement = { peer.publishPlacement($0) }
@@ -832,45 +860,6 @@ struct MiniMapGestures: UIViewRepresentable {
         @objc func tap(_ g: UITapGestureRecognizer) { parent.onTap(g.location(in: g.view)) }
         // Two fingers may truck and dolly in the same motion.
         func gestureRecognizer(_ a: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith b: UIGestureRecognizer) -> Bool { true }
-    }
-}
-
-/// An outline for a model in AR: an enlarged shell in the accent colour drawn over
-/// everything, then the model itself on top. Where something hides the model, the
-/// shell still shows, so the robot can be found behind the map or a wall.
-///
-/// A full-screen SCNTechnique cannot do this here: ARKit's person occlusion owns
-/// the AR view's technique.
-enum RobotGlow {
-    private static let shell: SCNMaterial = {
-        let material = SCNMaterial()
-        material.lightingModel = .constant
-        material.diffuse.contents = Theme.uiAccent
-        material.cullMode = .front
-        material.readsFromDepthBuffer = false
-        material.writesToDepthBuffer = false
-        // Push each vertex out along its normal by a fraction of its distance from the
-        // camera, so the rim is about the same width on screen near or far.
-        material.shaderModifiers = [.geometry: """
-            float4 viewPosition = scn_node.modelViewTransform * _geometry.position;
-            float3 viewNormal = normalize((scn_node.modelViewTransform * float4(_geometry.normal, 0.0)).xyz);
-            viewPosition.xyz += viewNormal * (0.012 * -viewPosition.z);
-            _geometry.position = scn_node.inverseModelViewTransform * viewPosition;
-            """]
-        return material
-    }()
-    static func outlined(_ model: SCNNode) -> SCNNode {
-        let rim = model.clone()
-        rim.enumerateHierarchy { node, _ in
-            guard let geometry = node.geometry?.copy() as? SCNGeometry else { return }
-            geometry.materials = Array(repeating: shell, count: max(1, geometry.materials.count))
-            node.geometry = geometry
-            node.renderingOrder = 100
-        }
-        model.enumerateHierarchy { node, _ in node.renderingOrder = 101 }
-        let holder = SCNNode()
-        holder.addChildNode(rim); holder.addChildNode(model)
-        return holder
     }
 }
 
@@ -1868,6 +1857,9 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     private(set) var map: PortalMap?
     let view = ARSCNView(frame: .zero)
     private let root = SCNNode()
+    /// Home's voxels, kept across scene updates and redrawn a chunk at a time.
+    private let voxelChunks = VoxelChunks()
+    private var lastMiniMapVoxels = Date.distantPast
     private let visionQueue = DispatchQueue(label: "home.portal.vision")
     private var busy = false
     private var aligned = false { didSet { if calibrated != aligned { calibrated = aligned } } }
@@ -2172,14 +2164,18 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             }
         }
         self.map = map
+        // Voxels come separately, as deltas; the rest of the app reads them from the map as before.
+        if !voxelChunks.isEmpty, voxelChunks.frame == map.scenegraph.map.frame.id { self.map?.render?.voxels = voxelChunks.list() }
         if let scene = map.render, scene.frame == map.scenegraph.map.frame.id { recordMessages(scene) }
         miniMap = MiniMapData(map)
         trackedDevices = trails.record(map.render?.notes ?? [], frame: map.scenegraph.map.frame.id,
                                        ownFrame: "phone-camera:" + poseSession)
         // Everything is redrawn except the point still being carried: taking it out and putting it
         // back would restart its dust trail every time Home sends an update.
-        root.childNodes.filter { $0 !== floating && $0 !== crayonRoot && $0 !== guideRoot }.forEach { $0.removeFromParentNode() }
+        root.childNodes.filter { $0 !== floating && $0 !== crayonRoot && $0 !== guideRoot && $0 !== voxelChunks.root }.forEach { $0.removeFromParentNode() }
         if guideRoot.parent == nil { root.addChildNode(guideRoot) }
+        if voxelChunks.root.parent == nil { root.addChildNode(voxelChunks.root) }
+        voxelChunks.root.isHidden = !showVoxels
         let listed = Set(map.render?.paths?.items.map(\.id) ?? [])
         guideRoot.childNodes.filter { listed.contains($0.name ?? "") }.forEach { $0.removeFromParentNode() }
         // Home said it saved the way, yet no longer lists it: it restarted, or someone erased
@@ -2235,7 +2231,9 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 let color = UInt32(stroke.color.dropFirst(), radix: 16) ?? 0xffca55
                 let shade = UIColor(red: CGFloat((color >> 16) & 255)/255,
                     green: CGFloat((color >> 8) & 255)/255, blue: CGFloat(color & 255)/255, alpha: 1)
-                let material = Self.flowingMaterial(shade)
+                // Routes show which way they run; a drawing stays as it was drawn.
+                let route = stroke.title.hasPrefix("Way to ") || stroke.title.hasPrefix("Way from ")
+                let material = route ? Self.flowingMaterial(shade) : Self.crayonMaterial(shade)
                 for (index, segment) in stroke.segments.enumerated() {
                     let points = segment.filter { $0.count == 3 }.map { SIMD3<Float>($0[0], $0[1], $0[2]) }
                     guard let node = Self.pathNode(points, width: stroke.width_m, material: material,
@@ -2324,6 +2322,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
 
     private func renderScene(_ scene: RenderScene?) {
         guard let scene, scene.frame == map?.scenegraph.map.frame.id else { return }
+        // Voxels that arrive as deltas are drawn by voxelChunks, face by face.
+        if voxelChunks.isEmpty || voxelChunks.frame != scene.frame {
         // One indexed mesh per chunk avoids a SceneKit node for every voxel.
         let corners: [SIMD3<Float>] = [SIMD3(-1,-1,-1), SIMD3(1,-1,-1), SIMD3(1,1,-1), SIMD3(-1,1,-1),
                                        SIMD3(-1,-1,1), SIMD3(1,-1,1), SIMD3(1,1,1), SIMD3(-1,1,1)]
@@ -2380,19 +2380,20 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
                 root.addChildNode(second)
             }
         }
+        }
         for object in scene.objects { addLabel(object.label, at: object.position, color: Theme.uiAccent) }
-        // Home's device labels stay plain; a person's note is a speech bubble.
+        // Home's device labels stay plain; a person's note is a speech bubble, and so is a
+        // robot that reports its battery: a bubble above its head with the percentage.
         for note in scene.notes {
-            if note.phone_pose == nil && note.robot_pose == nil { addBubble(note.text, at: note.position, photo: photos[note.id]) }
-            else { addLabel(note.text, at: note.position, color: .white) }
+            if let robot = note.robot_pose, let battery = robot.health?.battery?.percent, let head = Self.robotHead(robot) {
+                addBubble(String(format: "%@ · Battery %.0f%%", note.text, battery), at: head)
+            } else if note.phone_pose == nil && note.robot_pose == nil {
+                addBubble(note.text, at: note.position, photo: photos[note.id])
+            } else { addLabel(note.text, at: note.position, color: .white) }
         }
         // Once Home sends a point back, its copy takes over from the one kept here.
         unsynced.removeAll { kept in scene.notes.contains { $0.id == kept.id } }
         for kept in unsynced where kept.frame == scene.frame { addBubble(kept.text, at: kept.position, photo: photos[kept.id]) }
-        for note in scene.notes {
-            guard let pose = note.robot_pose?.pose, pose.translation.count == 3, pose.rotation_wxyz.count == 4 else { continue }
-            root.addChildNode(robotBody(at: pose.matrix))
-        }
         if let runners = scene.local_mapping?.runners, !runners.isEmpty {
             for (id, runner) in runners { addRobot(runner.robot_pose, name: String(id.suffix(8))) }
         } else { addRobot(scene.local_mapping?.robot_pose, name: "Runner") }
@@ -2523,33 +2524,18 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         root.addChildNode(label)
     }
 
-    /// A robot's path as a ribbon just above the floor. A robot Home no longer
-    /// reports also keeps a faint body and label where it was last seen.
-    /// The robot's 3D model standing on its base pose. Until the model has loaded,
-    /// a box the size of the chassis stands in for it.
-    private func robotBody(at base: simd_float4x4) -> SCNNode {
-        let holder = SCNNode()
-        holder.simdTransform = base
-        if let template = RobotMapLayer.template {
-            // The model and the base frame are both Z up, in metres.
-            holder.addChildNode(RobotGlow.outlined(template.clone()))
-        } else {
-            RobotMapLayer.whenLoaded {}
-            // Base frame is Z up, +X forward: 0.5 m long, 0.35 m wide, 0.2 m tall, sitting on its origin.
-            let box = SCNNode(geometry: SCNBox(width: 0.5, height: 0.35, length: 0.2, chamferRadius: 0.03))
-            box.geometry?.firstMaterial?.diffuse.contents = UIColor.white
-            box.geometry?.firstMaterial?.lightingModel = .constant
-            box.simdPosition = SIMD3(0, 0, 0.1)
-            holder.addChildNode(RobotGlow.outlined(box))
-        }
-        return holder
+    /// Above a robot's head in the scene: 1.8 m up its own Z axis (robot frames are Z up).
+    private static func robotHead(_ robot: RenderScene.PhonePose) -> [Float]? {
+        guard robot.pose.translation.count == 3, robot.pose.rotation_wxyz.count == 4 else { return nil }
+        let head = robot.pose.matrix * SIMD4<Float>(0, 0, 1.8, 1)
+        let position = [head.x, head.y, head.z]
+        return position.allSatisfy(\.isFinite) ? position : nil
     }
 
+    /// A robot's path as a ribbon just above the floor. A robot Home no longer
+    /// reports also keeps a faint label where it was last seen.
     private func addTrail(_ robot: TrackedDevice) {
         if robot.state == .lost {
-            let body = robotBody(at: robot.pose)
-            body.opacity = 0.3
-            root.addChildNode(body)
             let p = robot.position
             addLabel(robot.name + " zzz", at: [p.x, p.y, p.z], color: UIColor.white.withAlphaComponent(0.3))
         }
@@ -2644,8 +2630,22 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
             origin: [origin.x, origin.y, origin.z], direction: [direction.x, direction.y, direction.z])
     }
 
+    /// Changed voxel chunks from Home: redraw just those, and update the voxels the app reads.
+    func applyVoxels(_ data: Data) {
+        guard voxelChunks.apply(data) else { return }
+        if voxelChunks.root.parent == nil { root.addChildNode(voxelChunks.root) }
+        voxelChunks.root.isHidden = !showVoxels
+        guard let map, voxelChunks.frame == map.scenegraph.map.frame.id else { return }
+        self.map?.render?.voxels = voxelChunks.list()
+        // The mini map redraws from every voxel; a few times a minute is plenty.
+        if Date().timeIntervalSince(lastMiniMapVoxels) > 3, let current = self.map {
+            lastMiniMapVoxels = Date(); miniMap = MiniMapData(current)
+        }
+    }
+
     func clear() {
         clearPlacement()
+        voxelChunks.clear()
         map = nil
         miniMap = MiniMapData()
         trails = DeviceTrails(); trackedDevices = []
@@ -2735,18 +2735,22 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         return material
     }
 
-    /// A saved path's colour with a glow that runs along it the way it was drawn: a long
-    /// brightening tail and a sharp head, so even a still frame shows which way it goes.
+    /// A route's colour with a soft glow that runs along it the way it goes: a long
+    /// brightening tail and a sharp head, so even a still frame shows the direction.
     private static func flowingMaterial(_ color: UIColor) -> SCNMaterial {
         let material = crayonMaterial(color)
         material.diffuse.contents = glow(color)
         material.diffuse.wrapS = .repeat; material.diffuse.wrapT = .clamp
+        // Smoothed, so the bands do not shimmer on a thin line seen from afar.
+        material.diffuse.minificationFilter = .linear
+        material.diffuse.magnificationFilter = .linear
+        material.diffuse.mipFilter = .linear
         material.diffuse.contentsTransform = flowShift
         flowing.add(material.diffuse)
         return material
     }
     /// Metres between glows, and how fast they travel.
-    private static let flowTile: Float = 0.45, flowSpeed: Float = 0.7
+    private static let flowTile: Float = 0.8, flowSpeed: Float = 0.4
     private static let flowing = NSHashTable<SCNMaterialProperty>.weakObjects()
     private static var flowShift = SCNMatrix4MakeScale(1 / flowTile, 1, 1)
     /// Moves every path's glow on, from one clock, so a path rebuilt when Home's map
@@ -2761,7 +2765,7 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         if let tile = glowTiles[color] { return tile }
         var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
         color.getRed(&r, green: &g, blue: &b, alpha: &a)
-        let light = UIColor(red: r + (1 - r) * 0.75, green: g + (1 - g) * 0.75, blue: b + (1 - b) * 0.75, alpha: 1)
+        let light = UIColor(red: r + (1 - r) * 0.35, green: g + (1 - g) * 0.35, blue: b + (1 - b) * 0.35, alpha: 1)
         let tile = UIGraphicsImageRenderer(size: CGSize(width: 128, height: 4)).image { drawn in
             let colors = [color, color, light, light, color].map(\.cgColor) as CFArray
             let locations: [CGFloat] = [0, 0.3, 0.86, 0.92, 1]

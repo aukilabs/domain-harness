@@ -39,7 +39,7 @@ fn product(peer: &Value) -> Result<&Value> {
     Ok(product)
 }
 
-fn location(value: &Value, frame: &str, additional_age: Duration) -> Result<Value> {
+pub(crate) fn location(value: &Value, frame: &str, additional_age: Duration) -> Result<Value> {
     ensure!(value["stream"] == "live", "Pose stream is not live");
     let home = &value["home_pose"];
     ensure!(home["frame"] == frame, "No transform into the selected Home frame");

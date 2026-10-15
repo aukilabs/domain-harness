@@ -85,6 +85,23 @@ var mixedPairing = conferencePairing; mixedPairing["product_id"] = "local-scene:
 check((try? HomeProfile.load(JSONSerialization.data(withJSONObject: mixedPairing))) == nil, "different scene Product rejected")
 mixedPairing = conferencePairing; mixedPairing["product_id"] = "canonical-scene"
 check((try? HomeProfile.load(JSONSerialization.data(withJSONObject: mixedPairing))) == nil, "legacy Product cannot masquerade as conference")
+// Scenes whose origin is the first observed Portal name it `:origin`.
+var originPairing = pairing
+originPairing["frame"] = "local-scene:bb-lab:origin"
+originPairing["product_id"] = "local-scene:bb-lab:mobile"
+let originProfile = try HomeProfile.load(JSONSerialization.data(withJSONObject: originPairing))
+check(originProfile.sceneID == "bb-lab", "origin-named scene retained")
+check(originProfile.sceneLabel == "Bb Lab", "origin-named scene visible on phone")
+var epochPairing = originPairing
+epochPairing["frame"] = "local-scene:bb-lab:epoch-6f1c2a4e-0b7d-4c55-9a51-2f3e8d7b9c10"
+let epochProfile = try HomeProfile.load(JSONSerialization.data(withJSONObject: epochPairing))
+check(epochProfile.sceneID == "bb-lab", "epoch-named scene retained")
+epochPairing["frame"] = "local-scene:bb-lab:epoch-not-a-uuid"
+check((try? HomeProfile.load(JSONSerialization.data(withJSONObject: epochPairing))) == nil, "malformed epoch rejected")
+var badOrigin = originPairing; badOrigin["frame"] = "local-scene:BB_Lab:origin"
+check((try? HomeProfile.load(JSONSerialization.data(withJSONObject: badOrigin))) == nil, "invalid scene ID rejected")
+badOrigin = originPairing; badOrigin["product_id"] = "local-scene:nacs:mobile"
+check((try? HomeProfile.load(JSONSerialization.data(withJSONObject: badOrigin))) == nil, "origin scene Product must match")
 print("Independent scene pairing checks passed")
 
 var cooldown = CalibrationCooldown()
@@ -366,3 +383,21 @@ check(gate.step(at: 0, tracking: true, headingError: nil, hasFix: true) == .wait
       && gate.step(at: 14.5, tracking: true, headingError: 5, hasFix: false) == .waiting
       && gate.step(at: 15, tracking: true, headingError: 90, hasFix: true) == .gaveUp, "without a compass, tracking and a fix, the search gives up")
 print("Geo reference checks passed")
+
+// A robot label as Home relays it, with the runner's joint angles and motor health.
+let robotLabel = """
+{"id":"robot-name:r1","text":"Bracketbot 184","position":[1,0,2],"height_m":0,"robot_pose":{"peer_id":"r1","name":"Bracketbot 184",
+ "pose":{"from_frame_id":"robot.base","to_frame_id":"home","translation":[1,0,2],"rotation_wxyz":[1,0,0,0]},
+ "joints":{"timestamp_ns":5,"positions":{"rj1":0.4}},
+ "health":{"timestamp_ns":6,"joints":{"rj1":{"temperature_c":36.5,"current_a":0.8},"rj5":{"temperature_c":47,"current_a":1.2}},
+           "battery":{"voltage":24.1,"percent":18}},
+ "native_pose":{},"received_age_ms":120}}
+"""
+let robotNote = try JSONDecoder().decode(RenderScene.Note.self, from: Data(robotLabel.utf8))
+let registryNote = try JSONDecoder().decode(RenderScene.Note.self, from: Data(
+    robotLabel.replacingOccurrences(of: "\"native_pose\":{}", with: "\"native_pose\":{},\"registry\":true").utf8))
+check(registryNote.robot_pose?.health?.battery?.percent == 18, "a registry robot's label decodes with its battery")
+check(robotNote.robot_pose?.health?.battery?.percent == 18 && robotNote.robot_pose?.health?.joints?.count == 2,
+      "robot health decodes from Home's label")
+check(deviceNote(0).robot_pose?.health == nil, "a robot without health still decodes")
+print("Robot health checks passed")
