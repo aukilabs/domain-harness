@@ -44,8 +44,8 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
  function facePoint(v,h){
   if(h.kind==='move')return localPoint(v,[0,-v.size[1]/2+.07,v.size[2]/2+.06]);
   if(h.kind==='rotate')return localPoint(v,[h.sign*v.size[0]/2,-v.size[1]/2,v.size[2]/2+.02]);
-  if(h.axis===0)return localPoint(v,[h.sign*(v.size[0]/2+.12),0,v.size[2]/2-.02]);
-  if(h.axis===1)return localPoint(v,[0,v.size[1]/2+.16,v.size[2]/2-.02]);
+  if(h.axis===0)return localPoint(v,[h.sign*(v.size[0]/2+.12),0,0]);
+  if(h.axis===1)return localPoint(v,[0,v.size[1]/2+.16,0]);
   return localPoint(v,[0,0,-v.size[2]/2-.12]);
  }
  // Handles follow the box's size on screen continuously, with no jumps: the secondary handles fade and shrink as the
@@ -60,8 +60,9 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
  function anchor(v,h){
   if(h.kind==='move')return [localPoint(v,[0,-v.size[1]/2,v.size[2]/2]),axisVector(2,v.yaw)];
   if(h.kind==='rotate')return [localPoint(v,[h.sign*v.size[0]/2,-v.size[1]/2,v.size[2]/2]),null];
-  if(h.axis===0)return [localPoint(v,[h.sign*v.size[0]/2,0,v.size[2]/2-.02]),axisVector(0,v.yaw).multiplyScalar(h.sign)];
-  if(h.axis===1)return [localPoint(v,[0,v.size[1]/2,v.size[2]/2-.02]),new THREE.Vector3(0,1,0)];
+  // Face handles stand on the centre of their face.
+  if(h.axis===0)return [localPoint(v,[h.sign*v.size[0]/2,0,0]),axisVector(0,v.yaw).multiplyScalar(h.sign)];
+  if(h.axis===1)return [localPoint(v,[0,v.size[1]/2,0]),new THREE.Vector3(0,1,0)];
   return [localPoint(v,[0,0,-v.size[2]/2]),axisVector(2,v.yaw).multiplyScalar(-1)];
  }
  let shownDraft=null;
