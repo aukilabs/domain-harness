@@ -42,6 +42,12 @@ pub struct Geometry {
 }
 /// The sizes a calibrated frame may have: the camera's 4:3 image, 640 to 1280
 /// on its long side, on its side exactly when it was turned a quarter.
+/// How a viewer shows the picture: as on the phone's own screen. The app is
+/// locked to portrait, so the landscape sensor image is turned a quarter turn
+/// clockwise, however the phone is tilted. The pixels stay native.
+static PRESENTATION: std::sync::LazyLock<serde_json::Value> = std::sync::LazyLock::new(|| serde_json::json!({
+    "schema": "spatial.video-presentation/v1", "rotation_clockwise_deg": 90,
+    "basis": "the phone app's portrait screen"}));
 pub fn size_allowed((width, height): (u32, u32), rotation_deg: u16) -> bool {
     let (long, short) = (width.max(height), width.min(height));
     long * 3 == short * 4
@@ -105,8 +111,10 @@ fn metadata(geometry: Option<&(Geometry, (u32, u32))>) -> serde_json::Value {
             // The LiDAR depth image of the same capture has the same timestamp.
             "depth_image_product_id": DEPTH_IMAGE_PRODUCT,
             "timestamp_basis": "AR capture timestamp; device-local; a new AR session is a new clock",
+            "presentation": PRESENTATION.clone(),
         }),
         None => serde_json::json!({
+            "presentation": PRESENTATION.clone(),
             "calibration_status": "unavailable",
             "image_geometry": "unspecified",
             "timestamp_basis": "capture timestamp; device-local",
@@ -411,4 +419,21 @@ fn dimensions(jpeg: &[u8]) -> Result<(u32, u32)> {
         image::ImageReader::with_format(std::io::Cursor::new(jpeg), image::ImageFormat::Jpeg)
             .into_dimensions()?,
     )
+}
+
+#[cfg(test)]
+mod presentation_tests {
+    use super::*;
+    /// Home and the website show a phone's picture the way the phone's own
+    /// portrait screen shows it, however the phone is tilted: the phone says
+    /// so in its Catalog, and Home takes a declaration over any pose guess.
+    #[test]
+    fn phone_camera_declares_its_portrait_presentation_with_and_without_calibration() {
+        let g = Geometry { session: uuid::Uuid::new_v4().to_string(), fx: 700., fy: 700., cx: 480., cy: 360.,
+            rotation_deg: 0, alignment_timestamp_ns: 0 };
+        for value in [metadata(Some(&(g, (960, 720)))), metadata(None)] {
+            assert_eq!(value["presentation"]["schema"], "spatial.video-presentation/v1", "{value}");
+            assert_eq!(value["presentation"]["rotation_clockwise_deg"], 90, "{value}");
+        }
+    }
 }

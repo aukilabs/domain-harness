@@ -26,14 +26,17 @@ export function createVideoPresentation(stage,heading,onChange=()=>{}){
  }
  select.addEventListener('change',()=>{try{localStorage.setItem('pip-orientation:'+key,select.value);}catch{}apply();});
  return {
-  select(id){key=id;auto=0;candidate=null;confirmations=0;source='unavailable';let saved;try{saved=localStorage.getItem('pip-orientation:'+key);}catch{}
+  // Until this feed's pose says otherwise, start from the last upright angle it
+  // had, not 0°: a slow or missing orientation lookup must not lay it on its side.
+  select(id){key=id;candidate=null;confirmations=0;source='unavailable';let saved,last;try{saved=localStorage.getItem('pip-orientation:'+key);last=Number(localStorage.getItem('pip-upright:'+key));}catch{}
+   auto=[0,90,180,270].includes(last)?last:0;
    select.value=['0','90','180','270'].includes(saved)?saved:'auto';apply();},
   update(frame){width=frame.width;height=frame.height;
    const p=frame.presentation,angle=p?.rotation_clockwise_deg;
    if([0,90,180,270].includes(angle)){
     // Require two frames for subsequent quarter-turn changes to avoid boundary jitter.
     if(candidate===angle)confirmations++;else{candidate=angle;confirmations=1;}
-    if(source==='unavailable'||p.source==='declaration'||confirmations>=2)auto=angle;
+    if(source==='unavailable'||p.source==='declaration'||confirmations>=2){auto=angle;try{localStorage.setItem('pip-upright:'+key,String(angle));}catch{}}
     source=p.source;
    }else{source='unavailable';}
    apply();
