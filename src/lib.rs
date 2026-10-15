@@ -1,3 +1,5 @@
+pub mod peer_traffic;
+pub mod traffic_history;
 pub mod conventions;
 pub mod qr_decode;
 pub mod compact_pose;
