@@ -586,6 +586,7 @@ pub async fn serve_scene(
     controls: tokio::sync::mpsc::Receiver<crate::component_control::Request>,
     pointing: tokio::sync::mpsc::Receiver<crate::robot_pointing::Invoke>,
     occupancy: crate::robot_occupancy::Cache,
+    robot_states: crate::robot_states::RobotStates,
     ar_frames: crate::ar_preview::Frames,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<()> {
@@ -730,6 +731,7 @@ pub async fn serve_scene(
     let held = crate::frame_alignment::HeldTransforms::default();
     let controls = crate::component_control::serve(&running.peer,preview_catalogs.clone(),controls,&monitor_stop);
     let held_subscriptions = held.serve(&running.peer, preview_catalogs.clone(), &monitor_stop);
+    let robot_bodies = robot_states.serve(&running.peer, preview_catalogs.clone(), &monitor_stop);
     let declared_depth = crate::declared_depth::serve(&running.peer, preview_catalogs.clone(), &local_scenes, &held, &monitor_stop);
     let previews = crate::sensor_preview::serve(
         &running.peer,
@@ -742,7 +744,7 @@ pub async fn serve_scene(
         &monitor_stop,
     );
     let pointing = crate::robot_pointing::serve(&running.peer, pointing, &monitor_stop);
-    let (result, _, _, _, _, _, _, _, _, _, _) = tokio::join!(
+    let (result, _, _, _, _, _, _, _, _, _, _, _) = tokio::join!(
         publish,
         remote,
         previews,
@@ -753,7 +755,8 @@ pub async fn serve_scene(
         declared_depth,
         held_subscriptions,
         controls,
-        pointing
+        pointing,
+        robot_bodies
     );
     shutdown.cancel();
     status.send_replace(serde_json::json!({"enabled":true,"status":"Stopped"}));

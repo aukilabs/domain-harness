@@ -26,6 +26,8 @@ pub mod raycast;
 pub mod rgbd;
 pub mod runner_pose;
 pub mod robot_presence;
+pub mod robot_state;
+pub mod robot_states;
 pub mod runner_voxels;
 pub mod scene_mirror;
 pub mod shared_inputs;

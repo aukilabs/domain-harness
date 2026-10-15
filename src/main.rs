@@ -29,6 +29,7 @@ struct AppState {
     fiducials: Mutex<spatial_home::fiducials::FiducialStore>,
     picks: Mutex<spatial_home::picking::Picks>,
     occupancy: spatial_home::robot_occupancy::Cache,
+    robot_states: spatial_home::robot_states::RobotStates,
     ar_frames: spatial_home::ar_preview::Frames,
     previews: tokio::sync::mpsc::Sender<spatial_home::sensor_preview::Request>,
     controls: tokio::sync::mpsc::Sender<spatial_home::component_control::Request>,
@@ -92,6 +93,9 @@ async fn component_enabled(State(s):State<Arc<AppState>>,headers:HeaderMap,
         .map_err(|_|anyhow::anyhow!("Control timed out; state unconfirmed"))?
         .map_err(|_|anyhow::anyhow!("Device controls stopped"))??;
     Ok(Json(json!({"enabled":result.enabled})))
+}
+async fn robot_states_view(State(s): State<Shared>) -> Json<Value> {
+    Json(s.robot_states.view())
 }
 async fn sensor_preview(
     State(s): State<Shared>,
@@ -1324,6 +1328,7 @@ async fn main() -> anyhow::Result<()> {
     let (control_tx, control_rx) = tokio::sync::mpsc::channel(4);
     let (pointing_tx, pointing_rx) = tokio::sync::mpsc::channel(4);
     let occupancy = spatial_home::robot_occupancy::Cache::default();
+    let robot_states = spatial_home::robot_states::RobotStates::default();
     let ar_frames = spatial_home::ar_preview::Frames::default();
     let shutdown = tokio_util::sync::CancellationToken::new();
     let simulation_disconnect = tokio_util::sync::CancellationToken::new();
@@ -1410,6 +1415,7 @@ async fn main() -> anyhow::Result<()> {
             control_rx,
             pointing_rx,
             occupancy.clone(),
+            robot_states.clone(),
             ar_frames.clone(),
             shutdown.clone(),
         )))
@@ -1423,6 +1429,7 @@ async fn main() -> anyhow::Result<()> {
         fiducials,
         picks: Mutex::new(Default::default()),
         occupancy,
+        robot_states,
         ar_frames,
         previews: preview_tx,
         controls: control_tx,
@@ -1489,6 +1496,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/sensors", get(sensor_preview))
         .route("/api/component-enabled", post(component_enabled))
         .route("/camera-frame.js", get(|| async { ([(header::CONTENT_TYPE,"text/javascript")],include_str!("../web/camera-frame.js")) }))
+        .route("/api/robot-states", get(robot_states_view))
         .route("/pose-inspector.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/pose-inspector.js")) }))
         .route("/video-presentation.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/video-presentation.js")) }))
         .route("/compact-pose-trail.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/compact-pose-trail.js")) }))
