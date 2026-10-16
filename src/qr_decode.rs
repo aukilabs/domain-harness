@@ -96,23 +96,31 @@ impl Code {
             .then(|| portal_code(&self.payload))
             .flatten()
     }
+    /// A Portal, or an onboarding invitation or marker: worth a closer look.
+    fn useful(&self) -> bool {
+        self.portal().is_some()
+            || (!self.mirrored
+                && (self.payload.starts_with("ONB:")
+                    || self.payload.starts_with(crate::onboarding::PREFIX)))
+    }
 }
 
-/// Every QR code in `gray`. When `retry` is set and no Portal decodes at
-/// native resolution, scans once more on an [`UPSCALE_RETRY`] copy and keeps
-/// that result if it holds a Portal. Returns (codes, decoded on the retry).
+/// Every QR code in `gray`. When `retry` is set and neither a Portal nor an
+/// onboarding code decodes at native resolution, scans once more on an
+/// [`UPSCALE_RETRY`] copy and keeps that result if it holds one. Returns
+/// (codes, decoded on the retry).
 pub fn detect_codes(
     detector: &mut auki_qr_detector::QrDetector,
     gray: &image::GrayImage,
     retry: bool,
 ) -> anyhow::Result<(Vec<Code>, bool)> {
     let native = scan(detector, gray, 1.)?;
-    if !retry || native.iter().any(|c| c.portal().is_some()) {
+    if !retry || native.iter().any(Code::useful) {
         return Ok((native, false));
     }
     let larger = upscale(gray, UPSCALE_RETRY);
     let retried = scan(detector, &larger, UPSCALE_RETRY.factor())?;
-    Ok(if retried.iter().any(|c| c.portal().is_some()) {
+    Ok(if retried.iter().any(Code::useful) {
         (retried, true)
     } else {
         (native, false)
