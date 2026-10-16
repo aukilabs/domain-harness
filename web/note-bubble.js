@@ -10,6 +10,19 @@ export function bubbleLayout(text,measure,maxWidth=720){
  return {lines,width,height:lines.length*38+30+10};
 }
 export function bubbleColors(peer=false){return peer?{background:'#472652',foreground:'#fff7fc'}:{background:'#fff7fc',foreground:'#472652'};}
+// A title stays readable through the scene: the sprite itself is a faint copy drawn
+// without depth testing, and a full-strength twin drawn after it is hidden by whatever
+// stands in front. Unobstructed titles look solid; titles behind voxels show as a ghost.
+// The twin inherits the sprite's scale, so screen-size fixes must skip it (userData.ghostTwin).
+export const GHOST_OPACITY=.3;
+export function ghostWhenHidden(sprite){
+ const material=sprite.material,solid=material.clone();
+ solid.depthTest=true;solid.depthWrite=false;
+ material.depthTest=false;material.depthWrite=false;material.transparent=true;material.opacity=GHOST_OPACITY;
+ material.addEventListener('dispose',()=>solid.dispose());
+ const twin=new THREE.Sprite(solid);twin.center.copy(sprite.center);twin.renderOrder=sprite.renderOrder+1;twin.raycast=()=>{};twin.userData.ghostTwin=true;
+ sprite.add(twin);return sprite;
+}
 export function createNoteBubble(text,{peer=false}={}){
  const canvas=document.createElement('canvas'),ctx=canvas.getContext('2d');
  const font='600 32px ui-rounded, "SF Pro Rounded", system-ui, sans-serif';ctx.font=font;
@@ -25,5 +38,5 @@ export function createNoteBubble(text,{peer=false}={}){
  const material=new THREE.SpriteMaterial({map:texture,transparent:true,depthTest:false,depthWrite:false,sizeAttenuation:false,toneMapped:false});
  const sprite=new THREE.Sprite(material);const height=.026*(layout.height/78);
  sprite.scale.set(height*layout.width/layout.height,height,1);sprite.center.set(.5,0);sprite.renderOrder=80;
- sprite.userData.bubble={text:String(text),width:layout.width,height:layout.height};return sprite;
+ sprite.userData.bubble={text:String(text),width:layout.width,height:layout.height};return ghostWhenHidden(sprite);
 }

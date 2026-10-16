@@ -81,6 +81,8 @@ pub struct Camera {
     frame: FrameRegistryEntry,
     extrinsic: crate::compact_pose::Contract,
     last: u64,
+    last_native: u64,
+    native_clock: crate::capture_clock::NativeCaptureClock,
 }
 impl Camera {
     pub fn product(&self) -> RetainedProduct<VideoFrame> {
@@ -378,9 +380,14 @@ impl Camera {
             frame,
             extrinsic: extrinsic_contract,
             last: 0,
+            last_native: 0,
+            native_clock: p.native_clock.clone(),
         })
     }
     pub fn publish(&mut self, t: u64, jpeg: Vec<u8>) -> Result<()> {
+        if t <= self.last_native { return Ok(()); }
+        let native_timestamp_ns = t;
+        let Some(t) = self.native_clock.convert(t)? else { return Ok(()); };
         self.calibration.validate_jpeg(&jpeg)?;
         if t <= self.last {
             return Ok(());
@@ -393,6 +400,7 @@ impl Camera {
         };
         let (observation, _) = self.output.publish(t, Arc::new(frame))?;
         self.last = t;
+        self.last_native = native_timestamp_ns;
         self.tx.as_ref().unwrap().send_replace(Some(observation));
         Ok(())
     }

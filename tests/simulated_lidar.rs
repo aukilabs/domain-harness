@@ -38,7 +38,7 @@ fn validates_scan_and_preserves_no_returns() {
 async fn lidar_subscription_does_not_activate_camera() -> Result<()> {
     let pair = support::LocalPair::start().await?;
     let camera = Camera::mount(&pair.b)?;
-    let mut lidar = Lidar::mount(&camera.runtime, &camera.endpoint)?;
+    let mut lidar = Lidar::mount(&camera.runtime, &camera.endpoint, &camera.session_clock)?;
     let client = ComponentProtocolClient::new(pair.a.protocols());
     let route = pair.b.listen_addresses()[0].clone();
     let CatalogResponse::Snapshot { snapshot } = client
@@ -47,8 +47,10 @@ async fn lidar_subscription_does_not_activate_camera() -> Result<()> {
     else {
         panic!("Expected catalog")
     };
-    assert_eq!(snapshot.components.len(), 2);
-    assert_eq!(snapshot.products.len(), 2);
+    assert_eq!(snapshot.components.len(), 3);
+    assert_eq!(snapshot.products.len(), 3);
+    assert!(snapshot.products.iter().any(|product| product.metadata.as_ref()
+        .is_some_and(|metadata| metadata.schema == spatial_home::capture_time::METADATA)));
     assert!(!camera.demanded() && !lidar.demanded(&camera.endpoint));
     let p = snapshot
         .products

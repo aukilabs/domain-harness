@@ -26,3 +26,16 @@ protocol across Node clones. Established streams remain concurrent; each new
 stream still authenticates. Weak gate entries are pruned and permits release
 on cancellation. This prevents concurrent local readers overrunning the small
 libp2p-stream inbound queue. The regression has no caller-side admission lock.
+
+## Home traffic dashboard
+
+AuthenticatedStream counts successful read/write bytes in process-local totals.
+This measures application stream bytes after DDS authentication, not wire usage;
+HTTP, authentication, transport overhead and retransmissions are excluded.
+Counters retain no payload or identity data and do not change wire contracts.
+
+Per-link counters are keyed by both authenticated local and remote Peer IDs,
+with a bound of 256 pairs per process. Stream wrappers count successful reads
+and writes, failed I/O calls, stream opens, and live stream handles. These are
+application-stream counters, not delivery confirmations or packet-loss metrics.
+Native and browser stream constructors supply the authenticated local identity.

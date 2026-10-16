@@ -1,7 +1,7 @@
 //! Persisted, independent local SDK scenegraphs. Selecting one never changes
 //! the legacy canonical mapper's calibration or journal.
 use anyhow::{Result, anyhow, ensure};
-use auki_components::{ClockReference, ComponentRuntime, InMemoryTransport, InvocationContext};
+use auki_components::{ComponentRuntime, InMemoryTransport, InvocationContext};
 use auki_scenegraph::{
     CoordinateConvention, MapDefinition, MapFrame, MapSnapshot,
     Scenegraph,
@@ -242,6 +242,14 @@ impl LocalScenes {
             .get(id)
             .ok_or_else(|| anyhow!("Unknown local scenegraph"))
     }
+    /// Discovery needs only the live frame identity, not a cloned voxel map or
+    /// disk-backed annotation/volume views on every scheduling tick.
+    pub fn frame_id(&self, id: &str) -> Result<String> {
+        let snapshot = self.snapshot(id)?;
+        let views = self.mobile_views.lock().map_err(|_| anyhow!("Local scene view unavailable"))?;
+        Ok(views.get(id).and_then(|v| v["frame"].as_str())
+            .unwrap_or(&snapshot.scenegraph.map.frame.id).to_owned())
+    }
     pub fn view(&self, id: &str) -> Result<Value> {
         let snapshot = self.snapshot(id)?;
         if let Some(view) = self
@@ -286,9 +294,9 @@ impl LocalScenes {
         &self,
         runtime: &ComponentRuntime,
         endpoint: &auki_component_protocol::ComponentProtocolEndpoint,
-        clock: ClockReference,
-        started: Instant,
+        session_clock: auki_time::SessionClock,
     ) -> Result<Vec<MapComponent>> {
+        let clock = crate::model::clock_ref(&session_clock.registry_entry());
         let mut components = Vec::new();
         for (id, snapshot) in &self.snapshots {
             let owner = runtime.peer_id().to_owned();
@@ -301,7 +309,7 @@ impl LocalScenes {
                     clock: clock.clone(),
                     map: snapshot.scenegraph.map.clone(),
                 },
-                move || started.elapsed().as_nanos() as u64,
+                { let clock = session_clock.clone(); move || clock.now_ns() },
                 |_| true,
                 move |ctx| ctx.caller_peer_id == allowed,
             )?;

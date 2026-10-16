@@ -1,6 +1,10 @@
 #[allow(dead_code)]
 mod support;
+#[allow(dead_code)] #[path="../diagnostics/connection-peer/src/diagnostic_log.rs"] mod diagnostic_log;
 mod compact_pose { pub use spatial_home::compact_pose::*; }
+mod capture_time { pub use spatial_home::capture_time::*; }
+mod clock_sync { pub use spatial_home::clock_sync::*; }
+#[allow(dead_code)] #[path="../diagnostics/connection-peer/src/capture_clock.rs"] mod capture_clock;
 mod robot_state { pub use spatial_home::robot_state::*; }
 #[path = "../diagnostics/connection-peer/src/poses.rs"]
 mod poses;
@@ -13,9 +17,10 @@ async fn home_follows_the_diagnostic_body_on_its_pose_base_frame() -> anyhow::Re
     let pair=support::LocalPair::start().await?;
     let publisher=poses::Publisher::mount(&pair.b)?;
     let mut robot=body::Body::mount(&publisher)?;
+    let native_now=||auki_time::Clock::read_to_ns(&auki_time::SystemClock) as u64;
     // Catalog metadata, and so the declared body, appears with the first observation.
-    robot.publish(serde_json::from_value(serde_json::json!({"kind":"joints","timestamp_ns":1_000,"positions":{"left_shoulder":0.}}))?)?;
-    robot.publish(serde_json::from_value(serde_json::json!({"kind":"health","timestamp_ns":1_000,"joints":{},"battery":{"voltage":19.,"percent":50.}}))?)?;
+    robot.publish(serde_json::from_value(serde_json::json!({"kind":"joints","timestamp_ns":native_now(),"positions":{"left_shoulder":0.}}))?)?;
+    robot.publish(serde_json::from_value(serde_json::json!({"kind":"health","timestamp_ns":native_now(),"joints":{},"battery":{"voltage":19.,"percent":50.}}))?)?;
     let fault=|id:&str|robot_state::Pointing{request_id:id.into(),phase:"fault".into(),arm:Some("arm_left".into()),
         reason:Some("lj0 at 50 C (limit 50 C)".into()),code:Some("hot".into())};
     robot.publish_pointing(fault("first"))?;
@@ -29,9 +34,10 @@ async fn home_follows_the_diagnostic_body_on_its_pose_base_frame() -> anyhow::Re
     let check=async {
     let result=async {
     // Home follows new state only, so keep publishing until both kinds arrive.
-    let mut t=1_000;
+    let mut attempts=0;
     let view=loop {
-        t+=1;
+        attempts+=1;
+        let t=native_now();
         robot.publish(serde_json::from_value(serde_json::json!({"kind":"joints","timestamp_ns":t,"positions":{"left_shoulder":0.25}}))?)?;
         robot.publish(serde_json::from_value(serde_json::json!({"kind":"health","timestamp_ns":t,
             "joints":{"left_shoulder":{"temperature_c":44.5,"current_a":1.2}},"battery":{"voltage":19.1,"percent":59.0}}))?)?;
@@ -39,7 +45,7 @@ async fn home_follows_the_diagnostic_body_on_its_pose_base_frame() -> anyhow::Re
         let view=states.view();
         let robot_view=&view["robots"][0];
         if !robot_view["joints"].is_null() && !robot_view["health"].is_null() && !robot_view["pointing"].is_null() {break view;}
-        anyhow::ensure!(t<1_200,"Home did not receive robot state: {view}");
+        anyhow::ensure!(attempts<200,"Home did not receive robot state: {view}");
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     };
     let robot_view=&view["robots"][0];
@@ -53,6 +59,12 @@ async fn home_follows_the_diagnostic_body_on_its_pose_base_frame() -> anyhow::Re
     assert_eq!(robot_view["pointing"]["state"]["phase"],"fault");
     assert_eq!(robot_view["pointing"]["state"]["code"],"hot");
     assert_eq!(robot_view["pointing"]["state"]["reason"],"lj0 at 50 C (limit 50 C)");
+    for kind in ["joints", "health", "pointing"] {
+        assert_eq!(robot_view[kind]["clock"],serde_json::to_value(&publisher.contract.clock)?);
+        assert_eq!(robot_view[kind]["source"]["product"]["peer_id"],owner);
+        assert_eq!(robot_view[kind]["source"]["output"]["peer_id"],owner);
+        assert!(robot_view[kind]["source"]["output"]["manifest_hash"].as_str().is_some());
+    }
     assert!(robot_view["joints"]["age_ms"].as_u64().unwrap()<2_000);
     // A stale or repeated timestamp is never published over newer state.
     robot.publish(serde_json::from_value(serde_json::json!({"kind":"joints","timestamp_ns":5,"positions":{"left_shoulder":9.0}}))?)?;

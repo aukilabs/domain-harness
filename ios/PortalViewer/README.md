@@ -57,20 +57,38 @@ used by `spatial-runner`. It discovers the Product in the authenticated peer's
 catalog, subscribes to the latest complete scene and follows updates. Validation
 checks the pinned peer, Domain, schema/SDK, frame, publication clock,
 SDK Portal snapshot and voxel consistency before passing Portal poses and renderable scene content to Swift.
+While LiDAR sharing and voxel display are enabled, each scan appears as smaller
+magenta wireframe cubes (4.5 cm inside a 10 cm cell). After two subsequent changed
+Home map updates in the same frame, its outlines fade together over 0.45 seconds.
+This is a visual progress estimate, not a per-capture delivery acknowledgement:
+Home can reject or skip captures, and updates can include other contributors.
+Overlapping newer scans retain their outlines until their own turn. No map
+updates means no progress fade. The preview retains at most 4,096 cells across
+scan groups, evicting oldest groups; it clears when sharing stops, the connection
+or alignment resets, or the scene or AR session changes. Preview cells never
+enter navigation, the shared map, or Home's confirmed geometry.
+
+Confirmed voxels use opaque physically based shading (metalness 0, roughness
+0.65), per-face normals and tangents, and one shared 64×64 bevel normal texture.
+This visual trial keeps scanned colors as albedo, replaces fixed face-darkening
+with scene lighting, and adds no bevel triangles or additional rendering passes.
+Both snapshot and incremental voxel meshes use the same material.
+
 Occupied voxels (including available color), semantic objects, text notes and
 runner poses share the same Home-to-AR transform. Voxels use batched meshes;
 scene-only updates preserve alignment. It makes no Portal metadata or size-lookup backend calls.
 
 User credentials are used for SDK authentication and in-memory authority renewal.
-The password is cleared from the Swift form immediately after submission and is
-not saved. No App secret is embedded. A persistent phone peer identity is stored
+The password is cleared from the Swift form immediately after submission. After
+a successful sign-in, the login is retained in this device’s protected Keychain
+and reused with the saved Home pairing on launch and foregrounding. The sign-in
+screen provides **Forget saved login**. No credential is embedded in the app. A persistent phone peer identity is stored
 in the app's protected Application Support directory and excluded from backups.
 The authentication service endpoints are fixed in Rust; a pairing file cannot
 redirect credentials to another host.
 
-Transient subscription failures retry twice before showing an error. A stream
-idle for 45 seconds is closed and rediscovered to detect silent disconnection and
-Home publication restarts. Initial scene receipt has a 30-second deadline; a
+Transient subscription failures retry twice before showing an error. A quiet
+stream stays open with no idle timeout; it reconnects only after an error. Initial scene receipt has a 30-second deadline; a
 connection attempt has a 60-second overall deadline. Reconnection status labels
 any retained AR map as cached. Unchanged Portal data does not reset AR alignment.
 Changed Portal geometry or frames require scanning again.
@@ -195,10 +213,17 @@ This initial depth path carries no RGB colors.
 
 Sharing pauses when alignment/tracking is lost, the switch is disabled, or the
 app disconnects/backgrounds. Home can build a live scene from the phone alone;
-Galbot sensor inputs continue through the same mapper. The older phone presence
+Other peer sensor inputs continue through the same mapper. The older phone presence
 label currently still publishes a pre-composed Home pose; refactoring that
 separate presence path remains deferred as requested.
 
 Additional checks: `cargo test --locked --test mobile_depth`, Swift depth
 projection checks in `test.sh`, and physical confirmation of phone contributions
 in Home's live scene after installing and scanning a Portal.
+
+Camera preview: `phone-camera` sends native-landscape 640×480 JPEGs at up to
+10 Hz (quality 0.7), with intrinsics scaled to that resolution and an exact
+capture-time pose. Video cadence is independent of 5 Hz mini-map updates.
+The paired raw depth image stays capped at 5 Hz; point-cloud mapping is unchanged.
+`phone-screen` retains its existing 640-pixel portrait height and 8 Hz ceiling.
+These are capture ceilings, not guarantees of network or browser display FPS.

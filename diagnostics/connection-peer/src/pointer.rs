@@ -68,13 +68,6 @@ fn identity() -> Pose {
     }
 }
 
-pub fn now_ns() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos() as u64
-}
-
 /// The latest observation of `t`, as the destination-from-source transform.
 fn value(t: &Transform, clock: &ClockReference, session: &str, now: u64) -> Result<(Pose, Used)> {
     t.contract.validate_output(&t.product.producer)?;
@@ -308,6 +301,7 @@ struct Shared {
     base: FrameRef,
     clock: ClockReference,
     session: String,
+    session_clock: auki_time::SessionClock,
     busy: Arc<Mutex<Busy>>,
     reports: tokio::sync::mpsc::UnboundedSender<crate::arm::Reply>,
 }
@@ -331,7 +325,7 @@ impl Shared {
             turner.face(&request.request_id, &request.frame, request.point, stop)?;
             let target = {
                 let known = self.known.lock().map_err(|_| anyhow::anyhow!("Frames unavailable"))?;
-                let now = now_ns();
+                let now = self.session_clock.now_ns();
                 // The base has turned: only its fresh pose places the target.
                 let accepted = resolve(request, &known, &self.base, &self.clock, &self.session, now)?;
                 self.in_arm(&known, arm, accepted.point_in_base, now)?.0
@@ -387,6 +381,7 @@ impl Pointer {
         let context = Shared {
             known: known.clone(), base: base.clone(), clock: clock.clone(), session: session.clone(),
             busy: busy.clone(), reports: reports.clone(),
+            session_clock: p.session_clock.clone(),
         };
         let arm = match arm {
             Some(execute) => {
@@ -422,7 +417,7 @@ impl Pointer {
                 };
                 let (mut accepted, in_arm) = {
                     let known = known.lock().map_err(|_| InvocationError::TargetUnavailable)?;
-                    let now = now_ns();
+                    let now = context.session_clock.now_ns();
                     let accepted = if turn.is_some() {
                         locate(&request, &known, &base, &clock, &session, now)
                     } else {

@@ -114,6 +114,7 @@ final class ScreenShare: ObservableObject {
 
     /// On `queue`: scale to the size offered, encode and hand to the bridge.
     private func send(_ buffer: CMSampleBuffer) {
+        sampleNativeCaptureClock(1)
         let time = CMSampleBufferGetPresentationTimeStamp(buffer).seconds
         guard !busy, time.isFinite, time > 0, time >= next,
               let pixels = CMSampleBufferGetImageBuffer(buffer) else { return }

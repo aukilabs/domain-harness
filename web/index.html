@@ -25,7 +25,7 @@
 <label class="map-label" for="map-select">SCENEGRAPH</label><select id="map-select"><optgroup label="Local"><option value="demo">Home Server</option></optgroup></select>
 <label class="map-label" for="sensor-select">WATCH SENSOR</label><select id="sensor-select"><option value="">None</option></select><small id="sensor-catalog-status" role="status">Looking for camera feeds…</small>
 <div class="network-status"><strong id="p2p-status">P2P status</strong><small id="p2p-detail">Checking peer…</small><a id="pairing-download" href="/api/home-connection" download="home-connection.json" hidden>Download runner connection ↗</a></div>
-<div class="network-status" id="runner-card"><strong id="runner-status">Galbot · connecting</strong><small id="runner-position">Waiting for calibrated pose</small><small id="runner-detail"></small><div id="runner-list" hidden></div><button class="text-button" id="focus-runner" disabled>Focus Galbot ↗</button></div>
+<div class="network-status" id="runner-card"><strong id="runner-status">Robot · connecting</strong><small id="runner-position">Waiting for calibrated pose</small><small id="runner-detail"></small><div id="runner-list" hidden></div><button class="text-button" id="focus-runner" disabled>Focus Robot ↗</button></div>
 <div class="network-status" id="mapping-card"><strong id="mapping-status">LiDAR · waiting</strong><small id="mapping-detail">Waiting for measured scans</small></div>
 <div id="domain-info"><p id="frame-info">Domain <code>b2881524…2807</code><br>OpenGL · Y up · meters</p><p id="portal-info">Stored Y = 0 for every portal.<br>Actual mounting heights are unverified.</p><div id="portal-list"></div></div>
 <div id="demo-controls" hidden>
@@ -45,7 +45,7 @@
 <label class="layer"><span><i id="portal-swatch" class="swatch red"></i>Portals</span><input type="checkbox" data-layer="portals" checked></label>
 <label class="layer"><span><i class="swatch coral"></i>Semantic objects</span><input type="checkbox" data-layer="objects" checked></label>
 <label class="layer"><span><i class="swatch blue"></i>Camera rays</span><input type="checkbox" data-layer="rays" checked></label>
-<label class="layer"><span><i class="swatch" style="background:#e49b32"></i>Live Galbot poses</span><input type="checkbox" id="runner-layer" checked></label>
+<label class="layer"><span><i class="swatch" style="background:#e49b32"></i>Robot poses</span><input type="checkbox" id="runner-layer" checked></label>
 <label class="layer"><span><i class="swatch" style="background:#ff2020"></i>Robot occupied volume</span><input type="checkbox" id="robot-volume-layer" checked></label>
 <small id="robot-volume-status" role="status">Robot volume · waiting</small>
 <div class="sidebar-footer"><span class="local-badge" id="scene-badge">STORED DOMAIN POSES</span><p id="scene-note">Simulated peers. No portal services.<br>Portal A has a manual size of 40 cm.</p><a id="inspect-snapshot" href="/api/snapshots" target="_blank" rel="noopener">Inspect SDK snapshots ↗</a></div>

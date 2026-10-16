@@ -8,28 +8,34 @@
 
 /* Begin PBXBuildFile section */
 		0A9A1BD27276FC3895F4A4EC /* ScreenShare.swift in Sources */ = {isa = PBXBuildFile; fileRef = C38092EFE931EB56A528B487 /* ScreenShare.swift */; };
-		B035332A7A24EF29879734ED /* McKennaIntro.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D7D0E1ED0FEC6E03D40AEDD /* McKennaIntro.swift */; };
-		2C692308ACB6D6B8B26B88AE /* VoxelChunks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 630D038DE0F37FFCF3EFD8E1 /* VoxelChunks.swift */; };
-		5B236A49E20DC7CA12B8707A /* Onboarding.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5104FEF0A9DC237366105CF8 /* Onboarding.swift */; };
+		11F1FDC5250F721C8999C155 /* McKennaIntro.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B0EA166835C2C9692208E02 /* McKennaIntro.swift */; };
 		126307E730AE9D6F418261E3 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 5E28D30D4D61E2D22CF37F86 /* Assets.xcassets */; };
 		2481687917605ECCE2F2C22A /* bracketbot_0184_rigged.usdz in Resources */ = {isa = PBXBuildFile; fileRef = BA431FB9B359E3A0AF861867 /* bracketbot_0184_rigged.usdz */; };
+		2A95B8380B6EFAC3B646A123 /* RobotHealth.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB2B945385636185BD39367D /* RobotHealth.swift */; };
 		2DC11F9A3C2824AFF300B427 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E4554C6754FD11EA49048B5 /* Theme.swift */; };
 		2F00069261E099226C9BD6C9 /* PortalMap.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF63C94F0E06FB864456F332 /* PortalMap.swift */; };
-		2A95B8380B6EFAC3B646A123 /* RobotHealth.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB2B945385636185BD39367D /* RobotHealth.swift */; };
+		71D60C4CA888B0F335D24DED /* VoxelChunks.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFA8ED5F8DCD8D020A27D731 /* VoxelChunks.swift */; };
 		76AEBF1C9FA1B8D4D8E320D7 /* SemanticVolume.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1F90986E59A331AC5AF0962 /* SemanticVolume.swift */; };
 		7F41A3FEC846F6B3880A9B3A /* HomePeer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 923BCD5A09BD097EE8206E8E /* HomePeer.swift */; };
 		B5FC91E8E14B70B258CF83E0 /* PortalViewerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B33697AF632544986693964C /* PortalViewerApp.swift */; };
+		B70EA92C81E47EE62E0BE61C /* PendingVoxels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EBD3F7247CBE60D509E475B /* PendingVoxels.swift */; };
 		BBD894698F7A607B9DBD5CF9 /* SpatialPortalBridge.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D6933E6306AC040ABFB74C78 /* SpatialPortalBridge.xcframework */; };
 		BD58CFC0B92E999985C2400D /* SemanticVolumeModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4400D81FC657522891C44E1A /* SemanticVolumeModel.swift */; };
 		CE88F9F57B642D17A46C0710 /* auki.png in Resources */ = {isa = PBXBuildFile; fileRef = 27973CF9A0CDCC6DEC974C85 /* auki.png */; };
 		D70486EFF8BDADCEE2E7E3B4 /* GeoLocator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BCEC81F73CF1D624DA0884F /* GeoLocator.swift */; };
 		D8B75E2AFC86238BBCF46EF0 /* GeoReference.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53473FD966BA04F1FC85EED6 /* GeoReference.swift */; };
+		DD4420B26CCD5BE70FA29702 /* PendingVoxelOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C645496BAD13D7DF7D5554B /* PendingVoxelOverlay.swift */; };
 		EEE08B86D5CC19868B4DBB4B /* PortalPose.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FF47757AD099392D75B3200 /* PortalPose.swift */; };
+		F4EFB461688C69950E4D582F /* Onboarding.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14B6E7ED0FE926E1DD9B869B /* Onboarding.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		14B6E7ED0FE926E1DD9B869B /* Onboarding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Onboarding.swift; sourceTree = "<group>"; };
+		1B0EA166835C2C9692208E02 /* McKennaIntro.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = McKennaIntro.swift; sourceTree = "<group>"; };
 		27973CF9A0CDCC6DEC974C85 /* auki.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = auki.png; sourceTree = "<group>"; };
 		2BCEC81F73CF1D624DA0884F /* GeoLocator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeoLocator.swift; sourceTree = "<group>"; };
+		3C645496BAD13D7DF7D5554B /* PendingVoxelOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PendingVoxelOverlay.swift; sourceTree = "<group>"; };
+		3EBD3F7247CBE60D509E475B /* PendingVoxels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PendingVoxels.swift; sourceTree = "<group>"; };
 		4400D81FC657522891C44E1A /* SemanticVolumeModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SemanticVolumeModel.swift; sourceTree = "<group>"; };
 		53473FD966BA04F1FC85EED6 /* GeoReference.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeoReference.swift; sourceTree = "<group>"; };
 		5E28D30D4D61E2D22CF37F86 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -41,12 +47,10 @@
 		B33697AF632544986693964C /* PortalViewerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortalViewerApp.swift; sourceTree = "<group>"; };
 		BA431FB9B359E3A0AF861867 /* bracketbot_0184_rigged.usdz */ = {isa = PBXFileReference; lastKnownFileType = file.usdz; path = bracketbot_0184_rigged.usdz; sourceTree = "<group>"; };
 		C38092EFE931EB56A528B487 /* ScreenShare.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenShare.swift; sourceTree = "<group>"; };
-		4D7D0E1ED0FEC6E03D40AEDD /* McKennaIntro.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = McKennaIntro.swift; sourceTree = "<group>"; };
-		630D038DE0F37FFCF3EFD8E1 /* VoxelChunks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoxelChunks.swift; sourceTree = "<group>"; };
-		5104FEF0A9DC237366105CF8 /* Onboarding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Onboarding.swift; sourceTree = "<group>"; };
-		CF63C94F0E06FB864456F332 /* PortalMap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortalMap.swift; sourceTree = "<group>"; };
 		CB2B945385636185BD39367D /* RobotHealth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RobotHealth.swift; sourceTree = "<group>"; };
+		CF63C94F0E06FB864456F332 /* PortalMap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortalMap.swift; sourceTree = "<group>"; };
 		D6933E6306AC040ABFB74C78 /* SpatialPortalBridge.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = SpatialPortalBridge.xcframework; path = ../PortalBridge/build/SpatialPortalBridge.xcframework; sourceTree = "<group>"; };
+		FFA8ED5F8DCD8D020A27D731 /* VoxelChunks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoxelChunks.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -87,17 +91,19 @@
 				2BCEC81F73CF1D624DA0884F /* GeoLocator.swift */,
 				53473FD966BA04F1FC85EED6 /* GeoReference.swift */,
 				923BCD5A09BD097EE8206E8E /* HomePeer.swift */,
+				1B0EA166835C2C9692208E02 /* McKennaIntro.swift */,
+				14B6E7ED0FE926E1DD9B869B /* Onboarding.swift */,
+				3C645496BAD13D7DF7D5554B /* PendingVoxelOverlay.swift */,
+				3EBD3F7247CBE60D509E475B /* PendingVoxels.swift */,
 				CF63C94F0E06FB864456F332 /* PortalMap.swift */,
-				CB2B945385636185BD39367D /* RobotHealth.swift */,
 				8FF47757AD099392D75B3200 /* PortalPose.swift */,
 				B33697AF632544986693964C /* PortalViewerApp.swift */,
+				CB2B945385636185BD39367D /* RobotHealth.swift */,
 				C38092EFE931EB56A528B487 /* ScreenShare.swift */,
-				4D7D0E1ED0FEC6E03D40AEDD /* McKennaIntro.swift */,
-				630D038DE0F37FFCF3EFD8E1 /* VoxelChunks.swift */,
-				5104FEF0A9DC237366105CF8 /* Onboarding.swift */,
 				A1F90986E59A331AC5AF0962 /* SemanticVolume.swift */,
 				4400D81FC657522891C44E1A /* SemanticVolumeModel.swift */,
 				8E4554C6754FD11EA49048B5 /* Theme.swift */,
+				FFA8ED5F8DCD8D020A27D731 /* VoxelChunks.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -190,17 +196,19 @@
 				D70486EFF8BDADCEE2E7E3B4 /* GeoLocator.swift in Sources */,
 				D8B75E2AFC86238BBCF46EF0 /* GeoReference.swift in Sources */,
 				7F41A3FEC846F6B3880A9B3A /* HomePeer.swift in Sources */,
+				11F1FDC5250F721C8999C155 /* McKennaIntro.swift in Sources */,
+				F4EFB461688C69950E4D582F /* Onboarding.swift in Sources */,
+				DD4420B26CCD5BE70FA29702 /* PendingVoxelOverlay.swift in Sources */,
+				B70EA92C81E47EE62E0BE61C /* PendingVoxels.swift in Sources */,
 				2F00069261E099226C9BD6C9 /* PortalMap.swift in Sources */,
-				2A95B8380B6EFAC3B646A123 /* RobotHealth.swift in Sources */,
 				EEE08B86D5CC19868B4DBB4B /* PortalPose.swift in Sources */,
 				B5FC91E8E14B70B258CF83E0 /* PortalViewerApp.swift in Sources */,
+				2A95B8380B6EFAC3B646A123 /* RobotHealth.swift in Sources */,
 				0A9A1BD27276FC3895F4A4EC /* ScreenShare.swift in Sources */,
-				B035332A7A24EF29879734ED /* McKennaIntro.swift in Sources */,
-				2C692308ACB6D6B8B26B88AE /* VoxelChunks.swift in Sources */,
-				5B236A49E20DC7CA12B8707A /* Onboarding.swift in Sources */,
 				76AEBF1C9FA1B8D4D8E320D7 /* SemanticVolume.swift in Sources */,
 				BD58CFC0B92E999985C2400D /* SemanticVolumeModel.swift in Sources */,
 				2DC11F9A3C2824AFF300B427 /* Theme.swift in Sources */,
+				71D60C4CA888B0F335D24DED /* VoxelChunks.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

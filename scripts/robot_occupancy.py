@@ -1,13 +1,5 @@
-"""Read-only, 2 Hz collision-envelope voxelization inside the existing runner.
-
-No point-cloud accumulation: every sample replaces the previous body volume.
-The grid is fixed in robot.base (ROS body axes), metres, 5 cm cells.
-"""
-import hashlib
-import json
+"""Shared bounded geometry primitives for the Bracketbot body envelope."""
 import sys
-import time
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
 # Optional private numerical runtime; never replace vendor/system packages.
@@ -16,7 +8,6 @@ import numpy as np
 from scipy.spatial import ConvexHull
 from scipy.spatial.transform import Rotation
 
-MODEL = '/data/config/galbot_description/galbot_g_series_description/galbot_g1_cali_user.urdf'
 SIZE = .05
 MAX_CELLS = 65536
 
@@ -76,117 +67,3 @@ class Solid:
             cells, centers = cells[keep], centers[keep]
         self.cached = (pose.copy(), size, cells)
         return cells
-
-
-class Model:
-    def __init__(self, path=MODEL):
-        path = Path(path)
-        raw = path.read_bytes()
-        root = ET.fromstring(raw)
-        digest = hashlib.sha256(raw)
-        self.parts = []
-        self.links = []
-        joints = {j.find('child').get('link'): j for j in root.findall('joint')}
-        grippers = {'left': [], 'right': []}
-        for link in root.findall('link'):
-            name = link.get('name')
-            for collision in link.findall('collision'):
-                mesh = collision.find('geometry/mesh')
-                if mesh is None:
-                    raise ValueError('unsupported collision primitive')
-                uri = mesh.get('filename')
-                if not uri.startswith('package://'):
-                    raise ValueError('expected packaged collision asset')
-                mesh_path = path.parent.parent / uri[len('package://'):]
-                points, content = stl_vertices(mesh_path)
-                digest.update(uri.encode()); digest.update(content)
-                points *= np.fromstring(mesh.get('scale', '1 1 1'), sep=' ')
-                points = transform(points, origin(collision.find('origin')))
-                self.links.append(name)
-                if '_gripper_' in name:
-                    side = name.split('_')[0]
-                    grippers[side].append((name, points))
-                else:
-                    self.parts.append((name, Solid(points), [name], False))
-        # Vendor gripper states lack named joint angles. Publish an explicitly
-        # approximate envelope over permitted finger travel, not an invented pose.
-        self.approximate = []
-        for side, meshes in grippers.items():
-            if not meshes:
-                continue
-            driver = next(j for j in joints.values() if j.get('name') == side + '_gripper_r_knuckle_joint')
-            limit = driver.find('limit')
-            angles = np.linspace(float(limit.get('lower')), float(limit.get('upper')), 129)
-            mount = side + '_arm_end_effector_mount_link'
-            cloud = []
-            for angle in angles:
-                for name, points in meshes:
-                    chain = []; child = name
-                    while child != mount:
-                        joint = joints[child]; chain.append(joint); child = joint.find('parent').get('link')
-                    matrix = np.eye(4)
-                    for joint in reversed(chain):
-                        matrix = matrix @ origin(joint.find('origin'))
-                        if joint.get('type') != 'fixed':
-                            mimic = joint.find('mimic')
-                            q = angle if mimic is None else angle * float(mimic.get('multiplier', '1')) + float(mimic.get('offset', '0'))
-                            axis = np.fromstring(joint.find('axis').get('xyz'), sep=' ')
-                            rotation = np.eye(4); rotation[:3, :3] = Rotation.from_rotvec(axis * q).as_matrix()
-                            matrix = matrix @ rotation
-                    cloud.append(transform(points, matrix))
-            names = [name for name, _ in meshes]
-            self.approximate.extend(names)
-            # 1 mm margin bounds interpolation between sweep samples for this
-            # sub-0.5 m mechanism (step < .014 rad, at most two moving joints).
-            self.parts.append((mount, Solid(np.concatenate(cloud), padding=.001), names, True))
-        self.sha256 = digest.hexdigest()
-
-
-class RobotOccupancy:
-    def __init__(self, sensors):
-        self.sensors = sensors
-        self.model = None
-
-    def poll(self):
-        if self.model is None:
-            self.model = Model()
-        s = self.sensors
-        odometry = s.robot.get_odom()
-        if not odometry:
-            return 0
-        t = int(odometry['timestamp_ns']) - 200000000
-        identity = 'robot.occupancy'
-        if t <= s.last.get(identity, 0):
-            return 0
-        frame = s.registry.frame_ros_body(s.owner, 'robot.base'); frame.pop('hash', None)
-        if identity not in s.specs:
-            spec = dict(id=identity, clock=s.contract['clock'], frame_definition=frame,
-                payload=dict(kind='structured', datatype='spatial.robot-occupancy', schema='spatial.robot-occupancy/v1',
-                    modality='robot_occupancy', observes='robot', unit='meters'),
-                metadata=dict(model_sha256=self.model.sha256, session_id=s.contract['session_id'], model_uri=MODEL, update_hz=2,
-                    geometry='conservative collision envelope; grippers swept over joint limits',
-                    pose_products=['robot.link.' + part[0] + '.pose-history' for part in self.model.parts]))
-            s.publisher.register_sensor(json.dumps(spec)); s.specs[identity] = spec
-        started = time.monotonic(); chunks = []; covered = []; missing = []
-        for name, solid, names, approximate in self.model.parts:
-            p, stamp = s.robot.get_transform('base_link', name, t, 0)
-            if len(p) != 7 or stamp != t or not np.isfinite(p).all() or abs(np.dot(p[3:], p[3:]) - 1) > 1e-6:
-                missing.extend(names); continue
-            matrix = np.eye(4); matrix[:3, :3] = Rotation.from_quat(p[3:]).as_matrix(); matrix[:3, 3] = p[:3]
-            chunks.append(solid.cells(matrix)); covered.extend(names)
-            link_frame = s.registry.frame_ros_body(s.owner, name); link_frame.pop('hash', None)
-            s.publish_pose('robot.link.' + name + '.pose', t, link_frame)
-        cells = np.unique(np.concatenate(chunks), axis=0) if chunks else np.empty((0, 3), dtype=int)
-        if len(cells) > MAX_CELLS:
-            raise ValueError('robot occupancy exceeds cell limit')
-        sample = dict(session_id=s.contract['session_id'], model_sha256=self.model.sha256,
-            voxel_size_m=SIZE, grid_origin_m=[0., 0., 0.], cells=cells.tolist(),
-            covered_links=covered, missing_links=missing, approximate_links=self.model.approximate,
-            compute_ms=(time.monotonic()-started)*1000)
-        s.publisher.publish_sensor(identity, t, json.dumps(sample, allow_nan=False), b'')
-        s.last[identity] = t
-        with s.lock:
-            s.counts[identity] = s.counts.get(identity, 0) + 1
-            s.states['robot.occupancy.details'] = dict(cells=len(cells), compute_ms=sample['compute_ms'],
-                measurement_age_ms=(time.time_ns()-t)/1e6, missing_links=missing)
-        return 1

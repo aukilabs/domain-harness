@@ -131,7 +131,7 @@ pub async fn resolve_pose(client: &ComponentProtocolClient, sensor: &Sensor, row
                 request: TimeRangeRequest { clock: contract.clock.clone(), start_ns: geometry.timestamp_ns.saturating_sub(200_000_000), end_ns: geometry.timestamp_ns.saturating_add(200_000_000) }
             }).await?;
             let retained = RetainedProduct::imported_buffer(response.product, response.product_manifest_hash, response.producer,
-                BufferLimits { max_entries: Some(256), max_bytes: Some(1024*1024), target_duration: None }, |_: &PoseUpdate| 1024)?;
+                crate::observation_history::poses(), |_: &PoseUpdate| 1024)?;
             for o in response.observations {
                 retained.buffer().append_shared(Arc::new(Envelope::new(o.sequence, o.timestamp_ns, o)))?;
             }

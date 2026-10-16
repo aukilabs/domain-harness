@@ -46,7 +46,7 @@ func _physics_process(delta: float) -> void:
 			scan_ready.emit(latest)
 
 func sample() -> Dictionary:
-	var timestamp_ns := Time.get_ticks_usec()*1000
+	var timestamp_ns := int(Time.get_unix_time_from_system()*1000000000.0)
 	var sensor := robot.global_transform * Transform3D(Basis.IDENTITY, MOUNT)
 	var ranges: Array = []
 	var hits := PackedVector3Array()

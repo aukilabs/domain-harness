@@ -1,3 +1,5 @@
+pub mod peer_traffic;
+pub mod traffic_history;
 pub mod conventions;
 pub mod qr_decode;
 pub mod compact_pose;
@@ -10,6 +12,10 @@ pub mod declared_depth;
 pub mod home_pose_policy;
 pub mod catalog_chat;
 pub mod commands;
+pub mod observation_history;
+pub mod capture_time;
+pub mod clock_sync;
+pub mod time_history;
 pub mod scene_geometry;
 pub mod peer_aliases;
 pub mod domain_portals;
@@ -38,7 +44,7 @@ pub mod voxel_color;
 
 pub mod sensor_preview;
 
-pub mod galbot_sensors;
+pub mod runner_sensors;
 pub mod portal_camera_detector;
 
 pub mod home_alignment;

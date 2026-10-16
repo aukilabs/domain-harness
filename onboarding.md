@@ -162,7 +162,21 @@ Publish the result as the standard held transform from `R` into `H`, not as a sp
 
 The phone and robot have different capture clocks. We need a verified mapping between them with bounded uncertainty, sufficient pose history, and capture-time sampling/interpolation. Equal-looking timestamps or both being labelled UTC are not proof of synchronization.
 
-The cross-peer clock mapping mechanism still needs to be verified against the SDK. Treat that as an early implementation check, not something to discover after building the complete UI.
+The implementation uses each peer's SDK session-monotonic clock and the same
+Catalog UTC-transform Product used by Home. The marker reply declares the host's
+full clock reference. Both joiners resolve its Registry definitions and actual
+held UTC observation before measuring a bounded inter-peer offset over libp2p.
+That measurement does not rewrite the session-start UTC anchors or assume the
+hosts' wall clocks agree. Native camera timestamps are converted only at the
+producer boundary; none are exposed as unlabelled onboarding timestamps.
+
+Clock reads and marker-at-time operations use v2 payloads carrying full clock
+references. The pairing session is not a substitute for a clock identity.
+Replies must match the requested pairing session, clock, timestamp and timing
+uncertainty, and pose history must cover the whole interval without gaps or
+extrapolation. Old v1 hosts/joiners must be rebuilt together. The invitation QR
+format is unchanged. See `docs/session-clocks.md` for the shared contract;
+on-device native-clock and suspend/resume validation is still required.
 
 - Retain the robot image/detection's capture timestamp and clock reference.
 - Resolve the phone and runner poses at that physical instant through the declared clock mapping.

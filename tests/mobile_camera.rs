@@ -10,6 +10,11 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
+fn camera_product(catalog:&serde_json::Value)->&serde_json::Value {
+    catalog["catalog"]["products"].as_array().unwrap().iter()
+        .find(|p|p["manifest"]["product_id"]==spatial_home::mobile_camera::PRODUCT).unwrap()
+}
+
 async fn preview(tx: &mpsc::Sender<Request>, sensor: Option<String>) -> Result<sensor_preview::Reply> {
     let (reply, answer) = oneshot::channel();
     tx.send(Request {
@@ -87,6 +92,7 @@ async fn phone_camera_shares_sdk_catalog_and_home_consumes_only_on_demand() -> R
         assert_eq!(frame["width"], 640);
         assert_eq!(frame["height"], 480);
         assert_eq!(frame["capture_timestamp_ns"], "100");
+        assert_eq!(frame["clock"],serde_json::to_value(spatial_home::model::clock_ref(&products.timing.clock.registry_entry()))?);
         assert!(frame.get("data").is_none());
         assert!(frame.image.as_ref().unwrap().starts_with(&[255,216]));
         tokio::time::timeout(Duration::from_secs(35), async {
@@ -123,7 +129,9 @@ async fn phone_camera_joins_the_ar_session_and_declares_its_calibration() -> Res
             .map(ToString::to_string)
             .collect::<Vec<_>>();
         let frame_of = |catalog: &serde_json::Value| {
-            catalog["catalog"]["components"][0]["current_outputs"]["frames"]["manifest"].clone()
+            catalog["catalog"]["components"].as_array().unwrap().iter()
+                .find(|c|c["manifest"]["component_id"]=="phone-rgb-camera").unwrap()
+                ["current_outputs"]["frames"]["manifest"].clone()
         };
         let before = fetch(&pair.a, pair.b.peer_id(), &routes).await;
         assert_eq!(before["catalog_status"], "ready");
@@ -143,8 +151,10 @@ async fn phone_camera_joins_the_ar_session_and_declares_its_calibration() -> Res
             frame_of(&entered)["spatial_frame_id"],
             format!("phone-camera:{session}")
         );
-        assert_eq!(frame_of(&entered)["clock"]["id"], "arkit-capture");
-        assert_eq!(entered["catalog"]["products"].as_array().unwrap().len(), 1);
+        assert_eq!(frame_of(&entered)["clock"], serde_json::to_value(spatial_home::model::clock_ref(&products.timing.clock.registry_entry()))?);
+        assert!(camera_product(&entered)["manifest"]["producer"].is_object());
+        assert!(entered["catalog"]["products"].as_array().unwrap().iter()
+            .any(|p|p["metadata"]["schema"]==spatial_home::capture_time::METADATA));
 
         let jpeg = |width, height| -> Result<Vec<u8>> {
             let mut jpeg = Vec::new();
@@ -171,7 +181,7 @@ async fn phone_camera_joins_the_ar_session_and_declares_its_calibration() -> Res
             frame_of(&sent)["spatial_frame_id"],
             format!("phone-camera:{session}")
         );
-        let metadata = &sent["catalog"]["products"][0]["metadata"];
+        let metadata = &camera_product(&sent)["metadata"];
         assert_eq!(metadata["schema"], spatial_home::registry_ar::CAMERA_METADATA);
         let contract: spatial_home::registry_ar::CameraContract =
             serde_json::from_value(metadata["value"].clone())?;
@@ -214,18 +224,19 @@ async fn phone_camera_joins_the_ar_session_and_declares_its_calibration() -> Res
         assert!(camera.publish_calibrated(301, jpeg(720, 960)?, big).is_err());
         let bigger = fetch(&pair.a, pair.b.peer_id(), &routes).await;
         assert_eq!(frame_of(&bigger)["payload"]["height"], 720);
-        let metadata = &bigger["catalog"]["products"][0]["metadata"]["value"];
+        let metadata = &camera_product(&bigger)["metadata"]["value"];
         assert_ne!(metadata["sensor"]["hash"], contract.sensor.hash);
         assert_ne!(frame_of(&bigger)["output_id"], output["output_id"]);
 
-        // A new AR session moves the camera again.
+        // A new AR session changes the spatial frame, not the peer's clock.
         let next = uuid::Uuid::new_v4().to_string();
-        camera.publish_calibrated(5, jpeg(640, 480)?, Geometry { session: next.clone(), ..geometry })?;
+        camera.publish_calibrated(400, jpeg(640, 480)?, Geometry { session: next.clone(), ..geometry })?;
         let moved = fetch(&pair.a, pair.b.peer_id(), &routes).await;
         assert_eq!(
             frame_of(&moved)["spatial_frame_id"],
             format!("phone-camera:{next}")
         );
+        assert_eq!(frame_of(&moved)["clock"],frame_of(&before)["clock"]);
         camera.close()?;
         products.close().await?;
         Ok::<_, anyhow::Error>(())
@@ -252,12 +263,15 @@ async fn home_draws_over_a_phone_camera_without_a_phone_adapter() -> Result<()> 
     let mut jpeg = Vec::new();
     image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
         .encode_image(&image::RgbImage::from_pixel(640, 480, image::Rgb([50, 100, 150])))?;
-    // One capture: the picture as the sensor took it, and the camera's pose at that instant.
-    let geometry = Geometry { session: session.clone(), fx: 480., fy: 481., cx: 320., cy: 240., rotation_deg: 0, alignment_timestamp_ns: 77 };
-    camera.publish_calibrated(1000, jpeg, geometry)?;
-    let sample = spatial_home::mobile_pose::Sample {
+    // Each image and pose share one actual SDK-session capture time.
+    let alignment_time = products.timing.clock.now_ns();
+    let geometry = Geometry { session: session.clone(), fx: 480., fy: 481., cx: 320., cy: 240., rotation_deg: 0, alignment_timestamp_ns: alignment_time };
+    let first_capture = products.timing.clock.now_ns();
+    let mut capture_times = vec![first_capture];
+    camera.publish_calibrated(first_capture, jpeg.clone(), geometry.clone())?;
+    let mut sample = spatial_home::mobile_pose::Sample {
         session: session.clone(),
-        timestamp_ns: 1000,
+        timestamp_ns: first_capture,
         pose: auki_scenegraph::RigidTransform {
             from_frame_id: format!("phone-camera:{session}"),
             to_frame_id: format!("phone-ar:{session}"),
@@ -270,7 +284,7 @@ async fn home_draws_over_a_phone_camera_without_a_phone_adapter() -> Result<()> 
     pose.publish(&home_peer, &sample)?;
 
     let mut declared = spatial_home::mobile_declared::Publisher::new(&products, &session, &home_peer, &home_frame)?;
-    declared.align(77, &auki_scenegraph::RigidTransform {
+    declared.align(alignment_time, &auki_scenegraph::RigidTransform {
         from_frame_id: format!("phone-ar:{session}"), to_frame_id: home_frame.clone(),
         translation:[0.;3], rotation_wxyz:[1.,0.,0.,0.],
     })?;
@@ -300,7 +314,21 @@ async fn home_draws_over_a_phone_camera_without_a_phone_adapter() -> Result<()> 
                 let (reply, answer) = oneshot::channel();
                 tx.send(Request { home_frame: None, debug_pose: false, scene: false, sensor: Some(id.clone()), ar: true, pick: false, follow: false,
                     capture: false, expected_manifest: None, reply }).await?;
-                match answer.await? {
+                // Home deliberately starts sampled poses with NewOnly. A
+                // retained pre-subscription pose must not make a stopped peer
+                // look live; publish a fresh, exactly matched pair while the
+                // preview resolves its SDK subscriptions.
+                let publish = async {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    sample.timestamp_ns = products.timing.clock.now_ns();
+                    pose.publish(&home_peer, &sample)?;
+                    camera.publish_calibrated(sample.timestamp_ns, jpeg.clone(), geometry.clone())?;
+                    capture_times.push(sample.timestamp_ns);
+                    Ok::<_, anyhow::Error>(())
+                };
+                let (answer, sent) = tokio::join!(answer, publish);
+                sent?;
+                match answer? {
                     Ok(frame) => break Ok::<_, anyhow::Error>(frame),
                     Err(error) => last = error.to_string(),
                 }
@@ -309,7 +337,11 @@ async fn home_draws_over_a_phone_camera_without_a_phone_adapter() -> Result<()> 
         })
         .await
         .map_err(|_| anyhow::anyhow!("Home never drew over the phone camera: {last}"))??;
-        assert_eq!(drawn["capture_timestamp_ns"], "1000");
+        let received_sequence = drawn["sequence"].as_str().unwrap().parse::<usize>()?;
+        let received_capture = drawn["capture_timestamp_ns"].as_str().unwrap().parse::<u64>()?;
+        assert_eq!(received_capture, capture_times[received_sequence], "the image keeps its matching pose's capture time");
+        assert!(received_capture > first_capture, "AR uses a post-subscription observation, not stale replay");
+        assert_eq!(drawn["clock"],serde_json::to_value(spatial_home::model::clock_ref(&products.timing.clock.registry_entry()))?);
         assert_eq!(drawn["ar"]["status"], "ready");
         assert_eq!(drawn["ar"]["frame"], home_frame);
         let seen = &drawn["picking"]["camera_to_map"];

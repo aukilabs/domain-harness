@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 
+// Legacy scene identity retained for stored-map compatibility, not a runner.
 pub const FAMILY: &str = "galbot-local";
 pub const BRACKETBOT_FAMILY: &str = "bracketbot-local";
 pub fn is_local_family(id: &str) -> bool {
@@ -257,6 +258,8 @@ pub struct LocalMap {
     required_portal: Option<String>,
     canonical_reference: Option<MapSnapshot>,
     clock: ClockReference,
+    clock_definition: Option<auki_registry::ClockRegistryEntry>,
+    publication_clock: Option<auki_time::SessionClock>,
     contract: PoseContract,
     odometry: auki_odometry::OdometryComponent,
     history: BufferProductCapture<auki_odometry::PoseUpdate>,
@@ -317,8 +320,19 @@ impl LocalMap {
         camera_frame: &str,
         sizes: crate::portal_sizes::PortalSizes,
     ) -> Result<Self> {
+        Self::new_for_robot_with_clock(runtime, owner, crate::model::clock_entry(owner, session), family, camera_frame, sizes, None)
+    }
+    pub fn new_for_robot_with_clock(
+        runtime: &ComponentRuntime, owner: &str, clock_definition: auki_registry::ClockRegistryEntry,
+        family: &str, camera_frame: &str, sizes: crate::portal_sizes::PortalSizes,
+        publication_clock: Option<auki_time::SessionClock>,
+    ) -> Result<Self> {
         ensure!(is_local_family(family), "unknown robot map family");
-        let clock = crate::model::clock_ref(&crate::model::clock_entry(owner, session));
+        ensure!(clock_definition.peer_id == owner, "Local mapper capture clock owner mismatch");
+        ensure!(publication_clock.as_ref().is_none_or(|clock| clock.registry_entry().peer_id == runtime.peer_id()),
+            "Local mapper publication clock owner mismatch");
+        let session = clock_definition.session_id.as_str();
+        let clock = crate::model::clock_ref(&clock_definition);
         let frame = format!("{family}:{session}:zup");
         let body_frame = |id: &str| {
             if family == BRACKETBOT_FAMILY {
@@ -347,8 +361,10 @@ impl LocalMap {
             false,
             None,
             FrameRegistryEntry::ros_optical(owner, camera_frame),
+            publication_clock,
         )?;
         map.set_portal_sizes(sizes)?;
+        map.clock_definition = Some(clock_definition);
         Ok(map)
     }
     pub fn set_portal_sizes(&mut self, sizes: crate::portal_sizes::PortalSizes) -> Result<()> {
@@ -409,6 +425,7 @@ impl LocalMap {
             true,
             required_portal,
             camera_frame,
+            None,
         )
     }
     #[allow(clippy::too_many_arguments)]
@@ -422,6 +439,7 @@ impl LocalMap {
         portal_origin: bool,
         required_portal: Option<String>,
         camera_frame: FrameRegistryEntry,
+        publication_clock: Option<auki_time::SessionClock>,
     ) -> Result<Self> {
         ensure!(
             crate::rgbd::supported_camera_frame(&camera_frame.frame_id)
@@ -517,7 +535,7 @@ impl LocalMap {
             MapComponentConfig {
                 component_id: "observed-portals".into(),
                 publication_id: session.into(),
-                clock: clock.clone(),
+                clock: publication_clock.as_ref().map(|c| crate::model::clock_ref(&c.registry_entry())).unwrap_or_else(|| clock.clone()),
                 map: MapDefinition {
                     map_id: format!("observed-{session}"),
                     name: Some(
@@ -532,7 +550,7 @@ impl LocalMap {
                     frame: crate::conventions::frame(&frame)?,
                 },
             },
-            now,
+            { let clock = publication_clock.clone(); move || clock.as_ref().map_or_else(now, auki_time::SessionClock::now_ns) },
             |_| true,
             move |caller| {
                 caller.caller_peer_id == writer && caller.caller_component_id == "local-mapper"
@@ -591,6 +609,8 @@ impl LocalMap {
             required_portal,
             canonical_reference: None,
             clock,
+            clock_definition: None,
+            publication_clock,
             contract,
             odometry,
             history,
@@ -739,7 +759,7 @@ impl LocalMap {
             "robot_health":self.latest_health},
             "landmark_components":[crate::landmarks::ComponentCapabilities { component: self.processor.reference().clone(), landmark_types: Some(vec![crate::landmarks::PORTAL.into()]) }],
             "landmark_observations":self.landmark_capture.product().reference(),
-            "frames":[self.contract.from_frame,self.contract.to_frame],"clocks":[crate::model::clock_entry(&self.sensor_owner,&self.contract.session_id)]})
+            "frames":[self.contract.from_frame,self.contract.to_frame],"clocks":self.clock_definition.iter().collect::<Vec<_>>()})
     }
     pub fn scan_progress(&self) -> Value {
         let age = self.last_integration.map(|t| t.elapsed().as_millis() as u64);
@@ -1513,9 +1533,9 @@ impl LocalMap {
                 &self.runtime,
                 "local-voxel-mapper",
                 &format!("local-voxels-{}", self.contract.session_id),
-                self.clock.clone(),
+                self.publication_clock.as_ref().map(|c| crate::model::clock_ref(&c.registry_entry())).unwrap_or_else(|| self.clock.clone()),
                 definition,
-                now,
+                { let clock = self.publication_clock.clone(); move || clock.as_ref().map_or_else(now, auki_time::SessionClock::now_ns) },
             )?;
             self.voxels = Some((*component.product().latest_existing()?.unwrap().payload).clone());
             self._voxel_component = Some(component);

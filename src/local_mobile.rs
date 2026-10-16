@@ -285,7 +285,7 @@ pub struct Publisher {
     occupancy: crate::occupancy_mapper::OccupancyMapper,
     clock: clock::ClockRegistryEntry,
     owner: String,
-    started: Instant,
+    session_clock: auki_time::SessionClock,
     last_tick: Option<Instant>,
     last_content: Option<Vec<u8>>,
     /// Size and observation count of the voxel map last sent to phones.
@@ -303,9 +303,9 @@ impl Publisher {
         runtime: &ComponentRuntime,
         endpoint: &ComponentProtocolEndpoint,
         scenes: Arc<LocalScenes>,
-        clock: clock::ClockRegistryEntry,
-        started: Instant,
+        session_clock: auki_time::SessionClock,
     ) -> Result<Vec<Self>> {
+        let clock = session_clock.registry_entry();
         scenes
             .snapshots
             .iter()
@@ -320,7 +320,7 @@ impl Publisher {
                     id,
                     reference.clone(),
                     clock.clone(),
-                    started,
+                    session_clock.clone(),
                 )
             })
             .collect()
@@ -332,7 +332,7 @@ impl Publisher {
         id: &str,
         reference: MapSnapshot,
         clock: clock::ClockRegistryEntry,
-        started: Instant,
+        session_clock: auki_time::SessionClock,
     ) -> Result<Self> {
         let owner = runtime.peer_id().to_owned();
         let frame = reference.scenegraph.map.frame.id.clone();
@@ -401,7 +401,7 @@ impl Publisher {
         )?;
         let geometry_output = component.configured_observable(ConfiguredObservableSpec::new(
             "geometry", uuid::Uuid::new_v4().to_string(),
-            crate::model::clock_ref(&crate::model::clock_entry(&owner, &clock.session_id)),
+            crate::model::clock_ref(&clock),
             PayloadContract::Structured(StructuredPayloadContract {
                 modality: "scenegraph".into(), datatype: crate::network::SCENE_SCHEMA.into(),
                 schema: crate::network::SCENE_SCHEMA.into(), observes: "accumulated_home_geometry".into(), unit: Some("meters".into()),
@@ -428,7 +428,7 @@ impl Publisher {
         // The retained input is bound locally by the standard SDK mapper. The
         // derived occupancy Product, rather than this extra full scene, is exported.
         let occupancy = crate::occupancy_mapper::OccupancyMapper::mount_scoped(runtime, endpoint,
-            &geometry_capture.product(), &owner, crate::model::clock_ref(&clock),
+            &geometry_capture.product(), &owner, session_clock.clone(),
             crate::occupancy_mapper::Config::new(0.), id)?;
         let capture = runtime.capture_buffer(
             crate::local_scenes::mobile_product(id),
@@ -596,7 +596,7 @@ impl Publisher {
             endpoint,
             id,
             crate::model::clock_ref(&clock),
-            started,
+            session_clock.clone(),
         )?));
         let drive_update = drive.operable(
             "update",
@@ -747,7 +747,7 @@ impl Publisher {
         let paths_publisher=crate::scene_paths::Publisher::mount(runtime,endpoint,id,&owner,&paths_frame,crate::model::clock_ref(&clock),
             move |path,stroke| path_scenes.paths.change(&path_scene,&path_frame,path,stroke))?;
         let (navigation, planner) = crate::scene_navigation::mount(runtime, endpoint, id, &paths_frame, crate::model::clock_ref(&clock),
-            NavigationWorld { state: state.clone(), scenes: scenes.clone(), scene: id.into(), frame: paths_frame.clone(), started })?;
+            NavigationWorld { state: state.clone(), scenes: scenes.clone(), scene: id.into(), frame: paths_frame.clone(), session_clock: session_clock.clone() })?;
         scenes.planners.lock().map_err(|_| anyhow!("Route planner unavailable"))?.insert(id.into(), planner);
         components.push(navigation);
         let mut publisher = Self {
@@ -766,7 +766,7 @@ impl Publisher {
             occupancy,
             clock,
             owner,
-            started,
+            session_clock,
             last_tick: None,
             last_content: None,
             last_checkpoint: None,
@@ -783,7 +783,7 @@ impl Publisher {
     pub fn tick(&mut self) -> Result<()> {
         // Paths are lightweight: publish incremental strokes independently of the map's 1 Hz rebuild.
         let frame=self.reference.read().map_err(|_|anyhow!("Scene unavailable"))?.scenegraph.map.frame.id.clone();
-        self.paths_publisher.publish(self.started.elapsed().as_nanos() as u64,self.scenes.paths.get(&self.id,&frame)?)?;
+        self.paths_publisher.publish(self.session_clock.now_ns(),self.scenes.paths.get(&self.id,&frame)?)?;
         if self
             .last_tick
             .is_some_and(|t| t.elapsed() < Duration::from_secs(1))
@@ -804,7 +804,7 @@ impl Publisher {
             .take();
         if state.voxels_cleared {
             self.occupancy.clear_geometry();
-            for layer in &self.voxel_layers {layer.clear(self.started.elapsed().as_nanos() as u64)?;}
+            for layer in &self.voxel_layers {layer.clear(self.session_clock.now_ns())?;}
             state.voxels_cleared=false;
         }
         for contribution in self.contributions.lock().map_err(|_|anyhow!("Contribution inbox unavailable"))?.take() {
@@ -829,7 +829,12 @@ impl Publisher {
             paths_product: Some(self.paths_publisher.reference()),
             publication_clock: self.clock.clone(),
             portals: reference.clone(),
-            geometry: state.map.scene()?,
+            // This is a new Home publication, not a forwarded source Product.
+            // Nested voxel capture provenance remains unchanged.
+            geometry: state.map.scene()?.map(|mut geometry| {
+                geometry.publication_clock = self.clock.clone();
+                geometry
+            }),
             notes: { let mut notes=state.notes.clone();notes.volumes.clear();notes },
             volumes: self.scenes.volumes.mobile(&self.id,&reference.scenegraph.map.frame.id)?,
             semantic_volumes: Some(self.scenes.volumes.get(&self.id, &reference.scenegraph.map.frame.id)?),
@@ -853,7 +858,7 @@ impl Publisher {
             },
         };
         scene.validate(&self.owner, &reference.scenegraph.map.frame.id)?;
-        self.paths_publisher.publish(self.started.elapsed().as_nanos() as u64,scene.paths.clone().unwrap())?;
+        self.paths_publisher.publish(self.session_clock.now_ns(),scene.paths.clone().unwrap())?;
         // Phones get voxels as deltas on their own Product, so the scene itself
         // carries no voxel bytes and goes out only when something else changed.
         let light = serde_json::to_vec(&Scene {
@@ -868,7 +873,7 @@ impl Publisher {
             self.occupancy.tick()?;
             return Ok(());
         }
-        let timestamp = self.started.elapsed().as_nanos() as u64;
+        let timestamp = self.session_clock.now_ns();
         if voxels_changed && let Some(geometry) = &scene.geometry {
             for (publisher, layer) in self.voxel_layers.iter().zip(crate::voxel_layers::split(&geometry.voxels)?) {
                 publisher.publish(timestamp, layer)?;
@@ -908,7 +913,7 @@ impl Publisher {
     }
 }
 /// The live scene as the route planner reads it: the same map, notes and saved paths peers see.
-struct NavigationWorld { state: Arc<Mutex<State>>, scenes: Arc<LocalScenes>, scene: String, frame: String, started: Instant }
+struct NavigationWorld { state: Arc<Mutex<State>>, scenes: Arc<LocalScenes>, scene: String, frame: String, session_clock: auki_time::SessionClock }
 impl crate::scene_navigation::World for NavigationWorld {
     fn voxels(&self) -> Result<(Vec<[f64; 3]>, f64)> {
         let state = self.state.lock().map_err(|_| anyhow!("Scene unavailable"))?;
@@ -922,7 +927,7 @@ impl crate::scene_navigation::World for NavigationWorld {
     fn store(&self, id: &str, stroke: Option<crate::scene_paths::Stroke>) -> Result<crate::scene_paths::Paths> {
         self.scenes.paths.change(&self.scene, &self.frame, id, stroke)
     }
-    fn now(&self) -> u64 { self.started.elapsed().as_nanos() as u64 }
+    fn now(&self) -> u64 { self.session_clock.now_ns() }
 }
 /// Replace the saved scene atomically so a restart keeps reported Portals.
 fn save_scene(path: &std::path::Path, snapshot: &MapSnapshot) -> Result<()> {
@@ -1007,12 +1012,18 @@ fn persist_notes(notes: &Notes, path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+/// Wait for `next`, giving up after `limit`; `None` waits for as long as it takes.
+pub(crate) async fn next_within<T>(limit: Option<Duration>, next: impl std::future::Future<Output = T>) -> Result<T, tokio::time::error::Elapsed> {
+    match limit { Some(limit) => tokio::time::timeout(limit, next).await, None => Ok(next.await) }
+}
+
 /// Authenticated SDK subscription, pinned to this scene's Product and frame.
+/// With `idle` set, a stream quiet that long after the first scene returns Ok.
 pub async fn receive(
     peer: &auki_sdk::AukiPeer,
     home: &HomeConnection,
     stop: &tokio_util::sync::CancellationToken,
-    idle: Duration,
+    idle: Option<Duration>,
     mut accept: impl FnMut(Value),
 ) -> Result<()> {
     receive_scene(peer, home, stop, idle, |scene| { accept(scene.mobile()?); Ok(()) }).await
@@ -1024,7 +1035,7 @@ pub async fn receive_scene(
     peer: &auki_sdk::AukiPeer,
     home: &HomeConnection,
     stop: &tokio_util::sync::CancellationToken,
-    idle: Duration,
+    idle: Option<Duration>,
     mut accept: impl FnMut(&Scene) -> Result<()>,
 ) -> Result<()> {
     let expected = home.validate(peer)?;
@@ -1085,7 +1096,7 @@ pub async fn receive_scene(
             let next = tokio::select! {
                 _=stop.cancelled()=>return Ok(()),
                 exit=peer.wait_stopped()=>bail!("Phone peer stopped: {exit:?}"),
-                event=tokio::time::timeout(if received {idle} else {Duration::from_secs(30)},subscription.next())=>event,
+                event=next_within(if received {idle} else {Some(Duration::from_secs(30))},subscription.next())=>event,
             };
             match next {
                 Err(_) if received => return Ok(()),

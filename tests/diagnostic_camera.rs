@@ -1,6 +1,9 @@
 #[allow(dead_code)] mod support;
 #[allow(dead_code)] #[path="../diagnostics/connection-peer/src/diagnostic_log.rs"] mod diagnostic_log;
 mod compact_pose {pub use spatial_home::compact_pose::*;}
+mod capture_time {pub use spatial_home::capture_time::*;}
+mod clock_sync {pub use spatial_home::clock_sync::*;}
+#[allow(dead_code)] #[path="../diagnostics/connection-peer/src/capture_clock.rs"] mod capture_clock;
 mod camera_frame {pub use spatial_home::camera_frame::*;}
 mod qr_decode {pub use spatial_home::qr_decode::*;}
 mod fisheye {pub use spatial_home::fisheye::*;}
@@ -31,8 +34,13 @@ async fn diagnostic_jpeg_reaches_generic_home_preview_unchanged()->anyhow::Resul
     let mut camera=camera::Camera::mount(&p,camera::Calibration {width:64,height:64,k:[60.,60.,32.,32.],d:[0.;4],
         camera_to_base:auki_odometry::Pose {translation:[0.,0.,1.],rotation_xyzw:[0.,0.,0.,1.]}})?;
     let mut jpeg=vec![];image::codecs::jpeg::JpegEncoder::new(&mut jpeg).encode_image(&image::GrayImage::new(64,64))?;
-    let timestamp=9_007_199_254_740_993;
+    let capture_before=p.session_clock.now_ns();
+    let timestamp=auki_time::Clock::read_to_ns(&auki_time::SystemClock) as u64;
+    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     camera.publish(timestamp,jpeg.clone())?;
+    let mapped=camera.product().buffer().snapshot(0,u64::MAX).last().unwrap().timestamp_ns;
+    assert!(mapped.abs_diff(capture_before)<2_000_000,"Capture delay must not become a clock offset");
+    assert!(p.session_clock.now_ns()-mapped>=20_000_000);
     let calibration = camera.localization_calibration()?;
     assert_eq!(calibration.camera_product, camera.product().reference());
     assert_eq!(calibration.clock, p.contract.clock);
@@ -62,7 +70,7 @@ async fn diagnostic_jpeg_reaches_generic_home_preview_unchanged()->anyhow::Resul
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             }
         }).await??;
-        assert_eq!(value["capture_timestamp_ns"],timestamp.to_string());
+        assert_eq!(value["capture_timestamp_ns"],mapped.to_string());
         assert_eq!(value.image.as_deref(),Some(jpeg.as_slice()));assert!(value.get("data").is_none());
         assert_eq!(value["clock"],serde_json::to_value(&p.contract.clock)?);
         assert_eq!(value["metadata"]["value"]["frame"],value["spatial_frame"]["reference"]);

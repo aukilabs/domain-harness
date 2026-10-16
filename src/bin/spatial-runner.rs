@@ -35,6 +35,16 @@ async fn main() -> Result<()> {
     let home = read_connection(&home.ok_or_else(|| anyhow::anyhow!("--home required"))?)?;
     let running = settings.start().await?;
     let work = async {
+        let runtime = auki_components::ComponentRuntime::new(running.peer.peer_id().to_string());
+        let endpoint = auki_component_protocol::ComponentProtocolEndpoint::mount(running.peer.protocols(), runtime.clone())?;
+        let clock = auki_time::SessionClock::new(runtime.peer_id(), uuid::Uuid::new_v4().to_string(), "session");
+        let mut time = spatial_home::capture_time::Publisher::mount(&runtime, &endpoint, clock.registry_entry())?;
+        time.sample(&spatial_home::capture_time::SessionUtcClock(clock.clone()))?;
+        let definitions = spatial_home::product_registry::Definitions::default();
+        spatial_home::product_registry::clock(&definitions, &clock.registry_entry())?;
+        spatial_home::product_registry::clock(&definitions, &time.contract.to_clock)?;
+        let registry = spatial_home::product_registry::mount(&running.peer, runtime, definitions)?;
+        let work = async {
         let mut subscription = subscribe_scene(&running.peer, &home).await?;
         let source_clock = subscription.product().producer.clock.clone();
         println!("Subscribed to Home {} in {}. Robot alignment is not established by this connection.", home.peer_id, home.frame);
@@ -72,6 +82,10 @@ async fn main() -> Result<()> {
         result?;
         cleanup?;
         Ok::<_, anyhow::Error>(())
+        }.await;
+        let close_registry = registry.close().await;
+        let close_endpoint = endpoint.close().await;
+        work.and(close_registry.map_err(Into::into)).and(close_endpoint.map_err(Into::into))
     }.await;
     let cleanup = running.shutdown().await;
     work.and(cleanup)

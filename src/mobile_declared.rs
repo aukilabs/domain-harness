@@ -75,6 +75,7 @@ fn observable(name: &str, schema: &str) -> ObservableContract {
 }
 
 pub struct Publisher {
+    session_clock: auki_time::SessionClock,
     session: String,
     home_peer: String,
     home_frame: String,
@@ -95,8 +96,7 @@ impl Publisher {
         uuid::Uuid::parse_str(session)?;
         let runtime = products.runtime.clone();
         let owner = runtime.peer_id().to_string();
-        let mut clock = crate::model::clock_entry(&owner, session);
-        clock.clock_id = "arkit-capture".into();
+        let clock = products.timing.clock.registry_entry();
         let clock_ref = crate::model::clock_ref(&clock);
         let camera = FrameRegistryEntry::opengl(&owner, format!("phone-camera:{session}"));
         let ar = FrameRegistryEntry::opengl(&owner, format!("phone-ar:{session}"));
@@ -167,6 +167,7 @@ impl Publisher {
         endpoint.export_product_with_encoder(&points_capture.product(), PackedPoints::encoder()?)?;
 
         Ok(Self {
+            session_clock: products.timing.clock.clone(),
             session: session.into(), home_peer: home_peer.into(), home_frame: home_frame.into(),
             alignment, alignment_capture, points, points_capture, points_contract, endpoint,
             aligned_at: 0, lost: false, captured_at: 0, _components: [aligner, depth],
@@ -182,12 +183,12 @@ impl Publisher {
             session_to_scene.from_frame_id == format!("phone-ar:{}", self.session) && session_to_scene.to_frame_id == self.home_frame,
             "Transform endpoints mismatch"
         );
-        if timestamp_ns <= self.aligned_at && !self.lost {
+        if timestamp_ns <= self.aligned_at {
             return Ok(());
         }
         let update = Transform { tracking: Tracking::Valid { pose: pose(session_to_scene)? } };
         update.validate()?;
-        let at = timestamp_ns.max(self.aligned_at + 1);
+        let at = timestamp_ns;
         self.alignment.publish(at, Arc::new(update))?;
         ensure!(self.alignment_capture.errors().is_empty(), "Transform Product capture failed");
         self.aligned_at = at;
@@ -199,8 +200,10 @@ impl Publisher {
         if self.lost || self.aligned_at == 0 {
             return Ok(());
         }
-        self.alignment.publish(self.aligned_at + 1, Arc::new(Transform { tracking: Tracking::Lost }))?;
-        self.aligned_at += 1;
+        let at = self.session_clock.now_ns();
+        ensure!(at > self.aligned_at, "Alignment event precedes its last SDK capture time");
+        self.alignment.publish(at, Arc::new(Transform { tracking: Tracking::Lost }))?;
+        self.aligned_at = at;
         self.lost = true;
         Ok(())
     }

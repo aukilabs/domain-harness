@@ -3,12 +3,21 @@ use anyhow::{Result, ensure};
 use auki_components::{CatalogSnapshot, ComponentRuntime};
 use auki_protocols::registry::{RegistryClient, RegistryEndpoint, v3::*};
 use serde_json::{Value, json};
+use futures::{stream, StreamExt};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
     time::Duration,
 };
 pub type Definitions = Arc<Mutex<Vec<RegistryEntryEnvelope>>>;
+pub fn resolved_time_contract(registry:&Value,c:&crate::capture_time::Contract)->Result<()> {
+    let entries=registry["definitions"].as_object().ok_or_else(||anyhow::anyhow!("Waiting for peer Registry definitions"))?;
+    for definition in [&c.from_clock,&c.to_clock] {
+        ensure!(entries.values().filter_map(|v|serde_json::from_value::<auki_registry::ClockRegistryEntry>(v.clone()).ok())
+            .any(|v|v==*definition),"Unresolved time-transform clock");
+    }
+    Ok(())
+}
 pub fn resolved_contract(
     registry: &Value,
     c: &crate::compact_pose::Contract,
@@ -129,9 +138,23 @@ pub async fn resolve(
     previous: Option<&Value>,
     local: &Definitions,
 ) -> Value {
+    resolve_progress(peer, id, row, previous, local, |_| {}).await
+}
+
+/// Publish validated definitions as they arrive; an unrelated slow sensor must
+/// not hold up a native pose or its alignment subscription.
+pub async fn resolve_progress(
+    peer: &auki_sdk::AukiPeer,
+    id: auki_sdk::PeerId,
+    row: &Value,
+    previous: Option<&Value>,
+    local: &Definitions,
+    mut progress: impl FnMut(Value),
+) -> Value {
     let work = async {
         let catalog: CatalogSnapshot = serde_json::from_value(row["catalog"].clone())?;
         let mut refs = BTreeMap::new();
+        let mut priority = std::collections::BTreeSet::new();
         for c in &catalog.components {
             for o in c.current_outputs.values() {
                 o.manifest.validate().map_err(anyhow::Error::msg)?;
@@ -157,6 +180,13 @@ pub async fn resolve(
         }
         for p in &catalog.products {
             if let Some(m) = &p.metadata {
+                if m.schema == crate::capture_time::METADATA {
+                    let contract:crate::capture_time::Contract=serde_json::from_value(m.value.clone())?;
+                    for clock in [&contract.from_clock,&contract.to_clock] {
+                        let r=crate::model::clock_ref(clock);
+                        refs.insert(format!("clock:{}:{}:{}",r.peer_id,r.id,r.hash),("clock",serde_json::to_value(r)?));
+                    }
+                }
                 if m.schema == crate::registry_ar::CAMERA_METADATA {
                     let r = m.value["sensor"].clone();
                     refs.insert(format!("sensor:{}:{}:{}",r["peer_id"],r["id"],r["hash"]),("sensor",r));
@@ -166,8 +196,12 @@ pub async fn resolve(
                     refs.insert(format!("frame:{}:{}:{}",r["peer_id"],r["id"],r["hash"]),("frame",r));
                 }
                 if m.schema == crate::compact_pose::METADATA {
+                    if let Ok(c) = serde_json::from_value::<crate::compact_pose::Contract>(m.value.clone()) {
+                        priority.insert(format!("clock:{}:{}:{}", c.clock.peer_id, c.clock.id, c.clock.hash));
+                    }
                     for key in ["from_frame", "to_frame"] {
                         let r = m.value[key].clone();
+                        priority.insert(format!("frame:{}:{}:{}", r["peer_id"], r["id"], r["hash"]));
                         refs.insert(
                             format!("frame:{}:{}:{}", r["peer_id"], r["id"], r["hash"]),
                             ("frame", r),
@@ -192,19 +226,21 @@ pub async fn resolve(
             .unwrap_or(0) as usize
             % count.max(1);
         refs.rotate_left(offset);
+        refs.sort_by_key(|(key, _)| !priority.contains(key));
         let mut next_offset = None;
-        for (index, (key, (kind, r))) in refs.into_iter().enumerate() {
+        let mut pending = Vec::new();
+        for (index, (key, value)) in refs.into_iter().enumerate() {
             if let Some(v) = previous.and_then(|p| p["definitions"].get(&key)) {
                 definitions.insert(key, v.clone());
-                continue;
-            }
+            } else { pending.push((index, key, (value.0.to_owned(), value.1))); }
+        }
+        progress(json!({"status":"loading","definitions":definitions,"errors":errors}));
+        let mut fetches = stream::iter(pending.into_iter().map(|(index, key, (kind, r))| {
+            let client = &client;
+            let route = route.clone();
+            async move {
             if began.elapsed() > Duration::from_secs(9) {
-                next_offset.get_or_insert((offset + index) % count.max(1));
-                errors.insert(
-                    key,
-                    json!("Registry fetch deferred to next catalog refresh"),
-                );
-                continue;
+                return (index, key, Err("Registry fetch deferred to next catalog refresh".to_owned()));
             }
             let result = async {
                 let owner: auki_sdk::PeerId = r["peer_id"]
@@ -255,14 +291,22 @@ pub async fn resolve(
                     })?
                 })
             };
-            match tokio::time::timeout(Duration::from_secs(2), result).await {
-                Ok(Ok(v)) => {
-                    definitions.insert(key, v);
-                }
-                e => {
-                    errors.insert(key, json!(format!("{e:?}")));
+            let result = match tokio::time::timeout(Duration::from_secs(2), result).await {
+                Ok(Ok(v)) => Ok(v), e => Err(format!("{e:?}")),
+            };
+            (index, key, result)
+        }})).buffer_unordered(4);
+        while let Some((index, key, result)) = fetches.next().await {
+            match result {
+                Ok(v) => { definitions.insert(key, v); }
+                Err(error) => {
+                    if error == "Registry fetch deferred to next catalog refresh" {
+                        next_offset.get_or_insert((offset + index) % count.max(1));
+                    }
+                    errors.insert(key, json!(error));
                 }
             }
+            progress(json!({"status":"loading","definitions":definitions,"errors":errors}));
         }
         Ok::<Value, anyhow::Error>(
             json!({"status":if errors.is_empty(){"ready"}else{"incomplete"},"definitions":definitions,"errors":errors,"next_offset":next_offset.unwrap_or(0)}),

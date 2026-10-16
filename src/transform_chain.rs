@@ -7,7 +7,7 @@ use auki_odometry::Pose;
 use serde_json::Value;
 const MAX_EDGES: usize = 64;
 const MAX_DEPTH: usize = 8;
-const GAP_NS: u64 = 250_000_000;
+pub(crate) const GAP_NS: u64 = 250_000_000;
 
 #[derive(Clone)]
 struct Edge {
@@ -17,7 +17,7 @@ struct Edge {
     advertised_sequence: u64,
 }
 
-fn edges(catalog: &CatalogSnapshot, frame: &FrameRef, clock: &ClockReference, session: &str) -> Result<Vec<Edge>> {
+fn edges(catalog: &CatalogSnapshot, frame: &FrameRef, clock: &ClockReference, session: &str, cross_clock: bool) -> Result<Vec<Edge>> {
     let mut result = Vec::new();
     for p in &catalog.products {
         let Some(m) = &p.metadata else { continue };
@@ -26,7 +26,7 @@ fn edges(catalog: &CatalogSnapshot, frame: &FrameRef, clock: &ClockReference, se
         }
         let c: Contract = serde_json::from_value(m.value.clone())?;
         // No implicit cross-clock conversion or cross-session interpolation.
-        if c.clock != *clock || c.session_id != session {
+        if (c.clock == *clock && c.session_id != session) || (c.clock != *clock && !cross_clock) {
             continue;
         }
         let output = catalog
@@ -182,7 +182,7 @@ async fn at(
     sample_at(&samples, c.lifetime, timestamp)
 }
 
-fn sample_at(samples: &[(u64, u64, Update)], lifetime: Lifetime, timestamp: u64) -> Result<Pose> {
+pub(crate) fn sample_at(samples: &[(u64, u64, Update)], lifetime: Lifetime, timestamp: u64) -> Result<Pose> {
     match lifetime {
         Lifetime::Held => crate::frame_alignment::held_at(
             &samples
@@ -293,14 +293,17 @@ pub async fn resolve(
     ensure!(row["catalog_status"] == "ready", "Transform Catalog unavailable");
     ensure!(frame.peer_id == sensor.reference.peer_id && clock.peer_id == frame.peer_id, "Transform source authority mismatch");
     let catalog: CatalogSnapshot = serde_json::from_value(row["catalog"].clone())?;
-    let edges = edges(&catalog, frame, clock, session)?;
+    let edges = edges(&catalog, frame, clock, session, held.is_some())?;
     let (target, path) = unique_path(&edges, frame, targets)?;
     let mut pose = crate::local_mapper::identity();
     for index in path {
         let edge = &edges[index];
         crate::product_registry::resolved_contract(&row["registries"], &edge.contract)?;
-        let transform = if let (Lifetime::Held, Some(cache)) = (edge.contract.lifetime, held) {
-            cache.at(&edge.product, &edge.contract, edge.advertised_sequence, timestamp)?.0
+        let transform = if let Some(cache) = held {
+            let (matched, uncertainty) = cache.1.convert(clock, &edge.contract.clock, timestamp)?;
+            ensure!(uncertainty <= crate::capture_time::MAX_CAPTURE_MATCH_UNCERTAINTY_NS,
+                "Capture-clock conversion uncertainty exceeds 20 ms");
+            cache.at_with_uncertainty(&edge.product, &edge.contract, edge.advertised_sequence, matched, uncertainty)?.0
         } else { at(client, sensor, edge, timestamp).await? };
         pose = crate::local_mapper::compose(&transform, &pose)?;
     }

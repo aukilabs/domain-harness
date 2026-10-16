@@ -139,6 +139,20 @@ pub async fn render(
     home_peer: &str,
     overlay: bool,
 ) -> Result<Value> {
+    render_with_history(client, sensor, row, image, output, homes, home_peer, overlay, None).await
+}
+
+pub async fn render_with_history(
+    client: &ComponentProtocolClient,
+    sensor: &crate::sensor_preview::Sensor,
+    row: &Value,
+    image: &Observation<VideoFrame>,
+    output: &OutputManifest,
+    homes: &crate::local_scenes::LocalScenes,
+    home_peer: &str,
+    overlay: bool,
+    history: Option<&crate::frame_alignment::HeldTransforms>,
+) -> Result<Value> {
     ensure!(
         row["catalog_status"] == "ready",
         "Camera Catalog unavailable"
@@ -183,7 +197,7 @@ pub async fn render(
         })
         .collect::<Result<Vec<_>>>()?;
     let (target, pose) = crate::transform_chain::resolve(client, sensor, row,
-        &camera.frame, &camera.clock, &camera.session_id, image.timestamp_ns, &targets, None).await?;
+        &camera.frame, &camera.clock, &camera.session_id, image.timestamp_ns, &targets, history).await?;
     let declared = output
         .spatial_frame
         .as_ref()
@@ -202,6 +216,7 @@ pub async fn render(
     };
     Ok(
         json!({"sequence":image.sequence.to_string(),"capture_timestamp_ns":image.timestamp_ns.to_string(),
+        "capture_utc":history.map(|h|h.1.describe(&output.clock,image.timestamp_ns)),
         "clock":output.clock,"spatial_frame":output.spatial_frame,"calibration":calibration,
         "picking":{"frame":target.id,"camera_to_map":optical,"calibration":calibration},
         "viewpoint":crate::view_camera::frame_view(&pose,&declared.definition)?,"source_frame":camera.frame,

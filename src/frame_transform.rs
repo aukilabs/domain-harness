@@ -303,7 +303,7 @@ pub async fn subscribe(
                         manifest_hash: p.manifest_hash.clone(),
                     },
                     ObservationStart::LatestExisting,
-                    limits(),
+                    crate::observation_history::structured(),
                     size,
                 )
                 .await?;

@@ -196,7 +196,7 @@ impl Worker {
         // Validate downstream camera compatibility before registering anything;
         // a failed initializer must not leave a phantom alignment in the Catalog.
         let cal = camera.localization_calibration()?;
-        let source = p.product();
+        let source = p.product().ok_or_else(|| anyhow::anyhow!("Alignment requires an active pose sensor"))?;
         let native = Contract {
             from_frame: (&p.contract.from_frame).into(),
             to_frame: (&p.contract.to_frame).into(),
@@ -260,6 +260,7 @@ impl Worker {
         let detections = camera.detections.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let stopping = stop.clone();
+        let session_clock = p.session_clock.clone();
         let thread = std::thread::spawn(move || {
             let (_component, _capture) = (component, capture);
             let mut last_sequence = None;
@@ -298,7 +299,7 @@ impl Worker {
                 // its shutdown revocation and new session fence the old frame.
                 if alignment_action(changed, ready) == AlignmentAction::Revoke {
                     if valid {
-                        let at = now_ns().max(published.saturating_add(1));
+                        let at = session_clock.now_ns().max(published.saturating_add(1));
                         if output
                             .publish(
                                 at,
@@ -399,7 +400,7 @@ impl Worker {
             }
             if valid {
                 let _ = output.publish(
-                    now_ns().max(published.saturating_add(1)),
+                    session_clock.now_ns().max(published.saturating_add(1)),
                     Arc::new(Update {
                         tracking: Tracking::Lost,
                     }),
@@ -424,12 +425,6 @@ impl Worker {
             },
         )
     }
-}
-fn now_ns() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos() as u64
 }
 impl Drop for Worker {
     fn drop(&mut self) {

@@ -24,13 +24,115 @@ struct DiskState {
     catalog: auki_components::CatalogSnapshot,
     status: serde_json::Value,
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Hardware {
-    Galbot,
-    Bracketbot,
+fn sample_capture_clock(mapping: &mut crate::capture_time::NativeMapping, session: &auki_time::SessionClock) -> Result<()> {
+    mapping.observe(session, || auki_time::Clock::read_to_ns(&auki_time::SystemClock) as u64)
 }
 
-pub async fn run(hardware: Hardware) -> Result<()> {
+fn bbos_native_clock(owner: &str, session: &str) -> auki_registry::ClockRegistryEntry {
+    auki_registry::ClockRegistryEntry {
+        peer_id: owner.into(), session_id: session.into(),
+        clock_id: format!("{owner}/{session}/bbos-host-realtime"),
+        body: auki_registry::ClockBody::UtcClock(auki_registry::ClockMeta {
+            unit: "nanoseconds".into(), monotonic: false,
+            epoch: Some("1970-01-01T00:00:00Z".into()), scope: auki_registry::Scope::DeviceLocal,
+        }),
+    }
+}
+
+/// Exact capture correspondences for the local BBOS control/history adapter.
+/// SDK publications remain session-monotonic. The Python helpers read native
+/// BBOS times, so retain original values instead of approximating an inverse.
+#[derive(Default)]
+struct NativeCaptureTimes {
+    by_session: std::collections::BTreeMap<u64, u64>,
+    by_native: std::collections::BTreeMap<u64, u64>,
+    retained: std::collections::BTreeSet<u64>,
+}
+impl NativeCaptureTimes {
+    fn convert(&mut self, mapping: &crate::capture_time::NativeMapping, native: u64) -> Result<u64> {
+        if let Some(session) = self.by_native.get(&native) { return Ok(*session); }
+        let session = mapping.convert(native)?;
+        ensure!(self.by_session.get(&session).is_none_or(|old| *old == native), "Ambiguous native capture time");
+        self.by_session.insert(session, native);
+        self.by_native.insert(native, session);
+        Ok(session)
+    }
+    fn prune(&mut self, now: u64) -> Result<()> {
+        let cutoff = now.saturating_sub(10_000_000_000);
+        self.by_session.retain(|session, _| *session >= cutoff || self.retained.contains(session));
+        self.by_native.retain(|_, session| self.by_session.contains_key(session));
+        ensure!(self.by_session.len() <= 131_072, "Native capture correspondence budget exceeded");
+        Ok(())
+    }
+    fn control(&mut self, mut value: serde_json::Value,
+        source: &auki_components::ClockReference, native_definition: &auki_registry::ClockRegistryEntry) -> Result<serde_json::Value> {
+        fn convert(value: &mut serde_json::Value, table: &std::collections::BTreeMap<u64,u64>,
+            retained: &mut std::collections::BTreeSet<u64>, source: &serde_json::Value, native: &serde_json::Value) -> Result<()> {
+            if value == source { *value = native.clone(); return Ok(()); }
+            let timestamp = |value: &mut serde_json::Value, retained: &mut std::collections::BTreeSet<u64>| -> Result<()> {
+                if let Some(session) = value.as_u64().filter(|v| *v > 0) {
+                    let native = table.get(&session).ok_or_else(|| anyhow!("Missing original native capture timestamp"))?;
+                    retained.insert(session);
+                    *value = (*native).into();
+                }
+                Ok(())
+            };
+            match value {
+                serde_json::Value::Object(fields) => for (key, value) in fields {
+                    if key == "provenance" {
+                        // Original SDK observation references retain their
+                        // exact clock/time even in this native control view.
+                        continue;
+                    } else if key == "retained_depth_timestamps" {
+                        if let Some(values) = value.as_array_mut() { for value in values { timestamp(value, retained)?; } }
+                    } else if key == "timestamp_ns" || key.ends_with("_timestamp_ns") || key == "trajectory_correction_ns" {
+                        timestamp(value, retained)?;
+                    } else { convert(value, table, retained, source, native)?; }
+                },
+                serde_json::Value::Array(values) => for value in values { convert(value, table, retained, source, native)?; },
+                _ => {},
+            }
+            Ok(())
+        }
+        let mut retained = std::collections::BTreeSet::new();
+        let source = serde_json::to_value(source)?;
+        let native = serde_json::to_value(crate::model::clock_ref(native_definition))?;
+        convert(&mut value, &self.by_session, &mut retained, &source, &native)?;
+        value["local_clock_adapter"] = serde_json::json!({"sdk_clock":source,"native_clock":native,
+            "native_clock_definition":native_definition,"method":"original_capture_correspondence"});
+        self.retained = retained;
+        Ok(value)
+    }
+}
+
+/// This bridge's BBOS adapter explicitly stamps host CLOCK_REALTIME. Convert
+/// each original capture through measured clock samples, including nested
+/// historical corrections. Never derive an offset from packet arrival time.
+fn map_capture_times(value: &mut serde_json::Value, mapping: &crate::capture_time::NativeMapping, times: &mut NativeCaptureTimes) -> Result<()> {
+    fn timestamp(value: &mut serde_json::Value, mapping: &crate::capture_time::NativeMapping, times: &mut NativeCaptureTimes) -> Result<()> {
+        if let Some(t) = value.as_u64() { *value = times.convert(mapping, t)?.into(); }
+        Ok(())
+    }
+    if let Some(t) = value.get_mut("timestamp_ns") { timestamp(t, mapping, times)?; }
+    if let Some(sample) = value.get_mut("sample") {
+        for field in ["timestamp_ns", "rgb_timestamp_ns", "transform_timestamp_ns"] {
+            if let Some(t) = sample.get_mut(field) { timestamp(t, mapping, times)?; }
+        }
+    }
+    if let Some(portals) = value.get_mut("corrected_portals").and_then(serde_json::Value::as_object_mut) {
+        for pose in portals.values_mut() {
+            if let Some(t) = pose.get_mut("timestamp_ns") { timestamp(t, mapping, times)?; }
+        }
+    }
+    if let Some(depth) = value.get_mut("corrected_depth").and_then(serde_json::Value::as_object_mut) {
+        let mapped = depth.iter().map(|(t, pose)| Ok((times.convert(mapping, t.parse()?)?.to_string(), pose.clone())))
+            .collect::<Result<serde_json::Map<String, serde_json::Value>>>()?;
+        *depth = mapped;
+    }
+    Ok(())
+}
+
+pub async fn run() -> Result<()> {
     let args: Vec<_> = std::env::args().collect();
     ensure!(
         args.len() == 4,
@@ -46,40 +148,37 @@ pub async fn run(hardware: Hardware) -> Result<()> {
     lock.try_lock()?;
     let running = PeerSettings::load(Path::new(&args[1]))?.start().await?;
     let session = uuid::Uuid::new_v4().to_string();
-    let family = match hardware {
-        Hardware::Galbot => crate::local_mapper::FAMILY,
-        Hardware::Bracketbot => crate::local_mapper::BRACKETBOT_FAMILY,
-    };
+    let family = crate::local_mapper::BRACKETBOT_FAMILY;
     let frame = format!("{family}:{session}:zup");
-    let mut publisher = ScenePublisher::mount_in_frame(&running.peer, &frame)?;
     let owner = running.peer.peer_id().to_string();
-    let mut local = match hardware {
-        Hardware::Galbot => LocalMap::new(&publisher.runtime, &owner, &session)?,
-        Hardware::Bracketbot => LocalMap::new_for_robot(
-            &publisher.runtime,
-            &owner,
-            &session,
-            family,
-            crate::rgbd::BRACKETBOT_FRAME,
-            serde_json::from_str(include_str!(
-                "../config/humanoid-hub-conference/portals.json"
-            ))?,
-        )?,
-    };
+    let session_clock = auki_time::SessionClock::new(&owner, &session, "session");
+    let mut publisher = ScenePublisher::mount_in_frame_with_clock(&running.peer, &frame, session_clock.clone())?;
+    let registry_definitions = crate::product_registry::Definitions::default();
+    publisher.register_clocks(&registry_definitions)?;
+    let capture_clock = session_clock.registry_entry();
+    crate::product_registry::clock(&registry_definitions, &capture_clock)?;
+    let registry = crate::product_registry::mount(&running.peer, publisher.runtime.clone(), registry_definitions)?;
+    let mut local = LocalMap::new_for_robot_with_clock(
+        &publisher.runtime,
+        &owner,
+        capture_clock.clone(),
+        family,
+        crate::rgbd::BRACKETBOT_FRAME,
+        serde_json::from_str(include_str!(
+            "../config/humanoid-hub-conference/portals.json"
+        ))?,
+        Some(session_clock.clone()),
+    )?;
     if let Some(path) = std::env::var_os("SPATIAL_PORTAL_SIZES") {
         local.set_portal_sizes(crate::portal_sizes::PortalSizes::load(path)?)?;
     }
     local.export_sources(&publisher.endpoint)?;
     local.copy_native_scans();
-    let contribution_clock = crate::model::clock_entry(&owner, &session);
+    let contribution_clock = capture_clock.clone();
     let contribution_owner = owner.clone();
     let (contribution_send, mut contribution_receive) = tokio::sync::mpsc::channel::<crate::scene_contribution::Contribution>(2);
     let mut connection = HomeConnection::current(&running.peer)?;
-    connection.frame = if hardware == Hardware::Bracketbot {
-        family.into()
-    } else {
-        frame.clone()
-    };
+    connection.frame = family.into();
     save(Path::new(&args[3]), &connection)?;
     if path.exists() {
         std::fs::rename(
@@ -89,16 +188,10 @@ pub async fn run(hardware: Hardware) -> Result<()> {
     }
     let script = std::env::var_os("SPATIAL_LOCAL_CAPTURE")
         .map(PathBuf::from)
-        .unwrap_or_else(|| match hardware {
-            Hardware::Galbot => "scripts/capture-runner.py".into(),
-            Hardware::Bracketbot => "scripts/capture-bracketbot.py".into(),
-        });
-    let python = std::env::var_os("SPATIAL_CAPTURE_PYTHON").unwrap_or_else(|| match hardware {
-        Hardware::Galbot => "python3.8".into(),
-        Hardware::Bracketbot => "python3".into(),
-    });
+        .unwrap_or_else(|| "scripts/capture-bracketbot.py".into());
+    let python = std::env::var_os("SPATIAL_CAPTURE_PYTHON").unwrap_or_else(|| "python3".into());
     let context = serde_json::to_string(&serde_json::json!({
-        "clock":crate::model::clock_ref(&crate::model::clock_entry(&owner,&session)),
+        "clock":crate::model::clock_ref(&capture_clock),
         "session_id":session,
         "control_state_path":path.with_file_name("robot-control.json"),
         "camera_frame":crate::rgbd::BRACKETBOT_FRAME,
@@ -106,16 +199,9 @@ pub async fn run(hardware: Hardware) -> Result<()> {
         "base_frame_definition":auki_registry::FrameRegistryEntry::in_convention(&owner,"robot.base",auki_registry::CoordinateConvention::ZUpRightForward),
     }))?;
     let mut command = tokio::process::Command::new(python);
-    if hardware == Hardware::Bracketbot {
-        command.arg("scripts/bracketbot-python.py");
-    } else {
-        command.env("PYTHONPATH","/data/galbot/lib:/data/galbot/lib/python3.8.10:/data/galbot/lib/python3/site-packages")
-            .env("LD_LIBRARY_PATH","/data/galbot/lib");
-    }
+    command.arg("scripts/bracketbot-python.py");
     let mut child = command
         .arg(script)
-        .env("GALBOT_SENSOR_STATE", path.parent().unwrap())
-        .env("GALBOT_CAPTURE_CONTEXT", &context)
         .env("SPATIAL_CAPTURE_CONTEXT", &context)
         .env("OPENBLAS_NUM_THREADS", "1")
         .env("OMP_NUM_THREADS", "1")
@@ -129,7 +215,11 @@ pub async fn run(hardware: Hardware) -> Result<()> {
     let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
     let sensors: Inbox = Default::default();
     let mapping: Inbox = Default::default();
-    let live = Arc::new(Mutex::new(live::LiveState::new(hardware == Hardware::Bracketbot)));
+    let native_times = Arc::new(Mutex::new(NativeCaptureTimes::default()));
+    // A local IPC clock, distinct from the fixed session-start UTC anchor.
+    // BBOS realtime may be adjusted; the native sampler detects those changes.
+    let native_clock = bbos_native_clock(&owner, &session);
+    let live = Arc::new(Mutex::new(live::LiveState::new(true)));
     let stop = Arc::new(AtomicBool::new(false));
     let disk = Arc::new(Mutex::new(None::<DiskState>));
     let sensor_status = Arc::new(Mutex::new(serde_json::json!({})));
@@ -140,11 +230,33 @@ pub async fn run(hardware: Hardware) -> Result<()> {
         let live = live.clone();
         let sensors = sensors.clone();
         let mapping = mapping.clone();
+        let native_times = native_times.clone();
         tokio::spawn(async move {
-            while let Some(line) = lines.next_line().await? {
+            let mut clocks = crate::capture_time::NativeMapping::default();
+            let mut clock_tick = tokio::time::interval(Duration::from_millis(100));
+            loop {
+                let line = tokio::select! {
+                    _ = clock_tick.tick() => {
+                        sample_capture_clock(&mut clocks, &session_clock)?;
+                        continue;
+                    },
+                    line = lines.next_line() => match line? { Some(line) => line, None => break },
+                };
                 if let Some(raw) = line.strip_prefix("SENSOR ") {
                     ensure!(raw.len() < 16 * 1024 * 1024, "sensor packet exceeds limit");
-                    let value: serde_json::Value = serde_json::from_str(raw)?;
+                    let mut value: serde_json::Value = serde_json::from_str(raw)?;
+                    if value["kind"] != "register_sensor" {
+                        sample_capture_clock(&mut clocks, &session_clock)?;
+                        let mut times = native_times.lock().unwrap();
+                        times.prune(session_clock.now_ns())?;
+                        if let Err(error) = map_capture_times(&mut value, &clocks, &mut times) {
+                            if matches!(value["kind"].as_str(), Some("map_correction" | "trajectory_correction" | "correction_pending")) {
+                                return Err(error.context("Cannot map a coordinate-reset event into this session"));
+                            }
+                            eprintln!("Capture outside measured clock history: {error}");
+                            continue;
+                        }
+                    }
                     if matches!(value["kind"].as_str(), Some("odometry" | "tracking_lost" | "map_correction" | "trajectory_correction" | "correction_pending")) {
                         let event: SensorEvent = serde_json::from_value(value.clone())?;
                         live.lock().unwrap().accept(&event);
@@ -171,20 +283,19 @@ pub async fn run(hardware: Hardware) -> Result<()> {
         tokio::task::spawn_blocking(move || -> Result<()> {
             let detector_budget = Arc::new(crate::portal_camera_detector::DetectorBudget::default());
             let mut mounted =
-                std::collections::BTreeMap::<String, crate::galbot_sensors::Sensor>::new();
+                std::collections::BTreeMap::<String, crate::runner_sensors::Sensor>::new();
             let work = (|| -> Result<()> {
                 while !stop.load(Ordering::Relaxed) {
                     let batch = sensors.lock().unwrap().drain();
                     for value in batch {
                         if value["kind"] == "register_sensor" {
-                            let spec: crate::galbot_sensors::SensorSpec =
+                            let spec: crate::runner_sensors::SensorSpec =
                                 serde_json::from_value(value["spec"].clone())?;
                             ensure!(!mounted.contains_key(&spec.id), "duplicate sensor");
                             let mut sensor =
-                                crate::galbot_sensors::Sensor::mount(&runtime, &endpoint, spec)
+                                crate::runner_sensors::Sensor::mount(&runtime, &endpoint, spec)
                                     .map_err(|e| anyhow!(e))?;
-                            if matches!(hardware, Hardware::Bracketbot)
-                                && matches!(
+                            if matches!(
                                     sensor.spec.id.as_str(),
                                     "camera.left"
                                         | "camera.right"
@@ -234,6 +345,7 @@ pub async fn run(hardware: Hardware) -> Result<()> {
     };
     let mapper = {
         let live = live.clone();
+        let native_clock = native_clock.clone();
         let stop = stop.clone();
         let home_status = home_status.clone();
         let disk = disk.clone();
@@ -315,12 +427,6 @@ pub async fn run(hardware: Hardware) -> Result<()> {
                         }
                     }
                     if last_odom.elapsed() > Duration::from_secs(3) {
-                        if hardware != Hardware::Bracketbot && let Some((timestamp, _)) = &local.latest_pose {
-                            local.alignment_after_ns = Some(local.metadata()["local_mapping"]["observed_portals"]
-                                .as_object().into_iter().flat_map(|m|m.values())
-                                .filter_map(|v|v["capture_timestamp_ns"].as_u64())
-                                .max().unwrap_or(*timestamp).max(*timestamp));
-                        }
                         local.latest_pose = None;
                     }
                     local.export_camera_preview(&publisher.endpoint)?;
@@ -352,7 +458,8 @@ pub async fn run(hardware: Hardware) -> Result<()> {
                         if let Some(scene) = &scene {
                             live.lock().unwrap().set_basis(scene);
                         }
-                        let status = serde_json::json!({"frame":frame,"origin":local.origin,"detail":local.detail,"capture_status":capture_status,"scan_progress":local.scan_progress(),"status":if local.latest_pose.is_some(){"mapping"}else{"waiting_for_odometry"},"mapper_batch_ms":started.elapsed().as_millis(),"coalesced_samples":mapping.lock().unwrap().replaced,"sensors":sensor_status.lock().unwrap().clone(),"home_reference":home_status.lock().unwrap().clone(),"home_reference_applied":local.home_portals.is_some()});
+                        let status = serde_json::json!({"frame":frame,"origin":local.origin,"detail":local.detail,"capture_status":capture_status,"scan_progress":local.scan_progress(),"status":if local.latest_pose.is_some(){"mapping"}else{"waiting_for_odometry"},"mapper_batch_ms":started.elapsed().as_millis(),"coalesced_samples":mapping.lock().unwrap().replaced,"sensors":sensor_status.lock().unwrap().clone(),"home_reference":home_status.lock().unwrap().clone(),"home_reference_applied":local.home_portals.is_some(),
+                            "local_control_clock":crate::model::clock_ref(&native_clock)});
                         *disk.lock().unwrap() = Some(DiskState {
                             scene,
                             catalog: publisher.runtime.catalog().snapshot(),
@@ -425,16 +532,13 @@ pub async fn run(hardware: Hardware) -> Result<()> {
         }
     };
     let volume_work = async {
-        if hardware != Hardware::Bracketbot {
-            std::future::pending::<()>().await;
-        }
         let cache = path.with_file_name("semantic-volumes.json");
         loop {
             let work = async {
                 let profile: HomeConnection = serde_json::from_slice(&std::fs::read(&home_path)?)?;
                 let cancel = tokio_util::sync::CancellationToken::new();
                 crate::local_mobile::receive_scene(&running.peer, &profile, &cancel,
-                    Duration::from_secs(5), |scene| {
+                    Some(Duration::from_secs(5)), |scene| {
                         save(&cache, &serde_json::json!({
                             "schema":"spatial.robot-volume-input/v1", "authenticated":true,
                             "home_peer_id":profile.peer_id, "home_frame":profile.frame,
@@ -576,9 +680,14 @@ pub async fn run(hardware: Hardware) -> Result<()> {
     let live_work = async {
         loop {
             let snapshot = live.lock().unwrap().snapshot();
-            if let Some(snapshot) = snapshot
-                && let Err(error) = save(&path.with_file_name("robot-control.json"), &snapshot) {
-                eprintln!("Robot control snapshot: {error}");
+            if let Some(snapshot) = snapshot {
+                // This local IPC file is for BBOS history and motion helpers,
+                // which explicitly operate in BBOS's native realtime clock.
+                // Never export this derived view as an SDK Product.
+                let snapshot = native_times.lock().unwrap().control(snapshot, &crate::model::clock_ref(&capture_clock), &native_clock);
+                if let Err(error) = snapshot.and_then(|snapshot| save(&path.with_file_name("robot-control.json"), &snapshot)) {
+                    eprintln!("Robot control snapshot: {error}");
+                }
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -605,7 +714,7 @@ pub async fn run(hardware: Hardware) -> Result<()> {
                 let value = live.lock().unwrap().snapshot();
                 let update = match value {
                     Some(value) => {
-                        let name=std::env::var("SPATIAL_ROBOT_NAME").unwrap_or_else(|_|if hardware==Hardware::Bracketbot { "Bracketbot 0184".into() } else { "Galbot".into() });
+                        let name=std::env::var("SPATIAL_ROBOT_NAME").unwrap_or_else(|_| "Bracketbot 0184".into());
                         crate::robot_presence::from_live(&value,&name)?
                     },
                     None => crate::robot_presence::Update { sample:None },
@@ -656,9 +765,11 @@ pub async fn run(hardware: Hardware) -> Result<()> {
     {
         save(&path, scene)?;
     }
+    let registry_cleanup = registry.close().await;
     let cleanup = publisher.close().await;
     let peer_cleanup = tokio::time::timeout(Duration::from_secs(15), running.shutdown()).await?;
     reader_result
+        .and(registry_cleanup.map_err(Into::into))
         .and(sensor_result)
         .and(map_result)
         .and(disk_result)
@@ -670,4 +781,67 @@ fn save(path: &Path, value: &impl serde::Serialize) -> Result<()> {
     std::fs::write(&tmp, serde_json::to_vec(value)?)?;
     std::fs::rename(tmp, path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::*;
+    #[test]
+    fn capture_mapping_preserves_delay_and_maps_nested_corrections() -> Result<()> {
+        let mut mapping = crate::capture_time::NativeMapping::default();
+        let mut times = NativeCaptureTimes::default();
+        mapping.observe_pair(100, 1100, 100)?;
+        mapping.observe_pair(300, 1300, 300)?;
+        let mut camera = serde_json::json!({"kind":"camera","sample":{
+            "timestamp_ns":1150,"rgb_timestamp_ns":1150,"transform_timestamp_ns":1150}});
+        map_capture_times(&mut camera, &mapping, &mut times)?;
+        assert_eq!(camera["sample"]["timestamp_ns"], 150);
+        assert_eq!(camera["sample"]["rgb_timestamp_ns"], 150);
+        assert_eq!(camera["sample"]["transform_timestamp_ns"], 150);
+        let mut correction = serde_json::json!({"kind":"trajectory_correction","timestamp_ns":1250,
+            "corrected_portals":{"marker":{"timestamp_ns":1150}},"corrected_depth":{"1200":{}}});
+        map_capture_times(&mut correction, &mapping, &mut times)?;
+        assert_eq!(correction["timestamp_ns"], 250);
+        assert_eq!(correction["corrected_portals"]["marker"]["timestamp_ns"], 150);
+        assert!(correction["corrected_depth"].get("200").is_some());
+        let mut stale = serde_json::json!({"kind":"odometry","timestamp_ns":1050});
+        assert!(map_capture_times(&mut stale, &mapping, &mut times).is_err());
+        Ok(())
+    }
+    #[test]
+    fn local_control_preserves_original_bbos_times_and_pins_only_referenced_history() -> Result<()> {
+        let mut mapping = crate::capture_time::NativeMapping::default();
+        mapping.observe_pair(100, 1100, 100)?;
+        mapping.observe_pair(300, 1300, 300)?;
+        let mut times = NativeCaptureTimes::default();
+        assert_eq!(times.convert(&mapping, 1150)?, 150);
+        assert_eq!(times.convert(&mapping, 1200)?, 200);
+        let clock = auki_time::SessionClock::new("peer", "test", "session");
+        let source = crate::model::clock_ref(&clock.registry_entry());
+        let native = bbos_native_clock("peer", "test");
+        let native_ref = crate::model::clock_ref(&native);
+        assert_ne!(native, crate::capture_time::Contract::local(clock.registry_entry()).to_clock);
+        let input = serde_json::json!({"registries":{"local_mapping":{
+            "robot_pose":{"capture_timestamp_ns":150,"clock":source},
+            "retained_depth_timestamps":[150],
+            "origin":{"capture_timestamp_ns":150,"capture_clock":source},
+            "provenance":{"timestamp_ns":150,"clock":source}
+        }}});
+        let control = times.control(input.clone(), &source, &native)?;
+        assert_eq!(control["registries"]["local_mapping"]["robot_pose"]["capture_timestamp_ns"], 1150);
+        assert_eq!(control["registries"]["local_mapping"]["robot_pose"]["clock"], serde_json::to_value(&native_ref)?);
+        assert_eq!(control["registries"]["local_mapping"]["origin"]["capture_clock"], serde_json::to_value(&native_ref)?);
+        assert_eq!(control["registries"]["local_mapping"]["retained_depth_timestamps"][0], 1150);
+        assert_eq!(control["registries"]["local_mapping"]["provenance"], input["registries"]["local_mapping"]["provenance"]);
+        assert_eq!(input["registries"]["local_mapping"]["robot_pose"]["capture_timestamp_ns"], 150,
+            "SDK state must not be rewritten by the local control adapter");
+        times.prune(11_000_000_000)?;
+        assert_eq!(times.by_session.len(), 1);
+        // Even after bounded clock history expires, an optimized-pose reply for
+        // a pinned Portal must recover its exact original SDK capture key.
+        assert_eq!(times.convert(&crate::capture_time::NativeMapping::default(), 1150)?, 150);
+        let missing = serde_json::json!({"capture_timestamp_ns":200});
+        assert!(times.control(missing, &source, &native).is_err());
+        Ok(())
+    }
 }

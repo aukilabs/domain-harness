@@ -61,11 +61,9 @@ async fn retired_reference_keeps_independent_scene_products_and_services() -> Re
         }"#)?;
         let scenes = std::sync::Arc::new(LocalScenes::load(dir.path())?);
         let mut publisher = ScenePublisher::mount_without_reference(&pair.a)?;
-        let clock = model::clock_entry(&pair.a.peer_id().to_string(), "local-scenes-test");
-        let started = std::time::Instant::now();
-        let components = scenes.mount(&publisher.runtime, &publisher.endpoint, model::clock_ref(&clock), started)?;
+        let components = scenes.mount(&publisher.runtime, &publisher.endpoint, publisher.session_clock.clone())?;
         let mut mobiles = spatial_home::local_mobile::Publisher::mount_all(
-            &publisher.runtime, &publisher.endpoint, scenes.clone(), clock, started)?;
+            &publisher.runtime, &publisher.endpoint, scenes.clone(), publisher.session_clock.clone())?;
         for mobile in &mut mobiles { mobile.tick()?; }
         let client = ComponentProtocolClient::new(pair.b.protocols());
         let CatalogResponse::Snapshot { snapshot } = client.catalog_exact(
@@ -210,8 +208,7 @@ async fn saved_map_is_a_real_discoverable_sdk_product() -> Result<()> {
         let components = scenes.mount(
             &runtime,
             &endpoint,
-            model::clock_ref(&model::clock_entry(&owner, "test")),
-            std::time::Instant::now(),
+            auki_time::SessionClock::new(&owner, "test", "session"),
         )?;
         let client = ComponentProtocolClient::new(pair.b.protocols());
         let route = pair.a.listen_addresses()[0].clone();

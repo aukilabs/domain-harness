@@ -61,6 +61,15 @@ pub async fn serve(
 /// or None when the pose is not this body's base frame in `frame`.
 pub fn entry(robot: &Value, value: &Value, network: &Value, frame: &str) -> Option<Value> {
     let peer = robot["peer_id"].as_str()?;
+    let contract: crate::compact_pose::Contract = serde_json::from_value(value["resolved"]["references"].clone()).ok()?;
+    let product: auki_components::ProductReference = serde_json::from_value(value["product"].clone()).ok()?;
+    let output: auki_components::OutputReference = serde_json::from_value(value["observation"]["output"].clone()).ok()?;
+    let timestamp = value["observation"]["timestamp_ns"].as_u64()?;
+    let sequence = value["observation"]["sequence"].as_u64()?;
+    if product.peer_id != peer || output.peer_id != peer || output.output_id != contract.output_id()
+        || value["timestamp_ns"] != timestamp.to_string() || value["sequence"] != sequence.to_string() {
+        return None;
+    }
     // The pose must be for the declared body's base frame, as the viewer matches it.
     if value["resolved"]["references"]["from_frame"] != robot["base_frame"] {
         return None;
@@ -84,7 +93,20 @@ pub fn entry(robot: &Value, value: &Value, network: &Value, frame: &str) -> Opti
         let Some(timestamp) = latest["timestamp_ns"].as_str().and_then(|t| t.parse::<u64>().ok()) else {
             return Value::Null;
         };
-        let mut value = json!({"timestamp_ns": timestamp});
+        // This is the source dataset's capture clock, not Home's or another
+        // stream from this peer. Forward provenance without changing its time.
+        let Ok(clock) = serde_json::from_value::<auki_components::ClockReference>(latest["clock"].clone()) else {
+            return Value::Null;
+        };
+        let Ok(product) = serde_json::from_value::<auki_components::ProductReference>(latest["source"]["product"].clone()) else {
+            return Value::Null;
+        };
+        let Ok(output) = serde_json::from_value::<auki_components::OutputReference>(latest["source"]["output"].clone()) else {
+            return Value::Null;
+        };
+        let Some(sequence) = latest["sequence"].as_u64() else { return Value::Null };
+        let mut value = json!({"timestamp_ns":timestamp,"clock":clock,"sequence":sequence,
+            "source":{"product":product,"output":output}});
         for field in fields {
             if !latest["state"][field].is_null() {
                 value[*field] = latest["state"][field].clone();
@@ -96,6 +118,9 @@ pub fn entry(robot: &Value, value: &Value, network: &Value, frame: &str) -> Opti
         "peer_id": peer,
         "name": crate::peer_aliases::name(peer, reported),
         "registry": true,
+        "clock": contract.clock,
+        "capture_timestamp_ns": timestamp.to_string(),
+        "source": {"product":product,"output":output,"sequence":sequence.to_string(),"contract":contract},
         "pose": {"from_frame_id": robot["base_frame"]["id"], "to_frame_id": frame,
                  "translation": translation, "rotation_wxyz": [w, x, y, z]},
         "joints": state("joints", &["positions"]),
@@ -110,14 +135,29 @@ mod tests {
 
     fn fixtures() -> (Value, Value) {
         let base = json!({"peer_id": "robot", "id": "bracketbot-root", "hash": "h1"});
-        let robot = json!({"peer_id": "robot", "model": "bracketbot", "base_frame": base,
+        let mut robot = json!({"peer_id": "robot", "model": "bracketbot", "base_frame": base,
             "joints": {"timestamp_ns": "7", "age_ms": 5, "state": {"positions": {"rj1": 0.4}}},
             "health": {"timestamp_ns": "8", "age_ms": 5, "state": {
                 "joints": {"rj1": {"temperature_c": 47.0, "current_a": 1.2}},
                 "battery": {"voltage": 24.1, "percent": 61.0}}},
             "pointing": null});
-        let value = json!({"stream": "live", "age_ms": 40,
-            "resolved": {"references": {"from_frame": base}},
+        for (kind, sequence) in [("joints", 17), ("health", 18)] {
+            robot[kind]["sequence"] = json!(sequence);
+            robot[kind]["clock"] = json!({"peer_id":"robot","id":format!("{kind}-session-clock"),"hash":"clock-hash"});
+            robot[kind]["source"] = json!({
+                "product":{"peer_id":"robot","product_id":format!("{kind}-product"),"manifest_hash":"product-hash"},
+                "output":{"peer_id":"robot","component_id":"body","component_manifest_hash":"component-hash",
+                    "slot":kind,"output_id":format!("{kind}-output"),"manifest_hash":"output-hash"}});
+        }
+        let contract: crate::compact_pose::Contract = serde_json::from_value(json!({"from_frame":base,
+            "to_frame":{"peer_id":"robot","id":"native","hash":"native-frame-hash"},
+            "clock":{"peer_id":"robot","id":"pose-session-clock","hash":"pose-clock-hash"},"session_id":"pose-session"})).unwrap();
+        let value = json!({"stream": "live", "age_ms": 40,"timestamp_ns":"9007199254740993","sequence":"3",
+            "product":{"peer_id":"robot","product_id":"poses","manifest_hash":"pose-product-hash"},
+            "observation":{"timestamp_ns":9_007_199_254_740_993_u64,"sequence":3,
+                "output":{"peer_id":"robot","component_id":"poses","component_manifest_hash":"pose-component-hash",
+                    "slot":"poses","output_id":contract.output_id(),"manifest_hash":"pose-output-hash"}},
+            "resolved": {"references": contract},
             "home_pose": {"frame": "local-scene:lab:origin", "tracking": {"status": "valid",
                 "pose": {"translation": [1.0, 0.0, 2.0], "rotation_xyzw": [0.0, 0.0, 0.0, 1.0]}}}});
         (robot, value)
@@ -133,15 +173,56 @@ mod tests {
         assert_eq!(entry["pose"]["to_frame_id"], "local-scene:lab:origin");
         assert_eq!(entry["pose"]["from_frame_id"], "bracketbot-root");
         assert_eq!(entry["pose"]["rotation_wxyz"], json!([1.0, 0.0, 0.0, 0.0]));
-        assert_eq!(entry["joints"], json!({"timestamp_ns": 7, "positions": {"rj1": 0.4}}));
+        assert_eq!(entry["clock"], value["resolved"]["references"]["clock"]);
+        assert_eq!(entry["capture_timestamp_ns"], value["timestamp_ns"]);
+        assert_eq!(entry["source"]["product"], value["product"]);
+        assert_eq!(entry["source"]["output"], value["observation"]["output"]);
+        assert_eq!(entry["source"]["sequence"], value["sequence"]);
+        assert_eq!(entry["joints"]["timestamp_ns"], 7);
+        assert_eq!(entry["joints"]["positions"], json!({"rj1": 0.4}));
         assert_eq!(entry["health"]["timestamp_ns"], 8);
         assert_eq!(entry["health"]["battery"]["percent"], 61.0);
         assert_eq!(entry["health"]["joints"]["rj1"]["temperature_c"], 47.0);
+        for kind in ["joints", "health"] {
+            assert_eq!(entry[kind]["clock"], robot[kind]["clock"]);
+            assert_eq!(entry[kind]["sequence"], robot[kind]["sequence"]);
+            assert_eq!(entry[kind]["source"], robot[kind]["source"]);
+        }
+        assert_ne!(entry["joints"]["clock"], entry["health"]["clock"], "never infer a shared clock from a peer");
         // Phones decode presence labels through the same scene view as before.
         let mut view = json!({"notes": []});
         crate::robot_presence::append_labels(&mut view,
             &json!({"frame": "local-scene:lab:origin", "poses": [entry]}), "local-scene:lab:origin");
         assert_eq!(view["notes"][0]["robot_pose"]["registry"], true);
+        assert_eq!(view["notes"][0]["robot_pose"]["health"]["clock"], robot["health"]["clock"]);
+    }
+
+    #[test]
+    fn state_without_full_capture_clock_or_source_is_not_forwarded() {
+        let (robot, value) = fixtures();
+        for path in [["clock", "hash"], ["source", "product"], ["source", "output"]] {
+            let mut incomplete = robot.clone();
+            incomplete["health"][path[0]].as_object_mut().unwrap().remove(path[1]);
+            let entry = entry(&incomplete, &value, &json!({}), "local-scene:lab:origin").unwrap();
+            assert!(entry["health"].is_null());
+            assert_eq!(entry["joints"]["clock"], robot["joints"]["clock"]);
+        }
+    }
+
+    #[test]
+    fn pose_without_exact_clock_source_and_capture_provenance_is_not_forwarded() {
+        let (robot, value) = fixtures();
+        for field in ["product", "observation", "timestamp_ns", "sequence"] {
+            let mut incomplete = value.clone();
+            incomplete.as_object_mut().unwrap().remove(field);
+            assert!(entry(&robot, &incomplete, &json!({}), "local-scene:lab:origin").is_none());
+        }
+        let mut missing_clock = value.clone();
+        missing_clock["resolved"]["references"].as_object_mut().unwrap().remove("clock");
+        assert!(entry(&robot, &missing_clock, &json!({}), "local-scene:lab:origin").is_none());
+        let mut mismatched_capture = value.clone();
+        mismatched_capture["timestamp_ns"] = json!("9007199254740992");
+        assert!(entry(&robot, &mismatched_capture, &json!({}), "local-scene:lab:origin").is_none());
     }
 
     #[test]

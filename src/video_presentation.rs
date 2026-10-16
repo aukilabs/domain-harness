@@ -1,6 +1,6 @@
 //! Presentation only. Camera bytes, calibration, poses and pixel coordinates
 //! remain native. Missing orientation must not prevent viewing a video feed.
-use crate::compact_pose::{Contract, FrameRef, Lifetime, Update};
+use crate::compact_pose::{Contract, FrameRef, Lifetime};
 use anyhow::{Result, anyhow, ensure};
 use auki_components::*;
 use serde_json::{Value, json};
@@ -58,7 +58,7 @@ pub fn upright(
 }
 
 pub async fn resolve(
-    client: &auki_component_protocol::ComponentProtocolClient,
+    history: &crate::frame_alignment::HeldTransforms,
     sensor: &crate::sensor_preview::Sensor,
     row: &Value,
     output: &OutputManifest,
@@ -93,7 +93,6 @@ pub async fn resolve(
                 let c: Contract = serde_json::from_value(m.value.clone()).ok()?;
                 if c.lifetime != Lifetime::Sampled
                     || c.from_frame != FrameRef::from(&frame.definition)
-                    || c.clock != output.clock
                     || p.manifest.peer_id != sensor.reference.peer_id
                 {
                     return None;
@@ -113,44 +112,10 @@ pub async fn resolve(
         );
         let (reference, c) = &candidates[0];
         let (resolved, _) = crate::product_registry::resolved_contract(&row["registries"], c)?;
-        let gap = crate::declared_depth::MAX_GAP_NS;
-        let request = auki_component_protocol::ObservationRequest {
-            product: reference.clone(),
-            selection: auki_component_protocol::ObservationSelection::TimeRange {
-                request: TimeRangeRequest {
-                    clock: c.clock.clone(),
-                    start_ns: timestamp.saturating_sub(gap),
-                    end_ns: timestamp.saturating_add(gap),
-                },
-            },
-        };
-        let response = if let Some(route) = &sensor.route {
-            client
-                .observations_exact::<Update>(sensor.peer, route.clone(), request)
-                .await?
-        } else {
-            client.observations::<Update>(sensor.peer, request).await?
-        };
-        ensure!(
-            response.product.reference() == *reference
-                && response.product.producer == response.producer.reference()
-                && response.gap.is_none()
-                && response.end.is_none(),
-            "Pose history changed/unavailable"
-        );
-        c.validate_output(&response.producer)?;
-        let samples = response
-            .observations
-            .iter()
-            .map(|o| {
-                ensure!(
-                    o.output == response.producer.reference(),
-                    "Pose provenance mismatch"
-                );
-                Ok((o.sequence, o.timestamp_ns, (*o.payload).clone()))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let pose = crate::declared_depth::sampled_at(&samples, timestamp)?;
+        let (matched,uncertainty)=history.1.convert(&output.clock,&c.clock,timestamp)?;
+        ensure!(uncertainty<=crate::capture_time::MAX_CAPTURE_MATCH_UNCERTAINTY_NS,
+            "Capture-clock conversion uncertainty exceeds 20 ms");
+        let pose=history.at_with_uncertainty(reference,c,0,matched,uncertainty)?.0;
         let turn = match meta.and_then(|m| m.get("rotation_from_camera_frame_deg")) {
             Some(value) => value
                 .as_u64()
@@ -164,7 +129,7 @@ pub async fn resolve(
             json!({"rotation_clockwise_deg":rotation,"source":"capture_pose","timestamp_ns":timestamp.to_string(),"reference_frame":c.to_frame}),
         )
     };
-    // A phone's pose comes over Wi-Fi; 200 ms missed often enough to lay its picture on its side.
+    // Bound orientation work; failures leave presentation explicitly unavailable.
     match tokio::time::timeout(std::time::Duration::from_millis(800), work).await {
         Ok(Ok(value)) => value,
         Ok(Err(e)) => json!({"source":"unavailable","detail":e.to_string()}),
