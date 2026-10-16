@@ -130,7 +130,6 @@ h3{font-size:13px;font-weight:600;letter-spacing:0;margin:8px 0 5px;color:var(--
 #sensor-close{background:transparent;border:0;color:#ffffff99;font-size:18px}
 #sensor-stage{position:relative;overflow:hidden;aspect-ratio:16/9}
 .sensor-presentation{position:absolute;left:0;top:0;width:100%;transform-origin:0 0}
-.sensor-orientation{width:auto;max-width:85px;font-size:11px;padding:2px}
 #sensor-image{display:block;width:100%;aspect-ratio:16/9;object-fit:contain;background:#09090b}
 #sensor-ar-overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
 #sensor-feed-status,#sensor-ar-status{font-size:10px;padding:6px 8px;color:#9da6b8}
@@ -244,7 +243,6 @@ aside{display:block;padding:0;min-width:0;max-height:none;overflow:hidden;backgr
 .volume-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 10px}
 .volume-grid input{min-width:0}
 .volume-handles{position:absolute;inset:0;pointer-events:none;z-index:80}
-.volume-handle-leaders{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
 .volume-resize-handle{position:absolute;transform:translate(-50%,-50%);width:48px;height:48px;padding:0;border:0;border-radius:50%;background:transparent;color:#3b82f6;pointer-events:auto;cursor:grab;touch-action:none;display:grid;place-items:center}
 .volume-resize-handle[hidden]{display:none}
 .volume-resize-handle .handle-ring{stroke:#1d4ed8}
@@ -1048,6 +1046,9 @@ select.form-control{appearance:none;-webkit-appearance:none;padding-right:30px;b
 .card-head .card-title.mono-id{font-size:14px}
 .card-head~.inspector-parent,.card-head~.inspector-position,.card-head~small{display:block;margin-left:44px}
 .card-head~.inspector-position{margin-top:2px}
+/* A rename field stays under the head at full width (only a plain title joins it), so the lines after it align with
+   the name rather than the icon column. */
+.card-head~.card-title-input~.inspector-position{margin-left:0}
 .card-head~small{margin-top:2px;font-size:12px;line-height:16px;color:var(--nav-muted)}
 .card-head+.form-status:empty{display:none}
 /* Facts: label/value rows with hairlines, used by scene picks and technical details alike. */
@@ -1066,23 +1067,23 @@ select.form-control{appearance:none;-webkit-appearance:none;padding-right:30px;b
 .location-warning[hidden]{display:none}
 /* Footer: actions pinned to the bottom of the card, same in every mode. */
 .selection>.card-actions,.selection .note-card-form>.card-actions,.selection .volume-form>.card-actions,.selection>.card-confirm{position:sticky;bottom:-16px;z-index:1;margin:16px -16px -16px;padding:12px 16px;border-top:1px solid var(--nav-line);background:color-mix(in srgb,var(--nav-panel) 96%,transparent);border-radius:0 0 16px 16px}
-/* Delete confirm takes over the footer rather than nesting a box in the body. */
-.selection .card-confirm{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:6px 12px;border-top-color:color-mix(in srgb,#dc2626 30%,transparent);background:color-mix(in srgb,color-mix(in srgb,#dc2626 5%,var(--nav-panel)) 96%,transparent);animation:confirm-in .34s cubic-bezier(.3,1.25,.5,1)}
+/* Delete confirm takes over the footer rather than nesting a box in the body: the question across the full width,
+   the buttons beneath it on the right, then any status. The footer itself stays put (it is sticky and translucent,
+   so sliding or fading it showed the card through it and bounced its edge); only its contents ease in. */
+.selection .card-confirm{display:grid;grid-template-columns:minmax(0,1fr);gap:10px;border:0;border-top:1px solid color-mix(in srgb,#dc2626 30%,transparent);background:color-mix(in srgb,color-mix(in srgb,#dc2626 5%,var(--nav-panel)) 96%,transparent)}
+.selection .card-confirm>*{animation:confirm-in .18s ease-out both}
 .selection .card-confirm>p{margin:0;font-size:12px;line-height:16px;color:#b91c1c}
 :root:not([data-theme="light"]) .selection .card-confirm>p{color:#fca5a5}
-.selection .card-confirm .card-actions{position:static;margin:0;padding:0;border:0;background:none}
+.selection .card-confirm .card-actions{position:static;justify-content:flex-end;margin:0;padding:0;border:0;background:none}
 .selection .card-confirm .form-status:empty{display:none}
-.selection .card-confirm .form-status{grid-column:1/-1;margin:0}
-@keyframes confirm-in{from{opacity:0;transform:translateY(8px)}}
+.selection .card-confirm .form-status{margin:0}
+@keyframes confirm-in{from{opacity:0;transform:translateY(3px)}}
 /* Body rhythm */
 .selection .card-description{margin-top:14px}
 .selection .technical-details{margin-top:14px;padding-top:12px;border-top:1px solid var(--nav-line)}
 .selection .note-photo,.selection .card-photo{margin-top:14px}
-.volume-form .form-control{height:36px;font-size:13px}
-@media(prefers-reduced-motion:reduce){.selection .card-confirm{animation:none}}
-/* Confirm footer: the question gets the full width, buttons sit beneath it on the right. */
-.selection .card-confirm{grid-template-columns:minmax(0,1fr)}
-.selection .card-confirm .card-actions{justify-content:flex-end}
+.volume-form .form-control:not(textarea){height:36px;font-size:13px}
+@media(prefers-reduced-motion:reduce){.selection .card-confirm>*{animation:none}}
 /* Positions wrap rather than truncate in facts rows. */
 .selection .card-facts dd>span.mono-id{white-space:normal;overflow:visible;text-overflow:clip}
 /* Volume handles: glass pucks with a violet ring, matching the Volumes section. Hover lifts them like the
@@ -1098,7 +1099,6 @@ select.form-control{appearance:none;-webkit-appearance:none;padding-right:30px;b
 :root:not([data-theme="light"]) .volume-resize-handle{color:#c4b5fd}
 :root:not([data-theme="light"]) .volume-resize-handle::before{background:radial-gradient(circle at 35% 28%,#52525b,#3f3f46 58%,#27272a);box-shadow:inset 0 0 0 1.5px color-mix(in srgb,#a78bfa 60%,transparent),inset 0 1px 0 rgba(255,255,255,.12),0 6px 14px -5px rgba(0,0,0,.7)}
 :root:not([data-theme="light"]) .volume-resize-handle.active{color:#fff}
-.volume-leader{stroke:#7c3aed;stroke-width:1.25;stroke-dasharray:3 3;opacity:.55}
 @media(prefers-reduced-motion:reduce){.volume-resize-handle::before,.volume-resize-handle svg{transition:none}}
 /* Devices: the list follows hidden legacy controls, so its first header needs the same top reset as other panels. */
 #fleet-sensors>.section-header:first-child,#fleet-sensors>:first-child>.section-header:first-child{margin-top:0}
@@ -1142,7 +1142,6 @@ select.form-control{appearance:none;-webkit-appearance:none;padding-right:30px;b
 #sensor-pip .ar-toggle .switch-input{width:30px!important;height:18px!important}
 #sensor-pip .ar-toggle .switch-input::after{width:14px;height:14px}
 #sensor-pip .ar-toggle .switch-input:checked::after{transform:translateX(12px)}
-#sensor-pip .sensor-orientation{width:auto;height:28px;margin:0;padding:0 24px 0 8px;border:0;border-radius:8px;background:var(--glass-fill) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 12 12' fill='none' stroke='%2371717a' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5'/%3E%3C/svg%3E") no-repeat right 7px center;box-shadow:inset 0 0 0 1px var(--glass-rim);color:var(--nav-text);font:500 12px system-ui;appearance:none;-webkit-appearance:none;cursor:pointer}
 #sensor-pip #sensor-close{position:static;flex-shrink:0;width:28px;height:28px;color:var(--nav-muted)}
 #sensor-pip #sensor-stage{border-radius:10px;background:#09090b;box-shadow:inset 0 0 0 1px rgba(0,0,0,.06)}
 #sensor-pip #sensor-image{background:#09090b}
@@ -1209,6 +1208,359 @@ body:has(.placement-banner:not([hidden])) .scene-notice{top:68px}
 .card-title-input{display:block;box-sizing:border-box;width:calc(100% - 26px);min-height:32px;margin:2px 0 0 -7px;color:var(--nav-text);padding:3px 6px;border:1px solid transparent;border-radius:8px;background:transparent;color:inherit;font:inherit;font-size:15px;font-weight:600;line-height:22px;cursor:text;outline:none;transition:background .15s ease,border-color .15s ease}
 .card-title-input:hover{background:var(--glass-fill);border-color:var(--glass-rim)}
 .card-title-input:focus{background:var(--glass-fill);border-color:var(--tab,#2563eb)}
+/* Real peers have long IDs and product names: nothing in a panel may widen it. Long identifiers truncate;
+   the full value stays available through copy buttons and tooltips. */
+.panel-body{overflow-x:hidden}
+.panel-body>*,.panel-body>*>*,#device-detail>*{min-width:0}
+.device-identity h3{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;overflow-wrap:normal}
+.device-id{min-width:0}
+.device-id .mono-id{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pose-log-row .list-row-meta{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
+.list-row-title,.list-row-meta{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Device capabilities: the per-capability raw details stay invisible until opened (their closed summary was
+   drawing a stray divider under every row), and rows are separated by one hairline between them. */
+.capability .capability-raw,#device-detail .capability .capability-raw{margin:0;padding:0;border:0}
+.capability .capability-raw:not([open]){height:0;overflow:hidden}
+.capability .capability-raw[open],#device-detail .capability .capability-raw[open]{margin-top:6px}
+.capability+.capability{border-top:1px solid color-mix(in srgb,var(--nav-line) 70%,transparent)}
+/* Buttons: no border, so the hover plate's rim and shadow sit exactly on the button's edge instead of a pixel
+   inside it. Secondary buttons draw their rim as an inset line; the top highlight is faint on dark glass. */
+.btn{border:0}
+.btn-secondary{box-shadow:inset 0 0 0 1px var(--glass-rim),inset 0 1px 0 rgba(255,255,255,.06),0 1px 2px rgba(0,0,0,.2)}
+:root[data-theme="light"] .btn-secondary{box-shadow:inset 0 0 0 1px var(--glass-rim),inset 0 1px 0 rgba(255,255,255,.6),0 1px 2px rgba(24,24,27,.06)}
+.btn-secondary:not(:disabled):hover{background:color-mix(in srgb,#ffffff 10%,var(--glass-fill));box-shadow:inset 0 0 0 1px rgba(255,255,255,.14),inset 0 1px 0 rgba(255,255,255,.1),0 4px 10px -4px rgba(0,0,0,.5)}
+.btn-ghost:not(:disabled):hover{background:rgba(255,255,255,.06);box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)}
+:root[data-theme="light"] :is(.btn-secondary,.btn-ghost):not(:disabled):hover{background:radial-gradient(circle at var(--light-x,35%) var(--light-y,30%),rgba(255,255,255,.7),transparent 60%),linear-gradient(180deg,#ffffff,#f4f4f5);box-shadow:inset 0 0 0 1px rgba(24,24,27,.08),inset 0 1px 0 #fff,0 6px 12px -6px rgba(24,24,27,.35)}
+.btn-secondary[aria-pressed="true"]{box-shadow:inset 0 0 0 1px #3b82f6}
+/* Page load: the shell stays hidden until the script has built it, then fades in, so a refresh never shows
+   the raw, unarranged markup. The head script adds the class; app.js removes it (with a timed fallback). */
+html.booting body{opacity:0}
+html.booted body{animation:boot-in .3s ease}
+@keyframes boot-in{from{opacity:0}}
+@media(prefers-reduced-motion:reduce){html.booted body{animation:none}}
+/* Dark mode: a softer hover on buttons; the cursor spotlight is a faint sheen rather than a white glow. */
+:root:not([data-theme="light"]) .btn-secondary:not(:disabled):hover{background:rgba(255,255,255,.06);box-shadow:inset 0 0 0 1px rgba(255,255,255,.1),0 4px 10px -4px rgba(0,0,0,.5)}
+:root:not([data-theme="light"]) .btn-ghost:not(:disabled):hover{background:rgba(255,255,255,.045);box-shadow:none}
+:root:not([data-theme="light"]) :is(.btn-secondary,.btn-ghost,.btn-danger-ghost,.user-menu-button)::after{background:radial-gradient(120px circle at var(--spot-x) var(--spot-y),rgba(255,255,255,.07),transparent 70%)}
+/* Device capabilities: ⓘ opens an inset glass well under the row. Facts first (label/value rows, as on the
+   scene cards), then the manifest itself behind a "Raw manifest" disclosure with its copy button alongside. */
+#device-detail .capability .capability-raw[open]{display:flow-root;margin-top:0}
+.capability-well{margin:8px -4px 2px;padding:2px 10px 8px;border-radius:12px;background:rgba(0,0,0,.16);box-shadow:inset 0 0 0 1px var(--glass-rim),inset 0 1px 3px rgba(0,0,0,.28)}
+:root[data-theme="light"] .capability-well{background:rgba(24,24,27,.035);box-shadow:inset 0 0 0 1px rgba(24,24,27,.06),inset 0 1px 2px rgba(24,24,27,.06)}
+#device-detail .capability-well .capability-facts{display:grid;grid-template-columns:84px minmax(0,1fr);gap:0;margin:0;padding:0;border:0}
+#device-detail .capability-well .capability-facts:empty{display:none}
+#device-detail .capability-well .capability-facts :is(dt,dd){display:flex;align-items:center;min-height:32px;margin:0;padding:6px 0;border-top:1px solid color-mix(in srgb,var(--nav-line) 60%,transparent)}
+#device-detail .capability-well .capability-facts :is(dt,dd):nth-child(-n+2){border-top:0}
+#device-detail .capability-well .capability-facts dt{padding-right:10px;font-size:12px;line-height:16px;color:var(--muted)}
+#device-detail .capability-well .capability-facts dd{gap:4px;font:12px/16px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--nav-text);overflow-wrap:anywhere}
+#device-detail .capability-well .capability-facts dd>span{flex:1;min-width:0;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;word-break:break-all}
+#device-detail .capability-well .capability-facts .copy-button{margin:-6px -6px -6px 0}
+.capability-well>.btn{width:100%;margin:6px 0 2px;justify-content:center}
+.capability-manifest-header{display:flex;align-items:center;gap:4px;margin:2px -6px 0 0;padding-top:4px;border-top:1px solid color-mix(in srgb,var(--nav-line) 60%,transparent)}
+.capability-facts:empty+.capability-manifest-header,.capability-well>.capability-manifest-header:first-child{border-top:0}
+.capability-manifest-header .disclosure{flex:1;width:auto;height:32px;margin:0 0 0 -8px;padding:0 8px;font-size:12px;color:var(--nav-text)}
+.capability-manifest-header .disclosure svg{width:14px;height:14px}
+#device-detail .capability-manifest .capability-json{max-height:260px;margin:2px 0 4px;padding:10px 12px;border-radius:9px;background:var(--nav-rail);box-shadow:inset 0 0 0 1px var(--glass-rim);color:var(--muted);font:11.5px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:slashed-zero;tab-size:2;white-space:pre;overflow:auto}
+:root[data-theme="light"] #device-detail .capability-manifest .capability-json{background:rgba(255,255,255,.7)}
+.capability-json:focus-visible{outline-offset:-2px!important}
+.capability-json .json-key{color:var(--tab-ink,#22d3ee)}
+.capability-json :is(.json-string,.json-number,.json-literal){color:var(--nav-text)}
+.capability-json :is(.json-number,.json-literal){font-weight:600}
+#device-detail .capability .icon-toggle[aria-expanded="true"]{color:var(--tab-ink)}
+/* Capability groups: a small caption in the section colour's ink over a glass card holding the rows. */
+#device-detail .device-capabilities .capability-group{display:flex;align-items:center;gap:6px;margin:16px 0 6px;padding:0 2px;font-size:12px;font-weight:600;line-height:16px;letter-spacing:.01em;color:var(--muted)}
+#device-detail .device-capabilities .capability-group svg{flex-shrink:0;color:var(--tab-ink)}
+#device-detail .device-capabilities .capability-group>span:nth-of-type(1){flex:1}
+.capability-group-count{font-weight:500;font-variant-numeric:tabular-nums;color:var(--nav-muted)}
+.capability-card{padding:0 12px;border-radius:12px;background:var(--glass-fill);box-shadow:inset 0 0 0 1px var(--glass-rim)}
+:root[data-theme="light"] .capability-card{background:rgba(255,255,255,.6);box-shadow:inset 0 0 0 1px var(--glass-rim),0 1px 2px rgba(24,24,27,.04)}
+#device-detail .capability-card .capability{padding:10px 0}
+#device-detail .capability-card .capability .list-row-title{font-size:13.5px;font-weight:500}
+/* Right-click spot menu as a donut: a glass ring centred on the spot, split into four wedges by hairlines
+   across the middle 60% of the band, a tool on each diagonal, and a small hollow centre the floor marker shows through. Earlier .spot-menu rules set the bar; these replace them. */
+.spot-menu{--hole:18px;--band:calc(76px - var(--hole));--divider:rgba(24,24,27,.1);display:block;width:152px;height:152px;padding:0;border:0;border-radius:50%;background:none;-webkit-backdrop-filter:none;backdrop-filter:none;box-shadow:0 18px 40px -14px rgba(24,24,27,.32),0 2px 6px rgba(24,24,27,.06);transform-origin:50% 50%}
+:root:not([data-theme="light"]) .spot-menu{box-shadow:0 18px 40px -14px rgba(0,0,0,.6)}
+.spot-menu[data-closing]{pointer-events:none}
+.spot-menu:focus{outline:none!important;animation:none!important}
+:root:not([data-theme="light"]) .spot-menu{--divider:rgba(255,255,255,.1)}
+.spot-menu::before{content:"";position:absolute;inset:0;border-radius:50%;background:linear-gradient(transparent calc(var(--band)*.2),var(--divider) 0 calc(var(--band)*.8),transparent 0 calc(100% - var(--band)*.8),var(--divider) 0 calc(100% - var(--band)*.2),transparent 0) center/1px 100% no-repeat,linear-gradient(90deg,transparent calc(var(--band)*.2),var(--divider) 0 calc(var(--band)*.8),transparent 0 calc(100% - var(--band)*.8),var(--divider) 0 calc(100% - var(--band)*.2),transparent 0) center/100% 1px no-repeat,color-mix(in srgb,var(--nav-panel) 88%,transparent);-webkit-backdrop-filter:blur(24px) saturate(1.3);backdrop-filter:blur(24px) saturate(1.3);box-shadow:inset 0 0 0 1px rgba(255,255,255,.6);-webkit-mask:radial-gradient(circle,transparent calc(var(--hole) - .5px),#000 calc(var(--hole) + .5px));mask:radial-gradient(circle,transparent calc(var(--hole) - .5px),#000 calc(var(--hole) + .5px))}
+.spot-menu::after{content:"";position:absolute;left:50%;top:50%;width:calc(var(--hole)*2);height:calc(var(--hole)*2);margin:calc(var(--hole)*-1) 0 0 calc(var(--hole)*-1);border-radius:50%;box-shadow:0 0 0 1px var(--glass-rim),inset 0 2px 5px rgba(24,24,27,.12);pointer-events:none}
+:root:not([data-theme="light"]) .spot-menu::before{box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)}
+:root:not([data-theme="light"]) .spot-menu::after{box-shadow:0 0 0 1px rgba(255,255,255,.08),inset 0 2px 5px rgba(0,0,0,.35)}
+/* Each tool is a whole quarter of the ring. Its wedge (.spot-hit) takes the pointer; inside it a rounded wedge
+   plate, inset from the ring and the cross, lifts on hover like the other icon plates. The plate is clipped
+   to its shape, so its shadow comes from a filter on the wrapper around it (.spot-lift). */
+.spot-menu .agent-tool{position:absolute;z-index:1;width:76px;height:76px;border-radius:0;background:none;pointer-events:none}
+.spot-menu .spot-hit{position:absolute;inset:0;pointer-events:auto;cursor:pointer}
+.spot-menu .spot-lift{position:absolute;inset:0;transform:rotateX(var(--tilt-x,0deg)) rotateY(var(--tilt-y,0deg));transition:filter .2s ease,transform .4s var(--ease-out)}
+.spot-menu .agent-tool.tilting .spot-lift{transition:filter .2s ease,transform .08s linear}
+.spot-menu .spot-plate{position:absolute;inset:0;transition:background .15s ease}
+.spot-menu .agent-tool .rail-face{position:absolute;left:calc(var(--x) - 20px);top:calc(var(--y) - 20px);background:none!important;box-shadow:none!important}
+.spot-menu .agent-tool:not([aria-disabled="true"]):is(:hover,:focus-visible) .spot-lift{transform:translateY(-1px) rotateX(var(--tilt-x,0deg)) rotateY(var(--tilt-y,0deg));filter:drop-shadow(0 4px 5px rgba(24,24,27,.09)) drop-shadow(0 1px 1px rgba(24,24,27,.1))}
+.spot-menu .agent-tool:not([aria-disabled="true"]):is(:hover,:focus-visible) .spot-plate{background:radial-gradient(circle at var(--light-x,35%) var(--light-y,30%),var(--plate-light),transparent 60%),var(--brush),radial-gradient(circle at var(--spot-x,50%) var(--spot-y,50%),rgba(255,255,255,.7),transparent 55%),linear-gradient(160deg,#ffffff 0%,#f4f4f5 55%,#e4e4e7 100%)}
+:root:not([data-theme="light"]) .spot-menu .agent-tool:not([aria-disabled="true"]):is(:hover,:focus-visible) .spot-lift{filter:drop-shadow(0 4px 6px rgba(0,0,0,.3)) drop-shadow(0 1px 1px rgba(0,0,0,.25))}
+:root:not([data-theme="light"]) .spot-menu .agent-tool:not([aria-disabled="true"]):is(:hover,:focus-visible) .spot-plate{background:radial-gradient(circle at var(--light-x,35%) var(--light-y,30%),rgba(255,255,255,.1),transparent 60%),radial-gradient(circle at var(--spot-x,50%) var(--spot-y,50%),rgba(255,255,255,.09),transparent 55%),var(--brush),linear-gradient(180deg,#3f3f46,#323238)}
+.spot-menu .agent-tool:not([aria-disabled="true"]):is(:hover,:focus-visible) .rail-face svg{color:var(--tab-ink);transform:translateY(-1px) scale(1.08)}
+.spot-menu .agent-tool:focus-visible .rail-face{outline:0!important}
+.spot-menu .agent-tool:focus-visible:not(:hover) .spot-plate{background:color-mix(in srgb,var(--focus) 22%,var(--nav-panel))!important}
+.spot-menu .agent-tool:not([aria-disabled="true"]):active .spot-lift{transform:scale(.97)}
+/* Disabled tools stay in place, dimmed and inert; the tooltip says why. */
+.spot-menu .agent-tool[aria-disabled="true"]{opacity:.38}
+.spot-menu .agent-tool[aria-disabled="true"] .spot-hit{cursor:not-allowed}
+.spot-menu .agent-tool[aria-disabled="true"] .rail-face{background:none!important;box-shadow:none!important;transform:none!important}
+.spot-menu .agent-tool[aria-disabled="true"] .rail-face svg{transform:none!important;filter:none!important}
+/* Tooltips sit outside their tool, pointing back at it. */
+.rail-tooltip.spot-tip{transform:none;pointer-events:none;animation:spot-tip-in .16s ease-out}
+.rail-tooltip.spot-tip::before{display:none}
+.rail-tooltip.spot-tip[data-side="top"]{--tip-from:0 4px}.rail-tooltip.spot-tip[data-side="bottom"]{--tip-from:0 -4px}.rail-tooltip.spot-tip[data-side="left"]{--tip-from:4px 0}.rail-tooltip.spot-tip[data-side="right"]{--tip-from:-4px 0}
+.rail-tooltip.spot-tip[data-side="top"]::after{left:50%;top:auto;bottom:-4px;transform:translateX(-50%) rotate(45deg)}
+.rail-tooltip.spot-tip[data-side="bottom"]::after{left:50%;top:-4px;transform:translateX(-50%) rotate(45deg)}
+.rail-tooltip.spot-tip[data-side="left"]::after{left:auto;right:-4px}
+@keyframes spot-tip-in{from{opacity:0;translate:var(--tip-from,0 0)}}
+@media(prefers-reduced-motion:reduce){.rail-tooltip.spot-tip{animation:none}.spot-menu .spot-ask .agent-orb,.spot-menu .spot-lift{transition:none;transform:none!important}}
+
+/* Form controls: one field system for text, number, select, textarea and range. Fields are glass with a rim and
+   inset, focus draws the shared halo, numbers never show native spinners, and dropdowns open a glass picker
+   (appearance: base-select; other browsers keep the on-brand trigger with the system popup). */
+:root{
+ --field-h:36px;--field-h-sm:28px;--field-r:10px;--field-r-sm:8px;--field-px:12px;
+ --field-fill:rgba(255,255,255,.04);--field-fill-hover:rgba(255,255,255,.06);--field-fill-focus:rgba(255,255,255,.07);
+ --field-rim:rgba(255,255,255,.09);--field-rim-hover:rgba(255,255,255,.18);
+ --field-inset:inset 0 1px 2px rgba(0,0,0,.28);
+ --field-text:#f4f4f5;--field-placeholder:#8b8b94;--field-icon:#a1a1aa;--field-disabled:#71717a;
+ --field-invalid:#f87171;--field-halo:color-mix(in srgb,var(--focus) 24%,transparent);
+ --control-on:#3b82f6;--track:rgba(255,255,255,.12);
+ --picker-glass:color-mix(in srgb,#1c1c20 84%,transparent);--picker-rim:rgba(255,255,255,.1);
+ --picker-shadow:0 18px 40px -12px rgba(0,0,0,.7),0 2px 6px rgba(0,0,0,.35);
+ --thumb:linear-gradient(160deg,#fafafa 0%,#e4e4e7 60%,#d4d4d8 100%);
+ --chevron:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5'/%3E%3C/svg%3E");
+ --check:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 9.5 7 13l7.5-8'/%3E%3C/svg%3E");
+}
+:root[data-theme="light"]{
+ --field-fill:rgba(255,255,255,.62);--field-fill-hover:rgba(255,255,255,.85);--field-fill-focus:#fff;
+ --field-rim:rgba(24,24,27,.1);--field-rim-hover:rgba(24,24,27,.22);
+ --field-inset:inset 0 1px 2px rgba(24,24,27,.06);
+ --field-text:#18181b;--field-placeholder:#71717a;--field-icon:#71717a;--field-disabled:#a1a1aa;
+ --field-invalid:#dc2626;--field-halo:color-mix(in srgb,var(--focus) 20%,transparent);
+ --control-on:#2563eb;--track:rgba(24,24,27,.1);
+ --picker-glass:color-mix(in srgb,#fafafa 84%,transparent);--picker-rim:rgba(255,255,255,.75);
+ --picker-shadow:0 18px 40px -12px rgba(24,24,27,.32),0 2px 6px rgba(24,24,27,.08),inset 0 0 0 .5px rgba(24,24,27,.08);
+ --thumb:linear-gradient(160deg,#ffffff 0%,#f4f4f5 55%,#e4e4e7 100%);
+}
+
+/* ---- Text-like fields ---------------------------------------------------- */
+:is(.form-control,.search-field input){
+ box-sizing:border-box;width:100%;height:var(--field-h);margin:0;padding:0 var(--field-px);
+ border:1px solid var(--field-rim);border-radius:var(--field-r);
+ background-color:var(--field-fill);box-shadow:var(--field-inset);
+ color:var(--field-text);font:inherit;font-size:13px;font-weight:400;line-height:20px;
+ caret-color:var(--focus);
+ transition:border-color .15s ease,background-color .15s ease,box-shadow .22s var(--ease-out);
+}
+.search-field input{padding:0 36px}
+:is(.form-control,.search-field input):hover:not(:focus,:disabled){border-color:var(--field-rim-hover);background-color:var(--field-fill-hover)}
+:is(input.form-control,textarea.form-control,.search-field input):focus,select.form-control:is(:focus-visible,:open){
+ outline:none;border-color:var(--focus);background-color:var(--field-fill-focus);
+ box-shadow:var(--field-inset),0 0 0 3px var(--field-halo);animation:field-focus .28s var(--ease-out);
+}
+select.form-control:focus:not(:focus-visible,:open){outline:none}
+@keyframes field-focus{from{box-shadow:var(--field-inset),0 0 0 7px transparent}}
+:is(.form-control,.search-field input)::placeholder{color:var(--field-placeholder);opacity:1}
+.form-control:is([aria-invalid="true"],:user-invalid){border-color:var(--field-invalid)}
+.form-control:is([aria-invalid="true"],:user-invalid):focus{box-shadow:var(--field-inset),0 0 0 3px color-mix(in srgb,var(--field-invalid) 22%,transparent)}
+.form-control:disabled{opacity:1;background-color:transparent;box-shadow:none;border-color:var(--field-rim);color:var(--field-disabled);cursor:not-allowed}
+.form-control:disabled::placeholder{color:var(--field-disabled)}
+.form-control.mono-id{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;font-variant-numeric:slashed-zero}
+.field-sm{height:var(--field-h-sm);padding:0 8px;border-radius:var(--field-r-sm);font-size:12px;font-weight:500}
+
+/* Textarea: grows with content between 96 and 240px; no native resize grip. */
+textarea.form-control{height:auto;min-height:96px;max-height:240px;padding:8px var(--field-px);resize:none;field-sizing:content;
+ overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--field-rim-hover) transparent}
+@supports not (field-sizing:content){textarea.form-control{resize:vertical}}
+.volume-form .form-control:not(textarea){height:var(--field-h)}
+
+/* Search: the clear button stays inside the field (the tactile rule made it position:relative). */
+.search-field .search-clear{position:absolute;top:4px;right:4px}
+.search-field>svg{color:var(--field-icon)}
+
+/* ---- Numbers: no native spinners anywhere -------------------------------- */
+input[type="number"]{-moz-appearance:textfield;appearance:textfield;font-variant-numeric:tabular-nums}
+input[type="number"]::-webkit-inner-spin-button,input[type="number"]::-webkit-outer-spin-button{-webkit-appearance:none;appearance:none;margin:0}
+.unit-field .form-control{padding-right:32px}
+.unit-suffix{top:auto;right:12px;bottom:0;height:var(--field-h);display:flex;align-items:center;font-size:12px;line-height:1;color:var(--field-placeholder)}
+/* Stepper: one field-shaped group, buttons inside (same shape as the 2D floor control). */
+.stepper{display:flex;align-items:center;gap:2px;height:var(--field-h);padding:3px;border:1px solid var(--field-rim);border-radius:var(--field-r);
+ background:var(--field-fill);box-shadow:var(--field-inset);transition:border-color .15s ease,box-shadow .22s var(--ease-out)}
+.stepper:hover:not(:focus-within){border-color:var(--field-rim-hover)}
+.stepper:focus-within{border-color:var(--focus);box-shadow:var(--field-inset),0 0 0 3px var(--field-halo)}
+.stepper .form-control{flex:1;min-width:0;height:28px;padding:0 2px;border:0;background:transparent;box-shadow:none;text-align:right;animation:none}
+.stepper .form-control:is(:hover,:focus){border:0;background:transparent;box-shadow:none}
+.stepper-unit{padding:0 6px 0 2px;font-size:13px;color:var(--field-placeholder)}
+.stepper .btn{flex:none;width:28px;height:28px;padding:0;border-color:transparent;border-radius:7px;font-size:16px}
+.stepper .btn:not(:hover,:focus-visible){background:transparent;box-shadow:none}
+.map2d-floor:focus-within{box-shadow:inset 0 0 0 1px var(--focus),0 0 0 3px var(--field-halo)}
+.map2d-floor input:focus-visible{outline:none}
+
+/* ---- Select: styled native trigger; fully custom popup where supported --- */
+select.form-control{appearance:none;-webkit-appearance:none;padding-right:34px;cursor:pointer;
+ background-image:var(--chevron-fallback);background-repeat:no-repeat;background-position:right 12px center;background-size:12px}
+:root{--chevron-fallback:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%23a1a1aa' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5'/%3E%3C/svg%3E")}
+:root[data-theme="light"]{--chevron-fallback:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%2371717a' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5'/%3E%3C/svg%3E")}
+select.form-control.field-sm{padding-right:26px;background-position:right 8px center;background-size:10px}
+select.form-control option{background:var(--nav-panel);color:var(--field-text)} /* fallback popups in dark mode */
+#sensor-pip select.sensor-orientation{width:auto;margin:0;font-family:inherit}
+
+@supports (appearance:base-select){
+ select.form-control,select.form-control::picker(select){appearance:base-select}
+ select.form-control:not([size],[multiple]){display:flex;align-items:center;gap:8px;padding:0 10px 0 var(--field-px);background-image:none}
+ select.form-control.field-sm{padding:0 6px 0 8px;gap:6px}
+ select.form-control::picker-icon{content:"";flex:none;width:12px;height:12px;margin-left:auto;background:var(--field-icon);
+  -webkit-mask:var(--chevron) center/12px no-repeat;mask:var(--chevron) center/12px no-repeat;transition:rotate .32s var(--ease-spring)}
+ select.form-control.field-sm::picker-icon{width:10px;height:10px;-webkit-mask-size:10px;mask-size:10px}
+ select.form-control:open::picker-icon{rotate:180deg}
+ select.form-control::picker(select){
+  box-sizing:border-box;min-inline-size:anchor-size(inline);max-block-size:min(320px,50vh);margin-block:6px;padding:4px;
+  overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--field-rim-hover) transparent;
+  border:1px solid var(--picker-rim);border-radius:12px;background:var(--picker-glass);
+  -webkit-backdrop-filter:blur(20px) saturate(1.4);backdrop-filter:blur(20px) saturate(1.4);box-shadow:var(--picker-shadow);
+  color:var(--field-text);transform-origin:50% 0;
+  transition:opacity .16s var(--ease-out),scale .34s var(--ease-spring),translate .34s var(--ease-spring),display .34s allow-discrete,overlay .34s allow-discrete}
+ select.form-control:not(:open)::picker(select){opacity:0;scale:.97;translate:0 -4px;transition-duration:.12s}
+ @starting-style{select.form-control:open::picker(select){opacity:0;scale:.94;translate:0 -6px}}
+ select.form-control option{display:flex;align-items:center;gap:8px;min-block-size:32px;padding:0 8px 0 10px;border-radius:8px;
+  background:transparent;color:var(--field-text);font-size:13px;font-weight:400;cursor:pointer;outline:none;
+  transition:background-color .12s ease,box-shadow .12s ease}
+ select.form-control option:is(:hover,:focus-visible){background:radial-gradient(circle at var(--light-x,35%) var(--light-y,30%),var(--plate-light),transparent 60%),var(--brush),var(--plate-hover);box-shadow:var(--plate-shadow),var(--plate-rim)}
+ select.form-control option:focus-visible{box-shadow:var(--plate-shadow),var(--plate-rim),inset 0 0 0 1px color-mix(in srgb,var(--focus) 55%,transparent)}
+ select.form-control option:checked{font-weight:500}
+ select.form-control option::checkmark{content:"";order:1;flex:none;width:14px;height:14px;margin-left:auto;background:var(--tab-ink,var(--control-on));
+  -webkit-mask:var(--check) center/14px no-repeat;mask:var(--check) center/14px no-repeat}
+ select.form-control option:disabled{color:var(--field-disabled);cursor:default;background:none;box-shadow:none}
+ select.form-control optgroup{padding:0;margin:0;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--nav-muted)}
+ select.form-control optgroup+optgroup{margin-top:4px;padding-top:4px;border-top:1px solid var(--field-rim)}
+ select.form-control optgroup legend{padding:8px 10px 4px}
+ select.form-control optgroup option{letter-spacing:0;text-transform:none}
+ select.form-control.mono-id option{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
+}
+@media(prefers-reduced-motion:reduce){
+ select.form-control::picker(select),select.form-control::picker-icon{transition:none}
+ :is(.form-control,.search-field input){animation:none!important}
+}
+@media(prefers-reduced-transparency:reduce){select.form-control::picker(select){-webkit-backdrop-filter:none;backdrop-filter:none;background:var(--nav-panel)}}
+
+/* ---- Listbox (select[size]): pose log ----------------------------------- */
+select.form-control[size]{display:block;height:auto;max-height:240px;padding:4px;background-image:none;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--field-rim-hover) transparent;
+ font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
+select.form-control[size] option{display:block;min-block-size:0;padding:6px 8px;border-radius:6px;color:var(--field-text);font:inherit;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+select.form-control[size] option::checkmark{display:none}
+select.form-control[size] option:checked{background:color-mix(in srgb,var(--tab,var(--control-on)) 18%,transparent);color:var(--field-text)}
+select.form-control[size]:focus{animation:none}
+
+/* ---- Range -------------------------------------------------------------- */
+.range-row input[type="range"]{--thumb-size:18px;height:24px;margin:0 0 8px;background:transparent;appearance:none;-webkit-appearance:none;cursor:pointer}
+.range-row input[type="range"]::-webkit-slider-runnable-track{height:6px;border-radius:999px;
+ background:linear-gradient(90deg,var(--control-on) var(--fill,50%),var(--track) var(--fill,50%));box-shadow:inset 0 1px 1px rgba(0,0,0,.18)}
+.range-row input[type="range"]::-moz-range-track{height:6px;border-radius:999px;background:var(--track);box-shadow:inset 0 1px 1px rgba(0,0,0,.18)}
+.range-row input[type="range"]::-moz-range-progress{height:6px;border-radius:999px;background:var(--control-on)}
+.range-row input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;width:var(--thumb-size);height:var(--thumb-size);margin-top:-6px;border:0;border-radius:50%;
+ background:radial-gradient(circle at 35% 30%,rgba(255,255,255,.9),transparent 60%),var(--thumb);
+ box-shadow:inset 0 1px 0 rgba(255,255,255,.9),inset 0 -1px 0 rgba(24,24,27,.12),0 2px 6px -1px rgba(0,0,0,.35),0 0 0 .5px rgba(24,24,27,.18);
+ transition:transform .3s var(--ease-spring),box-shadow .15s ease}
+.range-row input[type="range"]::-moz-range-thumb{width:var(--thumb-size);height:var(--thumb-size);border:0;border-radius:50%;background:var(--thumb);
+ box-shadow:inset 0 1px 0 rgba(255,255,255,.9),0 2px 6px -1px rgba(0,0,0,.35),0 0 0 .5px rgba(24,24,27,.18);transition:transform .3s var(--ease-spring)}
+.range-row input[type="range"]:hover::-webkit-slider-thumb{transform:scale(1.1)}
+.range-row input[type="range"]:active::-webkit-slider-thumb{transform:scale(1.18)}
+.range-row input[type="range"]:hover::-moz-range-thumb{transform:scale(1.1)}
+.range-row input[type="range"]:active::-moz-range-thumb{transform:scale(1.18)}
+.range-row input[type="range"]:focus-visible{outline:none}
+.range-row input[type="range"]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 2px var(--nav-panel),0 0 0 4px var(--focus),0 2px 6px -1px rgba(0,0,0,.35)}
+.range-row input[type="range"]:focus-visible::-moz-range-thumb{box-shadow:0 0 0 2px var(--nav-panel),0 0 0 4px var(--focus)}
+@media(prefers-reduced-motion:reduce){.range-row input[type="range"]::-webkit-slider-thumb,.range-row input[type="range"]::-moz-range-thumb{transition:none;transform:none!important}}
+
+/* ---- One-off fields brought onto the same tokens ------------------------ */
+#scene-chat-input::placeholder{color:var(--field-placeholder);opacity:1}
+.card-title-input:hover{background:var(--field-fill);border-color:var(--field-rim)}
+.card-title-input:focus{background:var(--field-fill-focus);border-color:var(--focus);box-shadow:0 0 0 3px var(--field-halo)}
+.placement-banner .placement-name{height:28px;border-radius:var(--field-r-sm);transition:border-color .15s ease,background-color .15s ease}
+.placement-banner .placement-name:focus{border-color:#93c5fd;box-shadow:0 0 0 3px rgba(147,197,253,.25)}
+/* Pose inspector: grouped actions, a styled log listbox and readable values. */
+.pose-inspector{display:grid;gap:8px}
+.pose-actions{display:flex;flex-wrap:wrap;gap:6px}
+.pose-values{margin:0;font-size:11.5px;line-height:1.5;color:var(--text-2);white-space:pre-wrap;overflow-wrap:anywhere}
+/* Scene labels (scene-labels.js): note bubbles, pins, clusters and volume chips as HTML over the 3D view.
+   Labels never take the pointer. Each label is a zero-size point at its anchor; its forms sit above that point
+   and cross-fade with a spring when the zoom tier changes (staggered outward from the zoom focus by --delay).
+   Stacking is by kind and state, never by depth. Pins and clusters are plain discs (no tail) sitting on their point. Note bubbles stay paper in both themes (they are the content,
+   matching the phone's AR); volume chips are white in light mode and dark glass in dark mode. */
+.scene-labels{position:absolute;inset:0;z-index:4;overflow:hidden;pointer-events:none;contain:strict}
+.scene-labels[hidden]{display:none}
+.scene-label{position:absolute;left:0;top:0;width:0;height:0;
+ --paper:#fff7fc;--plum:#472652;--label-shadow:0 3px 10px rgba(24,24,27,.18),0 1px 2px rgba(24,24,27,.12);
+ --chip:rgba(255,255,255,.97);--chip-text:#18181b;--chip-detail:#71717a;--chip-rim:rgba(24,24,27,.09)}
+:root:not([data-theme="light"]) .scene-label{--paper:#f6eef4;--label-shadow:0 4px 12px rgba(0,0,0,.5),0 1px 2px rgba(0,0,0,.4);
+ --chip:rgba(39,39,42,.92);--chip-text:#f4f4f5;--chip-detail:#a1a1aa;--chip-rim:rgba(255,255,255,.1)}
+.scene-label[data-kind="volume"]{z-index:1}.scene-label[data-kind="note"]:not([data-form="bubble"]),.scene-label[data-kind="cluster"]{z-index:2}
+.scene-label[data-kind="note"][data-form="bubble"]{z-index:3}.scene-label.hovered{z-index:4}.scene-label.selected{z-index:5}
+.scene-label .label-form{position:absolute;bottom:0;left:0;display:flex;align-items:center;white-space:nowrap;opacity:0;transform:translateX(-50%) scale(.85);transform-origin:50% 100%;
+ transition:opacity .14s cubic-bezier(.4,0,1,1),transform .14s cubic-bezier(.4,0,1,1)}
+.scene-label:is([data-form="bubble"]) .label-bubble,.scene-label[data-form="pin"] .label-pin,.scene-label[data-form="chip"] .label-chip,.scene-label[data-form="tile"] .label-tile-only,.scene-label[data-form="cluster"] .label-cluster{
+ opacity:1;transform:translateX(-50%) scale(1);transition:opacity .22s cubic-bezier(.2,.8,.2,1) calc(var(--delay,0ms) + 40ms),transform .22s var(--ease-spring) calc(var(--delay,0ms) + 40ms)}
+.scene-label[data-merging] .label-pin{transition:none}
+/* Note bubble: paper, rounded type, two lines at most, a 6 px tail ending on the anchor. */
+.label-bubble{bottom:6px!important}
+.label-body{position:relative;display:block;width:max-content;max-width:180px;padding:5px 10px;border-radius:10px;background:var(--paper);color:var(--plum);box-shadow:var(--label-shadow);
+ font:600 13px/16px ui-rounded,"SF Pro Rounded",system-ui,sans-serif;white-space:normal}
+.label-body .label-text{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;overflow-wrap:anywhere;text-align:center}
+.label-body::after{content:"";position:absolute;left:50%;top:100%;width:0;height:0;margin-left:-6px;border:6px solid transparent;border-bottom:0;border-top-color:var(--paper)}
+.label-pin{bottom:0!important;justify-content:center;width:22px;height:22px;border-radius:50%;background:var(--paper);color:var(--plum);box-shadow:var(--label-shadow)}
+.label-cluster{bottom:0!important;justify-content:center;width:26px;height:26px;border-radius:50%;background:var(--paper);color:var(--plum);
+ box-shadow:3px -3px 0 -1px var(--paper),3px -3px 0 0 color-mix(in srgb,var(--plum) 30%,transparent),var(--label-shadow);font:700 11px/1 ui-rounded,"SF Pro Rounded",system-ui,sans-serif;font-variant-numeric:tabular-nums}
+.scene-label[data-peer="true"]{--paper:#472652;--plum:#fff7fc}
+:root:not([data-theme="light"]) .scene-label[data-peer="true"] :is(.label-body,.label-pin){box-shadow:var(--label-shadow),0 0 0 1px rgba(255,247,252,.22)}
+/* Volume chip: a violet cube tile and the name; tile only when further out. */
+.label-chip{gap:6px;height:24px;padding:0 9px 0 4px;border-radius:8px;background:var(--chip);color:var(--chip-text);box-shadow:var(--label-shadow),inset 0 0 0 1px var(--chip-rim);font:600 12px/1 system-ui,-apple-system,sans-serif}
+.label-chip .label-text{max-width:180px;overflow:hidden;text-overflow:ellipsis}
+.label-detail{font-size:11px;font-weight:500;color:var(--chip-detail)}
+.label-tile-only{padding:4px;border-radius:8px;background:var(--chip);box-shadow:var(--label-shadow),inset 0 0 0 1px var(--chip-rim)}
+.label-tile{display:grid;place-items:center;flex:none;width:16px;height:16px;border-radius:5px;background:linear-gradient(180deg,#8b5cf6,#6d28d9);color:#fff}
+/* Hover: a ring in the section colour (the label is raised by its z-index). */
+/* Hover and selection ring: an even 2 px band all round the bubble and its tail, drawn by a layer behind the
+   bubble (its tail scaled to keep the band even along the slopes); pins are circles, so a box-shadow ring is even. */
+.scene-label.hovered{--ring:#f59e0b}.scene-label.selected{--ring:#d97706}
+.label-ring{position:absolute;inset:-2px;display:none;border-radius:12px;background:var(--ring)}
+.label-ring::after{content:"";position:absolute;left:50%;top:calc(100% - 2px);width:0;height:0;margin-left:-8.8px;border:8.8px solid transparent;border-bottom:0;border-top-color:var(--ring)}
+.scene-label:is(.hovered,.selected) .label-ring{display:block}
+.scene-label:is(.hovered,.selected) .label-pin{box-shadow:var(--label-shadow),0 0 0 2px var(--ring)}
+.scene-label.hovered :is(.label-chip,.label-tile-only){box-shadow:var(--label-shadow),inset 0 0 0 1px var(--chip-rim),0 0 0 2px #8b5cf6}
+@media(prefers-reduced-motion:reduce){.scene-label .label-form,.scene-label[data-form] .label-form{transform:translateX(-50%)!important;transition:opacity .1s linear!important}}
+/* Volume handles are placed by transform from the layer's origin every frame (semantic-volumes.js tick()); their
+   opacity and scale follow the box's size on screen. A tiny box shows only the move handle and this pill. */
+.volume-handles .volume-resize-handle{left:0;top:0;will-change:transform,opacity}
+.volume-zoom-pill{position:absolute;left:0;top:0;height:26px;padding:0 10px;border:0;border-radius:999px;background:var(--sheet-glass);color:#6d28d9;
+ box-shadow:inset 0 0 0 1px var(--glass-rim),0 6px 16px -6px rgba(24,24,27,.35);font:600 12px/26px system-ui,-apple-system,sans-serif;white-space:nowrap;pointer-events:auto;cursor:pointer;
+ -webkit-backdrop-filter:blur(14px) saturate(1.3);backdrop-filter:blur(14px) saturate(1.3)}
+.volume-zoom-pill[hidden]{display:none}
+.volume-zoom-pill:hover{background:color-mix(in srgb,#7c3aed 12%,var(--sheet-glass))}
+:root:not([data-theme="light"]) .volume-zoom-pill{color:#c4b5fd}
+/* Content locator (content-locator.js): a glass pill on the edge of the free screen area pointing back to the
+   content, with its distance. It springs in and fades out quickly; with reduced motion it only fades. */
+.content-locator{position:absolute;left:0;top:0;z-index:6;display:flex;align-items:center;gap:6px;height:36px;padding:0 12px 0 10px;border:0;border-radius:999px;
+ background:var(--sheet-glass);color:var(--nav-text);box-shadow:inset 0 0 0 1px var(--glass-rim),0 10px 24px -10px rgba(24,24,27,.45),0 2px 6px rgba(24,24,27,.08);
+ -webkit-backdrop-filter:blur(18px) saturate(1.3);backdrop-filter:blur(18px) saturate(1.3);font:600 12px/1 system-ui,-apple-system,sans-serif;font-variant-numeric:tabular-nums;white-space:nowrap;cursor:pointer;will-change:transform}
+.content-locator[hidden]{display:none}
+.content-locator .locator-arrow{flex:none;color:#059669}
+:root:not([data-theme="light"]) .content-locator .locator-arrow{color:#34d399}
+.content-locator:hover{box-shadow:inset 0 0 0 1px color-mix(in srgb,#059669 40%,transparent),0 12px 28px -10px rgba(24,24,27,.5),0 2px 6px rgba(24,24,27,.1)}
+.content-locator.shown{animation:locator-in .32s var(--ease-spring)}
+.content-locator.leaving{opacity:0;transition:opacity .16s ease}
+@keyframes locator-in{from{opacity:0;scale:.6}}
+@media(prefers-reduced-motion:reduce){.content-locator.shown{animation:locator-fade .16s ease}@keyframes locator-fade{from{opacity:0}}}
+.label-ring{box-shadow:var(--label-shadow)}.scene-label:is(.hovered,.selected) .label-body{box-shadow:none}
+/* Hovered and selected labels sit above every other label (the by-kind z-index rules are more specific). */
+.scene-label[data-kind].hovered{z-index:4}.scene-label[data-kind].selected{z-index:5}
+/* Labels under the open right-click ring fade out rather than flicker through its glass. */
+/* Volume handles sit below the panels and the card (which they used to paint over). */
+.volume-handles{z-index:5}
 
 /* Direct commands share the assistant bar without replacing its conversation. */
 .slash-suggestions{position:absolute;z-index:5;bottom:calc(100% + 32px);left:0;right:0;max-height:min(280px,50vh);overflow-y:auto;background:var(--nav-panel);color:var(--nav-text);border:1px solid var(--nav-line);border-radius:14px;padding:5px;box-shadow:0 8px 32px #0004;overscroll-behavior:contain}

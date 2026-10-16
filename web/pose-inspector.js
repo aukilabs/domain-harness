@@ -1,16 +1,18 @@
 // Read-only, demand-driven inspector. Pausing freezes display, not reception.
 export function createPoseInspector(parent) {
- const box=document.createElement('section');box.hidden=true;box.setAttribute('aria-label','Pose inspector');
+ const box=document.createElement('section');box.className='pose-inspector';box.hidden=true;box.setAttribute('aria-label','Pose inspector');
  const title=document.createElement('h3'),status=document.createElement('p'),values=document.createElement('pre');
- values.style.cssText='white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px';
+ values.className='mono-id pose-values';
  const raw=document.createElement('details'),summary=document.createElement('summary'),json=document.createElement('pre');
- summary.textContent='Raw observation';json.style.cssText=values.style.cssText;raw.append(summary,json);
+ summary.textContent='Raw observation';json.className=values.className;raw.append(summary,json);
  const pause=document.createElement('button'),close=document.createElement('button'),copy=document.createElement('button');
  pause.textContent='Pause display';close.textContent='Close';copy.textContent='Copy observation';
+ for(const button of [pause,close,copy]){button.type='button';button.className='btn btn-secondary btn-sm';}
+ const actions=document.createElement('div');actions.className='pose-actions';actions.append(pause,copy,close);
  const log=document.createElement('select'),hint=document.createElement('p');
- log.setAttribute('aria-label','Pose log');log.size=8;log.style.cssText='width:100%;font-family:monospace';
+ log.setAttribute('aria-label','Pose log');log.size=8;log.className='form-control pose-log';
  hint.textContent='Last 300 received poses since inspection opened (not a complete recording). Select a record to freeze it; resume to follow live.';
- box.append(title,pause,close,copy,status,hint,log,values,raw);parent.append(box);
+ box.append(title,actions,status,hint,log,values,raw);parent.append(box);
  let selection=null,generation=0,paused=false,last=null;
  let records=[],latest=null;
  log.onchange=()=>{const record=records[Number(log.value)];if(!record||!latest)return;paused=true;pause.textContent='Resume display';render({...latest,...record,stream:'historical'});};

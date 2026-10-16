@@ -2,11 +2,10 @@ import * as THREE from 'three';
 import { icons, icon, sectionHeader, listRow, actionButton, markSelected } from './panel-ui.js';
 
 // Semantic boxes are independent of transient voxel and robot-occupancy layers.
-export function createSemanticVolumes({scene, camera, renderer, controls, panel, api, label, clear, openPanel, inspector, toast=()=>{}, flyTo=null, priorityPickObjects=()=>[]}) {
+export function createSemanticVolumes({scene, camera, renderer, controls, panel, api, label, clear, openPanel, inspector, toast=()=>{}, flyTo=null, priorityPickObjects=()=>[], labels=null, priorityHit=()=>null, safeArea=null, rects=()=>null}) {
  const group=new THREE.Group(),preview=new THREE.Group();scene.add(group,preview);
  let context=null,items=[],draft=null,editing=null,drawing=false,start=null,press=null,pending=false,signature='',resize=null,conflicted=false;
  const handleLayer=document.createElement('div');handleLayer.className='volume-handles';renderer.domElement.parentElement.append(handleLayer);
- const leaders=document.createElementNS('http://www.w3.org/2000/svg','svg');leaders.classList.add('volume-handle-leaders');handleLayer.append(leaders);
  const handles=[];
  // Handle roles, glyphs, colors and rail layout follow Peyote's
  // AxisRailHandle, handle-icons and OutlineHandles (meter-based Home adapter).
@@ -23,14 +22,13 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
   const {axis,sign,kind,name}=descriptor;
   const button=document.createElement('button');button.type='button';button.className='volume-resize-handle';button.dataset.axis=String(axis);button.dataset.kind=kind;button.dataset.sign=String(sign);
   button.setAttribute('aria-label',name);button.title=kind==='rotate'?'Rotate around the opposite corner · Shift snaps to 15°':kind==='move'?'Move along the ground · Shift snaps to 10 cm':`Resize ${['width','height','depth'][axis]} · Shift snaps to 10 cm`;button.innerHTML=handleIcon(descriptor.icon);button.hidden=true;handleLayer.append(button);
-  const leader=document.createElementNS('http://www.w3.org/2000/svg','line');leader.setAttribute('class','volume-leader');leaders.append(leader);
-  const handle={...descriptor,button,leader};handles.push(handle);
+  const handle={...descriptor,button,opacity:1,live:true};handles.push(handle);
   button.addEventListener('pointerdown',e=>startResize(e,handle));
   button.addEventListener('pointermove',moveResize);
   button.addEventListener('pointerup',e=>finishResize(e));
   button.addEventListener('pointercancel',()=>stopResize(true));
   button.addEventListener('lostpointercapture',()=>{if(resize)stopResize(true);});
-  button.addEventListener('keydown',e=>{if(!editable()||!draft||!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key))return;e.preventDefault();const direction=['ArrowRight','ArrowUp'].includes(e.key)?1:-1,original=structuredClone(draft);if(kind==='resize')resizeFace(original,handle,direction*(e.shiftKey?.01:.1));else if(kind==='rotate')rotateCorner(original,handle,direction*(e.shiftKey?15:1)*Math.PI/180);else{original.center[e.key==='ArrowUp'||e.key==='ArrowDown'?2:0]+=direction*(e.shiftKey?.01:.1);setDraft(original);}message('Volume adjusted. Save volume to keep the change.');});
+  button.addEventListener('keydown',e=>{if(!context?.editable||!draft||!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key))return;e.preventDefault();const direction=['ArrowRight','ArrowUp'].includes(e.key)?1:-1,original=structuredClone(draft);if(kind==='resize')resizeFace(original,handle,direction*(e.shiftKey?.01:.1));else if(kind==='rotate')rotateCorner(original,handle,direction*(e.shiftKey?15:1)*Math.PI/180);else{original.center[e.key==='ArrowUp'||e.key==='ArrowDown'?2:0]+=direction*(e.shiftKey?.01:.1);setDraft(original);}nudged();});
  }
  function handleIcon(icon){
   function arrow(dx,dy){const l=Math.hypot(dx,dy);dx/=l;dy/=l;const x=dx*12,y=dy*12;return [[-x,-y,x,y],[x,y,x-dx*5.4-dy*3.9,y-dy*5.4+dx*3.9],[x,y,x-dx*5.4+dy*3.9,y-dy*5.4-dx*3.9],[-x,-y,-x+dx*5.4-dy*3.9,-y+dy*5.4+dx*3.9],[-x,-y,-x+dx*5.4+dy*3.9,-y+dy*5.4-dx*3.9]];}
@@ -46,30 +44,71 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
  function facePoint(v,h){
   if(h.kind==='move')return localPoint(v,[0,-v.size[1]/2+.07,v.size[2]/2+.06]);
   if(h.kind==='rotate')return localPoint(v,[h.sign*v.size[0]/2,-v.size[1]/2,v.size[2]/2+.02]);
-  if(h.axis===0)return localPoint(v,[h.sign*(v.size[0]/2+.12),0,v.size[2]/2-.02]);
-  if(h.axis===1)return localPoint(v,[0,v.size[1]/2+.16,v.size[2]/2-.02]);
+  if(h.axis===0)return localPoint(v,[h.sign*(v.size[0]/2+.12),0,0]);
+  if(h.axis===1)return localPoint(v,[0,v.size[1]/2+.16,0]);
   return localPoint(v,[0,0,-v.size[2]/2-.12]);
  }
+ // Handles follow the box's size on screen continuously, with no jumps: the secondary handles fade and shrink as the
+ // box gets small, the +Y handle later, the move handle never, and a "Zoom to edit" pill joins it once the box is
+ // tiny. Face handles sit a fixed 26 px out along their face's on-screen normal (fading as the face turns towards
+ // the camera, when it can't be dragged sensibly), rotate handles 24 px out from their corners, and a handle that
+ // would land on a higher-priority one fades rather than being pushed aside. The drag maths still uses facePoint().
+ const zoomPill=document.createElement('button');zoomPill.type='button';zoomPill.className='volume-zoom-pill';zoomPill.textContent='Zoom to edit';zoomPill.hidden=true;handleLayer.append(zoomPill);
+ zoomPill.onclick=()=>{if(draft)focus(draft);};
+ const smooth=(a,b,x)=>{const t=Math.min(1,Math.max(0,(x-a)/(b-a)));return t*t*(3-2*t);};
+ const rank=h=>h.kind==='move'?0:h.kind==='rotate'?4:h.axis===1?1:h.axis===0?2:3;
+ function anchor(v,h){
+  if(h.kind==='move')return [localPoint(v,[0,-v.size[1]/2,v.size[2]/2]),axisVector(2,v.yaw)];
+  if(h.kind==='rotate')return [localPoint(v,[h.sign*v.size[0]/2,-v.size[1]/2,v.size[2]/2]),null];
+  // Face handles stand on the centre of their face.
+  if(h.axis===0)return [localPoint(v,[h.sign*v.size[0]/2,0,0]),axisVector(0,v.yaw).multiplyScalar(h.sign)];
+  if(h.axis===1)return [localPoint(v,[0,v.size[1]/2,0]),new THREE.Vector3(0,1,0)];
+  return [localPoint(v,[0,0,-v.size[2]/2]),axisVector(2,v.yaw).multiplyScalar(-1)];
+ }
+ let shownDraft=null,area=null,areaAt=0;
  function tick(){
-  const visible=draft&&editable()&&!drawing&&preview.visible;
-  if(!visible){for(const h of handles){h.button.hidden=true;h.leader.setAttribute('visibility','hidden');}return;}
-  const rect=renderer.domElement.getBoundingClientRect(),parent=handleLayer.parentElement.getBoundingClientRect();
-  leaders.setAttribute('viewBox',`0 0 ${parent.width} ${parent.height}`);const placed=[];
-  const a=facePoint(draft,handles[0]).project(camera),b=facePoint(draft,handles[1]).project(camera),compact=Math.hypot((a.x-b.x)*rect.width/2,(a.y-b.y)*rect.height/2)<120;
-  for(const h of handles){h.button.hidden=!visible;if(!visible)continue;const p=facePoint(draft,h).project(camera);h.button.hidden=p.z< -1||p.z>1||Math.abs(p.x)>1||Math.abs(p.y)>1||(compact&&resize?.h!==h&&h.kind!=='move'&&!(h.kind==='resize'&&h.axis===1));
-   h.button.classList.toggle('active',resize?.h===h);
-   const x=rect.left-parent.left+(p.x+1)*rect.width/2,y=rect.top-parent.top+(1-p.y)*rect.height/2;let offset=0;
-   if(!h.button.hidden){while(placed.some(q=>Math.hypot(q.x-x,q.y-y-offset)<52))offset-=52;if(y+offset<26){offset=0;while(placed.some(q=>Math.hypot(q.x-x,q.y-y-offset)<52))offset+=52;}placed.push({x,y:y+offset});}
-   h.button.style.left=x+'px';h.button.style.top=(y+offset)+'px';
-   h.leader.setAttribute('visibility',offset&&!h.button.hidden?'visible':'hidden');h.leader.setAttribute('x1',String(x));h.leader.setAttribute('y1',String(y));h.leader.setAttribute('x2',String(x));h.leader.setAttribute('y2',String(y+offset));
+  // Handles stay up while a change saves, so releasing a drag doesn't flash them out, and can be dragged again at once.
+  const visible=draft&&context?.editable&&!drawing&&preview.visible;
+  if(!visible){for(const h of handles)h.button.hidden=true;zoomPill.hidden=true;shownDraft=null;return;}
+  const shared=rects(),rect=shared?.canvas||renderer.domElement.getBoundingClientRect(),parent=shared?.host||handleLayer.parentElement.getBoundingClientRect(),ox=rect.left-parent.left,oy=rect.top-parent.top;
+  const screen=p=>{const q=p.clone().project(camera);return {x:ox+(q.x+1)*rect.width/2,y:oy+(1-q.y)*rect.height/2,on:q.z>-1&&q.z<1};};
+  // S: the box's size on screen, the square root of the area its 8 corners cover.
+  let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+  for(const sx of [-1,1])for(const sy of [-1,1])for(const sz of [-1,1]){const c=screen(localPoint(draft,[sx*draft.size[0]/2,sy*draft.size[1]/2,sz*draft.size[2]/2]));minX=Math.min(minX,c.x);maxX=Math.max(maxX,c.x);minY=Math.min(minY,c.y);maxY=Math.max(maxY,c.y);}
+  const S=Math.sqrt(Math.max(0,(maxX-minX)*(maxY-minY))),centre={x:(minX+maxX)/2,y:(minY+maxY)/2};
+  // Handles never sit over the panels, bars or the inspector card (where one once covered Delete). They fade over
+  // 16 px around the free area's edge (and the card's 8 px gutter) rather than cutting out: fully shown while the
+  // plate clears it, gone (and inert) once the centre reaches the card. The card is a rect, not a column.
+  const now=performance.now();if(safeArea&&(!area||now-areaAt>250)){area=safeArea();areaAt=now;}
+  const clearance=(x,y)=>{if(!area)return Infinity;x+=parent.left;y+=parent.top;const c=area.card,edge=Math.min(x-area.left,area.right-x,y-area.top,area.bottom-y);return c?Math.min(edge,Math.max(c.left-x,x-c.right,c.top-y,y-c.bottom)):edge;};
+  const right=new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld,0).multiplyScalar(.5),placed=[],mounting=shownDraft!==draft.id;shownDraft=draft.id;
+  for(const h of [...handles].sort((a,b)=>rank(a)-rank(b))){
+   const [world,normal]=anchor(draft,h),at=screen(world);let x=at.x,y=at.y,opacity=h.kind==='move'?1:h.kind==='resize'&&h.axis===1?smooth(70,100,S):smooth(110,170,S);
+   if(normal){const tip=screen(world.clone().addScaledVector(normal,.5)),side=screen(world.clone().add(right)),dx=tip.x-x,dy=tip.y-y,length=Math.hypot(dx,dy),metre=Math.hypot(side.x-x,side.y-y)||1;
+    if(length>1e-3){x+=dx/length*26;y+=dy/length*26;}if(h.kind==='resize')opacity*=smooth(.25,.45,length/metre);}
+   else{const dx=x-centre.x,dy=y-centre.y,length=Math.hypot(dx,dy)||1;x+=dx/length*24;y+=dy/length*24;}
+   if(at.on)opacity*=smooth(-8,8,clearance(x,y));else opacity=0;
+   for(const q of placed)if(q.opacity>.05)opacity*=smooth(28,40,Math.hypot(q.x-x,q.y-y));
+   const active=resize?.h===h;if(active)opacity=1;placed.push({x,y,opacity});
+   h.button.hidden=false;h.button.classList.toggle('active',active);
+   h.button.style.transform=`translate(${x}px,${y}px) translate(-50%,-50%) scale(${active?1.08:.8+.2*opacity})`;h.button.style.opacity=String(opacity);
+   h.button.style.visibility=opacity<.05?'hidden':'';
+   // Only clearly visible handles take the pointer and focus, with a little hysteresis.
+   const live=h.live?opacity>.55:opacity>.65;if(live!==h.live){h.live=live;h.button.style.pointerEvents=live?'':'none';if(!live&&h.button.contains(document.activeElement))handles.find(x=>x.kind==='move')?.button.focus({preventScroll:true});h.button.inert=!live;}
+   // Spring in where they stand: scale the plate and icon, never the button, whose transform carries its position
+   // (a scale on the button would scale that translate too and fly it in from the corner).
+   if(mounting&&opacity>.05&&!matchMedia('(prefers-reduced-motion: reduce)').matches){const grow={duration:280,delay:rank(h)*20,easing:'cubic-bezier(.34,1.56,.64,1)',fill:'backwards'};
+    h.button.animate([{scale:.4,opacity:0},{scale:1,opacity:1}],{...grow,pseudoElement:'::before'});h.button.querySelector('svg')?.animate([{scale:.4,opacity:0},{scale:1,opacity:1}],grow);}
+   if(h.kind==='move'){const pill=1-smooth(55,70,S);zoomPill.hidden=pill<.05;zoomPill.style.opacity=String(pill);zoomPill.style.transform=`translate(${x}px,${y+28}px) translate(-50%,0)`;zoomPill.inert=pill<.6;}
   }
  }
  function pointerRay(e){const rect=renderer.domElement.getBoundingClientRect(),ray=new THREE.Raycaster();ray.setFromCamera(new THREE.Vector2((e.clientX-rect.left)/rect.width*2-1,-(e.clientY-rect.top)/rect.height*2+1),camera);return ray.ray;}
  function startResize(e,h){
-  if(e.button!==0||!e.isPrimary||!editable()||!draft||drawing)return;e.preventDefault();e.stopPropagation();
+  // A new drag may start while the last one is still saving; its change saves next (see finishResize).
+  if(e.button!==0||!e.isPrimary||!context?.editable||!draft||drawing)return;e.preventDefault();e.stopPropagation();
   const original=structuredClone(draft),axis=axisVector(h.axis,original.yaw),face=facePoint(original,h);
   const normal=h.kind==='resize'?camera.position.clone().sub(face):new THREE.Vector3(0,1,0);if(h.kind==='resize')normal.addScaledVector(axis,-normal.dot(axis));
-  if(normal.lengthSq()<1e-8){message('Orbit the view slightly to resize this face.');return;}
+  if(normal.lengthSq()<1e-8){message('Orbit the view slightly to resize this face.',{error:true});return;}
   const plane=new THREE.Plane().setFromNormalAndCoplanarPoint(normal.normalize(),face),point=pointerRay(e).intersectPlane(plane,new THREE.Vector3());if(!point)return;
   resize={original,h,axis,plane,point,pointerId:e.pointerId};controls.enabled=false;h.button.setPointerCapture(e.pointerId);tick();message(h.kind==='rotate'?'Rotate around the opposite bottom corner. Shift snaps to 15°. Escape cancels.':h.kind==='move'?'Move on the ground plane. Shift snaps to 10 cm. Escape cancels.':'Resize with the opposite face fixed. Shift snaps to 10 cm. Escape cancels.');
  }
@@ -91,7 +130,10 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
   let delta=p.sub(resize.point).dot(resize.axis)*h.sign;if(e.shiftKey)delta=Math.round(delta*10)/10;resizeFace(original,h,delta);
  }
  function stopResize(restore=false){if(!resize)return;const r=resize;resize=null;if(restore){draft=r.original;fill(draft);draw();}if(r.h.button.hasPointerCapture(r.pointerId))r.h.button.releasePointerCapture(r.pointerId);controls.enabled=true;tick();}
- function finishResize(e){if(!resize||e.pointerId!==resize.pointerId)return;moveResize(e);stopResize();if(editing&&cardMode==='view')persist(false,true);else message(editing?'Handle change pending · Save volume to keep it.':'Volume adjusted. Add a title and save to create it.');}
+ // Arrow-key nudges save themselves in view mode (there's no Save button there), half a second after the last key.
+ let nudgeTimer=0;
+ function nudged(){if(!(editing&&cardMode==='view')){message('Volume adjusted. Save volume to keep the change.');return;}message('Volume adjusted.');clearTimeout(nudgeTimer);nudgeTimer=setTimeout(()=>{if(!draft||!editing||cardMode!=='view')return;if(pending)saveQueued=true;else{saveQueued=false;persist(false,true);}},500);}
+ function finishResize(e){if(!resize||e.pointerId!==resize.pointerId)return;moveResize(e);stopResize();if(editing&&cardMode==='view'){if(pending)saveQueued=true;else{saveQueued=false;persist(false,true);}}else message(editing?'Handle change pending · Save volume to keep it.':'Volume adjusted. Add a title and save to create it.');}
  // Panel: create, show/hide, list. Detail and editing live in the inspector card.
  const newVolume=actionButton('New volume',{variant:'primary',iconPath:icons.plus,id:'volume-draw'});
  const reason=document.createElement('p');reason.className='panel-hint';
@@ -111,7 +153,7 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
   const grid=document.createElement('div');grid.className='volume-grid';
   for(const [name,short,full,unit] of entries){
    const field=document.createElement('label');field.className='unit-field';const caption=document.createElement('span');caption.className='unit-caption';caption.textContent=short;caption.hidden=!short;caption.setAttribute('aria-hidden','true');
-   const input=document.createElement('input');input.className='form-control';input.type='number';input.name=name;input.required=true;input.step='any';input.setAttribute('aria-label',full);
+   const input=document.createElement('input');input.className='form-control';input.type='number';input.inputMode='decimal';input.name=name;input.required=true;input.step='any';input.setAttribute('aria-label',full);
    input.min=['width','depth','height'].includes(name)?'.01':name==='yaw'?'-360':'-100000';input.max=name==='yaw'?'360':['width','depth','height'].includes(name)?'10000':'100000';
    input.addEventListener('input',()=>{delete input.dataset.exact;});
    const suffix=document.createElement('span');suffix.className='unit-suffix';suffix.textContent=unit;suffix.setAttribute('aria-hidden','true');
@@ -125,8 +167,13 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
  const $=id=>id==='volume-form'?form:document.getElementById(id);
  let cardMode=null,openedFromKeyboard=false;
  const format=n=>String(Number(Number(n).toFixed(4)));
- function message(text){status.textContent=text;}
- function alertInCard(text){if(!cardMode)return;inspector.element.querySelector('.card-alert')?.remove();const box=document.createElement('p');box.className='card-alert';box.setAttribute('role','alert');box.textContent=text;inspector.element.querySelector('.inspector-kind')?.after(box);}
+ // Quiet messages (handle hints, saves from dragging or nudging) still reach screen readers through the status
+ // line but aren't shown; instructions while drawing and errors stay visible.
+ // The panel's status line is for screen readers: progress and confirmations ("Saving…", "Volume saved") don't
+ // show. An error does: in the open card, or in the panel when no card is open.
+ function message(text,{error=false}={}){status.textContent=text;status.classList.toggle('visually-hidden',!error||!!cardMode);if(error&&text)alertInCard(text);}
+ // During a delete confirm the error belongs in the confirm's own status line, next to the buttons.
+ function alertInCard(text){if(!cardMode)return;const confirmStatus=inspector.element.querySelector('.card-confirm .form-status');if(confirmStatus){confirmStatus.textContent=text;return;}inspector.element.querySelector('.card-alert')?.remove();const box=document.createElement('p');box.className='card-alert';box.setAttribute('role','alert');box.textContent=text;inspector.element.querySelector('.inspector-kind')?.after(box);}
  function editable(){return context?.editable && !pending;}
  function buttons(){newVolume.disabled=!editable();newVolume.setAttribute('aria-pressed',String(drawing));for(const b of form.querySelectorAll('button'))b.disabled=pending;reason.hidden=!!context?.editable;reason.textContent=context?.editable?'':'Select a local Home scene to create volumes.';}
  function mesh(volume,parent,selected=false,isDraft=false){
@@ -136,9 +183,13 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
   box.position.fromArray(volume.center);box.position.y+=.004;box.scale.fromArray(volume.size);box.rotation.y=volume.yaw;box.userData.volume=volume;parent.add(box);
   const edges=new THREE.EdgesGeometry(box.geometry),material=isDraft?new THREE.LineDashedMaterial({color:0x7c3aed,dashSize:.04,gapSize:.03}):new THREE.LineBasicMaterial({color:0x7c3aed,transparent:!selected,opacity:selected?1:.4});
   const outline=new THREE.LineSegments(edges,material);outline.position.copy(box.position);outline.scale.copy(box.scale);outline.rotation.copy(box.rotation);if(isDraft)outline.computeLineDistances();parent.add(outline);
-  const title=label(volume.title||'New volume','#6d28d9');title.scale.multiplyScalar(1.6);title.position.set(volume.center[0],volume.center[1]+volume.size[1]/2+.2,volume.center[2]);parent.add(title);
+  // Scene labels draw the name (hidden on the volume being edited: its card shows it); otherwise a sprite.
+  const at=[volume.center[0],volume.center[1]+volume.size[1]/2+.08,volume.center[2]];
+  if(labels){const anchor=new THREE.Object3D();anchor.position.fromArray(at);parent.add(anchor);labelItems.push({id:'volume:'+(isDraft&&!editing?'draft':volume.id),kind:'volume',anchor,text:volume.title||'New volume',volumeId:volume.id,hidden:selected});}
+  else{const title=label(volume.title||'New volume');title.position.fromArray(at);parent.add(title);}
  }
- function draw(){clear(group);for(const v of items)if(!(draft&&v.id===editing))mesh(v,group,v.id===editing);clear(preview);if(draft)mesh(draft,preview,true,!editing);renderer.domElement.dataset.semanticVolumeCount=String(items.length);}
+ let labelItems=[];
+ function draw(){labelItems=[];clear(group);for(const v of items)if(!(draft&&v.id===editing))mesh(v,group,v.id===editing);clear(preview);if(draft)mesh(draft,preview,true,!editing);renderer.domElement.dataset.semanticVolumeCount=String(items.length);labels?.sync('semantic-volumes',labelItems);}
  function focus(v){const distance=Math.max(3,Math.max(...v.size)*2.2),target=new THREE.Vector3(...v.center),position=target.clone().add(new THREE.Vector3(distance*.7,distance*.65,distance*.7));
   if(flyTo)flyTo(position,target);else{controls.target.copy(target);camera.position.copy(position);controls.update();}}
  const dimensions=v=>`${format(v.size[0].toFixed(1))} × ${format(v.size[2].toFixed(1))} m floor · ${format(v.size[1].toFixed(1))} m tall`;
@@ -152,7 +203,9 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
   if(!items.length){const p=document.createElement('p');p.className='empty-state';p.textContent='No semantic volumes in this scene.';list.append(p);}
   if(focused)list.querySelector(`[data-volume-id="${CSS.escape(focused)}"]`)?.focus();
  }
- function fill(v){form.elements.title.value=v.title;form.elements.description.value=v.description;const values={x:v.center[0],z:v.center[2],base:v.center[1]-v.size[1]/2,width:v.size[0],height:v.size[1],depth:v.size[2],yaw:v.yaw*180/Math.PI};for(const [name,n] of Object.entries(values)){form.elements[name].value=format(n);form.elements[name].dataset.exact=String(n);}}
+ let cardSummary=null;
+ // The card's size line follows the draft live (it used to keep the size the card opened with).
+ function fill(v){if(cardSummary?.isConnected)cardSummary.textContent=`${dimensions(v)} · ${format((v.yaw*180/Math.PI).toFixed(0))}°`;form.elements.title.value=v.title;form.elements.description.value=v.description;const values={x:v.center[0],z:v.center[2],base:v.center[1]-v.size[1]/2,width:v.size[0],height:v.size[1],depth:v.size[2],yaw:v.yaw*180/Math.PI};for(const [name,n] of Object.entries(values)){form.elements[name].value=format(n);form.elements[name].dataset.exact=String(n);}}
  // Untouched fields keep their exact stored value; only edited fields use the displayed number.
  function values(){const n=name=>{const input=form.elements[name];return Number(input.dataset.exact??input.value);};return {id:editing||'',title:form.elements.title.value.trim(),description:form.elements.description.value,semantic_type:draft?.semantic_type||'region',center:[n('x'),n('base')+n('height')/2,n('z')],size:[n('width'),n('height'),n('depth')],yaw:n('yaw')*Math.PI/180};}
  // Inspector card: view, edit, create and delete-confirm.
@@ -166,7 +219,7 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
     title.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();title.blur();}else if(e.key==='Escape'){e.preventDefault();e.stopPropagation();title.value=v.title;title.blur();}};
     title.onblur=commit;nodes.push(title);}
    else{const title=document.createElement('strong');title.textContent=v.title;nodes.push(title);}
-   const summary=document.createElement('div');summary.className='inspector-position is-text';summary.textContent=`${dimensions(v)} · ${format((v.yaw*180/Math.PI).toFixed(0))}°`;nodes.push(summary);
+   const summary=document.createElement('div');summary.className='inspector-position is-text';summary.textContent=`${dimensions(v)} · ${format((v.yaw*180/Math.PI).toFixed(0))}°`;nodes.push(summary);cardSummary=summary;
    if(v.description){const d=document.createElement('p');d.className='card-description';d.textContent=v.description;nodes.push(d);}
    if(context?.editable){const hint=document.createElement('p');hint.className='card-hint';hint.textContent='Drag the handles to move, resize or rotate. Changes save when you let go.';nodes.push(hint);
     const row=document.createElement('div');row.className='card-actions';row.append(actionButton('Delete',{variant:'danger-ghost',onClick:confirmDelete}),actionButton('Edit',{onClick:()=>renderCard('edit')}));nodes.push(row);}
@@ -177,18 +230,27 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
   if(mode==='view'&&openedFromKeyboard){const t=inspector.element.querySelector('.card-title,:scope>strong');if(t){t.tabIndex=-1;t.focus();}}
   if(mode!=='view')requestAnimationFrame(()=>form.elements.title.focus());
  }
+ // Like the note and path confirms: both buttons are held while the delete runs (no second request, no cancelling
+ // half way), and progress and any error show in the confirm's status line.
  function confirmDelete(){
-  const v=items.find(x=>x.id===editing);if(!v)return;cardMode='confirm';
+  const v=items.find(x=>x.id===editing);if(!v||pending)return;cardMode='confirm';
   const row=inspector.element.querySelector('.card-actions');const box=document.createElement('div');box.className='card-confirm';box.setAttribute('role','group');box.setAttribute('aria-label','Confirm delete');
   const question=document.createElement('p');question.textContent=`Delete “${v.title}”? This can’t be undone.`;
-  const keep=actionButton('Cancel',{onClick:()=>renderCard('view')}),remove=actionButton('Delete volume',{variant:'danger',onClick:()=>persist(true)});
-  const buttonsRow=document.createElement('div');buttonsRow.className='card-actions';buttonsRow.append(keep,remove);box.append(question,buttonsRow);
-  box.addEventListener('keydown',e=>{if(e.key==='Escape'){e.stopPropagation();renderCard('view');}});
+  const status=document.createElement('p');status.className='form-status';status.setAttribute('role','status');
+  const back=()=>{if(!pending)renderCard('view');};
+  const keep=actionButton('Cancel',{onClick:back}),remove=actionButton('Delete volume',{variant:'danger',onClick:async()=>{
+   if(pending)return;keep.disabled=remove.disabled=true;status.textContent='Deleting…';
+   await persist(true);
+   // Still showing: the delete failed and its error is in the status line. Offer it again.
+   if(box.isConnected){keep.disabled=remove.disabled=false;if(status.textContent==='Deleting…')status.textContent='';remove.focus();}
+  }});
+  const buttonsRow=document.createElement('div');buttonsRow.className='card-actions';buttonsRow.append(keep,remove);box.append(question,buttonsRow,status);
+  box.addEventListener('keydown',e=>{if(e.key==='Escape'){e.stopPropagation();back();}});
   row.replaceWith(box);keep.focus();
  }
  function endDrawing(){stopResize();drawing=false;start=null;controls.enabled=true;renderer.domElement.style.cursor='';banner.hidden=true;tick();buttons();}
  // Resets editing state. `fromInspector` means the card was already closed by the app.
- function cancel(fromInspector=false){endDrawing();draft=null;editing=null;conflicted=false;form.hidden=true;const open=cardMode;cardMode=null;if(open&&!fromInspector)inspector.close();draw();showList();buttons();}
+ function cancel(fromInspector=false){endDrawing();selectionGeneration++;saveQueued=false;clearTimeout(nudgeTimer);draft=null;editing=null;conflicted=false;form.hidden=true;const open=cardMode;cardMode=null;if(open&&!fromInspector)inspector.close();draw();showList();buttons();}
  function select(v){if(pending)return;cancel();openPanel('volumes');editing=v.id;draft=context?.editable?structuredClone(v):null;fill(v);focus(v);renderCard('view');message('');draw();showList();}
  function begin(at=[controls.target.x,0,controls.target.z],title=''){if(!editable())return;cancel();draft={id:'',title,description:'',center:[at[0],1,at[2]],size:[2,2,1.2],yaw:0};fill(draft);focus(draft);draw();renderCard('create');message('');}
  // Draw mode: drag the front edge on the ground; a banner explains and offers the keyboard path.
@@ -207,17 +269,37 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
  form.oninput=()=>{if(draft&&!pending){const v=values();if([...v.center,...v.size,v.yaw].every(Number.isFinite)&&v.size.every(n=>n>=.01)){draft=v;draw();}}};
  form.addEventListener('keydown',e=>{if(e.key==='Escape'&&!resize&&!drawing){e.preventDefault();e.stopPropagation();cancelButton.click();}});
  function url(id){return '/api/semantic-volumes'+(id?'/'+encodeURIComponent(id):'')+'?scene='+encodeURIComponent(context.map);}
+ // A scene poll that was already in flight when a save landed still carries the old volume; merged as a remote
+ // edit, it would undo the save (a quick drag and release). For a few seconds after a save, polls that don't yet
+ // show what was saved are skipped.
+ // selectionGeneration changes whenever the selection does, so a save that lands afterwards doesn't reopen or
+ // reselect anything; it only updates the volume list.
+ let recentSave=null,saveQueued=false,selectionGeneration=0;
+ const volumeKey=v=>v?JSON.stringify([v.title,v.description,v.center,v.size,v.yaw]):null;
+ function staleAfterSave(collection){
+  if(!recentSave)return false;if(performance.now()-recentSave.at>5000){recentSave=null;return false;}
+  const remote=collection?.items?.find(v=>v.id===recentSave.id),current=recentSave.after===null?!remote:volumeKey(remote)===recentSave.after;
+  if(current)recentSave=null;return !current;
+ }
  async function persist(remove=false,keepSelection=false){
   if(!editable()||!draft)return;
-  if(conflicted){const text='This volume changed elsewhere while you were editing. Copy your edits, then reselect the volume to reload before saving.';message(text);alertInCard(text);return;}
-  const selected=context,identifier=editing,body={frame:selected.frame,volume:remove?null:values()},before=new Set(items.map(v=>v.id));
-  pending=true;buttons();endDrawing();message('Saving…');
-  try {const response=await api(url(identifier),body,remove?'DELETE':identifier?'PATCH':'POST');if(context!==selected)return;items=response.items;signature=JSON.stringify(response);
-   const saved=remove?null:(identifier?items.find(v=>v.id===identifier):items.find(v=>!before.has(v.id)))||null;
-   if(saved){editing=saved.id;draft=structuredClone(saved);fill(saved);draw();showList();if(!(keepSelection&&cardMode==='edit'))renderCard('view');}else cancel();
-   message(remove?'Volume deleted.':'Volume saved in this scene.');toast(remove?`Deleted “${body.volume?.title||'volume'}”`:'Volume saved');}
-  catch(e){if(context===selected){message(e.message);alertInCard(e.message);}}
-  finally{if(context===selected){pending=false;buttons();}}
+  if(conflicted){const text='This volume changed elsewhere while you were editing. Copy your edits, then reselect the volume to reload before saving.';message(text,{error:true});return;}
+  const selected=context,identifier=editing,body={frame:selected.frame,volume:remove?null:values()},before=new Set(items.map(v=>v.id)),generation=selectionGeneration;
+  // A drag already under way (started while an earlier change saved) carries on; it saves when it ends.
+  pending=true;buttons();if(!resize)endDrawing();message(remove?'Deleting…':'Saving…');
+  try {const response=await api(url(identifier),body,remove?'DELETE':identifier?'PATCH':'POST');if(context!==selected)return;signature=JSON.stringify(response);
+   // Apply only the volume this save changed; scene polls bring everything else. Swapping in the whole response
+   // list made every other volume (and its label) vanish and return whenever the lists differed.
+   const saved=remove?null:(identifier?response.items.find(v=>v.id===identifier):response.items.find(v=>!before.has(v.id)))||null;
+   items=remove?items.filter(v=>v.id!==identifier):saved?(items.some(v=>v.id===saved.id)?items.map(v=>v.id===saved.id?saved:v):[...items,saved]):items;
+   recentSave={id:remove?identifier:saved?.id,after:remove?null:volumeKey(saved),at:performance.now()};
+   // A drag that started during the save (or is queued to save next) keeps its own draft.
+   if(generation!==selectionGeneration)showList();
+   else if(saved&&(resize||saveQueued)){editing=saved.id;showList();}
+   else if(saved){editing=saved.id;draft=structuredClone(saved);fill(saved);draw();showList();if(!(keepSelection&&cardMode==='edit'))renderCard('view');}else cancel();
+   message(remove?'Volume deleted.':'Volume saved in this scene.');if(remove)toast(`Deleted “${body.volume?.title||'volume'}”`);}
+  catch(e){if(context===selected)message(e.message,{error:true});}
+  finally{if(context===selected){pending=false;buttons();if(saveQueued&&!resize){saveQueued=false;persist(false,true);}}}
  }
  form.onsubmit=e=>{e.preventDefault();if(form.reportValidity())persist();};
  function groundPoint(e){const rect=renderer.domElement.getBoundingClientRect(),ray=new THREE.Raycaster();ray.setFromCamera(new THREE.Vector2((e.clientX-rect.left)/rect.width*2-1,-(e.clientY-rect.top)/rect.height*2+1),camera);return ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,1,0),-Number(form.elements.base.value)),new THREE.Vector3());}
@@ -229,18 +311,21 @@ export function createSemanticVolumes({scene, camera, renderer, controls, panel,
  const canvas=renderer.domElement;
  canvas.addEventListener('pointerdown',e=>{press=[e.clientX,e.clientY];if(!drawing||e.button!==0)return;e.stopImmediatePropagation();e.preventDefault();start=groundPoint(e);if(start)canvas.setPointerCapture(e.pointerId);},true);
  canvas.addEventListener('pointermove',e=>{if(!drawing)return;e.stopImmediatePropagation();if(start){const p=groundPoint(e);if(p)footprint(p,e.shiftKey);}},true);
- canvas.addEventListener('pointerup',e=>{if(drawing){e.stopImmediatePropagation();e.preventDefault();if(start){const p=groundPoint(e);if(p)footprint(p,e.shiftKey);if(canvas.hasPointerCapture(e.pointerId))canvas.releasePointerCapture(e.pointerId);if(!p||p.distanceTo(start)<.3){start=null;message('Drag a front edge at least 30 cm long.');return;}endDrawing();message('Front edge ready. Add a title and use the handles to adjust the volume.');focus(draft);renderCard('create');}return;}
+ canvas.addEventListener('pointerup',e=>{if(drawing){e.stopImmediatePropagation();e.preventDefault();if(start){const p=groundPoint(e);if(p)footprint(p,e.shiftKey);if(canvas.hasPointerCapture(e.pointerId))canvas.releasePointerCapture(e.pointerId);if(!p||p.distanceTo(start)<.3){start=null;message('Drag a front edge at least 30 cm long.',{error:true});return;}endDrawing();message('Front edge ready. Add a title and use the handles to adjust the volume.');focus(draft);renderCard('create');}return;}
   if(pending||e.button!==0||!press||Math.hypot(e.clientX-press[0],e.clientY-press[1])>4||!group.visible)return;
   const r=canvas.getBoundingClientRect(),ray=new THREE.Raycaster();ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),camera);
-  // Notes are drawn through translucent volumes. Let the normal scene picker
-  // handle them before this capture-phase listener claims the click.
+  // A volume's own label selects it; any other label (notes are drawn through translucent volumes) and the
+  // priority objects go to the normal scene picker before this capture-phase listener claims the click.
+  const tagged=priorityHit(e),labelled=tagged?.kind==='volume'&&items.find(v=>v.id===tagged.volumeId);
+  if(labelled){e.semanticVolume=true;select(labelled);return;}
+  if(tagged)return;
   const priority=priorityPickObjects().filter(o=>{for(let p=o;p;p=p.parent){if(!p.visible)return false;}return true;});
   if(ray.intersectObjects(priority).length)return;
   const hit=ray.intersectObjects([...group.children,...preview.children]).find(h=>h.object.userData.volume);if(hit){e.semanticVolume=true;select(hit.object.userData.volume);}
  },true);
  canvas.addEventListener('pointercancel',()=>{if(drawing){cancel();message('Creation cancelled.');}});
  document.addEventListener('keydown',e=>{if(e.key!=='Escape')return;if(resize){e.stopImmediatePropagation();e.preventDefault();stopResize(true);message('Edit cancelled.');}else if(drawing){e.stopImmediatePropagation();e.preventDefault();cancel();message('Creation cancelled.');newVolume.focus();}},true);
- return {tick,beginAt:point=>begin(point),closed(){if(cardMode)cancel(true);},pick(ray){if(drawing||resize||!group.visible)return null;return ray.intersectObjects([...group.children,...preview.children]).find(h=>h.object.userData.volume);},update(map,data){const editable=map.startsWith('local:')||map==='demo';if(!context||context.map!==map||context.frame!==data?.frame){context={map,frame:data?.frame,editable};pending=false;items=[];cancel();signature='';message('');}const collection=data?.semantic_volumes;const next=JSON.stringify(collection||null);if(next!==signature){signature=next;const previous=items.find(v=>v.id===editing);items=collection?.frame===data.frame?collection.items:[];const remote=items.find(v=>v.id===editing);if(editing&&!pending&&!resize){if(!remote){cancel();message('This volume was deleted elsewhere.');}else if(draft&&previous){const merged=mergeVolumeDraft(previous,values(),remote);draft=merged.draft;conflicted=conflicted||merged.conflicts.length>0;fill(draft);if(conflicted)message('Conflicting edits: '+merged.conflicts.join(', ')+'. Copy your edits and reselect the volume before saving.');}else if(!draft)fill(remote);}draw();showList();}buttons();},reset(){context=null;items=[];pending=false;cancel();buttons();message('Loading selected scene…');}};
+ return {tick,beginAt:point=>begin(point),closed(){if(cardMode)cancel(true);},pick(ray){if(drawing||resize||!group.visible)return null;return ray.intersectObjects([...group.children,...preview.children]).find(h=>h.object.userData.volume);},update(map,data){const editable=map.startsWith('local:')||map==='demo';if(!context||context.map!==map||context.frame!==data?.frame){context={map,frame:data?.frame,editable};pending=false;recentSave=null;saveQueued=false;items=[];cancel();signature='';message('');}const collection=data?.semantic_volumes;const next=JSON.stringify(collection||null);if(next!==signature&&!staleAfterSave(collection)){signature=next;const previous=items.find(v=>v.id===editing);items=collection?.frame===data.frame?collection.items:[];const remote=items.find(v=>v.id===editing);if(editing&&!pending&&!resize){if(!remote){cancel();message('This volume was deleted elsewhere.',{error:true});}else if(draft&&previous){const merged=mergeVolumeDraft(previous,values(),remote);draft=merged.draft;conflicted=conflicted||merged.conflicts.length>0;fill(draft);if(conflicted)message('Conflicting edits: '+merged.conflicts.join(', ')+'. Copy your edits and reselect the volume before saving.',{error:true});}else if(!draft)fill(remote);}draw();showList();}buttons();},reset(){context=null;items=[];pending=false;recentSave=null;saveQueued=false;cancel();buttons();message('Loading selected scene…');}};
 }
 
 // Refresh untouched fields while retaining unsaved edits; never silently overwrite a conflict.

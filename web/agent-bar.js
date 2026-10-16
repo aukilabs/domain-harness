@@ -56,13 +56,16 @@ export function createAgentBar({root,tools,onOpen,hasConversation=()=>true}){
    if(reduceMotion())return;
    const to=shell.getBoundingClientRect(),orbTo=movingOrb.getBoundingClientRect();
    shell.animate([{width:from.width+'px',height:from.height+'px'},{width:to.width+'px',height:to.height+'px'}],{duration:560,easing:spring});
+   // Opening flies the orb from the button into the input; closing fades it back in on the button instead.
    const dx=(orbFrom.left-from.left)-(orbTo.left-to.left);
-   movingOrb.animate([{transform:`translateX(${dx}px) scale(.9)`},{transform:'none'}],{duration:620,easing:spring});
+   if(mode==='agent')movingOrb.animate([{transform:`translateX(${dx}px) scale(.9)`},{transform:'none'}],{duration:620,easing:spring});
+   else movingOrb.animate([{opacity:0,transform:'scale(.8)'},{opacity:1,transform:'none'}],{duration:260,delay:80,easing:'cubic-bezier(.2,.8,.2,1)',fill:'backwards'});
    const entering=[...shell.querySelectorAll(mode==='agent'?'#scene-chat-input,.agent-shell-actions>*':(root.hasAttribute('data-plan')?'.map2d-strip>*,.agent-ask-label,.agent-ask-key':'.agent-tool,.agent-ask-label,.agent-ask-key'))];
    entering.forEach((node,i)=>node.animate([{opacity:0,filter:'blur(6px)',transform:'translateY(6px) scale(.96)'},{opacity:1,filter:'none',transform:'none'}],{duration:380,delay:120+i*40,easing:'cubic-bezier(.2,.8,.2,1)',fill:'backwards'}));
   };
   if(reduceMotion()){swap();return;}
-  Promise.all(leaving.map(node=>node.animate([{opacity:1},{opacity:0,filter:'blur(4px)',transform:'scale(.96)'}],{duration:110,easing:'ease-in'}).finished)).then(swap);
+  const fading=mode==='tools'?[movingOrb.animate([{opacity:1},{opacity:0,transform:'scale(.8)'}],{duration:110,easing:'ease-in',fill:'forwards'})]:[];
+  Promise.all([...leaving.map(node=>node.animate([{opacity:1},{opacity:0,filter:'blur(4px)',transform:'scale(.96)'}],{duration:110,easing:'ease-in'}).finished),...fading.map(a=>a.finished)]).then(()=>{swap();fading.forEach(a=>a.cancel());});
  }
  function open(){if(isOpen()){input.focus();return;}morph('agent',()=>{showSheet();input.focus({preventScroll:true});});onOpen?.();}
  function closeAgent(){if(!isOpen())return;hideSheet(()=>{morph('tools');toggle.focus({preventScroll:true});});}

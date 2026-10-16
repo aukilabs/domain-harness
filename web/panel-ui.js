@@ -128,7 +128,8 @@ export function formField({label,id=`field-${++fieldCount}`,multiline=false,max,
  field.append(name,input);
  if(max){const counter=element('span','form-counter');counter.id=id+'-count';const from=Math.min(max-20,Math.round(max*.9));
   const sync=()=>{const near=input.value.length>=from;counter.hidden=!near;counter.textContent=`${input.value.length.toLocaleString()}/${max.toLocaleString()}`;if(near)input.setAttribute('aria-describedby',counter.id);else input.removeAttribute('aria-describedby');};input.addEventListener('input',sync);sync();field.append(counter);}
- if(multiline){const grow=()=>{input.style.height='auto';input.style.height=Math.min(240,Math.max(96,input.scrollHeight+2))+'px';};input.addEventListener('input',grow);requestAnimationFrame(grow);}
+ // Textareas size to their content in CSS (field-sizing); older browsers grow here instead.
+ if(multiline&&!CSS.supports('field-sizing','content')){const grow=()=>{input.style.height='auto';input.style.height=Math.min(240,Math.max(96,input.scrollHeight+2))+'px';};input.addEventListener('input',grow);requestAnimationFrame(grow);}
  return {field,input};
 }
 
@@ -169,18 +170,21 @@ export function tactile(root,targets){
 }
 
 // Animated reveal and hide for anything that expands: height plus a short fade.
+// While the height animates only the top and bottom are clipped: rows sit 8px into the gutter and cast
+// shadows, so clipping the sides (overflow:hidden) would cut their hover plate and focus ring mid-motion.
 const reduceMotion=()=>matchMedia('(prefers-reduced-motion: reduce)').matches;
+const clipHeight=el=>{el.style.clipPath='inset(0 -16px)';},unclip=el=>{el.style.clipPath='';};
 export function reveal(el){
  if(!el||reduceMotion())return;
  const height=el.scrollHeight;if(!height)return;
- el.style.overflow='hidden';
- el.animate([{height:'0px',opacity:0,transform:'translateY(-4px)'},{height:height+'px',opacity:1,transform:'none'}],{duration:260,easing:'cubic-bezier(.2,.8,.2,1)'}).onfinish=()=>{el.style.overflow='';};
+ clipHeight(el);
+ el.animate([{height:'0px',opacity:0,transform:'translateY(-4px)'},{height:height+'px',opacity:1,transform:'none'}],{duration:260,easing:'cubic-bezier(.2,.8,.2,1)'}).onfinish=()=>unclip(el);
 }
 export function conceal(el,done){
  if(!el||reduceMotion()||el.hidden||!el.offsetHeight){done?.();return;}
- el.style.overflow='hidden';
+ clipHeight(el);
  const animation=el.animate([{height:el.offsetHeight+'px',opacity:1},{height:'0px',opacity:0}],{duration:180,easing:'cubic-bezier(.4,0,1,1)'});
- animation.onfinish=()=>{el.style.overflow='';done?.();};
+ animation.onfinish=()=>{unclip(el);done?.();};
 }
 // Native <details>: animate between the summary's height and the full height.
 export function animateDetails(root=document){
@@ -189,9 +193,9 @@ export function animateDetails(root=document){
   if(!details||details.tagName!=='DETAILS'||reduceMotion()||details.dataset.animating)return;
   e.preventDefault();details.dataset.animating='true';
   const closed=summary.offsetHeight+'px';
-  if(!details.open){details.open=true;const open=details.scrollHeight+'px';details.style.overflow='hidden';
-   details.animate([{height:closed},{height:open}],{duration:260,easing:'cubic-bezier(.2,.8,.2,1)'}).onfinish=()=>{details.style.overflow='';delete details.dataset.animating;details.dispatchEvent(new Event('toggle'));};}
-  else{const open=details.offsetHeight+'px';details.style.overflow='hidden';
-   details.animate([{height:open},{height:closed}],{duration:180,easing:'cubic-bezier(.4,0,1,1)'}).onfinish=()=>{details.open=false;details.style.overflow='';delete details.dataset.animating;};}
+  if(!details.open){details.open=true;const open=details.scrollHeight+'px';clipHeight(details);
+   details.animate([{height:closed},{height:open}],{duration:260,easing:'cubic-bezier(.2,.8,.2,1)'}).onfinish=()=>{unclip(details);delete details.dataset.animating;details.dispatchEvent(new Event('toggle'));};}
+  else{const open=details.offsetHeight+'px';clipHeight(details);
+   details.animate([{height:open},{height:closed}],{duration:180,easing:'cubic-bezier(.4,0,1,1)'}).onfinish=()=>{details.open=false;unclip(details);delete details.dataset.animating;};}
  });
 }

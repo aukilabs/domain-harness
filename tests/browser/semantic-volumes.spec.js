@@ -107,7 +107,8 @@ test('face handles resize rotated boxes directly in the scene and keep opposite 
   await expect(page.locator('#volume-status')).toHaveText('Volume saved in this scene.');
   expect(Number(await form.getByLabel('Height',{exact:true}).inputValue())).toBeGreaterThan(2);
   expect(Number(await form.getByLabel('Base elevation',{exact:true}).inputValue())).toBeCloseTo(0,3);
-  const before=await width.inputValue(),r2=await handle.boundingBox();await page.mouse.move(r2.x+r2.width/2,r2.y+r2.height/2);await page.mouse.down();await page.mouse.move(r2.x+r2.width/2+40,r2.y+r2.height/2,{steps:5});await page.keyboard.press('Escape');await page.mouse.up();await expect(width).toHaveValue(before);
+  // The +X handle sits well below the card after both drags; it must stay usable, not be hidden by the card's column.
+  await expect(handle).toBeVisible();const before=await width.inputValue(),r2=await handle.boundingBox();await page.mouse.move(r2.x+r2.width/2,r2.y+r2.height/2);await page.mouse.down();await page.mouse.move(r2.x+r2.width/2+40,r2.y+r2.height/2,{steps:5});await page.keyboard.press('Escape');await page.mouse.up();await expect(width).toHaveValue(before);
   await page.screenshot({path:'test-results/semantic-volume-handles.png'});
   await page.getByRole('button',{name:'Edit',exact:true}).click();await page.getByRole('button',{name:'Save volume',exact:true}).click();await expect(page.locator('#volume-status')).toHaveText('Volume saved in this scene.');
   const saved=(await (await request.get(url)).json()).items.find(item=>item.id===v.id);expect(saved.size[0]).toBeCloseTo(newWidth,3);expect(saved.size[1]).toBeGreaterThan(2);expect(saved.yaw).toBeCloseTo(v.yaw,3);

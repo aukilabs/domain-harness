@@ -29,7 +29,7 @@ export function createMap2D(host,onToggle){
  strip.innerHTML=`<div class="map2d-floor" role="group" aria-label="Floor height">
   <span class="map2d-label">Floor</span>
   <button type="button" class="map2d-step" data-step="-0.1" aria-label="Lower the floor by 10 cm">−</button>
-  <label><span class="visually-hidden">2D map floor height</span><input type="number" step="0.05" value="0" aria-label="2D map floor height"></label><span class="map2d-unit">m</span>
+  <label><span class="visually-hidden">2D map floor height</span><input type="number" inputmode="decimal" step="0.05" value="0" aria-label="2D map floor height"></label><span class="map2d-unit">m</span>
   <button type="button" class="map2d-step" data-step="0.1" aria-label="Raise the floor by 10 cm">+</button>
  </div>
  <div class="map2d-legend" aria-label="Legend"><span><i data-kind="occupied"></i>Occupied</span><span><i data-kind="free"></i>Free</span><span><i data-kind="volume"></i>Volume</span></div>

@@ -9,7 +9,12 @@ import { createSemanticVolumes, legacyVolumesForView } from './semantic-volumes.
 import { createMap2D } from './map-2d.js';
 import { createCrayon } from './crayon.js';
 import { createGhostCamera, createCameraPan, isEditing } from './ghost-camera.js';
+import { createCameraRig } from './camera-rig.js';
 import { createNoteBubble, ghostWhenHidden } from './note-bubble.js';
+import { createSceneLabels } from './scene-labels.js';
+import { TIERS } from './note-lod.js';
+import { createContentLocator } from './content-locator.js';
+import { playFaviconWrite } from './favicon.js';
 import { createPipWindow } from './pip-window.js';
 import { createVideoPresentation } from './video-presentation.js';
 import { readCameraResponse } from './camera-frame.js';
@@ -103,6 +108,8 @@ const railIcon=(path,weight=1.5)=>`<svg aria-hidden="true" width="20" height="20
 // The McKenna mark heads the dock; the floating header keeps only status, scene tools and the account.
 const railLogo=document.createElement('a');railLogo.className='rail-logo';railLogo.href='/';railLogo.setAttribute('aria-label','McKenna home');// The McKenna mark: a colour version over a grey one, revealed along a traced pen route (see style.css).
 railLogo.innerHTML='<svg viewBox="0 0 231 118" aria-hidden="true"><defs><linearGradient id="mark-hue" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="231" y2="118"><stop offset="0.00" stop-color="#10b981"/><stop offset="0.20" stop-color="#3b82f6"/><stop offset="0.40" stop-color="#8b5cf6"/><stop offset="0.60" stop-color="#ec4899"/><stop offset="0.80" stop-color="#f59e0b"/><stop offset="1.00" stop-color="#06b6d4"/><animateTransform attributeName="gradientTransform" type="rotate" from="0 115 59" to="360 115 59" dur="10s" repeatCount="indefinite"/></linearGradient><mask id="mark-pen" maskUnits="userSpaceOnUse" x="-20" y="-20" width="271" height="158"><path class="mark-pen" d="M4 50C12 30 30 6 46 6C52 6 54 12 50 30C44 55 30 85 34 113C38 95 48 70 58 52C75 25 95 5 110 5C118 5 122 12 118 25C110 55 96 90 100 113C106 95 115 70 126 52C145 25 162 5 176 5C186 5 190 12 186 30C178 60 168 90 174 106C178 116 188 112 198 100C212 85 222 65 228 52" pathLength="1" fill="none" stroke="#fff" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/></mask></defs><path class="mark-base" d="M44.3657 0.0950353C46.975 -0.280215 50.568 0.523793 53.0372 1.31804C65.3195 5.26779 65.4902 15.351 63.0022 26.139C61.1842 34.0218 58.8415 41.4885 56.1087 49.0798C65.6655 32.6545 84.049 9.78554 101.899 2.31954C107.802 -0.149712 114.08 -0.764712 120.087 1.73329C123.845 3.29604 127.782 5.6543 129.348 9.6203C133.205 19.384 124.303 40.7483 120.279 49.8878C122.834 47.1308 126.484 41.4368 129.196 38.155C140.357 24.651 154.131 9.17354 170.484 2.23754C176.469 -0.137963 182.828 -0.913212 188.816 1.81954C198.433 6.20979 198.806 14.356 196.806 23.378C195.741 28.0323 194.341 32.6028 192.613 37.0533C187.681 49.9518 169.454 87.7148 174.308 99.5728C175.117 101.55 176.217 102.406 178.156 103.223C193.258 102.005 209.268 76.0905 215.678 63.8703C217.238 60.8693 218.706 57.8208 220.078 54.7295C220.913 52.8038 223.121 46.67 224.658 46.2288C230.816 44.4623 231.721 49.3138 230.348 53.4903C222.953 75.9843 192.981 127.158 163.411 115.368C158.162 113.221 153.986 109.07 151.806 103.835C145.191 88.239 154.445 65.3803 160.272 50.9063C164.921 39.422 171.766 25.9425 174.335 14.1935C166.294 16.7703 157.646 23.8343 151.66 29.8013C133.91 47.4945 117.948 70.3805 109.417 94.0003C107.829 98.3965 105.971 105.906 105.93 110.482C104.078 112.38 102.118 113.468 99.4557 112.966C83.3645 109.935 81.0105 98.16 83.483 83.9145C86.3002 67.681 93.3437 52.728 99.2995 37.576C101.989 30.7318 106.097 22.0493 106.863 15.0548C101.127 16.4648 94.7292 21.4115 90.3262 25.5003C70.9725 43.6363 56.6862 67.421 46.908 91.9313C43.937 99.3785 42.6125 107.748 40.2237 115.318C39.3235 116.509 36.5507 117.035 35.3475 117.004C7.63623 116.312 18.4755 84.888 23.417 68.8513C26.8595 57.6783 30.9715 48.1453 34.7202 37.3653C37.553 29.2193 42.073 19.097 41.9872 10.7438C29.6255 15.914 18.082 27.0875 12.037 39.195C10.7577 41.7575 10.1167 46.4215 8.47448 48.5588C7.96973 49.2158 5.27648 49.0088 4.26873 48.973C2.19073 47.6003 0.033724 45.8583 0.000973951 43.1483C-0.094526 35.2535 6.85372 26.1438 11.7555 20.5168C20.1292 10.9038 31.1815 1.21304 44.3657 0.0950353Z"/><path class="mark-ink" d="M44.3657 0.0950353C46.975 -0.280215 50.568 0.523793 53.0372 1.31804C65.3195 5.26779 65.4902 15.351 63.0022 26.139C61.1842 34.0218 58.8415 41.4885 56.1087 49.0798C65.6655 32.6545 84.049 9.78554 101.899 2.31954C107.802 -0.149712 114.08 -0.764712 120.087 1.73329C123.845 3.29604 127.782 5.6543 129.348 9.6203C133.205 19.384 124.303 40.7483 120.279 49.8878C122.834 47.1308 126.484 41.4368 129.196 38.155C140.357 24.651 154.131 9.17354 170.484 2.23754C176.469 -0.137963 182.828 -0.913212 188.816 1.81954C198.433 6.20979 198.806 14.356 196.806 23.378C195.741 28.0323 194.341 32.6028 192.613 37.0533C187.681 49.9518 169.454 87.7148 174.308 99.5728C175.117 101.55 176.217 102.406 178.156 103.223C193.258 102.005 209.268 76.0905 215.678 63.8703C217.238 60.8693 218.706 57.8208 220.078 54.7295C220.913 52.8038 223.121 46.67 224.658 46.2288C230.816 44.4623 231.721 49.3138 230.348 53.4903C222.953 75.9843 192.981 127.158 163.411 115.368C158.162 113.221 153.986 109.07 151.806 103.835C145.191 88.239 154.445 65.3803 160.272 50.9063C164.921 39.422 171.766 25.9425 174.335 14.1935C166.294 16.7703 157.646 23.8343 151.66 29.8013C133.91 47.4945 117.948 70.3805 109.417 94.0003C107.829 98.3965 105.971 105.906 105.93 110.482C104.078 112.38 102.118 113.468 99.4557 112.966C83.3645 109.935 81.0105 98.16 83.483 83.9145C86.3002 67.681 93.3437 52.728 99.2995 37.576C101.989 30.7318 106.097 22.0493 106.863 15.0548C101.127 16.4648 94.7292 21.4115 90.3262 25.5003C70.9725 43.6363 56.6862 67.421 46.908 91.9313C43.937 99.3785 42.6125 107.748 40.2237 115.318C39.3235 116.509 36.5507 117.035 35.3475 117.004C7.63623 116.312 18.4755 84.888 23.417 68.8513C26.8595 57.6783 30.9715 48.1453 34.7202 37.3653C37.553 29.2193 42.073 19.097 41.9872 10.7438C29.6255 15.914 18.082 27.0875 12.037 39.195C10.7577 41.7575 10.1167 46.4215 8.47448 48.5588C7.96973 49.2158 5.27648 49.0088 4.26873 48.973C2.19073 47.6003 0.033724 45.8583 0.000973951 43.1483C-0.094526 35.2535 6.85372 26.1438 11.7555 20.5168C20.1292 10.9038 31.1815 1.21304 44.3657 0.0950353Z" fill="url(#mark-hue)" mask="url(#mark-pen)"/></svg>';rail.append(railLogo);if(matchMedia('(prefers-reduced-motion: reduce)').matches)railLogo.querySelector('animateTransform')?.remove();
+// The tab icon writes itself in once, like the rail logo on hover.
+playFaviconWrite({mark:railLogo.querySelector('.mark-base').getAttribute('d'),pen:railLogo.querySelector('.mark-pen').getAttribute('d')});
 const railTabs=document.createElement('div');railTabs.className='rail-tabs';rail.append(railTabs);
 for(const [id,name] of Object.entries(panelNames)){
  const button=document.createElement('button');button.type='button';button.className='rail-tab';button.dataset.panel=id;button.dataset.accent=panelAccents[id];button.setAttribute('aria-label',name);button.setAttribute('aria-controls','panel-'+id);
@@ -217,22 +224,29 @@ const componentControlResults=new Map();
 let componentControlPending=false;
 const sceneBackground=document.documentElement.dataset.theme==='light'?'#e8e8f0':'#0d0d0f';
 const scene=new THREE.Scene();scene.background=new THREE.Color(sceneBackground);scene.fog=new THREE.Fog(sceneBackground,10,26);
-const camera=new THREE.PerspectiveCamera(42,1,.01,100);
+const camera=new THREE.PerspectiveCamera(42,1,.01,160);
 const renderer=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true});renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.1;
 $('canvas').append(renderer.domElement);renderer.domElement.setAttribute('aria-label','3D voxel map');
 const controls=new OrbitControls(camera,renderer.domElement);controls.enableDamping=true;
 // Mouse: left-drag looks around (orbits; a click without a drag still selects), right- or middle-drag pans
 // across the ground, and the wheel zooms toward the cursor. Touch: one finger pans, two pinch and rotate.
-controls.mouseButtons={LEFT:THREE.MOUSE.ROTATE,MIDDLE:THREE.MOUSE.PAN,RIGHT:THREE.MOUSE.PAN};controls.touches={ONE:THREE.TOUCH.PAN,TWO:THREE.TOUCH.DOLLY_ROTATE};
+const mouseButtons={LEFT:THREE.MOUSE.ROTATE,MIDDLE:THREE.MOUSE.PAN,RIGHT:THREE.MOUSE.PAN};controls.mouseButtons={...mouseButtons};controls.touches={ONE:THREE.TOUCH.PAN,TWO:THREE.TOUCH.DOLLY_ROTATE};
 controls.screenSpacePanning=false;controls.zoomToCursor=true;controls.minDistance=1.2;controls.maxDistance=60;controls.maxPolarAngle=Math.PI*.49;
 let crayon=null;
 const cameraPan=createCameraPan({camera,controls});
 renderer.domElement.addEventListener('pointerdown',()=>cameraPan.cancel(),true);
 renderer.domElement.addEventListener('wheel',()=>cameraPan.cancel(),{capture:true,passive:true});
 for(const id of ['map-select','fit','top','demo-view'])$(id).addEventListener(id==='map-select'?'change':'click',()=>cameraPan.cancel(),true);
-const ghostCamera=createGhostCamera({camera,controls,canvas:renderer.domElement,enabled:()=>!map2D.isActive()&&!crayon?.isActive(),onMove:()=>{cameraPan.cancel();if(attachedCamera.isActive())attachedCamera.detach();
- // The first time someone moves with the keyboard, show the whole scheme once.
- try{if(!localStorage.getItem('camera-keys-hint')){localStorage.setItem('camera-keys-hint','1');toast('WASD move · Space / Shift up and down · Q / E turn · drag to look around · right-drag to pan');}}catch{}}});
+// The camera and orbit target move within one set of limits, kept by the rig (camera-rig.js); the attached camera
+// and the 2D plan drive the camera themselves.
+const rig=createCameraRig({camera,controls,floor:()=>grid.position.y,paused:()=>attachedCamera.isActive()||map2D.isActive()});
+const ghostCamera=createGhostCamera({camera,controls,rig,canvas:renderer.domElement,enabled:()=>!map2D.isActive()&&!crayon?.isActive(),onMove:()=>{cameraPan.cancel();closeSpotMenu();if(attachedCamera.isActive())attachedCamera.detach();}});
+// OrbitControls turns a Shift-drag into a pan and a Shift right-drag into a look. Shift held to sink is movement,
+// not that modifier, so for that press the buttons are swapped and the drag does what it does without Shift.
+// Capture listeners run before OrbitControls' own; the plain one after it puts the buttons back.
+renderer.domElement.addEventListener('pointerdown',e=>{controls.mouseButtons={...mouseButtons};
+ if(e.shiftKey&&!e.ctrlKey&&!e.metaKey&&ghostCamera.sinking())controls.mouseButtons={LEFT:THREE.MOUSE.PAN,MIDDLE:THREE.MOUSE.ROTATE,RIGHT:THREE.MOUSE.ROTATE};},true);
+renderer.domElement.addEventListener('pointerdown',()=>{controls.mouseButtons={...mouseButtons};});
 let activeMap='demo',current=null,busy=false,refreshing=false,lastScene=null,selectable=[],selectedNoteId=null,selectedPathId=null,deletingPathId=null,deletingNoteId=null,selectedSpatialNode=null,spatialSignature='';
 let homeOffline=false,catalogInitialized=false;
 function isLocalScene(map=activeMap){return map.startsWith('local:');}
@@ -326,15 +340,24 @@ scene.add(new THREE.HemisphereLight(0xffffff,0x1a2438,1.7));
 const sun=new THREE.DirectionalLight(0xffffff,2.4);sun.position.set(-3,7,4);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);Object.assign(sun.shadow.camera,{left:-5,right:5,top:5,bottom:-5,near:.1,far:20});sun.shadow.bias=-.0005;scene.add(sun);
 const ground=new THREE.Mesh(new THREE.PlaneGeometry(200,200),new THREE.MeshStandardMaterial({color:document.documentElement.dataset.theme==='light'?'#e0e3e8':'#101014',roughness:1}));ground.rotation.x=-Math.PI/2;ground.position.y=-.15;ground.receiveShadow=true;scene.add(ground);
 // Ground grid: line grids (0.5 m minor, 2.5 m major) that follow the camera in whole major cells, so they
-// never run out and never swim. A small shader patch fades each line with distance from the camera; lines
-// only cost their own pixels, which keeps software-rendered browsers (and the browser tests) fast.
+// never run out and never swim. A small shader patch fades each line toward the horizon; lines only cost
+// their own pixels, which keeps software-rendered browsers (and the browser tests) fast.
 // `grid.material.opacity` stays the opacity setting and drives both layers.
-const gridFade={uCam:{value:new THREE.Vector3()},uFadeFar:{value:40}};
-// Fades a line material with distance from the camera; `reach` scales how far out it stays visible.
-function fadeWithDistance(material,reach){
- material.onBeforeCompile=shader=>{Object.assign(shader.uniforms,gridFade,{uReach:{value:reach}});
+// uPx is one device pixel's width in metres per metre of depth; uOrbit and uFlat locate the flattened top-down view.
+const gridFade={uCam:{value:new THREE.Vector3()},uCentre:{value:new THREE.Vector2()},uFadeFar:{value:40},uClip:{value:100},uPx:{value:.001},uOrbit:{value:10},uFlat:{value:0}};
+// Fades a line material toward the horizon. The fade is measured in 3D from the camera and scaled by the
+// distance to what it looks at, so everything between the camera and its target stays crisp at any tilt
+// (a flat distance from the camera faded the floor right in front of a downward look). `reach` scales how
+// far past the target a layer carries; `limit` is the layer's half-extent, faded softly so its end never shows.
+// Either way the fade finishes short of the camera's far plane (uClip): zoomed out and tilted, no hard cut-off.
+// With a line `spacing`, a layer also fades where its lines would land only a few pixels apart (toward the horizon):
+// there 1 px lines alias into a moiré that crawls and flickers with any sub-pixel camera move.
+function fadeWithDistance(material,reach,limit=1e6,spacing=0){
+ // Grid layers fade themselves; the scene's distance fog would double it.
+ material.fog=false;
+ material.onBeforeCompile=shader=>{Object.assign(shader.uniforms,gridFade,{uReach:{value:reach},uLimit:{value:limit},uSpacing:{value:spacing}});
   shader.vertexShader='varying vec3 vGridWorld;\n'+shader.vertexShader.replace('#include <project_vertex>','#include <project_vertex>\nvGridWorld=(modelMatrix*vec4(position,1.)).xyz;');
-  shader.fragmentShader='varying vec3 vGridWorld;uniform vec3 uCam;uniform float uFadeFar;uniform float uReach;\n'+shader.fragmentShader.replace('#include <color_fragment>','#include <color_fragment>\ndiffuseColor.a*=1.-smoothstep(uFadeFar*uReach*.35,uFadeFar*uReach,distance(uCam.xz,vGridWorld.xz));');};
+  shader.fragmentShader='varying vec3 vGridWorld;uniform vec3 uCam;uniform vec2 uCentre;uniform float uFadeFar;uniform float uReach;uniform float uLimit;uniform float uClip;uniform float uPx;uniform float uOrbit;uniform float uFlat;uniform float uSpacing;\n'+shader.fragmentShader.replace('#include <color_fragment>','#include <color_fragment>\nfloat fadeEnd=min(uFadeFar*(1.+1.8*uReach),uClip*.9),gridDist=max(distance(uCam,vGridWorld),1e-4);\ndiffuseColor.a*=(1.-smoothstep(min(uFadeFar*(1.+.4*uReach),fadeEnd*.55),fadeEnd,gridDist))*(1.-smoothstep(uLimit*.6,uLimit*.95,distance(uCentre,vGridWorld.xz)));\nif(uSpacing>0.)diffuseColor.a*=smoothstep(2.,5.,uSpacing*abs(uCam.y-vGridWorld.y)/gridDist/(mix(gridDist,uOrbit,uFlat)*uPx));');};
  return material;
 }
 // Each line is split into short pieces: the fade reads each fragment's world position, and one line hundreds of
@@ -343,24 +366,37 @@ function lineGrid(spacing,extent,reach,piece){
  const points=[],half=extent/2;
  for(let v=-half;v<=half+1e-6;v+=spacing)for(let a=-half;a<half-1e-6;a+=piece){const b=Math.min(half,a+piece);points.push(a,0,v,b,0,v,v,0,a,v,0,b);}
  const geometry=new THREE.BufferGeometry();geometry.setAttribute('position',new THREE.Float32BufferAttribute(points,3));
- return new THREE.LineSegments(geometry,fadeWithDistance(new THREE.LineBasicMaterial({color:'#52525b',transparent:true,depthWrite:false}),reach));
+ return new THREE.LineSegments(geometry,fadeWithDistance(new THREE.LineBasicMaterial({color:'#52525b',transparent:true,depthWrite:false}),reach,half,spacing));
 }
-const gridMinor=lineGrid(.5,90,.45,1),gridMajor=lineGrid(2.5,400,1,5);
+const gridMinor=lineGrid(.5,90,1,1),gridMajor=lineGrid(2.5,400,3,5);
 const axisPoints=[];for(let a=-200;a<200;a+=5)axisPoints.push(a,0,0,a+5,0,0,0,0,a,0,0,a+5);
-const gridAxes=new THREE.LineSegments(new THREE.BufferGeometry().setAttribute('position',new THREE.Float32BufferAttribute(axisPoints,3)),fadeWithDistance(new THREE.LineBasicMaterial({color:'#4f8ef7',transparent:true,depthWrite:false}),1));
+const gridAxes=new THREE.LineSegments(new THREE.BufferGeometry().setAttribute('position',new THREE.Float32BufferAttribute(axisPoints,3)),fadeWithDistance(new THREE.LineBasicMaterial({color:'#4f8ef7',transparent:true,depthWrite:false}),3,200));
 gridAxes.position.y=-.139;
 const grid=new THREE.Group();grid.add(gridMinor,gridMajor);grid.position.y=-.14;
 // One opacity for the whole grid (the Settings slider): minor lines at half strength, major and axes at full.
 grid.material={get opacity(){return gridMajor.material.opacity;},set opacity(v){gridMajor.material.opacity=gridAxes.material.opacity=v;gridMinor.material.opacity=v*.55;}};
 grid.material.opacity=.32;
 // Follow the camera in whole major cells so the lines stay put in the world while the grid never ends.
-gridMajor.onBeforeRender=()=>{const snap=2.5;grid.position.x=Math.round(controls.target.x/snap)*snap;grid.position.z=Math.round(controls.target.z/snap)*snap;grid.updateMatrixWorld();
- gridFade.uCam.value.copy(camera.position);gridFade.uFadeFar.value=Math.max(8,camera.position.distanceTo(controls.target)*1.15);};
+// Runs just before drawing, so the ground and both layers (which all share these uniforms) see this frame's camera.
+const gridBuffer=new THREE.Vector2();
+function followGrid(){const snap=2.5;grid.position.x=Math.round(controls.target.x/snap)*snap;grid.position.z=Math.round(controls.target.z/snap)*snap;grid.updateMatrixWorld();
+ const orbit=camera.position.distanceTo(controls.target);
+ gridFade.uCam.value.copy(camera.position);gridFade.uCentre.value.set(controls.target.x,controls.target.z);gridFade.uFadeFar.value=Math.max(4,orbit);gridFade.uClip.value=camera.far;
+ gridFade.uPx.value=2*Math.tan(THREE.MathUtils.degToRad(camera.fov/2))/camera.zoom/Math.max(1,renderer.getDrawingBufferSize(gridBuffer).y);gridFade.uOrbit.value=orbit;gridFade.uFlat.value=camera.userData.flatten||0;}
 // The axes mark the world origin, so they stay put rather than following the camera.
 scene.add(grid,gridAxes);
 // The demo floor plane dissolves into the background the same way, instead of ending in a hard edge.
-fadeWithDistance(ground.material,1.3);ground.material.transparent=true;ground.renderOrder=-2;
+// It sits only 1 cm below the grid, closer than the depth buffer can resolve far away: push its depth back so
+// distant grid lines never z-fight it.
+fadeWithDistance(ground.material,1.3,100);ground.material.transparent=true;ground.renderOrder=-2;Object.assign(ground.material,{polygonOffset:true,polygonOffsetFactor:1,polygonOffsetUnits:4});
 const groups=Object.fromEntries(['voxels','portals','objects','rays','notes'].map(k=>[k,new THREE.Group()]));Object.values(groups).forEach(g=>scene.add(g));
+// Note and volume labels are HTML over the canvas (scene-labels.js): one zoom tier for the whole scene, animated
+// changes of form and fixed stacking. They never take the pointer: canvas clicks ask labelHit(), once per event.
+const sceneLabels=createSceneLabels({camera,controls,renderer,hidden:()=>map2D?.isActive(),fog:()=>scene.fog,rects:()=>frameRects});
+const labelHit=e=>e.labelHit!==undefined?e.labelHit:(e.labelHit=sceneLabels.hitTest(e.clientX,e.clientY));
+// A cluster flies in to where its notes show as pins again: 80% of the pin tier's scale.
+function openCluster(centre){const height=renderer.domElement.clientHeight||700,distance=Math.max(controls.minDistance,TIERS[0].up*.8*height/(2*Math.tan(THREE.MathUtils.degToRad(camera.fov/2))));
+ cameraPan.start(centre.clone().add(camera.position.clone().sub(controls.target).setLength(distance)),centre.clone());}
 crayon=createCrayon({button:$('crayon'),canvas:renderer.domElement,camera,controls,scene,voxels:groups.voxels,
  state:()=>({map:activeMap,frame:current?.frame,paths:current?.paths,editable:isLocalScene()&&!!current&&!map2D.isActive()}),
  save:async(context,stroke,extend=false)=>{const result=await api('/api/paths'+(extend?'/'+encodeURIComponent(stroke.id):'')+'?scene='+encodeURIComponent(context.map),{frame:context.frame,stroke},extend?'PATCH':'POST');if(activeMap===context.map&&current?.frame===context.frame)current.paths=result;lastScene=null;return result;},
@@ -403,7 +439,7 @@ const volumeInspector={element:$('selection'),
   const close=document.createElement('button');close.type='button';close.className='inspector-close';close.setAttribute('aria-label','Close inspector');close.append(icon(icons.close));close.onclick=closeCard;
   card.replaceChildren(close,...nodes);card.hidden=false;noteCardMode='volume';},
  close(){if(noteCardMode==='volume'){noteCardMode='view';$('selection').hidden=true;}}};
-const semanticVolumes=createSemanticVolumes({scene,camera,renderer,controls,panel:panelBodies.volumes,api,label,clear,openPanel,inspector:volumeInspector,toast,flyTo:(position,target)=>cameraPan.start(position,target),priorityPickObjects:()=>[...selectable.filter(o=>o.userData.kind==='note'),...crayon.objects()]});
+const semanticVolumes=createSemanticVolumes({scene,camera,renderer,controls,panel:panelBodies.volumes,api,label,labels:sceneLabels,priorityHit:labelHit,safeArea:()=>sceneSafeArea(false),rects:()=>frameRects,clear,openPanel,inspector:volumeInspector,toast,flyTo:(position,target)=>cameraPan.start(position,target),priorityPickObjects:()=>crayon.objects()});
 // The volume tool draws on the 3D floor, so it can't start while the 2D plan is open.
 $('volume-draw').addEventListener('click',e=>{if(map2D.isActive())e.stopImmediatePropagation();},true);
 $('map-select').addEventListener('change',()=>{semanticVolumes.reset();try{localStorage.setItem('home.lastScene',$('map-select').value);}catch{}});
@@ -480,7 +516,8 @@ function build(data){flatSpritesAge=Infinity;
   groups.portals.add(g);
  }
  if(first)phoneTrails.reset(data.frame);
- for(const volume of legacyVolumesForView(data)){
+ const volumeLabels=[];
+ for(const [index,volume] of legacyVolumesForView(data).entries()){
   const [w,h,d]=volume.dimensions;
   const group=new THREE.Group();group.position.fromArray(volume.position);group.rotation.y=volume.yaw;
   const geometry=new THREE.BoxGeometry(w,h,d);
@@ -488,18 +525,21 @@ function build(data){flatSpritesAge=Infinity;
   body.position.y=h/2;group.add(body);
   const edges=new THREE.LineSegments(new THREE.EdgesGeometry(geometry),new THREE.LineBasicMaterial({color:0x22cddd}));
   edges.position.y=h/2;group.add(edges);
-  const tag=label(volume.name+' · '+volume.semantic_type,'#087b88');tag.position.set(0,h+.12,0);group.add(tag);
+  const anchor=new THREE.Object3D();anchor.position.set(0,h+.06,0);group.add(anchor);volumeLabels.push({id:'legacy-volume:'+(volume.id??index),kind:'volume',anchor,text:volume.name,detail:volume.semantic_type});
   groups.objects.add(group);
  }
+ sceneLabels.sync('legacy-volumes',volumeLabels);
  $('canvas').dataset.volumeCount=String(data.semantic_volumes?.frame===data.frame?data.semantic_volumes.items.length:(data.volumes||[]).length);
  renderer.domElement.dataset.legacyVolumeCount=String(legacyVolumesForView(data).length);
+ const noteLabels=[];
  for(const note of data.notes||[]){
   // Registry robots draw their own name tag from their pose; these labels are for phones.
   if(note.phone_pose||note.robot_pose?.registry)continue;
   const peer=Boolean(note.robot_pose||note.anchor_robot||note.id?.startsWith('robot-name:')||note.id?.startsWith('phone-name:'));
-  const tag=createNoteBubble(noteTitle(note),{peer});tag.position.fromArray(note.position);
-  tag.userData={kind:'note',note};groups.notes.add(tag);selectable.push(tag);
+  const anchor=new THREE.Object3D();anchor.position.fromArray(note.position);groups.notes.add(anchor);
+  noteLabels.push({id:'note:'+note.id,kind:'note',anchor,text:noteTitle(note),peer,note});
  }
+ sceneLabels.sync('notes',noteLabels);
  $('canvas').dataset.noteCount=String((data.notes||[]).length);
  for(const o of data.objects){
   const point=new THREE.Mesh(new THREE.SphereGeometry(.04,20,14),new THREE.MeshStandardMaterial({color:'#dd895d',emissive:'#65361b',emissiveIntensity:.15}));point.position.fromArray(o.position);point.userData={kind:'object',object:o};groups.objects.add(point);selectable.push(point);
@@ -519,6 +559,8 @@ function build(data){flatSpritesAge=Infinity;
  $('project').disabled=busy||!data.voxels.length;$('replay').disabled=busy||!data.sources.iphone;
  if(noteCardMode!=='view'){}else if(selectedSpatialNode){const {kind,id}=selectedSpatialNode;const node=data.landmarks?.[kind==='anchor'?'anchors':'landmarks']?.[id];if(node)showSpatialSelection(kind,node);else{selectedSpatialNode=null;$('selection').hidden=true;}}
  else if(selectedPathId){const path=data.paths?.items.find(p=>p.id===selectedPathId);if(path){if($('selection').dataset.pathId!==path.id)showPathSelection(path);}else{selectedPathId=null;crayon.select(null);$('selection').hidden=true;}}else if(selectedNoteId){const note=(data.notes||[]).find(n=>n.id===selectedNoteId);if(note){if($('selection').dataset.noteId!==note.id)showNoteSelection(note);}else{selectedNoteId=null;$('selection').hidden=true;}}else $('selection').hidden=true;
+ // The new scene's bounds (and orbit leash) go in before it's framed, or the old scene's leash clamps the fit.
+ setContentBounds(data);
  updateMapUI();if(data.occupancy_tiles){$('empty').hidden=data.occupancy_tiles.length>0;$('voxel-count').textContent=data.occupancy_tiles.length.toLocaleString();}if(first)fit();revealScene();
 }
 function pathLength(path){let total=0;for(const segment of path.segments)for(let i=1;i<segment.length;i++)total+=Math.hypot(...segment[i].map((v,k)=>v-segment[i-1][k]));return total;}
@@ -617,6 +659,8 @@ function robotGoControls(target){
  return box;
 }
 function showNoteSelection(note){
+ // Close an open volume first (its handles and edits), as showSelection() would if the mode were still 'volume'.
+ if(noteCardMode==='volume')semanticVolumes.closed();
  noteCardMode='view';
  showSelection(noteTitle(note),'',noteAnchorText(note),{kind:'Note'});
  selectedNoteId=note.id;const card=$('selection');card.dataset.noteId=note.id;
@@ -775,7 +819,7 @@ function updateMapUI(){
  document.querySelector('.flow').hidden=domain||!current?.demo;
  $('demo-view').hidden=!current?.demo;
  setSnapshotLinks(activeMap==='home-live'?'/api/home-live-snapshot':isRunner()?runnerUrl('/api/runner-snapshot'):domain?'/api/domain-snapshot':'/api/snapshots');
- ground.visible=Boolean(current?.demo);scene.fog=null;grid.position.x=local?0:-5;grid.position.z=local?0:3;
+ ground.visible=Boolean(current?.demo);grid.position.x=local?0:-5;grid.position.z=local?0:3;
  const list=$('portal-list');list.replaceChildren();{for(const p of (current?.portals||[]).filter(p=>p.anchor_id.length===11||p.anchor_id.startsWith('home:'))){const button=document.createElement('button');button.className='portal-row';button.textContent=p.anchor_id;const size=document.createElement('span');size.textContent=`${Math.round(p.side_length_m*100)} cm`;button.append(size);button.onclick=()=>focusPortal(p);list.append(button);}}
  list.hidden=Boolean(current?.landmarks);renderSpatialLists();
  if(isLocalScene()) {
@@ -862,6 +906,11 @@ function showSelection(title,body,note,{kind,subtitle,onSubtitle,monoTitle=false
 function factsList(facts){const list=document.createElement('dl');list.className='spatial-fields card-facts';
  for(const [name,value,copy] of facts){const term=document.createElement('dt'),description=document.createElement('dd'),text=document.createElement('span');term.textContent=name;text.textContent=value;if(copy)text.className='mono-id';description.append(text);if(copy)description.append(copyButton(String(value),'Copy '+name.toLowerCase()));list.append(term,description);}
  return list;}
+// Pretty-printed JSON as text nodes, with keys, strings, numbers and literals wrapped for colour.
+function jsonTokens(json){const out=[];let at=0;
+ for(const m of json.matchAll(/("(?:\\.|[^"\\])*")(\s*:)?|\b(?:true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g)){if(m.index>at)out.push(json.slice(at,m.index));
+  const span=document.createElement('span');span.className='json-'+(m[2]?'key':m[1]?'string':/\d/.test(m[0])?'number':'literal');span.textContent=m[1]||m[0];out.push(span);if(m[2])out.push(m[2]);at=m.index+m[0].length;}
+ out.push(json.slice(at));return out;}
 const xyz=(values,digits=2)=>['x','y','z'].map((axis,i)=>`${axis} ${values[i].toFixed(digits)}`).join('  ')+' m';
 // Every card variant shares one anatomy: a header (a tile in the section colour, the kind and the title), the
 // close button in the corner, then the body. Builders keep emitting a kind chip and title; this turns them
@@ -872,7 +921,7 @@ function decorateCard(card){
  if(!card.querySelector(':scope>.inspector-close')){const close=document.createElement('button');close.type='button';close.className='inspector-close';close.setAttribute('aria-label','Close inspector');close.append(icon(icons.close));close.onclick=closeCard;card.prepend(close);}
  const chip=card.querySelector('.inspector-kind');if(!chip||chip.closest('.card-head'))return;
  const [,accent,path]=CARD_KINDS.find(([pattern])=>pattern.test(chip.textContent));
- const head=document.createElement('div');head.className='card-head';const tile=document.createElement('span');tile.className='card-tile';tile.dataset.accent=accent;tile.append(icon(path,16));
+ const head=document.createElement('div');head.className='card-head';const tile=document.createElement('span');tile.className='card-tile';tile.dataset.accent=accent;tile.append(icon(path,16));card.dataset.accent=accent;
  const text=document.createElement('div');text.className='card-head-text';const title=chip.nextElementSibling?.matches('strong')?chip.nextElementSibling:null;
  chip.replaceWith(head);chip.className='card-kind';text.append(chip);
  if(title){title.classList.add('card-title');title.id='card-title';text.append(title);}
@@ -900,22 +949,38 @@ renderer.domElement.addEventListener('pointerup',e=>{
  if(!current||!pointerStart||Math.hypot(e.clientX-pointerStart[0],e.clientY-pointerStart[1])>4)return;
  if(placingNote){const target=placementTarget;stopNotePlacement();const box=renderer.domElement.getBoundingClientRect(),pick=new THREE.Raycaster();pick.setFromCamera(new THREE.Vector2((e.clientX-box.left)/box.width*2-1,1-(e.clientY-box.top)/box.height*2),camera);const request={source:'scene',frame:current.frame,origin:pick.ray.origin.toArray(),direction:pick.ray.direction.toArray()};if(target)target(request);else beginLabel(request);return;}
  const r=renderer.domElement.getBoundingClientRect(), ray=new THREE.Raycaster();ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),camera);
- const hits=ray.intersectObjects([...selectable,...crayon.objects()].filter(o=>{for(let p=o;p;p=p.parent){if(!p.visible)return false;}return true;}));if(!hits.length){clearSelection();return;}const h=hits.find(h=>h.object.userData.kind==='note')||hits.find(h=>h.object.userData.kind==='path')||hits.find(h=>h.object.userData.kind==='portal')||hits[0],d=h.object.userData;
+ // Labels first: a note opens its card, a cluster flies in. Legacy volumes can't be selected, so a click on one
+ // of their chips does nothing (rather than clearing the selection and moving the spot cursor).
+ const label=labelHit(e);
+ if(label?.kind==='note'){showNoteSelection(label.note);return;}
+ if(label?.kind==='note-cluster'){openCluster(label.centre);return;}
+ if(label?.kind==='volume')return;
+ const hits=ray.intersectObjects([...selectable,...crayon.objects()].filter(o=>{for(let p=o;p;p=p.parent){if(!p.visible)return false;}return true;}));
+ // Nothing hit: the click moves the spot cursor (the floor ring) there. Drags orbit and never get this far.
+ if(!hits.length){clearSelection();const floor=ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,1,0),0),new THREE.Vector3());if(floor&&!crayon.isActive()&&!map2D.isActive())placeSpotMarker(floor);return;}const h=hits.find(h=>h.object.userData.kind==='path')||hits.find(h=>h.object.userData.kind==='portal')||hits[0],d=h.object.userData;
  if(d.kind==='voxels'){const v=current.voxels[h.instanceId];showSelection('Occupied voxel','','',{kind:'Voxel',facts:[['Position',xyz(v.center),true],['Evidence',String(v.evidence)],['Cell size','10 cm']]});if(isLocalScene())$('selection').append(robotGoControls({kind:'position',position:v.center}));}
  if(d.kind==='occupancy'){const t=current.occupancy_tiles[h.instanceId],state=t.value===100?'Occupied':t.value===0?'Free':'Unknown';showSelection(state+' cell','','',{kind:'Occupancy',facts:[['State',state],['Position',xyz(t.center),true],['Value',String(t.value)],['Sample','10 cm · retrieved in 2 m cells']]});if(isLocalScene())$('selection').append(robotGoControls({kind:'position',position:t.center}));}
  if(d.kind==='path'){showPathSelection(d.path);return;}
- if(d.kind==='note')showNoteSelection(d.note);
  if(d.kind==='object'){const o=d.object;showSelection(o.label,'','',{kind:'Object',facts:[['Position',xyz(o.position),true],['Source',o.source_peer,true]]});}
  if(d.kind==='portal'&&(d.portal.anchor_id.length===11||d.portal.anchor_id.startsWith('home:'))){showSelection(d.portal.anchor_id,'','Double-click to approach',{kind:'Portal',monoTitle:true});return;}
  if(d.kind==='portal')showSelection(`Portal ${d.portal.payload.split(':').at(-1)}`,'','',{kind:'Portal',facts:[['Encoded size',`${d.portal.side_length_m.toFixed(2)} m`],['Source','Manually supplied · no backend lookup']]});
 });
+// Hover: the label under the pointer gets its ring and a pointer cursor (unless a tool owns the cursor).
+// It is re-checked while the view moves under a still pointer, and dropped (with any pending check) on leaving.
+let hoverFrame=0,hoverAt=null;
+function updateHover(){if(!hoverAt)return;const hit=sceneLabels.hitTest(hoverAt[0],hoverAt[1]),canvas=renderer.domElement;sceneLabels.setHover(hit?.id||null);
+ if(!placingNote&&!crayon.isActive()&&['','pointer'].includes(canvas.style.cursor))canvas.style.cursor=hit?'pointer':'';}
+renderer.domElement.addEventListener('pointermove',e=>{if(e.buttons||e.pointerType==='touch')return;hoverAt=[e.clientX,e.clientY];if(!hoverFrame)hoverFrame=requestAnimationFrame(()=>{hoverFrame=0;updateHover();});});
+renderer.domElement.addEventListener('pointerleave',()=>{cancelAnimationFrame(hoverFrame);hoverFrame=0;hoverAt=null;sceneLabels.setHover(null);if(renderer.domElement.style.cursor==='pointer')renderer.domElement.style.cursor='';});
 renderer.domElement.addEventListener('dblclick',e=>{
  if(e.button!==0||!current||crayon.isActive()||map2D.isActive())return;
  const r=renderer.domElement.getBoundingClientRect(),ray=new THREE.Raycaster();
  ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,1-(e.clientY-r.top)/r.height*2),camera);
+ const label=labelHit(e);
+ if(label?.kind==='note'){focusNote(label.note);return;}
+ if(label?.kind==='note-cluster'){openCluster(label.centre);return;}
+ if(label?.kind==='volume'){closeUp(label.anchor.getWorldPosition(new THREE.Vector3()).toArray());return;}
  const hits=ray.intersectObjects(selectable.filter(o=>{for(let p=o;p;p=p.parent)if(!p.visible)return false;return true;}));
- const note=hits.find(h=>h.object.userData.kind==='note');
- if(note){focusNote(note.object.userData.note);return;}
  const volume=semanticVolumes.pick(ray);if(volume){closeUp(volume.point.toArray());return;}
  const hit=hits[0];if(hit)closeUp(hit.point.toArray());
 });
@@ -983,9 +1048,76 @@ function keepSpriteSizes(amount){
   obj.scale.copy(base).multiplyScalar(perspective00*((1-amount)*depth+amount)/p00);
  }
 }
-renderer.setAnimationLoop(now=>{easeViewOffset();if(!cameraPan.tick(now)&&!attachedCamera.isActive())controls.update();ghostCamera.tick(now);if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);updateFlatten();
+// Smooth wheel movement: a wheel notch eases in over ~70 ms instead of jumping in one frame (trackpads and pinches,
+// already smooth, apply on the next frame), 5% per notch as in OrbitControls. The rig turns it into a move forward
+// or back along the ray through the cursor (see dolly in camera-rig.js). Wheels over the canvas or the label,
+// handle and locator layers above it land here; OrbitControls' own wheel never fires.
+let wheelZoom=0,wheelTau=0,wheelAt=null,wheelLast=0;
+renderer.domElement.parentElement.addEventListener('wheel',e=>{
+ if(!(e.target===renderer.domElement||e.target.closest?.('.volume-handles,.content-locator')))return;
+ if(!controls.enabled||!controls.enableZoom||controls.state!==-1||attachedCamera.isActive()||map2D.isActive())return;
+ e.preventDefault();e.stopPropagation();cameraPan.cancel();closeSpotMenu();
+ const delta=e.deltaY*([1,16,100][e.deltaMode]??1)*(e.ctrlKey?10:1);
+ wheelZoom+=Math.sign(delta)*Math.log(1/.95)*controls.zoomSpeed*Math.abs(delta)*.01;
+ wheelTau=e.deltaMode!==0||(Math.abs(e.deltaY)>=50&&!e.ctrlKey)?70:0;wheelAt=[e.clientX,e.clientY];sceneLabels.setFocus(e.clientX,e.clientY);
+},{capture:true,passive:false});
+renderer.domElement.addEventListener('pointerdown',()=>{wheelZoom=0;},true);
+$('map-select').addEventListener('change',()=>{wheelZoom=0;});
+const wheelRay=new THREE.Vector3();
+function applyWheelZoom(now){
+ if(!wheelZoom){wheelLast=0;return;}
+ const dt=Math.min(64,wheelLast?now-wheelLast:16);wheelLast=now;
+ const step=wheelTau?wheelZoom*(1-Math.exp(-dt/wheelTau)):wheelZoom;wheelZoom=Math.abs(wheelZoom-step)<1e-4?0:wheelZoom-step;
+ const r=frameRects.canvas||renderer.domElement.getBoundingClientRect();
+ wheelRay.set((wheelAt[0]-r.left)/r.width*2-1,1-(wheelAt[1]-r.top)/r.height*2,.5).unproject(camera).sub(camera.position).normalize();
+ if(!rig.dolly(wheelRay,step))wheelZoom=0;
+}
+// Far away, content fades into the background instead of meeting the far plane: linear fog scaled to the orbit
+// distance (always ending before the far plane), so the store stays clear at any normal zoom and dissolves only
+// when you pull right out. Labels fade with it. If you lose the content, the locator points back to it, and the
+// orbit target is leashed to within 80 m of the content so it can't drift off for good.
+function updateFog(){const end=THREE.MathUtils.clamp(6.4*camera.position.distanceTo(controls.target),50,camera.far*.92);scene.fog.near=end*.5;scene.fog.far=end;}
+let cameraFlying=false;
+const contentLocator=createContentLocator({camera,renderer,rects:()=>frameRects,fog:()=>scene.fog,blocked:()=>cameraFlying||map2D.isActive()||attachedCamera.isActive()||!current,
+ safeArea:sceneSafeArea,
+ // Back to the content: same heading, a downward tilt between 35° and 60°, far enough to see all of it.
+ fly:(centre,radius)=>{const distance=THREE.MathUtils.clamp(radius*2.4,6,60),offset=camera.position.clone().sub(controls.target),flat=new THREE.Vector3(offset.x,0,offset.z);
+  if(flat.lengthSq()<1e-6)flat.set(0,0,1);flat.normalize();const tilt=THREE.MathUtils.degToRad(THREE.MathUtils.clamp(THREE.MathUtils.radToDeg(Math.asin(Math.min(1,Math.max(-1,offset.y/(offset.length()||1))))),35,60));
+  if(attachedCamera.isActive())attachedCamera.detach();cameraPan.start(centre.clone().add(flat.multiplyScalar(Math.cos(tilt)*distance)).add(new THREE.Vector3(0,Math.sin(tilt)*distance,0)),centre);}});
+// The free part of the 3D view in client px: the canvas minus the rail, the open panel, the top and bottom bars and
+// the inspector card. The locator and the volume handles stay inside it.
+// cardColumn=false leaves the card as its own rect (area.card) instead of cutting the full height right of it, so
+// volume handles can still sit below a short card (cutting the column hid the +X handle of any wide box).
+function sceneSafeArea(cardColumn=true){const r=renderer.domElement.getBoundingClientRect(),area={left:r.left+72,top:r.top+68,right:r.right-16,bottom:r.bottom-80};
+ const aside=document.querySelector('.shell>aside');if(aside&&!document.querySelector('.shell')?.classList.contains('panel-collapsed'))area.left=Math.max(area.left,aside.getBoundingClientRect().right+8);
+ const bar=document.querySelector('.agent-bar')?.getBoundingClientRect();if(bar&&bar.height>64)area.bottom=Math.min(area.bottom,bar.top-8);
+ const card=$('selection');if(card&&!card.hidden){const c=card.getBoundingClientRect();if(cardColumn)area.right=Math.min(area.right,c.left-8);else area.card={left:c.left-8,top:c.top-8,right:c.right+8,bottom:c.bottom+8};}
+ return area;}
+function setContentBounds(data){
+ scene.updateMatrixWorld();const box=new THREE.Box3();for(const g of [groups.voxels,groups.portals,groups.objects])box.expandByObject(g);
+ for(const n of data.notes||[])if(n.position)box.expandByPoint(new THREE.Vector3(...n.position));
+ for(const v of data.semantic_volumes?.items||[])box.expandByPoint(new THREE.Vector3(...v.center));
+ contentLocator.setBounds(box);
+ if(box.isEmpty()){controls.maxTargetRadius=Infinity;return;}
+ controls.cursor.copy(box.getCenter(new THREE.Vector3()));controls.maxTargetRadius=box.getSize(new THREE.Vector3()).length()/2+80;
+}
+// OrbitControls' damping only shrinks the rest of a glide by 5% a frame, so after a rotate the camera creeps on
+// for seconds at a fraction of a pixel per frame: it looks still while grid lines keep popping between pixels.
+// Once under 2 px of the glide is left, end it. (_sphericalDelta and _panOffset are OrbitControls' pending moves.)
+function settleOrbit(){if(controls.state!==-1)return;const pixel=THREE.MathUtils.degToRad(camera.fov)/camera.zoom/(renderer.domElement.clientHeight||700);
+ const turn=controls._sphericalDelta,pan=controls._panOffset;
+ if(Math.abs(turn.theta)<2*pixel&&Math.abs(turn.phi)<2*pixel)turn.theta=turn.phi=0;
+ if(pan.length()<2*pixel*camera.position.distanceTo(controls.target))pan.set(0,0,0);}
+// The canvas and its host are measured once per frame, before any overlay writes, and shared with the overlays
+// (labels, volume handles, locator, wheel zoom), so the frame forces at most one layout.
+const frameRects={canvas:null,host:null};
+renderer.setAnimationLoop(now=>{frameRects.canvas=renderer.domElement.getBoundingClientRect();frameRects.host=renderer.domElement.parentElement.getBoundingClientRect();easeViewOffset();cameraFlying=cameraPan.tick(now);if(!cameraFlying&&!attachedCamera.isActive()){applyWheelZoom(now);controls.update();settleOrbit();}else wheelZoom=0;
+ // A key held into a flight (Fit, the locator, a note) waits for it to land rather than nudging it every frame.
+ if(!cameraFlying)ghostCamera.tick(now);
+ // Last camera write before drawing: everything above is brought within the floor and orbit limits.
+ rig.settle();updateFog();if(!current)phoneTrails.reset(null);const phones=phoneTrails.tick();phoneTrails.group.visible=groups.notes.visible;$('canvas').dataset.phoneGhostCount=String(phones.ghosts);$('canvas').dataset.phoneLiveCount=String(phones.live);updateFlatten();
  // Volume handles are HTML placed from this frame's camera: settle its matrices and projection first so they never trail a glide.
- camera.updateMatrixWorld();semanticVolumes.tick();renderer.render(scene,camera);});
+ camera.updateMatrixWorld();semanticVolumes.tick();sceneLabels.setSelected(selectedNoteId?'note:'+selectedNoteId:null);sceneLabels.tick(now);if(hoverAt&&sceneLabels.moving)updateHover();contentLocator.tick(now);followGrid();renderer.render(scene,camera);});
 refresh().catch(e=>{$('notice').textContent=e.message;$('notice').classList.add('error');});setInterval(()=>{if(!busy)refresh().catch(()=>{});},500);
 
 function updatePairingDownload(){const link=$('pairing-download');link.href=isLocalScene()?localSceneUrl()+'/connection':'/api/home-connection';link.download=isLocalScene()?activeMap.slice(6)+'-connection.json':'home-connection.json';link.textContent=isLocalScene()?'Download phone connection for selected scene ↗':'Download Xmart connection ↗';}
@@ -1231,8 +1363,8 @@ function createNoteCard({request,error,portal=false}={}){
  const portalSelect=document.createElement('select');portalSelect.id='note-portal';portalSelect.className='form-control mono-id';portalField.append(portalLabel,portalSelect);
  const heightField=document.createElement('div');heightField.className='form-field';
  const heightLabel=document.createElement('label');heightLabel.className='form-label';heightLabel.textContent='Height above portal';heightLabel.htmlFor='note-height';
- const height=document.createElement('input');height.id='note-height';height.type='number';height.step='0.1';height.min='-100';height.max='100';height.value='1.0';height.className='form-control';
- const step=(delta,label)=>{const button=actionButton(label);button.setAttribute('aria-label',(delta>0?'Raise':'Lower')+' by 10 cm');button.onclick=()=>{height.value=(Math.round((Number(height.value)+delta)*10)/10).toFixed(1);describe();};return button;};
+ const height=document.createElement('input');height.id='note-height';height.type='number';height.step='0.1';height.min='-100';height.max='100';height.value='1.0';height.className='form-control';height.inputMode='decimal';
+ const step=(delta,label)=>{const button=actionButton(label);button.setAttribute('aria-label',(delta>0?'Raise':'Lower')+' by 10 cm');button.onclick=()=>{height.value=(Math.round((Number(height.value)+delta)*10)/10).toFixed(1);height.dispatchEvent(new Event('input',{bubbles:true}));};return button;};
  const stepper=document.createElement('div');stepper.className='stepper';const unit=document.createElement('span');unit.textContent='m';unit.className='stepper-unit';
  stepper.append(step(-.1,'−'),height,unit,step(.1,'+'));heightField.append(heightLabel,stepper);
  portalRegion.append(portalField,heightField);portalRegion.hidden=!usePortal;
@@ -1547,7 +1679,7 @@ function renderFleetRows(){
  const signature=JSON.stringify([peers.map(({received_observations,...rest})=>rest),fleetNetwork?.enabled,fleetNetwork?.status,fleetNetwork?.aliases,sensors.map(o=>[o.value,o.textContent,o.dataset.peer]),$('sensor-select').value,deviceView,deviceOfflineOpen]);
  if(signature===fleetSignature)return;fleetSignature=signature;
  const focus=fleetList.contains(document.activeElement)?document.activeElement.dataset.focusKey:null;
- openedTechnical=new Set(Array.from(fleetList.querySelectorAll('details[open][data-technical]'),d=>d.dataset.technical));
+ openedTechnical=new Set(Array.from(fleetList.querySelectorAll('details[open][data-technical],div[data-technical]:not([hidden])'),d=>d.dataset.technical));
  fleetList.replaceChildren();
  const peer=deviceView&&peers.find(p=>p.peer_id===deviceView);
  if(deviceView&&!peer)deviceView=null;
@@ -1641,7 +1773,10 @@ function renderDeviceDetail(peer,feeds,openedTechnical){
  const catalog=peer.catalog||{};
  const poses=(catalog.products||[]).filter(p=>p.metadata?.schema==='spatial-harness.compact-pose-contract/v1');
  if(poses.length){const location=document.createElement('section');location.setAttribute('aria-label','Pose logs');location.append(sectionHeader('Location'));
-  for(const product of poses){const button=actionButton('Pose log · '+humanize(product.manifest.product_id),{onClick:()=>inspectPose(peer.peer_id,product,deviceName(peer)+' / '+product.manifest.product_id)});location.append(button);}
+  // Product IDs are long ("frame transform:phone ar:<uuid>"): the kind is the title and the rest a truncated meta line.
+  for(const product of poses){const id=product.manifest.product_id,[kind,...rest]=id.split(':');
+   const row=listRow({title:humanize(kind),meta:rest.join(':')||id,tile:icons.pin,label:'Pose log · '+humanize(id),onSelect:()=>inspectPose(peer.peer_id,product,deviceName(peer)+' / '+id)});
+   row.classList.add('pose-log-row');row.title=id;row.dataset.focusKey='pose:'+id;location.append(row);}
   view.append(location);}
  if(!peer.self&&isLocalScene()&&poses.some(p=>(p.metadata.value?.lifetime??'sampled')==='sampled'))view.append(driveSection(peer));
  // Capabilities: components with the products they make; raw manifests behind Technical details.
@@ -1652,8 +1787,11 @@ function renderDeviceDetail(peer,feeds,openedTechnical){
   for(const type of ['Cameras','Maps','Poses & odometry','Detections','Sensors & observations','Other']){
    const matching=entries.filter(item=>catalogType(item.entry,item.kind,catalog)===type).sort((a,b)=>a.entry.manifest[a.kind+'_id'].localeCompare(b.entry.manifest[b.kind+'_id']));
    if(!matching.length)continue;
-   const group=document.createElement('section');group.dataset.catalogType=type;group.setAttribute('aria-label',type);const heading=document.createElement('h4');heading.className='capability-group';heading.textContent=type;group.append(heading);
-   for(const {kind,entry} of matching)group.append(capabilityRow(peer,kind,entry,catalog,openedTechnical));
+   // A caption (glyph, type, count) over a glass card of rows, so groups never read as one more row.
+   const group=document.createElement('section');group.dataset.catalogType=type;group.setAttribute('aria-label',type);const heading=document.createElement('h4');heading.className='capability-group';
+   const label=document.createElement('span'),count=document.createElement('span');label.textContent=type;count.className='capability-group-count';count.textContent=matching.length;heading.append(icon(CATALOG_ICONS[type],14),label,count);
+   const card=document.createElement('div');card.className='capability-card';group.append(heading,card);
+   for(const {kind,entry} of matching)card.append(capabilityRow(peer,kind,entry,catalog,openedTechnical));
    capabilities.append(group);
   }
   view.append(capabilities);
@@ -1662,6 +1800,7 @@ function renderDeviceDetail(peer,feeds,openedTechnical){
  fleetList.append(view);
  if(deviceRenaming&&!peer.self)showRename();
 }
+const CATALOG_ICONS={'Cameras':icons.camera,'Maps':icons.map,'Poses & odometry':icons.pin,'Detections':'M2 6V2h4M12 2h4v4M16 12v4h-4M6 16H2v-4M9 9h.01','Sensors & observations':'M9 9h.01M6 6a4.2 4.2 0 0 0 0 6M12 6a4.2 4.2 0 0 1 0 6M3.5 3.5a7.8 7.8 0 0 0 0 11M14.5 3.5a7.8 7.8 0 0 1 0 11','Other':CUBE_ICON};
 function capabilityRow(peer,kind,entry,catalog,openedTechnical){
  const id=entry.manifest[kind+'_id'],row=document.createElement('div');row.className='capability';row.dataset[kind]=id;
  const made=kind==='component'?(catalog.products||[]).filter(p=>p.manifest.producer?.component_id===id):[];
@@ -1677,8 +1816,9 @@ function capabilityRow(peer,kind,entry,catalog,openedTechnical){
   if(ack){if(enabled===ack.enabled||stateProduct?.metadata?.source_sequence>ack.sequence)componentControlResults.delete(key);else enabled=ack.enabled;}
   const toggle=document.createElement('button');toggle.type='button';toggle.className='switch';toggle.setAttribute('role','switch');toggle.setAttribute('aria-label',humanize(id));toggle.dataset.focusKey='switch:'+peer.peer_id+':'+id;
   const status=document.createElement('span');status.className='capability-status';status.setAttribute('role','status');
-  // The switch shows on/off; the status text is only shown for waiting and error states.
-  const paint=()=>{toggle.setAttribute('aria-checked',String(enabled===true));status.textContent=typeof enabled==='boolean'?(enabled?'Enabled':'Disabled'):'Waiting for state';status.classList.toggle('visually-hidden',typeof enabled==='boolean');};paint();
+  // The switch shows on/off (dimmed while its state is unknown); the status text is for screen readers, and only an
+  // error shows.
+  const paint=()=>{toggle.setAttribute('aria-checked',String(enabled===true));status.textContent=typeof enabled==='boolean'?(enabled?'Enabled':'Disabled'):'Waiting for state';status.classList.add('visually-hidden');};paint();
   toggle.disabled=typeof enabled!=='boolean'||peer.catalog_status!=='ready'||!!peer.catalog_cached;
   toggle.onclick=async()=>{
    componentControlPending=true;toggle.disabled=true;status.textContent='Applying…';
@@ -1693,9 +1833,18 @@ function capabilityRow(peer,kind,entry,catalog,openedTechnical){
  const summary=document.createElement('summary');summary.className='visually-hidden';summary.textContent=(kind==='component'?'Component':'Product')+' · '+id;raw.append(summary);
  const info=document.createElement('button');info.type='button';info.className='icon-toggle';info.setAttribute('aria-label','Technical details for '+humanize(id));info.setAttribute('aria-expanded',String(raw.open));info.append(icon(icons.info,16));info.dataset.focusKey='info:'+raw.dataset.technical;
  info.onclick=()=>{const open=!raw.open;info.setAttribute('aria-expanded',String(open));if(open){raw.open=true;reveal(raw);}else conceal(raw,()=>{raw.open=false;});};head.append(info);
- for(const product of made){const line=document.createElement('p');line.className='mono-id capability-product';line.textContent='Product · '+product.manifest.product_id;raw.append(line);
-  if(product.metadata?.schema==='spatial-harness.compact-pose-contract/v1')raw.append(actionButton('Inspect live pose',{onClick:()=>inspectPose(peer.peer_id,product,deviceName(peer)+' / '+product.manifest.product_id)}));}
- const pre=document.createElement('pre');pre.className='capability-json';pre.textContent=JSON.stringify(entry.manifest,null,2);raw.append(pre,copyButton(pre.textContent,'Copy manifest'));
+ // Opened, it is an inset well: the product and key manifest fields as label/value rows, then the manifest
+ // itself behind "Raw manifest" (its open state survives re-renders like the well's, via data-technical).
+ const well=document.createElement('div');well.className='capability-well';raw.append(well);
+ const manifest=entry.manifest,names=list=>(list||[]).map(o=>o.name).filter(Boolean).join(', ');
+ const facts=factsList([['ID',id,true],...made.map(p=>['Product',p.manifest.product_id,true]),['Outputs',names(manifest.observables)],['Operations',names(manifest.operables)],['Producer',manifest.producer&&[manifest.producer.component_id,manifest.producer.slot].filter(Boolean).join(' · ')],['Schema',entry.metadata?.schema],['Manifest hash',entry.manifest_hash,true]].filter(([,value])=>value));
+ facts.classList.add('capability-facts');for(const value of facts.querySelectorAll('dd>span'))value.title=value.textContent;well.append(facts);
+ for(const product of made)if(product.metadata?.schema==='spatial-harness.compact-pose-contract/v1')well.append(actionButton('Inspect live pose',{iconPath:icons.pin,onClick:()=>inspectPose(peer.peer_id,product,deviceName(peer)+' / '+product.manifest.product_id)}));
+ const json=JSON.stringify(manifest,null,2),source=document.createElement('div');source.className='capability-manifest';source.id='manifest-'+raw.dataset.technical.replace(/[^\w-]/g,'_');source.dataset.technical=raw.dataset.technical+':json';source.hidden=!openedTechnical.has(source.dataset.technical);
+ const pre=document.createElement('pre');pre.className='capability-json';pre.tabIndex=0;pre.setAttribute('aria-label','Manifest JSON');pre.append(...jsonTokens(json));source.append(pre);
+ const header=document.createElement('div');header.className='capability-manifest-header';
+ const toggle=disclosure('Raw manifest',{expanded:!source.hidden,controls:source.id,onToggle:()=>{const open=source.hidden;toggle.setAttribute('aria-expanded',String(open));if(open){source.hidden=false;reveal(source);}else conceal(source,()=>{source.hidden=true;});}});
+ toggle.dataset.focusKey='manifest:'+raw.dataset.technical;header.append(toggle,copyButton(json,'Copy manifest'));well.append(header,source);
  row.append(raw);
  return row;
 }
@@ -1780,51 +1929,95 @@ let chatFocus=null;
 const spotMarker=new THREE.Mesh(new THREE.RingGeometry(.7,1,40),new THREE.MeshBasicMaterial({color:'#8b5cf6',side:THREE.DoubleSide,depthWrite:false,transparent:true,opacity:.9,polygonOffset:true,polygonOffsetFactor:-2}));
 // Drawn under notes and everything else in the scene; it only marks the floor.
 spotMarker.rotation.x=-Math.PI/2;spotMarker.renderOrder=-1;spotMarker.visible=false;scene.add(spotMarker);
-const spotMenu=document.createElement('div');spotMenu.className='spot-menu';spotMenu.hidden=true;spotMenu.setAttribute('role','menu');spotMenu.setAttribute('aria-label','Tools at this spot');document.body.append(spotMenu);
+// A donut centred on the spot: four tools on the diagonals of a glass ring split into wedges, the spot itself
+// showing through the hollow centre. Disabled tools stay focusable (aria-disabled) so their reason is
+// reachable from the keyboard; arrow keys step around the ring (roving tabindex).
+const spotMenu=document.createElement('div');spotMenu.className='spot-menu';spotMenu.hidden=true;spotMenu.setAttribute('role','menu');spotMenu.setAttribute('aria-label','Tools at this spot');spotMenu.tabIndex=-1;document.body.append(spotMenu);
+// Clockwise from the top right: [place, x, y, the side its hint opens on].
+const SPOT_PLACES=[['top-right',1,-1,'right'],['bottom-right',1,1,'right'],['bottom-left',-1,1,'left'],['top-left',-1,-1,'left']],SPOT_RADIUS=50,SPOT_SIZE=152,SPOT_HOLE=18;
+// Each tool is one quarter of the ring: a wedge for its hit area and, inset from it, a rounded wedge plate that
+// lifts and tilts on hover. Drawn in a quadrant's own frame (x, y >= 0), mirrored into place and given in the
+// coordinates of the tool's box, which is that quadrant of the menu; `gap` is the distance from the cross.
+function spotWedge(qx,qy,{outer,inner,gap,round=0}){const c=SPOT_SIZE/2,k=round,sweep=qx*qy<0?1:0,
+  p=([x,y])=>`${(qx>0?qx*x:c+qx*x).toFixed(2)} ${(qy>0?qy*y:c+qy*y).toFixed(2)}`,side=r=>Math.sqrt(r*r-gap*gap),e1=r=>[gap,side(r)],e2=r=>[side(r),gap],
+  arc=(r,[x,y],turn)=>{const a=Math.atan2(y,x)+turn/r;return [r*Math.cos(a),r*Math.sin(a)];};
+ return `path('M${p(e1(outer-k))} Q${p(e1(outer))} ${p(arc(outer,e1(outer),-k))} A${outer} ${outer} 0 0 ${sweep} ${p(arc(outer,e2(outer),k))} Q${p(e2(outer))} ${p(e2(outer-k))} L${p(e2(inner+k))} Q${p(e2(inner))} ${p(arc(inner,e2(inner),k))} A${inner} ${inner} 0 0 ${1-sweep} ${p(arc(inner,e1(inner),-k))} Q${p(e1(inner))} ${p(e1(inner+k))} Z')`;}
 let spot=null,rightStart=null;
-function spotTool(label,iconPath,accent,run,enabled=true){
- const button=document.createElement('button');button.type='button';button.className='agent-tool';button.dataset.accent=accent;button.setAttribute('role','menuitem');button.setAttribute('aria-label',label);button.dataset.tip=label;button.disabled=!enabled;
- const face=document.createElement('span');face.className='rail-face';face.append(icon(iconPath,20));button.append(face);
+// About 10 px across whatever the distance.
+function placeSpotMarker(point){const r=renderer.domElement.getBoundingClientRect();spotMarker.position.copy(point).add(new THREE.Vector3(0,.01,0));spotMarker.scale.setScalar(camera.position.distanceTo(point)*Math.tan(camera.fov*Math.PI/360)*10/r.height);spotMarker.visible=true;}
+function spotTool(label,face,accent,run,disabledReason=''){
+ const button=document.createElement('button');button.type='button';button.className='agent-tool';button.dataset.accent=accent;button.setAttribute('role','menuitem');button.setAttribute('aria-label',label);button.tabIndex=-1;
+ button.dataset.tip=disabledReason?`${label} · ${disabledReason}`:label;if(disabledReason){button.setAttribute('aria-disabled','true');button.setAttribute('aria-description','Unavailable: '+disabledReason);}
+ const hit=document.createElement('span'),lift=document.createElement('span'),plate=document.createElement('span'),glyph=document.createElement('span');hit.className='spot-hit';lift.className='spot-lift';plate.className='spot-plate';lift.append(plate);glyph.className='rail-face';glyph.append(typeof face==='string'?icon(face,20):face);button.append(hit,lift,glyph);
  // The ring has done its job once a tool starts there; only Ask keeps it, until the question is sent.
- button.onclick=()=>{const at=spot;closeSpotMenu();run(at);};return button;}
-function closeSpotMenu(clearMarker=true){if(spotMenu.hidden)return;spotMenu.hidden=true;clearTimeout(spotTipTimer);spotTip.hidden=true;spot=null;if(clearMarker&&!chatFocus)spotMarker.visible=false;}
+ button.onclick=()=>{if(disabledReason)return;const at=spot;closeSpotMenu();run(at);};return button;}
+function closeSpotMenu(clearMarker=true){if(spotMenu.hidden||spotMenu.dataset.closing)return;
+ // Focus goes back where it was before the menu opened, unless a tool has already moved it on.
+ if(spotMenu.contains(document.activeElement))(spotMenu.returnFocus?.isConnected?spotMenu.returnFocus:document.body).focus?.({preventScroll:true});clearTimeout(spotTipTimer);spotTip.hidden=true;spot=null;if(clearMarker&&!chatFocus)spotMarker.visible=false;
+ if(matchMedia('(prefers-reduced-motion: reduce)').matches){spotMenu.hidden=true;return;}
+ // A quick scale-down into the spot; the menu ignores the pointer while it goes.
+ spotMenu.dataset.closing='true';spotMenu.getAnimations({subtree:true}).forEach(a=>a.cancel());
+ spotMenu.animate([{opacity:1,transform:'none'},{opacity:0,transform:'scale(.6)'}],{duration:140,easing:'cubic-bezier(.4,0,1,1)'}).finished.then(()=>{if(spotMenu.dataset.closing){delete spotMenu.dataset.closing;spotMenu.hidden=true;}},()=>{});}
 function openSpotMenu(e){
  const r=renderer.domElement.getBoundingClientRect(),ray=new THREE.Raycaster();ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,1-(e.clientY-r.top)/r.height*2),camera);
  const hit=ray.intersectObjects(selectable.filter(o=>{for(let p=o;p;p=p.parent)if(!p.visible)return false;return true;}))[0];
- const point=hit?hit.point.clone():ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,1,0),0),new THREE.Vector3());
+ const label=labelHit(e),point=label?.kind==='note'?new THREE.Vector3(...label.note.position):label?.kind==='note-cluster'?label.centre.clone():hit?hit.point.clone():ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,1,0),0),new THREE.Vector3());
  if(!point)return;
+ spotMenu.returnFocus=document.activeElement;
  spot={point,request:{source:'scene',frame:current.frame,origin:ray.ray.origin.toArray(),direction:ray.ray.direction.toArray()}};
- // About 10 px across whatever the distance.
- spotMarker.position.copy(point).add(new THREE.Vector3(0,.01,0));spotMarker.scale.setScalar(camera.position.distanceTo(point)*Math.tan(camera.fov*Math.PI/360)*10/r.height);spotMarker.visible=true;
- const writable=notesWritable(),ask=document.createElement('button');ask.type='button';ask.className='agent-ask';ask.setAttribute('role','menuitem');
- ask.innerHTML='<span class="agent-orb" aria-hidden="true"></span><span class="agent-ask-label">Ask</span>';ask.dataset.tip='Ask about this spot';
- ask.onclick=()=>{chatFocus=spot.point.toArray().map(n=>Math.round(n*1000)/1000);closeSpotMenu(false);agentBar.open();};
- const divider=document.createElement('span');divider.className='agent-divider';divider.setAttribute('aria-hidden','true');
- spotMenu.replaceChildren(
-  spotTool('New note here',icons.note,'amber',at=>beginLabel(at.request),writable&&!newNoteButton.disabled),
-  spotTool('Draw a path',icons.pen,'amber',()=>{if($('crayon').getAttribute('aria-pressed')!=='true')$('crayon').click();},!$('crayon').disabled),
-  spotTool('New volume here','M9 1.5 15.5 5v8L9 16.5 2.5 13V5ZM2.5 5 9 8.5l6.5-3.5M9 8.5v8','violet',at=>semanticVolumes.beginAt(at.point.toArray()),!$('volume-draw').disabled),
-  divider,ask);
- spotMenu.hidden=false;
- const box=spotMenu.getBoundingClientRect(),x=Math.min(Math.max(8,e.clientX-box.width/2),innerWidth-box.width-8),y=e.clientY-box.height-22<8?e.clientY+22:e.clientY-box.height-22;
- spotMenu.style.left=x+'px';spotMenu.style.top=y+'px';
- if(!matchMedia('(prefers-reduced-motion: reduce)').matches)spotMenu.animate([{opacity:0,transform:'translateY(6px) scale(.96)',filter:'blur(4px)'},{opacity:1,transform:'none',filter:'none'}],{duration:260,easing:'cubic-bezier(.3,1.3,.5,1)'});
- spotMenu.querySelector('button:not(:disabled)')?.focus({preventScroll:true});
+ placeSpotMarker(point);
+ const writable=notesWritable(),orb=document.createElement('span');orb.className='agent-orb';orb.setAttribute('aria-hidden','true');
+ const tools=[
+  spotTool('New note here',icons.note,'amber',at=>beginLabel(at.request),writable&&!newNoteButton.disabled?'':'switch to a Home scene'),
+  spotTool('Draw a path',icons.pen,'amber',()=>{if($('crayon').getAttribute('aria-pressed')!=='true')$('crayon').click();},$('crayon').disabled?'switch to a Home scene':''),
+  spotTool('New volume here','M9 1.5 15.5 5v8L9 16.5 2.5 13V5ZM2.5 5 9 8.5l6.5-3.5M9 8.5v8','violet',at=>semanticVolumes.beginAt(at.point.toArray()),$('volume-draw').disabled?'select a local Home scene':''),
+  spotTool('Ask about this spot',orb,'zinc')];
+ const ask=tools[3];ask.classList.add('spot-ask');ask.onclick=()=>{chatFocus=spot.point.toArray().map(n=>Math.round(n*1000)/1000);closeSpotMenu(false);agentBar.open();};
+ const offset=v=>Math.round(v*SPOT_RADIUS*Math.SQRT1_2);
+ // Each tool's box is its quadrant (so the tilt pivots on the wedge); the icon sits on the diagonal at SPOT_RADIUS.
+ tools.forEach((tool,i)=>{const [place,dx,dy,side]=SPOT_PLACES[i],half=SPOT_SIZE/2;tool.dataset.place=place;tool.dataset.side=side;
+  tool.style.left=(dx>0?half:0)+'px';tool.style.top=(dy>0?half:0)+'px';tool.style.transformOrigin=`${dx>0?0:100}% ${dy>0?0:100}%`;
+  tool.style.setProperty('--x',(dx>0?offset(1):half-offset(1))+'px');tool.style.setProperty('--y',(dy>0?offset(1):half-offset(1))+'px');
+  tool.querySelector('.spot-hit').style.clipPath=spotWedge(dx,dy,{outer:half-.5,inner:SPOT_HOLE+1,gap:1});tool.querySelector('.spot-plate').style.clipPath=spotWedge(dx,dy,{outer:half-8,inner:SPOT_HOLE+7,gap:6,round:8});});
+ spotMenu.replaceChildren(...tools);spotMenu.getAnimations({subtree:true}).forEach(a=>a.cancel());delete spotMenu.dataset.closing;spotMenu.hidden=false;
+ // Centred on the cursor, shifted inward near an edge so the whole ring stays on screen.
+ const half=SPOT_SIZE/2,x=Math.min(Math.max(half+8,e.clientX),innerWidth-half-8),y=Math.min(Math.max(half+8,e.clientY),innerHeight-half-8);
+ spotMenu.style.left=x-half+'px';spotMenu.style.top=y-half+'px';sceneLabels.setHover(null);
+ // Tools fly out under a resting cursor: hints wait until they have landed.
+ clearTimeout(spotMenu.settle);delete spotMenu.dataset.opening;
+ if(!matchMedia('(prefers-reduced-motion: reduce)').matches){
+  const spring='cubic-bezier(.34,1.56,.64,1)';spotMenu.dataset.opening='true';spotMenu.settle=setTimeout(()=>delete spotMenu.dataset.opening,620);
+  spotMenu.animate([{opacity:0,transform:'scale(.4)'},{opacity:1,transform:'none'}],{duration:380,easing:spring});
+  tools.forEach((tool,i)=>tool.animate([{opacity:0,transform:'scale(.5)'},{opacity:1,transform:'none'}],{duration:420,delay:50+i*45,easing:spring,fill:'backwards'}));
+ }
+ // The menu takes focus, not a tool: nothing looks selected until the pointer or an arrow key picks one.
+ spotMenu.focus({preventScroll:true});
 }
-// Hints come quickly here: the menu is opened to be used at once.
-const spotTip=document.createElement('div');spotTip.className='rail-tooltip tip-top';spotTip.setAttribute('aria-hidden','true');spotTip.hidden=true;document.body.append(spotTip);
+// Hints come quickly here: the menu is opened to be used at once. Each sits outside its tool, away from the ring.
+const spotTip=document.createElement('div');spotTip.className='rail-tooltip spot-tip';spotTip.setAttribute('aria-hidden','true');spotTip.hidden=true;document.body.append(spotTip);
 let spotTipTimer=0;
-spotMenu.addEventListener('pointerover',e=>{const button=e.target.closest('[data-tip]');if(!button)return;clearTimeout(spotTipTimer);
- spotTipTimer=setTimeout(()=>{const box=button.getBoundingClientRect();spotTip.textContent=button.dataset.tip;spotTip.style.left=(box.left+box.width/2)+'px';spotTip.style.top=(box.top-10)+'px';spotTip.hidden=false;},spotTip.hidden?120:0);});
+function showSpotTip(button){
+ spotTip.textContent=button.dataset.tip;spotTip.dataset.side=button.dataset.side;spotTip.hidden=false;
+ // Level with the tool's icon, just outside the ring on its side.
+ const ring=spotMenu.getBoundingClientRect(),box=button.querySelector('.rail-face').getBoundingClientRect(),tip=spotTip.getBoundingClientRect(),gap=10;
+ const x=button.dataset.side==='left'?ring.left-gap-tip.width:ring.right+gap,y=box.top+(box.height-tip.height)/2;
+ spotTip.style.left=Math.min(Math.max(8,x),innerWidth-tip.width-8)+'px';spotTip.style.top=Math.min(Math.max(8,y),innerHeight-tip.height-8)+'px';}
+spotMenu.addEventListener('pointerover',e=>{const button=e.target.closest('[data-tip]');if(!button||spotMenu.dataset.opening)return;clearTimeout(spotTipTimer);spotTipTimer=setTimeout(()=>showSpotTip(button),spotTip.hidden?120:0);});
 spotMenu.addEventListener('pointerout',e=>{if(!e.relatedTarget?.closest?.('.spot-menu [data-tip]')){clearTimeout(spotTipTimer);spotTip.hidden=true;}});
-renderer.domElement.addEventListener('pointerdown',e=>{if(e.button===2)rightStart=[e.clientX,e.clientY];else closeSpotMenu();});
+spotMenu.addEventListener('focusin',e=>{if(e.target===spotMenu)return;for(const item of spotMenu.querySelectorAll('[role="menuitem"]'))item.tabIndex=item===e.target?0:-1;if(e.target.matches(':focus-visible')&&!spotMenu.dataset.opening){clearTimeout(spotTipTimer);showSpotTip(e.target);}});
+// Any press on the canvas closes the menu (a right-drag pan included); a still right-click reopens it on release.
+// The ring sits under the cursor, so a wheel over it closes it too (the view is about to move).
+spotMenu.addEventListener('wheel',e=>{e.preventDefault();closeSpotMenu();},{passive:false});
+renderer.domElement.addEventListener('pointerdown',e=>{rightStart=e.button===2?[e.clientX,e.clientY]:null;closeSpotMenu();});
 renderer.domElement.addEventListener('pointerup',e=>{
  if(e.button!==2||!rightStart)return;const moved=Math.hypot(e.clientX-rightStart[0],e.clientY-rightStart[1]);rightStart=null;
  // A right-drag orbits the view; only a still right-click opens the menu.
  if(moved>4||!current||map2D.isActive()||crayon.isActive()||placingNote)return;openSpotMenu(e);});
 document.addEventListener('pointerdown',e=>{if(!spotMenu.hidden&&!spotMenu.contains(e.target)&&e.target!==renderer.domElement)closeSpotMenu();},true);
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!spotMenu.hidden){e.preventDefault();closeSpotMenu();}});
-spotMenu.addEventListener('keydown',e=>{if(!['ArrowLeft','ArrowRight'].includes(e.key))return;const items=[...spotMenu.querySelectorAll('button:not(:disabled)')],at=items.indexOf(document.activeElement);if(at<0)return;e.preventDefault();items[(at+(e.key==='ArrowRight'?1:-1)+items.length)%items.length].focus();});
+// Right and Down step clockwise, Left and Up back; Home and End go to the first and last tool.
+spotMenu.addEventListener('keydown',e=>{const items=[...spotMenu.querySelectorAll('[role="menuitem"]')],at=items.indexOf(document.activeElement),step={ArrowRight:1,ArrowDown:1,ArrowLeft:-1,ArrowUp:-1}[e.key];
+ const next=step?items[at<0?(step>0?0:items.length-1):(at+step+items.length)%items.length]:e.key==='Home'?items[0]:e.key==='End'?items.at(-1):null;if(!next)return;e.preventDefault();next.focus();});
 function notesWritable(){return !activeMap.startsWith('peer-scene:')&&!activeMap.startsWith('phone:')&&!isRunner()&&activeMap!=='domain';}
 function noteRowTile(note){
  if(!note.details?.thumbnail)return icons.note;
@@ -1944,7 +2137,7 @@ async function renderFiducials(focusKey=null){
  const familyField=document.createElement('div');familyField.className='form-field';const familyLabel=document.createElement('label');familyLabel.className='form-label';familyLabel.textContent='Tag family';
  const family=document.createElement('select');family.id='fiducial-family';family.className='form-control';familyLabel.htmlFor=family.id;for(const item of catalog.families)family.add(new Option(item.label,item.id));familyField.append(familyLabel,family);
  const idField=document.createElement('div');idField.className='form-field';const idLabel=document.createElement('label');idLabel.className='form-label';idLabel.textContent='Marker ID (optional)';
- const id=document.createElement('input');id.id='fiducial-id';id.className='form-control';id.type='number';id.min='0';id.step='1';id.placeholder='Next available';idLabel.htmlFor=id.id;idField.append(idLabel,id);
+ const id=document.createElement('input');id.id='fiducial-id';id.className='form-control';id.type='text';id.inputMode='numeric';id.pattern='\\d*';id.autocomplete='off';id.placeholder='Next available';idLabel.htmlFor=id.id;idField.append(idLabel,id);
  const size=mmField('Printed marker size (mm)','fiducial-size','150');size.input.required=true;
  const helper=document.createElement('small');helper.className='form-helper';helper.textContent='Size of the black square on paper';size.field.append(helper);
  const message=document.createElement('p');message.className='form-status';message.setAttribute('role','status');
@@ -1952,10 +2145,10 @@ async function renderFiducials(focusKey=null){
  const formActions=document.createElement('div');formActions.className='card-actions';if(catalog.fiducials.length)formActions.append(cancel);formActions.append(generate);
  form.append(familyField,idField,size.field,measureExplainer(),formActions,message);
  form.addEventListener('keydown',e=>{if(e.key==='Escape'&&catalog.fiducials.length){e.stopPropagation();cancel.click();}});
- form.onsubmit=async event=>{event.preventDefault();generate.disabled=true;message.textContent='Generating…';
+ form.onsubmit=async event=>{event.preventDefault();generate.disabled=true;message.classList.add('visually-hidden');message.textContent='Generating…';
   try{const marker=await api('/api/fiducials',{family:family.value,id:id.value===''?null:Number(id.value),side_length_m:Number(size.input.value)/1000});
    createdFiducialKey=marker.key;fiducialCreateOpen=false;expandedFiducials.add(marker.key);await renderFiducials(marker.key);toast(`${marker.family_label} · ${marker.id} created`);
-  }catch(e){message.textContent=e.message;generate.disabled=false;}};
+  }catch(e){message.textContent=e.message;message.classList.remove('visually-hidden');generate.disabled=false;}};
  tagsBody.append(form);
  if(!catalog.fiducials.length){tagsBody.append(emptyState('No tags yet. Generate a marker, print it at 100%, then measure the black square.'));return;}
  // Tags grouped by family, newest first.
@@ -1997,3 +2190,5 @@ async function renderFiducials(focusKey=null){
  createdFiducialKey=null;
 }
 renderFiducials();
+// The interface is built: show it (see html.booting in style.css).
+requestAnimationFrame(()=>document.documentElement.classList.replace('booting','booted'));
