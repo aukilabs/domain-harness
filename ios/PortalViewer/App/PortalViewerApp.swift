@@ -47,7 +47,7 @@ struct ViewerScreen: View {
     @AppStorage("phoneName") private var phoneName = ""
     @State private var driveSelection: String?
     @AppStorage("panelTab") private var panelTab = "map"
-    @AppStorage("panelOpen") private var panelOpen = true
+    @AppStorage("panelOpen") private var panelOpen = false
     /// On by default, so every phone opens with the scene panel; the logo button folds it away.
     @AppStorage("showDetails") private var showDetails = true
     @State private var promptedForLogin = false
@@ -371,6 +371,8 @@ struct ViewerScreen: View {
             peer.onPortalResult = { controller.showPortalResult($0) }
             controller.onInvitation = { peer.handleInvitation($0) }
             // A Portal seen before Home's map has arrived offers sign-in once.
+            // The scene panel always opens folded: one line, the chevron unfolds it.
+            panelOpen = false
             controller.onPortalSeen = { _ in
                 guard !peer.running, !connecting, !promptedForLogin else { return }
                 if !peer.autoConnect() { promptedForLogin = true; connecting = true }
