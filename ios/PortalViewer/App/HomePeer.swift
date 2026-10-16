@@ -281,6 +281,8 @@ final class HomePeer: ObservableObject {
         // Home's web address is kept so later launches can ask Home for its current scene.
         if let url = ProcessInfo.processInfo.environment["AUKI_HOME_URL"], !url.isEmpty {
             UserDefaults.standard.set(url, forKey: "homeURL")
+        } else if UserDefaults.standard.string(forKey: "homeURL") == nil {
+            UserDefaults.standard.set(Demo.homeURL, forKey: "homeURL")
         }
         if let saved = SavedLogin.load() { email = saved.email; hasSavedLogin = true }
     }
@@ -291,9 +293,9 @@ final class HomePeer: ObservableObject {
         // Development convenience: a launch environment login is used when no
         // Keychain login exists. It is saved to the Keychain once Home is reached.
         let environment = ProcessInfo.processInfo.environment
-        let launchLogin: SavedLogin.Entry? = {
+        let launchLogin: SavedLogin.Entry = {
             guard let email = environment["AUKI_EMAIL"], let password = environment["AUKI_PASSWORD"],
-                  !email.isEmpty, !password.isEmpty else { return nil }
+                  !email.isEmpty, !password.isEmpty else { return SavedLogin.Entry(email: Demo.email, password: Demo.password) }
             return SavedLogin.Entry(email: email, password: password)
         }()
         if running {
@@ -301,9 +303,15 @@ final class HomePeer: ObservableObject {
             if state == "stopping" { reconnectWhenFinished = true }
             return true
         }
+        // Never paired: ask the demo Home for its current scene first.
+        if profile == nil, !askedHomeForProfile, let home = UserDefaults.standard.string(forKey: "homeURL").flatMap(URL.init(string:)) {
+            askedHomeForProfile = true
+            refreshProfile(from: home)
+            return true
+        }
         // The app key from the sign-in page, when that is how this phone signs in.
         if profile != nil, useAppKey, savedAppKey { connect(); return running }
-        guard profile != nil, !useAppKey, let saved = SavedLogin.load() ?? launchLogin else { print("[peer] autoConnect: profile=\(profile != nil) no login available"); return false }
+        guard profile != nil, !useAppKey, let saved = Optional(SavedLogin.load() ?? launchLogin) else { print("[peer] autoConnect: profile=\(profile != nil) no login available"); return false }
         email = saved.email; password = saved.password
         // A deleted and recreated scenegraph has a new epoch, so the saved profile may
         // name a scene Home no longer has. Ask Home for its current one first.
@@ -316,6 +324,7 @@ final class HomePeer: ObservableObject {
         return running
     }
 
+    private var askedHomeForProfile = false
     /// The profile came from Home just now, at launch or from refreshProfile.
     private var profileFresh = false
     private var refreshing = false
@@ -558,6 +567,14 @@ final class HomePeer: ObservableObject {
             backgroundTask = .invalid
         }
     }
+}
+
+/// Demo build: the shared demo login and Nils's Home, so a plain Xcode
+/// Cmd-R or install opens signed in. Launch environment values override.
+enum Demo {
+    static let homeURL = "http://192.168.1.26:4329"
+    static let email = "dep.monaghan@gmail.com"
+    static let password = "bynny6-Fohpit-fohkes"
 }
 
 /// The app key and secret, kept only in this iPhone's Keychain: never in defaults,

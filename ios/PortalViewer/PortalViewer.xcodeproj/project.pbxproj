@@ -58,7 +58,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				BBD894698F7A607B9DBD5CF9 /* SpatialPortalBridge.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -131,6 +130,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 85B17104BB73DAADBC8ED08D /* Build configuration list for PBXNativeTarget "PortalViewer" */;
 			buildPhases = (
+				5B1D6E2A9C3F4A8B00C0FFEE /* Build Rust bridge */,
 				6110747040736F06C64AC795 /* Sources */,
 				6667097BB5C18FC7D02C1BEC /* Resources */,
 				A0F42966F4B1711B215DA8E3 /* Frameworks */,
@@ -188,6 +188,25 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		5B1D6E2A9C3F4A8B00C0FFEE /* Build Rust bridge */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Build Rust bridge";
+			outputPaths = (
+				"$(SRCROOT)/../PortalBridge/build/SpatialPortalBridge.source",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# Cmd-R builds the Rust bridge too, so the app never links old Rust.\nexport PATH=\"$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"\nPATH=\"$(rustup run stable rustc --print sysroot)/bin:$PATH\"\ncase \"$PLATFORM_NAME\" in iphoneos) export TARGETS=aarch64-apple-ios ;; esac\nexport CARGO_INCREMENTAL=0\nsh \"$SRCROOT/../PortalBridge/build.sh\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		6110747040736F06C64AC795 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -221,10 +240,15 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = V7LQ934WJD;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"\"../PortalBridge/build\"",
 				);
+				"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = "$(SRCROOT)/../PortalBridge/build/SpatialPortalBridge.xcframework/ios-arm64";
+				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = "$(SRCROOT)/../PortalBridge/build/SpatialPortalBridge.xcframework/ios-arm64-simulator $(SRCROOT)/../PortalBridge/build/SpatialPortalBridge.xcframework/ios-arm64_x86_64-simulator";
+				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/../PortalBridge/include";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = McKenna;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Scan a Portal to display Home's scenegraph in augmented reality.";
@@ -238,6 +262,7 @@
 				);
 				OTHER_LDFLAGS = (
 					"$(inherited)",
+					"-lspatial_portal_bridge",
 					"-lc++",
 					"-liconv",
 					"-framework",
@@ -245,7 +270,7 @@
 					"-framework",
 					Security,
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.spatialharness.PortalViewer;
+				PRODUCT_BUNDLE_IDENTIFIER = com.luckybulldozer.auki.PortalViewer;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 1;
@@ -314,10 +339,15 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = V7LQ934WJD;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"\"../PortalBridge/build\"",
 				);
+				"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = "$(SRCROOT)/../PortalBridge/build/SpatialPortalBridge.xcframework/ios-arm64";
+				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = "$(SRCROOT)/../PortalBridge/build/SpatialPortalBridge.xcframework/ios-arm64-simulator $(SRCROOT)/../PortalBridge/build/SpatialPortalBridge.xcframework/ios-arm64_x86_64-simulator";
+				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/../PortalBridge/include";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = McKenna;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Scan a Portal to display Home's scenegraph in augmented reality.";
@@ -331,6 +361,7 @@
 				);
 				OTHER_LDFLAGS = (
 					"$(inherited)",
+					"-lspatial_portal_bridge",
 					"-lc++",
 					"-liconv",
 					"-framework",
@@ -338,7 +369,7 @@
 					"-framework",
 					Security,
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.spatialharness.PortalViewer;
+				PRODUCT_BUNDLE_IDENTIFIER = com.luckybulldozer.auki.PortalViewer;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 1;
