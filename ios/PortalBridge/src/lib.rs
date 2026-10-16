@@ -257,6 +257,21 @@ pub unsafe extern "C" fn spatial_mobile_start_app(
     unsafe { start(profile, key, secret, identity, |key, secret| SignIn::App { key, secret }) }
 }
 
+/// This phone's Wi-Fi IPv4 address for the next connection; see `spatial_mobile_set_lan_address`.
+static LAN_ADDRESS: Mutex<Option<std::net::Ipv4Addr>> = Mutex::new(None);
+
+/// Set (or clear, with null or an invalid value) this phone's Wi-Fi IPv4 address
+/// before starting a connection, so Home can dial the phone directly.
+/// # Safety
+/// Non-null input must be a live NUL-terminated UTF-8 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spatial_mobile_set_lan_address(address: *const c_char) {
+    let parsed = (!address.is_null())
+        .then(|| unsafe { CStr::from_ptr(address) }.to_str().ok()?.parse().ok())
+        .flatten();
+    *LAN_ADDRESS.lock().unwrap_or_else(|e| e.into_inner()) = parsed;
+}
+
 /// # Safety
 /// Each pointer must be a valid NUL-terminated UTF-8 string for the duration of this call.
 unsafe fn start(
@@ -287,7 +302,8 @@ unsafe fn start(
             return 0;
         }
         let client = Arc::new(MobileClient::default());
-        runtime().spawn(client.clone().run(profile, sign_in(first, second), identity));
+        let lan = *LAN_ADDRESS.lock().unwrap_or_else(|e| e.into_inner());
+        runtime().spawn(client.clone().run(profile, sign_in(first, second), identity, lan));
         *slot = Some(client);
         1
     }))
