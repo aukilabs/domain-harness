@@ -290,6 +290,9 @@ final class HomePeer: ObservableObject {
     /// Connect with the saved login. Returns false when there is nothing to use.
     @discardableResult
     func autoConnect() -> Bool {
+        // Nothing touches the network until the permission list is done: the
+        // first packet raises iOS's Local Network prompt over it.
+        guard permissionsAsked else { return true }
         // Development convenience: a launch environment login is used when no
         // Keychain login exists. It is saved to the Keychain once Home is reached.
         let environment = ProcessInfo.processInfo.environment
@@ -304,7 +307,7 @@ final class HomePeer: ObservableObject {
             return true
         }
         // Never paired: ask the demo Home for its current scene first.
-        if profile == nil, permissionsAsked, !askedHomeForProfile, let home = UserDefaults.standard.string(forKey: "homeURL").flatMap(URL.init(string:)) {
+        if profile == nil, !askedHomeForProfile, let home = UserDefaults.standard.string(forKey: "homeURL").flatMap(URL.init(string:)) {
             askedHomeForProfile = true
             refreshProfile(from: home)
             return true
