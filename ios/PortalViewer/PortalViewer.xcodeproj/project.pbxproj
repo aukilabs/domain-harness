@@ -10,6 +10,7 @@
 		0A9A1BD27276FC3895F4A4EC /* ScreenShare.swift in Sources */ = {isa = PBXBuildFile; fileRef = C38092EFE931EB56A528B487 /* ScreenShare.swift */; };
 		11F1FDC5250F721C8999C155 /* McKennaIntro.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B0EA166835C2C9692208E02 /* McKennaIntro.swift */; };
 		126307E730AE9D6F418261E3 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 5E28D30D4D61E2D22CF37F86 /* Assets.xcassets */; };
+		ABE5898E17F62CE5340CD95C /* robot.urdf in Resources */ = {isa = PBXBuildFile; fileRef = 9CAC97C78FD44B66249FFD11 /* robot.urdf */; };
 		2481687917605ECCE2F2C22A /* bracketbot_0184_rigged.usdz in Resources */ = {isa = PBXBuildFile; fileRef = BA431FB9B359E3A0AF861867 /* bracketbot_0184_rigged.usdz */; };
 		2A95B8380B6EFAC3B646A123 /* RobotHealth.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB2B945385636185BD39367D /* RobotHealth.swift */; };
 		2DC11F9A3C2824AFF300B427 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E4554C6754FD11EA49048B5 /* Theme.swift */; };
@@ -47,6 +48,7 @@
 		B33697AF632544986693964C /* PortalViewerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortalViewerApp.swift; sourceTree = "<group>"; };
 		BA431FB9B359E3A0AF861867 /* bracketbot_0184_rigged.usdz */ = {isa = PBXFileReference; lastKnownFileType = file.usdz; path = bracketbot_0184_rigged.usdz; sourceTree = "<group>"; };
 		C38092EFE931EB56A528B487 /* ScreenShare.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenShare.swift; sourceTree = "<group>"; };
+		9CAC97C78FD44B66249FFD11 /* robot.urdf */ = {isa = PBXFileReference; path = robot.urdf; sourceTree = "<group>"; };
 		CB2B945385636185BD39367D /* RobotHealth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RobotHealth.swift; sourceTree = "<group>"; };
 		CF63C94F0E06FB864456F332 /* PortalMap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortalMap.swift; sourceTree = "<group>"; };
 		D6933E6306AC040ABFB74C78 /* SpatialPortalBridge.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = SpatialPortalBridge.xcframework; path = ../PortalBridge/build/SpatialPortalBridge.xcframework; sourceTree = "<group>"; };
@@ -70,9 +72,19 @@
 			children = (
 				A7988369933F8FE8153DB769 /* App */,
 				72B20422B48B789027D9077B /* Resources */,
+				DCF06EED2E487D5DEDA88BE9 /* robot */,
 				BC96395D20B07A0008672331 /* Frameworks */,
 				F41E3BF819CA5A1A5A8C8EDD /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		DCF06EED2E487D5DEDA88BE9 /* robot */ = {
+			isa = PBXGroup;
+			children = (
+				9CAC97C78FD44B66249FFD11 /* robot.urdf */,
+			);
+			name = robot;
+			path = ../../web/robot;
 			sourceTree = "<group>";
 		};
 		72B20422B48B789027D9077B /* Resources */ = {
@@ -183,6 +195,7 @@
 				126307E730AE9D6F418261E3 /* Assets.xcassets in Resources */,
 				CE88F9F57B642D17A46C0710 /* auki.png in Resources */,
 				2481687917605ECCE2F2C22A /* bracketbot_0184_rigged.usdz in Resources */,
+				ABE5898E17F62CE5340CD95C /* robot.urdf in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
