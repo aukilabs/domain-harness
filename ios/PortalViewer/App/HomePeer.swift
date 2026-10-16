@@ -304,7 +304,7 @@ final class HomePeer: ObservableObject {
             return true
         }
         // Never paired: ask the demo Home for its current scene first.
-        if profile == nil, !askedHomeForProfile, let home = UserDefaults.standard.string(forKey: "homeURL").flatMap(URL.init(string:)) {
+        if profile == nil, permissionsAsked, !askedHomeForProfile, let home = UserDefaults.standard.string(forKey: "homeURL").flatMap(URL.init(string:)) {
             askedHomeForProfile = true
             refreshProfile(from: home)
             return true
@@ -325,6 +325,9 @@ final class HomePeer: ObservableObject {
     }
 
     private var askedHomeForProfile = false
+    /// The permission list is done, so reaching Home cannot raise the Local
+    /// Network prompt over it.
+    var permissionsAsked = false
     /// The profile came from Home just now, at launch or from refreshProfile.
     private var profileFresh = false
     private var refreshing = false
@@ -342,6 +345,12 @@ final class HomePeer: ObservableObject {
                    String(decoding: data, as: UTF8.self) != self.profileJSON {
                     do { try self.pair(data); print("[peer] paired to Home's current scene") }
                     catch { print("[peer] Home's current profile rejected: \(error.localizedDescription)") }
+                } else if data == nil, self.profile == nil {
+                    // Never paired: keep asking until Home answers.
+                    print("[peer] Home not reachable yet; asking again in 3 s")
+                    self.askedHomeForProfile = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) { self.autoConnect() }
+                    return
                 } else if data == nil {
                     print("[peer] Home not reachable for a fresh profile; using the saved one")
                 } else {

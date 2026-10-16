@@ -339,7 +339,8 @@ struct ViewerScreen: View {
             McKennaIntro(mode: introDone ? .quick : .firstBoot, screen: screen) {
                 introDone = true
                 showIntro = false
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { beginCapture() }
+                peer.permissionsAsked = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { beginCapture(); peer.autoConnect() }
             }
             .onAppear { print("[intro] shown") }
             .onDisappear { print("[intro] gone") }
