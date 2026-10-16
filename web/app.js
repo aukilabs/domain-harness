@@ -9,7 +9,7 @@ import { createSemanticVolumes, legacyVolumesForView } from './semantic-volumes.
 import { createMap2D } from './map-2d.js';
 import { createCrayon } from './crayon.js';
 import { createGhostCamera, createCameraPan, isEditing } from './ghost-camera.js';
-import { createNoteBubble } from './note-bubble.js';
+import { createNoteBubble, ghostWhenHidden } from './note-bubble.js';
 import { createPipWindow } from './pip-window.js';
 import { createVideoPresentation } from './video-presentation.js';
 import { readCameraResponse } from './camera-frame.js';
@@ -370,7 +370,7 @@ for(const input of document.querySelectorAll('[data-layer]'))input.onchange=()=>
 const boxGeometry=new THREE.BoxGeometry(1,1,1), cubeMaterial=new THREE.MeshStandardMaterial({roughness:.82,metalness:0});
 function clear(group){for(const child of [...group.children]){group.remove(child);if(child.isInstancedMesh)child.dispose();child.traverse(o=>{if(o.geometry&&o.geometry!==boxGeometry)o.geometry.dispose();if(o.material&&o.material!==cubeMaterial){for(const m of Array.isArray(o.material)?o.material:[o.material]){m.map?.dispose();m.dispose();}}});}}
 function label(text,color='#36594a'){
- const c=document.createElement('canvas');c.width=384;c.height=96;const ctx=c.getContext('2d');ctx.fillStyle='#fcfdf6';ctx.beginPath();ctx.roundRect(4,8,376,76,18);ctx.fill();ctx.font='500 30px system-ui';ctx.textAlign='center';ctx.fillStyle=color;ctx.fillText(text,192,56,356);const tex=new THREE.CanvasTexture(c);tex.colorSpace=THREE.SRGBColorSpace;const sprite=new THREE.Sprite(new THREE.SpriteMaterial({map:tex,depthTest:false}));sprite.scale.set(.65,.1625,1);return sprite;
+ const c=document.createElement('canvas');c.width=384;c.height=96;const ctx=c.getContext('2d');ctx.fillStyle='#fcfdf6';ctx.beginPath();ctx.roundRect(4,8,376,76,18);ctx.fill();ctx.font='500 30px system-ui';ctx.textAlign='center';ctx.fillStyle=color;ctx.fillText(text,192,56,356);const tex=new THREE.CanvasTexture(c);tex.colorSpace=THREE.SRGBColorSpace;const sprite=new THREE.Sprite(new THREE.SpriteMaterial({map:tex}));sprite.scale.set(.65,.1625,1);return ghostWhenHidden(sprite);
 }
 const phoneTrails=createPhoneTrails(scene,text=>createNoteBubble(text,{peer:true}),peer=>cameraShape(fleetNetwork?.peers?.find(p=>p.peer_id===peer)?.catalog));
 const compactTrail=createCompactPoseTrail(scene);
@@ -975,7 +975,7 @@ const spriteView=new THREE.Vector3();
 let flatSprites=[],flatSpritesAge=Infinity;
 function keepSpriteSizes(amount){
  camera.updateMatrixWorld();const p00=camera.projectionMatrix.elements[0],perspective00=flatPerspective.elements[0];
- if(!amount||++flatSpritesAge>30){flatSprites=[];scene.traverse(obj=>{if(obj.isSprite&&obj.material.sizeAttenuation===false)flatSprites.push(obj);});flatSpritesAge=0;}
+ if(!amount||++flatSpritesAge>30){flatSprites=[];scene.traverse(obj=>{if(obj.isSprite&&obj.material.sizeAttenuation===false&&!obj.userData.ghostTwin)flatSprites.push(obj);});flatSpritesAge=0;}
  for(const obj of flatSprites){
   if(!amount){if(obj.userData.baseScale){obj.scale.copy(obj.userData.baseScale);delete obj.userData.baseScale;}continue;}
   const base=obj.userData.baseScale??=obj.scale.clone();
