@@ -53,7 +53,7 @@ final class HomePeer: ObservableObject {
     }
     @Published private(set) var profile: HomeProfile?
     @Published private(set) var running = false
-    @Published private(set) var detail = "Pair with Home to connect"
+    @Published private(set) var detail = "Pair with Home to connect" { didSet { if detail != oldValue { print("[peer] \(state): \(detail)") } } }
     @Published private(set) var state = "stopped" {
         didSet { if state == "live" && oldValue != "live" { sendUnsent() } }
     }
