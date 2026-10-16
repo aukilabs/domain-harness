@@ -1,5 +1,6 @@
 import { createNetworkTraffic } from './network-traffic.js';
 import * as THREE from 'three';
+import {createSceneWifi} from './scene-wifi.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createArOverlay } from './ar.js';
 import { createPhoneTrails, cameraShape } from './phone-trails.js';
@@ -67,9 +68,11 @@ chatForm.onsubmit=async e=>{
  // Sending while the conversation is minimised brings it back, so the reply isn't hidden.
  if(chatCompact){chatCompact=false;try{localStorage.setItem('home.chat.compact','false');}catch{}syncChatCompact();}
  const map=activeMap,message=chatInput.value.trim(),history=(chatConversations.get(map)||[]).slice(-18);
- const direct=message.startsWith('/');let command;
- if(direct){try{command=slashCommands.prepare();}catch(error){chatStatus.textContent=error.message;toast(error.message);return;}}
- history.push({role:'user',content:message,direct});
+ const direct=message.startsWith('/'),draft=slashCommands.draft();let command,content=message;
+ try{if(direct)command=slashCommands.prepare();else content=slashCommands.prepareChat();}
+ catch(error){chatStatus.textContent=error.message;toast(error.message);return;}
+ if(content.length>8000){chatStatus.textContent='Message and references are too long. Use fewer references.';toast(chatStatus.textContent);return;}
+ history.push({role:'user',content,display_content:message,direct});
  if(history.reduce((n,m)=>n+m.content.length,0)>32000){chatStatus.textContent='Conversation is too long. Start a shorter conversation.';toast(chatStatus.textContent);return;}
  chatConversations.set(map,history);chatPending=true;chatPendingMap=map;renderChat();chatInput.value='';slashCommands.submitted();chatForm.querySelector('button').disabled=true;chatStatus.textContent=direct?'Executing directly in Home…':'Qwen is thinking…';
  try{
@@ -82,7 +85,7 @@ chatForm.onsubmit=async e=>{
    // A failed refresh cannot undo saved receipts or offer the whole edit again.
    lastScene=null;try{await refresh();}catch(error){chatStatus.textContent+=' · View refresh failed: '+error.message;}
   }
- }catch(error){if(direct){history.push({role:'assistant',direct:true,content:'Command failed or was not confirmed: '+error.message+'. Check the current state before retrying; Home will not retry automatically.'});}else{history.pop();if(activeMap===map&&!chatInput.value)chatInput.value=message;}chatStatus.textContent=error.message;toast(error.message);}
+ }catch(error){if(direct){history.push({role:'assistant',direct:true,content:'Command failed or was not confirmed: '+error.message+'. Check the current state before retrying; Home will not retry automatically.'});}else{history.pop();if(activeMap===map&&!chatInput.value)slashCommands.restore(draft);}chatStatus.textContent=error.message;toast(error.message);}
  finally{chatPending=false;chatPendingMap=null;renderChat();if(document.activeElement===document.body||document.activeElement?.closest?.('.agent-bar'))chatInput.focus({preventScroll:true});chatForm.querySelector('button').disabled=!chatInput.value.trim();}
 };
 $('map-select').addEventListener('change',()=>{slashCommands.reset();renderChat();chatStatus.textContent=chatPending?'A local reply is pending for the previous scene…':'Ask Qwen, or type / for direct commands';});
@@ -161,6 +164,9 @@ moveTo('fleet','#runner-card, #sensor-select, #sensor-catalog-status');
 $('runner-card').hidden=true;
 $('sensor-catalog-status').hidden=true;
 moveTo('settings','#demo-controls, aside > .section-label, aside > .layer, #robot-volume-status');
+const sceneWifi=createSceneWifi({container:panelBodies.settings,getScene:()=>$('map-select').value,getName:()=>$('map-select').selectedOptions[0]?.textContent||'Local scene'});
+$('map-select').addEventListener('change',()=>sceneWifi.sync());
+new MutationObserver(()=>sceneWifi.sync()).observe($('map-select'),{childList:true,subtree:true});
 sidebar.querySelectorAll(':scope > .map-label').forEach(el=>el.remove());
 // Panel motion: opening fades in with a bounce from the clicked tab, switching tabs bounces,
 // and closing fades out.

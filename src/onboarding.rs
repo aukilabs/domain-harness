@@ -78,6 +78,17 @@ impl std::fmt::Debug for Invitation {
     }
 }
 
+impl Wifi {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(!self.ssid.is_empty() && self.ssid.len() <= 32 && !self.ssid.chars().any(char::is_control),
+            "Wi-Fi name must be 1–32 bytes without control characters");
+        if let Some(password) = &self.password {
+            ensure!((8..=63).contains(&password.len()) && !password.chars().any(char::is_control),
+                "Wi-Fi password must be 8–63 bytes without control characters");
+        }
+        Ok(())
+    }
+}
 impl Invitation {
     pub fn new(alias: &str, home: crate::network::HomeConnection, host: Host, wifi: Option<Wifi>) -> Result<Self> {
         let invitation = Self {
@@ -121,10 +132,7 @@ impl Invitation {
             let _: auki_sdk::Multiaddr = route.parse()?;
         }
         if let Some(wifi) = &self.wifi {
-            ensure!(!wifi.ssid.is_empty() && wifi.ssid.len() <= 32, "Wi-Fi name must be 1–32 bytes");
-            if let Some(password) = &wifi.password {
-                ensure!((8..=63).contains(&password.len()), "Wi-Fi password must be 8–63 characters");
-            }
+            wifi.validate()?;
         }
         Ok(())
     }

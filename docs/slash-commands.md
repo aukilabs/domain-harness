@@ -1,27 +1,38 @@
-# Direct Home commands
+# Chat references and direct Home commands
 
 Type `/` in the existing scene-assistant input to choose an operation. Use
-Arrow keys then Tab/Enter, or click a suggestion. `#` selects a discovered peer
-by alias; `@` selects a note, volume, or positioned portal in the selected local
+Arrow keys then Tab/Enter, or click a suggestion. `@` selects a discovered peer
+by alias; `#` selects a note, volume, or positioned portal in the selected local
 scene. Duplicate names show their type and ID. Names with spaces are quoted.
+
+The same autocomplete works anywhere in an ordinary Qwen message: `@` for
+peers and `#` for scene nodes. For example, type `How far is @Dan from #cheese?`
+and choose each reference. The conversation shows the readable message; Qwen
+also receives the exact selected IDs and their scene/frame as reference data.
+Those selections remain in conversation history, but are not cached poses or
+proof of current existence: Qwen's tools still resolve and validate current state.
+Editing a reference or switching scenes invalidates its selection. Unselected
+references must be selected before sending; normal messages need no selection.
+Enter/Tab accepts a suggestion, arrows navigate, and Escape dismisses it.
+Ordinary messages go to Qwen; only a leading `/` executes directly.
 
 Examples (choose the references from suggestions, not just pasted names):
 
 ```text
-/camera #"Dan's Phone" "camera-product-id"
-/attach #"Dan's Phone" "camera-product-id"
+/camera @"Dan's Phone" "camera-product-id"
+/attach @"Dan's Phone" "camera-product-id"
 /detach
-/focus @"cheese"
-/focus #"Dan's Phone"
-/path #"Dan" #"Bracket 0125"
-/path #"Dan" @"cheese"
-/path @"Kitchen" @"cheese"
-/path @"1" @"2" @"3" #"Dan" #"Bracket 0125"
-/inspect #"Dan's Phone"
-/rename #"Dan's Phone" "Dan"
-/rename @"cheese" "Cheddar"
-/move @"cheese" 2 0.1 -1
-/resize @"Kitchen" 4 2.5 3
+/focus #"cheese"
+/focus @"Dan's Phone"
+/path @"Dan" @"Bracket 0125"
+/path @"Dan" #"cheese"
+/path #"Kitchen" #"cheese"
+/path #"1" #"2" #"3" @"Dan" @"Bracket 0125"
+/inspect @"Dan's Phone"
+/rename @"Dan's Phone" "Dan"
+/rename #"cheese" "Cheddar"
+/move #"cheese" 2 0.1 -1
+/resize #"Kitchen" 4 2.5 3
 /note "this is Dan" 2 0.1 -1
 ```
 
@@ -32,8 +43,8 @@ missing transform is an error. Camera/view commands change this browser's view,
 not the physical device. Resize preserves the volume's bottom, as in the
 existing tool. Coordinates and dimensions are XYZ metres in the selected scene.
 
-`/path` accepts a variable-length ordered list of independently selected `#peer`
-or `@entity` waypoints (2–64 per request). Continue typing `#` or `@` to add
+`/path` accepts a variable-length ordered list of independently selected `@peer`
+or `#entity` waypoints (2–64 per request). Continue typing `#` or `@` to add
 another waypoint; Send draws one continuous path through them in order.
 It resolves each distinct peer once through the same registry-backed reader as
 the viewer, and projects all positions onto the selected scene's floor (Y=0, line lifted

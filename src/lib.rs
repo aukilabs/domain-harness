@@ -6,6 +6,7 @@ pub mod compact_pose;
 pub mod product_registry;
 pub mod frame_alignment;
 pub mod origin_reset;
+pub mod scene_wifi;
 pub mod video_presentation;
 pub mod compact_ar;
 pub mod declared_depth;

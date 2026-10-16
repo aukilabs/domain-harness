@@ -231,7 +231,8 @@ pub struct MobileClient {
     /// Home's voxels as this phone holds them, and the chunks to redraw.
     voxels: Mutex<crate::voxel_delta::Mirror>,
     /// The connected Home and how other phones reach this one. None until connected.
-    connection: Mutex<Option<(crate::network::HomeConnection, crate::onboarding::Host)>>,
+    connection: Mutex<Option<(crate::network::HomeConnection, crate::onboarding::Host, Arc<crate::mobile_home::HomeOperations>)>>,
+    onboarding_request: Mutex<Option<String>>,
     invitations: tokio::sync::watch::Sender<Option<crate::onboarding::Invitation>>,
     sightings: tokio::sync::mpsc::Sender<crate::mobile_onboarding::Sighting>,
     sighting_receiver: Mutex<Option<tokio::sync::mpsc::Receiver<crate::mobile_onboarding::Sighting>>>,
@@ -253,6 +254,7 @@ impl Default for MobileClient {
             onboarding: Default::default(),
             voxels: Default::default(),
             connection: Mutex::new(None),
+            onboarding_request: Mutex::new(None),
             invitations: tokio::sync::watch::channel(None).0,
             sightings,
             sighting_receiver: Mutex::new(Some(sighting_receiver)),
@@ -465,6 +467,7 @@ impl MobileClient {
     }
     pub fn stop(&self) {
         self.stop.cancel();
+        self.stop_onboarding();
     }
     pub fn finished(&self) -> bool {
         self.finished.load(Ordering::Acquire)
@@ -477,19 +480,48 @@ impl MobileClient {
         state
     }
 
+    /// Reserve an attempt synchronously before dispatching network work. A
+    /// cancelled/older queued worker cannot supersede a new attempt or client.
+    pub fn prepare_onboarding(&self) -> String {
+        let attempt = uuid::Uuid::new_v4().to_string();
+        *self.onboarding_request.lock().unwrap_or_else(|e| e.into_inner()) = Some(attempt.clone());
+        attempt
+    }
     /// Start showing the way into this phone's scene. Needs a live connection
     /// and a place in the scene. Returns the invitation QR text.
-    pub fn host_onboarding(&self, alias: &str, wifi: Option<crate::onboarding::Wifi>, display: crate::onboarding::Display) -> Result<String> {
+    pub async fn host_onboarding(&self, attempt: &str, alias: &str, display: crate::onboarding::Display) -> Result<String> {
+        ensure!(self.onboarding_request.lock().unwrap_or_else(|e| e.into_inner()).as_deref() == Some(attempt), "Onboarding cancelled");
         ensure!(self.snapshot().state == "live", "Connect to Home first");
         let placement = self.placement.borrow().clone();
         let history = self.onboarding.history.lock().map_err(|_| anyhow::anyhow!("Pose history unavailable"))?.session().to_owned();
         ensure!(placement.as_ref().is_some_and(|p| p.session == history), "Calibrate this phone into the scene first");
         let marker_in_camera = display.marker_in_camera()?;
-        let (home, host) = self.connection.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        let (home, host, operations) = self.connection.lock().unwrap_or_else(|e| e.into_inner()).clone()
             .ok_or_else(|| anyhow::anyhow!("Connect to Home first"))?;
+        ensure!(placement.as_ref().is_some_and(|p| !p.session.is_empty()
+            && p.session_to_scene.from_frame_id == format!("phone-ar:{}", p.session)
+            && p.session_to_scene.to_frame_id == home.frame), "Calibrate into the selected Home scene first");
+        // Fetch only when preparing a QR, over the existing authenticated SDK
+        // connection. Retain credentials only in the active invitation for its
+        // QR display, never in persistent phone settings or a fallback cache.
+        let wifi = tokio::select! {
+            _ = self.stop.cancelled() => anyhow::bail!("Onboarding cancelled"),
+            result = tokio::time::timeout(Duration::from_secs(20), crate::scene_wifi::retrieve(&operations, &home)) =>
+                result.map_err(|_| anyhow::anyhow!("Scene Wi-Fi request timed out. Retry"))??,
+        };
+        ensure!(self.snapshot().state == "live" && self.connection.lock().unwrap_or_else(|e| e.into_inner())
+            .as_ref().is_some_and(|(_, _, current)| Arc::ptr_eq(current, &operations)), "Home connection changed. Retry onboarding");
+        ensure!(self.placement.borrow().as_ref().is_some_and(|p| p.session == history
+            && p.session_to_scene.from_frame_id == format!("phone-ar:{history}")
+            && p.session_to_scene.to_frame_id == home.frame)
+            && self.onboarding.history.lock().map_err(|_| anyhow::anyhow!("Pose history unavailable"))?.session() == history,
+            "Calibration changed. Calibrate this phone again");
         let invitation = crate::onboarding::Invitation::new(alias, home.clone(), host, wifi)?;
         let text = invitation.encode()?;
-        *self.onboarding.hosting.lock().map_err(|_| anyhow::anyhow!("Onboarding unavailable"))? = Some(crate::onboarding::Hosting {
+        let request = self.onboarding_request.lock().unwrap_or_else(|e| e.into_inner());
+        ensure!(!self.stop.is_cancelled() && request.as_deref() == Some(attempt), "Onboarding cancelled");
+        let mut hosting = self.onboarding.hosting.lock().map_err(|_| anyhow::anyhow!("Onboarding unavailable"))?;
+        *hosting = Some(crate::onboarding::Hosting {
             session: invitation.session.clone(), alias: invitation.alias.clone(), invitation: text.clone(),
             marker: invitation.marker_payload(), marker_in_camera, scene_peer_id: home.peer_id, scene_frame: home.frame,
             joiner: None, stage: None, detail: "Display marker to device to begin onboarding".into(),
@@ -503,6 +535,7 @@ impl MobileClient {
     }
     /// Stop hosting or joining. A joiner keeps any place it already found.
     pub fn stop_onboarding(&self) {
+        *self.onboarding_request.lock().unwrap_or_else(|e| e.into_inner()) = None;
         if let Ok(mut hosting) = self.onboarding.hosting.lock() { *hosting = None; }
         let session = self.invitations.send_replace(None).map(|i| i.session);
         if let Some(session) = session { self.seen.lock().unwrap_or_else(|e| e.into_inner()).forget(&session); }
@@ -515,7 +548,7 @@ impl MobileClient {
     pub fn join_onboarding(&self, text: &str) -> Result<bool> {
         let invitation = crate::onboarding::Invitation::parse(text)?;
         let connected = self.connection.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        ensure!(self.snapshot().state == "live" && connected.as_ref().is_some_and(|(home, _)|
+        ensure!(self.snapshot().state == "live" && connected.as_ref().is_some_and(|(home, _, _)|
             home.peer_id == invitation.home.peer_id && home.frame == invitation.home.frame),
             "Connect to the invitation's Home scene first");
         if !self.seen.lock().unwrap_or_else(|e| e.into_inner()).first(&invitation.session) {
@@ -640,7 +673,7 @@ impl MobileClient {
         let result = match peer {
             Ok(peer) => {
                 let work = async {
-                let operations = crate::mobile_home::HomeOperations::new(&peer,&home)?;
+                let operations = Arc::new(crate::mobile_home::HomeOperations::new(&peer,&home)?);
                 // Warm once before high-rate producers start, so their short
                 // sample deadlines cannot repeatedly cancel cold discovery.
                 tokio::select! { _ = self.stop.cancelled() => return Ok(()), _ = operations.warm() => {} }
@@ -657,7 +690,7 @@ impl MobileClient {
                 let routes: Vec<String> = peer.listen_addresses().iter().map(ToString::to_string)
                     .filter(|r| !r.contains("/127.0.0.1/") && !r.contains("/0.0.0.0/")).take(4).collect();
                 *self.connection.lock().unwrap_or_else(|e| e.into_inner()) = (!routes.is_empty()).then(|| (home.clone(),
-                    crate::onboarding::Host { peer_id: peer.peer_id().to_string(), routes }));
+                    crate::onboarding::Host { peer_id: peer.peer_id().to_string(), routes }, operations.clone()));
                 let onboarding_display = crate::mobile_onboarding::Display::mount(&products, &self.onboarding, self.placement.subscribe())?;
                 let mut invitations = self.invitations.subscribe();
                 let mut sightings = self.sighting_receiver.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap();

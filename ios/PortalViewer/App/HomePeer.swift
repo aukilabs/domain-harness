@@ -203,12 +203,29 @@ final class HomePeer: ObservableObject {
     private var pendingInvitation: String?
     private var switchingTo: Data?
     /// Start showing the way into this phone's scene. Answers the invitation QR text.
-    func hostOnboarding(_ request: [String: Any]) -> Result<String, ViewerError> {
-        guard let data = try? JSONSerialization.data(withJSONObject: request),
+    func hostOnboarding(_ request: [String: Any]) async -> Result<String, ViewerError> {
+        // Reserve before dispatch: Cancel or a newer attempt can invalidate a
+        // worker even if it has not started on the background queue yet.
+        let prepared = Onboarding.call { "{\"prepare\":true}".withCString { spatial_mobile_onboarding_host($0) } }
+        let attempt: String
+        switch prepared {
+        case .failure(let error): return .failure(error)
+        case .success(let value):
+            guard let id = value["attempt"] as? String else { return .failure(ViewerError("Could not prepare onboarding")) }
+            attempt = id
+        }
+        var reserved = request
+        reserved["attempt"] = attempt
+        guard let data = try? JSONSerialization.data(withJSONObject: reserved),
               let json = String(data: data, encoding: .utf8) else { return .failure(ViewerError("Invalid onboarding request")) }
-        return Onboarding.call { json.withCString { spatial_mobile_onboarding_host($0) } }.flatMap { value in
-            guard let text = value["invitation"] as? String else { return .failure(ViewerError("No invitation")) }
-            return .success(text)
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let result = Onboarding.call { json.withCString { spatial_mobile_onboarding_host($0) } }.flatMap { value -> Result<String, ViewerError> in
+                    guard let text = value["invitation"] as? String else { return .failure(ViewerError("No invitation")) }
+                    return .success(text)
+                }
+                continuation.resume(returning: result)
+            }
         }
     }
     func stopOnboarding() {

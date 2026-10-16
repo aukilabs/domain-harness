@@ -624,7 +624,10 @@ pub unsafe extern "C" fn spatial_mobile_onboarding_screen(model: *const c_char) 
     })())).unwrap_or(std::ptr::null_mut())
 }
 
-/// Start hosting: `{"alias", "wifi"?: {"ssid","password"?,"hidden"?}, "display": {"model","center_points","side_points"}}`.
+/// Reserve on the UI thread with `{"prepare":true}` → `{"attempt":...}`,
+/// then start hosting with `{"attempt", "alias", "display": {"model","center_points","side_points"}}`.
+/// Fetches scene Wi-Fi from Home's authorized SDK Operable. Call off the UI
+/// thread; bounded to 20 seconds. Cancellation prevents a late QR being shown.
 /// Answers `{"invitation": <QR text>}`.
 /// # Safety
 /// `request` must be a NUL-terminated UTF-8 JSON string.
@@ -632,10 +635,14 @@ pub unsafe extern "C" fn spatial_mobile_onboarding_screen(model: *const c_char) 
 pub unsafe extern "C" fn spatial_mobile_onboarding_host(request: *const c_char) -> *mut c_char {
     std::panic::catch_unwind(|| answer((|| {
         let request: serde_json::Value = serde_json::from_str(&unsafe { text(request, 8192) }?).map_err(failed)?;
+        let client = connected()?;
+        if request["prepare"].as_bool() == Some(true) {
+            return Ok(serde_json::json!({"attempt": client.prepare_onboarding()}));
+        }
+        let attempt = request["attempt"].as_str().ok_or("Missing onboarding attempt")?;
         let alias = request["alias"].as_str().ok_or("Missing alias")?;
-        let wifi = match &request["wifi"] { serde_json::Value::Null => None, w => Some(serde_json::from_value(w.clone()).map_err(failed)?) };
         let display = serde_json::from_value(request["display"].clone()).map_err(failed)?;
-        let invitation = connected()?.host_onboarding(alias, wifi, display).map_err(failed)?;
+        let invitation = runtime().block_on(client.host_onboarding(attempt, alias, display)).map_err(failed)?;
         Ok(serde_json::json!({"invitation": invitation}))
     })())).unwrap_or(std::ptr::null_mut())
 }

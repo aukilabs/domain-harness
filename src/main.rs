@@ -460,6 +460,32 @@ fn volume_context(s: &Shared, scene: &str) -> Result<(String, String), ApiError>
         Ok(("canonical".into(), spatial_home::model::FRAME.into()))
     }
 }
+// Scene settings are not part of /scene, snapshots, Qwen inventory or mobile
+// scene Products. The browser only receives a redacted summary.
+async fn get_scene_wifi(State(s): State<Shared>, headers: HeaderMap,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    axum::extract::Path(id): axum::extract::Path<String>) -> Result<impl IntoResponse, ApiError> {
+    wifi_management(&headers, remote)?;
+    s.local_scenes.snapshot(&id)?;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(s.local_scenes.wifi.summary(&id)?)))
+}
+async fn set_scene_wifi(State(s): State<Shared>, headers: HeaderMap,
+    axum::extract::ConnectInfo(remote): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    body: axum::body::Bytes) -> Result<impl IntoResponse, ApiError> {
+    wifi_management(&headers, remote)?;
+    s.local_scenes.snapshot(&id)?;
+    let change = spatial_home::scene_wifi::parse_change(&body)?;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(s.local_scenes.wifi.change(&id, change)?)))
+}
+fn wifi_management(headers: &HeaderMap, remote: std::net::SocketAddr) -> Result<(), ApiError> {
+    // A LAN client must not grant itself access by spoofing Host/Origin. Use the
+    // actual socket address, never forwarded headers, for secret management.
+    if !remote.ip().is_loopback() {
+        return Err(anyhow::anyhow!("Edit scene Wi-Fi on the Home computer using http://127.0.0.1:4329").into());
+    }
+    local_write(headers)
+}
 async fn get_volumes(State(s): State<Shared>, axum::extract::Query(q): axum::extract::Query<VolumeQuery>) -> ApiResult {
     let (key, frame) = volume_context(&s, &q.scene)?;
     Ok(Json(serde_json::to_value(s.local_scenes.volumes.get(&key, &frame)?).map_err(anyhow::Error::from)?))
@@ -1633,6 +1659,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/chat",post(chat_message))
         .route("/api/commands",get(get_commands).post(execute_command))
         .route("/slash-commands.js",get(||async { ([(header::CONTENT_TYPE,"text/javascript")],include_str!("../web/slash-commands.js")) }))
+        .route("/scene-wifi.js", get(|| async { ([(header::CONTENT_TYPE,"text/javascript")],include_str!("../web/scene-wifi.js")) }))
         .route(
             "/api/simulation/disconnect",
             post(disconnect_simulated_robots),
@@ -1719,6 +1746,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/scene-sources", get(scene_sources))
         .route("/api/local-scenes/{id}", get(local_scene))
         .route("/api/local-scenes/{id}/snapshot", get(local_snapshot))
+        .route("/api/local-scenes/{id}/wifi", get(get_scene_wifi).post(set_scene_wifi))
         .route("/api/local-scenes/{id}/reset-mapping", post(reset_local_mapping))
         .route("/api/local-scenes/{id}/drive", post(drive_local))
         .route("/api/local-scenes/{id}/navigate-robot", post(navigate_robot_local))
@@ -1768,7 +1796,7 @@ async fn main() -> anyhow::Result<()> {
         }
     );
     let stop = shutdown.clone();
-    let server = axum::serve(listener, app)
+    let server = axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
         .with_graceful_shutdown(async move {
             tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = stop.cancelled() => {} }
             stop.cancel();
@@ -1828,6 +1856,16 @@ mod ui_access_tests {
         for host in ["localhost.evil:4329", "localhost:bad", "", "127.0.0.1:4329@evil"] {
             assert!(ui_write(&request(host, None), "").is_err());
         }
+    }
+    #[test]
+    fn wifi_management_rejects_lan_even_with_spoofed_local_headers() {
+        let mut headers = request("127.0.0.1:4329", Some("http://127.0.0.1:4329"));
+        headers.insert("x-forwarded-for", "127.0.0.1".parse().unwrap());
+        assert!(wifi_management(&headers, "192.168.1.50:12345".parse().unwrap()).is_err());
+        assert!(wifi_management(&headers, "127.0.0.1:12345".parse().unwrap()).is_ok());
+        assert!(wifi_management(&headers, "[::1]:12345".parse().unwrap()).is_ok());
+        assert!(wifi_management(&request("127.0.0.1:4329", Some("http://foreign.example")),
+            "127.0.0.1:12345".parse().unwrap()).is_err());
     }
 }
 

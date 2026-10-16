@@ -56,9 +56,9 @@ async function setup(page){
 test('slash, peer and camera completion are keyboard accessible and bypass chat',async({page})=>{
  const {input,send,calls,errors}=await setup(page);
  await input.fill('/cam');await expect(page.getByRole('option')).toContainText('/camera');await input.press('Tab');
- await input.pressSequentially('#Dan');await expect(page.getByRole('option')).toContainText("Dan's Phone");await input.press('Enter');
+ await input.pressSequentially('@Dan');await expect(page.getByRole('option')).toContainText("Dan's Phone");await input.press('Enter');
  await expect(page.getByRole('option')).toContainText('rgb');await input.press('Tab');
- await expect(input).toHaveValue('/camera #"Dan\'s Phone" "rgb" ');
+ await expect(input).toHaveValue('/camera @"Dan\'s Phone" "rgb" ');
  await send.click();await expect(page.locator('#scene-chat-history')).toContainText('Camera PiP opened');await expect(page.locator('#sensor-pip')).toBeVisible();
  expect(calls).toHaveLength(1);expect(calls[0].path).toBe('/api/commands');expect(calls[0].body.args).toEqual([{type:'peer',id:'phone'},{type:'camera',reference:ref}]);expect(calls[0].body.viewer.frame).toBe('home');
  await expect(page.locator('#scene-chat-history strong').last()).toHaveText('Home');
@@ -68,7 +68,7 @@ test('slash, peer and camera completion are keyboard accessible and bypass chat'
 
 test('duplicate entity names show type and ID, click chooses exact entity',async({page})=>{
  const {input,send,calls,errors}=await setup(page);
- await input.fill('/focus @che');await expect(page.getByRole('option')).toHaveCount(2);
+ await input.fill('/focus #che');await expect(page.getByRole('option')).toHaveCount(2);
  await page.getByRole('option').filter({hasText:'volume · two'}).click();await send.click();
  await expect(page.locator('#scene-chat-history')).toContainText('Map camera moving');
  expect(calls[0].body.args).toEqual([{type:'entity',kind:'volume',id:'two'}]);expect(calls[0].path).toBe('/api/commands');
@@ -77,17 +77,17 @@ test('duplicate entity names show type and ID, click chooses exact entity',async
 
 test('unresolved or edited references, malformed arguments and unknown commands never call chat',async({page})=>{
  const {input,send,calls}=await setup(page);
- await input.fill('/focus @cheese');await expect(page.getByRole('option')).toHaveCount(2);await input.press('Escape');await send.click();
+ await input.fill('/focus #cheese');await expect(page.getByRole('option')).toHaveCount(2);await input.press('Escape');await send.click();
  await expect(page.locator('#scene-chat-status')).toContainText('autocomplete');expect(calls).toHaveLength(0);
- await input.fill('/point #robot @cheese');await send.click();await expect(page.locator('#scene-chat-status')).toContainText('not exposed');
+ await input.fill('/point @robot #cheese');await send.click();await expect(page.locator('#scene-chat-status')).toContainText('not exposed');
  await input.fill('/note "Hi" nope 1 2');await send.click();await expect(page.locator('#scene-chat-status')).toContainText('number');expect(calls).toHaveLength(0);
- await input.fill('/focus @che');await page.getByRole('option').first().click();await input.press('Backspace');await input.press('Backspace');await input.pressSequentially('x');await send.click();
+ await input.fill('/focus #che');await page.getByRole('option').first().click();await input.press('Backspace');await input.press('Backspace');await input.pressSequentially('x');await send.click();
  await expect(page.locator('#scene-chat-status')).toContainText('quoted argument');expect(calls).toHaveLength(0);
 });
 
 test('scene switch clears bound IDs and suggestions work on narrow screens',async({page})=>{
  const {input,send,calls}=await setup(page);await page.setViewportSize({width:440,height:820});
- await input.fill('/focus @che');await page.getByRole('option').first().click();
+ await input.fill('/focus #che');await page.getByRole('option').first().click();
  await page.locator('#map-select').evaluate(el=>el.dispatchEvent(new Event('change',{bubbles:true})));
  await send.click();await expect(page.locator('#scene-chat-status')).toContainText('not ready');expect(calls).toHaveLength(0);
  await input.fill('/');await expect(page.getByRole('listbox')).toBeVisible();
@@ -98,9 +98,9 @@ test('scene switch clears bound IDs and suggestions work on narrow screens',asyn
 test('path autocompletes both peer endpoints and saves without chat or device commands',async({page})=>{
  const {input,send,calls,errors}=await setup(page);
  await input.fill('/pa');await expect(page.getByRole('option')).toContainText('/path');await input.press('Tab');
- await input.pressSequentially('#Dan');await page.getByRole('option').filter({hasText:"Dan's Phone"}).click();
- await input.pressSequentially('#Bracket');await expect(page.getByRole('option')).toContainText('Bracket 0125');await input.press('Tab');
- await expect(input).toHaveValue('/path #"Dan\'s Phone" #"Bracket 0125" ');
+ await input.pressSequentially('@Dan');await page.getByRole('option').filter({hasText:"Dan's Phone"}).click();
+ await input.pressSequentially('@Bracket');await expect(page.getByRole('option')).toContainText('Bracket 0125');await input.press('Tab');
+ await expect(input).toHaveValue('/path @"Dan\'s Phone" @"Bracket 0125" ');
  await send.click();await expect(page.locator('#scene-chat-history')).toContainText('Floor path saved');
  expect(calls).toHaveLength(1);expect(calls[0].path).toBe('/api/commands');expect(calls[0].body.command).toBe('path');
  expect(calls[0].body.args).toEqual([{type:'peer',id:'phone'},{type:'peer',id:'robot'}]);
@@ -113,31 +113,78 @@ test('path autocompletes both peer endpoints and saves without chat or device co
 
 test('path accepts mixed and entity endpoints and rejects an edited second selection',async({page})=>{
  const {input,send,calls}=await setup(page);
- await input.fill('/path @che');await page.getByRole('option').filter({hasText:'note · one'}).click();
- await input.pressSequentially('#Bracket');await page.getByRole('option').filter({hasText:'Bracket 0125'}).click();
+ await input.fill('/path #che');await page.getByRole('option').filter({hasText:'note · one'}).click();
+ await input.pressSequentially('@Bracket');await page.getByRole('option').filter({hasText:'Bracket 0125'}).click();
  await send.click();await expect(page.locator('#scene-chat-history')).toContainText('Floor path saved');
  expect(calls[0].body.args).toEqual([{type:'entity',kind:'note',id:'one'},{type:'peer',id:'robot'}]);
- await input.fill('/path @che');await page.getByRole('option').filter({hasText:'note · one'}).click();
- await input.pressSequentially('@che');await page.getByRole('option').filter({hasText:'volume · two'}).click();
+ await input.fill('/path #che');await page.getByRole('option').filter({hasText:'note · one'}).click();
+ await input.pressSequentially('#che');await page.getByRole('option').filter({hasText:'volume · two'}).click();
  await send.click();await expect.poll(()=>calls.length).toBe(2);
  expect(calls[1].body.args).toEqual([{type:'entity',kind:'note',id:'one'},{type:'entity',kind:'volume',id:'two'}]);
- await input.fill('/path #Dan');await page.getByRole('option').filter({hasText:"Dan's Phone"}).click();
- await input.pressSequentially('#Bracket');await page.getByRole('option').filter({hasText:'Bracket 0125'}).click();
+ await input.fill('/path @Dan');await page.getByRole('option').filter({hasText:"Dan's Phone"}).click();
+ await input.pressSequentially('@Bracket');await page.getByRole('option').filter({hasText:'Bracket 0125'}).click();
  await input.press('Backspace');await input.press('Backspace');await input.pressSequentially('x');await send.click();
  await expect(page.locator('#scene-chat-status')).toContainText('quoted argument');expect(calls).toHaveLength(2);
 });
 
 test('path keeps offering autocomplete for third and later waypoints, without silently adding one',async({page})=>{
  const {input,send,calls,errors}=await setup(page);
- await input.fill('/path @che');await page.getByRole('option').filter({hasText:'note · one'}).click();
- await input.pressSequentially('@che');await page.getByRole('option').filter({hasText:'volume · two'}).click();
+ await input.fill('/path #che');await page.getByRole('option').filter({hasText:'note · one'}).click();
+ await input.pressSequentially('#che');await page.getByRole('option').filter({hasText:'volume · two'}).click();
  await expect(page.getByRole('listbox')).toBeHidden();
- await input.pressSequentially('#Bracket');await expect(page.getByRole('option')).toContainText('Bracket 0125');await input.press('Tab');
+ await input.pressSequentially('@Bracket');await expect(page.getByRole('option')).toContainText('Bracket 0125');await input.press('Tab');
  await expect(page.getByRole('listbox')).toBeHidden();
- await input.pressSequentially('#Dan');await page.getByRole('option').filter({hasText:"Dan's Phone"}).click();
- await expect(input).toHaveValue('/path @"cheese" @"cheese" #"Bracket 0125" #"Dan\'s Phone" ');
+ await input.pressSequentially('@Dan');await page.getByRole('option').filter({hasText:"Dan's Phone"}).click();
+ await expect(input).toHaveValue('/path #"cheese" #"cheese" @"Bracket 0125" @"Dan\'s Phone" ');
  await expect(page.getByRole('listbox')).toBeHidden();
  await send.click();await expect(page.locator('#scene-chat-history')).toContainText('Floor path saved');
  expect(calls).toHaveLength(1);expect(calls[0].body.args).toEqual([{type:'entity',kind:'note',id:'one'},{type:'entity',kind:'volume',id:'two'},{type:'peer',id:'robot'},{type:'peer',id:'phone'}]);
  expect(errors).toEqual([]);
+});
+
+test('ordinary Qwen messages autocomplete @peers and #nodes with stable identities',async({page})=>{
+ const {input,send,calls,errors}=await setup(page);
+ await input.fill('How far is @Dan');await expect(page.getByRole('option')).toHaveCount(1);
+ await input.press('Tab');await input.pressSequentially('from #che');
+ await expect(page.getByRole('option')).toHaveCount(2);
+ await page.screenshot({path:'test-results/qwen-chat-references.png'});
+ await page.getByRole('option').filter({hasText:'volume · two'}).click();
+ await input.pressSequentially('?');await send.click();
+ await expect.poll(()=>calls.length).toBe(1);expect(calls[0].path).toBe('/api/chat');
+ const content=calls[0].body.messages[0].content,data=JSON.parse(content.split('\n').at(-1));
+ expect(data.references.map(({type,id,kind})=>({type,id,kind}))).toEqual([{type:'peer',id:'phone',kind:undefined},{type:'entity',kind:'volume',id:'two'}]);
+ await expect(page.locator('#scene-chat-history .user')).toContainText(`How far is @"Dan's Phone" from #"cheese" ?`);
+ await expect(page.locator('#scene-chat-history')).not.toContainText('Selected references');
+ await input.fill('And now?');await send.click();await expect.poll(()=>calls.length).toBe(2);
+ expect(calls[1].body.messages[0].content).toBe(content);expect(errors).toEqual([]);
+});
+
+test('prose completion edits the caret token only, and Escape does not close chat',async({page})=>{
+ const {input,send,calls}=await setup(page);
+ await input.fill('Show #che, please');await input.evaluate(el=>{el.setSelectionRange(9,9);el.dispatchEvent(new Event('click'));});
+ await expect(page.getByRole('option')).toHaveCount(2);await input.press('Escape');
+ await expect(page.getByRole('listbox')).toBeHidden();await expect(input).toBeVisible();
+ await input.evaluate(el=>el.dispatchEvent(new Event('click')));
+ await page.getByRole('option').filter({hasText:'note · one'}).click();
+ await expect(input).toHaveValue('Show #"cheese", please');await send.click();
+ await expect.poll(()=>calls.length).toBe(1);expect(calls[0].path).toBe('/api/chat');
+ expect(JSON.parse(calls[0].body.messages[0].content.split('\n').at(-1)).references[0].id).toBe('one');
+});
+
+test('prose never submits unresolved or scene-invalidated selections as confirmed identities',async({page})=>{
+ const {input,send,calls}=await setup(page);
+ await input.fill('Where is #cheese');await input.press('Escape');await send.click();
+ await expect(page.locator('#scene-chat-status')).toContainText('autocomplete');expect(calls).toHaveLength(0);
+ await input.fill('Where is #che');await page.getByRole('option').filter({hasText:'volume · two'}).click();
+ await page.locator('#map-select').evaluate(el=>el.dispatchEvent(new Event('change',{bubbles:true})));
+ await send.click();await expect(page.locator('#scene-chat-status')).toContainText('not ready');expect(calls).toHaveLength(0);
+});
+
+test('failed chat restores the selected identities for a manual retry',async({page})=>{
+ const {input,send,calls}=await setup(page);let fail=true;
+ await page.route('**/api/chat',route=>{if(fail){fail=false;return route.fulfill({status:503,json:{error:'Fixture unavailable'}});}return route.fallback();});
+ await input.fill('Where is @Dan');await input.press('Tab');await send.click();
+ await expect(input).toHaveValue(`Where is @"Dan's Phone" `);
+ await expect(send).toBeEnabled();await send.click();await expect.poll(()=>calls.length).toBe(1);
+ expect(JSON.parse(calls[0].body.messages[0].content.split('\n').at(-1)).references[0].id).toBe('phone');
 });

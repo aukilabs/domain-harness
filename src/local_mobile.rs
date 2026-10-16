@@ -750,6 +750,7 @@ impl Publisher {
             NavigationWorld { state: state.clone(), scenes: scenes.clone(), scene: id.into(), frame: paths_frame.clone(), session_clock: session_clock.clone() })?;
         scenes.planners.lock().map_err(|_| anyhow!("Route planner unavailable"))?.insert(id.into(), planner);
         components.push(navigation);
+        components.push(crate::scene_wifi::mount(runtime, endpoint, id, scenes.wifi.clone())?);
         let mut publisher = Self {
             id: id.into(),
             reference,
