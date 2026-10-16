@@ -330,7 +330,7 @@ pub struct OccupancyMapper {
     config: Config,
     state: OccupancyScene,
     last: Option<OccupancyScene>,
-    started: Instant,
+    session_clock: auki_time::SessionClock,
     last_cycle: Option<Instant>,
     last_received: Option<Instant>,
     timestamp: u64,
@@ -342,10 +342,10 @@ impl OccupancyMapper {
         endpoint: &ComponentProtocolEndpoint,
         source: &RetainedProduct<CanonicalScene>,
         owner: &str,
-        clock: ClockReference,
+        session_clock: auki_time::SessionClock,
         config: Config,
     ) -> Result<Self> {
-        Self::mount_inner(runtime, Some(endpoint), source, owner, clock, config, None)
+        Self::mount_inner(runtime, Some(endpoint), source, owner, session_clock, config, None)
     }
 
     /// Home runs one mapper per independent local scene; IDs must not collide.
@@ -354,12 +354,12 @@ impl OccupancyMapper {
         endpoint: &ComponentProtocolEndpoint,
         source: &RetainedProduct<CanonicalScene>,
         owner: &str,
-        clock: ClockReference,
+        session_clock: auki_time::SessionClock,
         config: Config,
         scene_id: &str,
     ) -> Result<Self> {
         ensure!(!scene_id.is_empty() && scene_id.len() <= 128, "invalid occupancy scene ID");
-        Self::mount_inner(runtime, Some(endpoint), source, owner, clock, config, Some(scene_id))
+        Self::mount_inner(runtime, Some(endpoint), source, owner, session_clock, config, Some(scene_id))
     }
 
     /// Bind an SDK Product locally without mounting a network peer or endpoint.
@@ -367,10 +367,10 @@ impl OccupancyMapper {
         runtime: &ComponentRuntime,
         source: &RetainedProduct<CanonicalScene>,
         owner: &str,
-        clock: ClockReference,
+        session_clock: auki_time::SessionClock,
         config: Config,
     ) -> Result<Self> {
-        Self::mount_inner(runtime, None, source, owner, clock, config, None)
+        Self::mount_inner(runtime, None, source, owner, session_clock, config, None)
     }
 
     fn mount_inner(
@@ -378,11 +378,13 @@ impl OccupancyMapper {
         endpoint: Option<&ComponentProtocolEndpoint>,
         source: &RetainedProduct<CanonicalScene>,
         owner: &str,
-        clock: ClockReference,
+        session_clock: auki_time::SessionClock,
         config: Config,
         scene_id: Option<&str>,
     ) -> Result<Self> {
         config.validate()?;
+        ensure!(session_clock.registry_entry().peer_id == owner, "Occupancy clock owner mismatch");
+        let clock = crate::model::clock_ref(&session_clock.registry_entry());
         let component_id = scene_id.map_or_else(|| "voxel-to-occupancy-2d".into(), |id| format!("voxel-to-occupancy-2d:{id}"));
         let product_id = scene_id.map_or_else(|| PRODUCT.into(), |id| format!("{PRODUCT}:{id}"));
         let component = runtime.component(
@@ -481,7 +483,7 @@ impl OccupancyMapper {
                 layers: Layers { occupancy_2d: None },
             },
             last: None,
-            started: Instant::now(),
+            session_clock,
             last_cycle: None,
             last_received: None,
             timestamp: 0,
@@ -576,7 +578,7 @@ impl OccupancyMapper {
             size(&self.state) <= MAX_BYTES,
             "occupancy scene exceeds size limit"
         );
-        self.timestamp = (self.started.elapsed().as_nanos() as u64).max(self.timestamp + 1);
+        self.timestamp = self.session_clock.now_ns();
         self.output
             .publish(self.timestamp, Arc::new(self.state.clone()))?;
         ensure!(

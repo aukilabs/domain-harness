@@ -15,7 +15,7 @@ import time
 
 import numpy as np
 from bracketbot_capture import timestamp
-from bracketbot_stance import calibrated, ease, hand_axis, plan_wrist
+from bracketbot_stance import calibrated, control_clock, ease, hand_axis, plan_wrist
 from bracketbot_behavior import supervisor_fresh
 
 
@@ -49,13 +49,9 @@ def main():
     home_frame = json.loads((args.state/'home-connection.json').read_text())['frame']
     initial_scene = scene()
     frame = initial_scene['frame'] if initial_scene else capture['frame']
-    # Mapping can establish its origin before the independent camera catalog
-    # worker publishes its first source. The origin owns the capture clock.
-    clock = ((initial_scene or {}).get('registries',{}).get('local_mapping',{}).get('origin') or {}).get('capture_clock')
-    if clock is None:
-        sources=capture.get('sensors',{}).get('sources',[])
-        if not sources:raise RuntimeError('capture clock not ready')
-        clock=sources[0]['clock']
+    # SDK streams use session time; local history/freshness checks use BBOS
+    # realtime. The snapshot/status explicitly declares that separate clock.
+    clock = control_clock(initial_scene, capture)
     baseline = (initial_scene['registries']['local_mapping']['observed_portals'].get(args.portal, {}).get('observations', 0)
                 if initial_scene and initial_scene['frame'] == frame else 0)
     report = dict(pid=os.getpid(), portal=args.portal, frame=frame, execute=args.execute,

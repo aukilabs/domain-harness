@@ -1,4 +1,4 @@
-//! Read-only Galbot telemetry. All transforms are source -> destination; no
+//! Read-only runner telemetry. All transforms are source -> destination; no
 //! extrapolation, portal service calls, robot operations or map journal writes.
 use crate::domain_portals::{DOMAIN, FRAME};
 use anyhow::{Result, anyhow, bail, ensure};
@@ -278,9 +278,9 @@ pub async fn monitor(
             }
             ensure!(
                 !routes.is_empty(),
-                "Galbot not discovered; waiting for its advertised route"
+                "Robot not discovered; waiting for its advertised route"
             );
-            let mut error = anyhow!("no usable Galbot route");
+            let mut error = anyhow!("no usable robot route");
             for route in routes {
                 match follow(
                     peer,

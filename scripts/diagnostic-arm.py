@@ -311,7 +311,8 @@ def main():
             request_id = None
 
             def emit(phase, **details):
-                # When the phase happened, on the robot's UTC clock (the runner's bbos-capture).
+                # When the phase happened, on this host's realtime clock as BBOS stamps
+                # captures; the runner converts it into its session clock.
                 print(json.dumps(dict(request_id=request_id, phase=phase, timestamp_ns=time.time_ns(), **details),
                                  allow_nan=False), flush=True)
             try:

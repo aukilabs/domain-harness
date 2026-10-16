@@ -41,7 +41,8 @@ pub struct Reply {
     pub arm: Option<String>,
     #[serde(default)]
     pub code: Option<String>,
-    /// When this phase happened: UTC ns on this robot, the pose capture clock.
+    /// When this phase happened, on this host's realtime clock (as BBOS stamps
+    /// captures); the body publisher converts it into the session clock.
     #[serde(default)]
     pub timestamp_ns: Option<u64>,
 }

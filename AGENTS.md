@@ -36,9 +36,27 @@ use. Display rotation is the reader's job.
 
 **Clocks**
 
+- Every peer (Home, Annotator, runners and simulators) owns an SDK
+  session-monotonic clock and publishes its registered definition plus a
+  UTC-transform Product in the SDK Catalog. Use the same contract for every
+  peer; no device-specific consumer paths. A new session or clock reset gets a
+  new clock identity, and history must not be joined across those identities.
+- The UTC-transform Product declares both clocks by full registry reference
+  and publishes the transform established at session start through the SDK over
+  libp2p. Keep this relationship fixed for that session; do not move its epoch
+  when the host wall clock is corrected or require fresh UTC samples per capture.
+  Preserve timing uncertainty; mapping to a device's UTC clock does not by
+  itself establish synchronization with another device.
+- Convert native sensor capture timestamps into the session clock through an
+  explicit, measured clock relationship. Never substitute receipt time,
+  publication time or "UTC now" for an earlier capture timestamp.
 - Every timestamp identifies its clock by full registry reference
   (`peer_id`, `id`, `hash`). Never infer a clock from a peer, a field name or
   the number itself.
+- Every data stream's Output manifest declares that exact clock reference.
+  Consumers discover its UTC-transform Product by matching the transform's
+  source clock to that reference, not by assuming all streams from a peer use
+  the same clock. A declared clock must describe the timestamps actually sent.
 - Timestamps are capture time under that clock, in nanoseconds from its epoch.
   Publication time is a separate event. Preserve capture time and clock through
   processing and forwarding.
@@ -80,6 +98,12 @@ explicitly before publishing. `tracking` is `valid` with a pose or `lost`.
   `source_sequence` with a fetched observation when an exact match matters.
 - Forwarding a Product preserves its source Output, sequence, time, clock and
   frames.
+- Home retains consumed Products in SDK buffers targeting ten seconds of source
+  capture time, with explicit byte/entry caps and reported actual coverage.
+  Shared consumers resolve time through the Catalog's UTC-transform Products;
+  do not create per-peer pose queues or fetch poses separately for each image.
+  Keep held session-clock anchors and calibration baselines for their declared
+  lifetime. Buffering does not authorize opening every advertised camera.
 
 ## SDK boundaries
 
@@ -96,6 +120,11 @@ explicitly before publishing. `tracking` is `valid` with a pose or `lost`.
   metadata field needs every producer and consumer moved together.
 
 ## Working here
+
+- Galbot runner support is intentionally removed. Do not investigate, restore,
+  implement, test, or deploy Galbot support unless the user explicitly requests
+  it again. Preserve shared peer/geometry code needed by the supported apps;
+  historical wire identifiers alone are not a request to restore a runner.
 
 - Home, the phone core (`src/mobile*.rs`, compiled into the apps) and the
   runner share this crate. A struct Home publishes is decoded by the phone's

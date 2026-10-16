@@ -1,6 +1,5 @@
 use anyhow::Result;
 use spatial_home::{
-    model,
     occupancy_fixture::FakeVoxelSource,
     simulated_robot::{self, SimulationState},
 };
@@ -58,7 +57,7 @@ async fn single_robot_has_exactly_one_remote_peer_and_contributor() -> Result<()
 #[tokio::test]
 async fn patrol_has_limited_visibility_and_clears_moving_obstacles() -> Result<()> {
     let runtime = auki_components::ComponentRuntime::new("robot");
-    let mut source = FakeVoxelSource::new(&runtime, "robot", model::clock_entry("robot", "test"))?;
+    let mut source = FakeVoxelSource::new(&runtime, "robot", auki_time::SessionClock::new("robot", "test", "session"))?;
     let a = source.publish_patrol(0.)?;
     let b = source.publish_patrol(3.)?;
     a.validate("robot")?;
@@ -112,7 +111,7 @@ async fn occupancy_grows_retains_unseen_obstacles_and_clears_only_with_free_evid
 {
     use spatial_home::occupancy_mapper::{Config, OccupancyMapper};
     let runtime = auki_components::ComponentRuntime::new("robot");
-    let clock = model::clock_entry("robot", "accumulation-test");
+    let clock = auki_time::SessionClock::new("robot", "accumulation-test", "session");
     let mut source = FakeVoxelSource::new(&runtime, "robot", clock.clone())?;
     let mut config = Config::new(0.);
     config.interval = Duration::from_millis(100);
@@ -120,7 +119,7 @@ async fn occupancy_grows_retains_unseen_obstacles_and_clears_only_with_free_evid
         &runtime,
         &source.product(),
         "robot",
-        model::clock_ref(&clock),
+        clock,
         config,
     )?;
     let mut count = 0;
@@ -294,9 +293,9 @@ async fn two_sources_merge_unique_coverage_without_inventing_observations() -> R
     let r1 = auki_components::ComponentRuntime::new("r1");
     let r2 = auki_components::ComponentRuntime::new("r2");
     let home = auki_components::ComponentRuntime::new("home");
-    let mut a = FakeVoxelSource::new(&r1, "r1", model::clock_entry("r1", "test"))?;
-    let mut b = FakeVoxelSource::new(&r2, "r2", model::clock_entry("r2", "test"))?;
-    let mut combined = FakeVoxelSource::new(&home, "home", model::clock_entry("home", "test"))?;
+    let mut a = FakeVoxelSource::new(&r1, "r1", auki_time::SessionClock::new("r1", "test", "session"))?;
+    let mut b = FakeVoxelSource::new(&r2, "r2", auki_time::SessionClock::new("r2", "test", "session"))?;
+    let mut combined = FakeVoxelSource::new(&home, "home", auki_time::SessionClock::new("home", "test", "session"))?;
     let a = a.publish_patrol(0.)?;
     let b0 = b.publish_patrol_phase(0., std::f64::consts::PI)?;
     let scene = combined.publish_combined(&[a.clone(), b0.clone()])?;

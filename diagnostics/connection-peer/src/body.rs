@@ -1,7 +1,8 @@
 //! Bracketbot body state: `bbos-joints`, `bbos-health`, `bbos-battery` and
 //! `bbos-pointing`, each declaring the body model rooted at the published pose's
 //! base frame, on the pose clock. Every observation is stamped with the capture
-//! time of what it holds: one arm's state, the battery, or a pointing phase.
+//! time of what it holds (one arm's state, the battery, or a pointing phase),
+//! converted from BBOS's native realtime clock into this peer's session clock.
 use anyhow::{Result, ensure};
 use auki_components::*;
 use serde::Deserialize;
@@ -19,11 +20,11 @@ const POINTING: &str = "bbos-pointing";
 #[derive(Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Sample {
-    /// One arm's positions, at its BBOS arm-state capture time.
+    /// One arm's positions, at its BBOS arm-state capture time (native).
     Joints { timestamp_ns: u64, positions: BTreeMap<String, f64> },
-    /// One arm's motor readings, at its BBOS arm-state capture time.
+    /// One arm's motor readings, at its BBOS arm-state capture time (native).
     Health { timestamp_ns: u64, joints: BTreeMap<String, JointHealth> },
-    /// The battery, at its BBOS `drive.status` capture time.
+    /// The battery, at its BBOS `drive.status` capture time (native).
     Battery { timestamp_ns: u64, battery: Battery },
 }
 
@@ -95,6 +96,10 @@ pub struct Body {
     health: Stream<Health>,
     battery: Stream<Battery>,
     pointing: Stream<Pointing>,
+    native_clock: crate::capture_clock::NativeCaptureClock,
+    /// The last native capture time sent per Output, so a repeat is skipped
+    /// before conversion.
+    last_native: [u64; 4],
 }
 impl Body {
     pub fn mount(p: &crate::poses::Publisher) -> Result<Self> {
@@ -106,31 +111,48 @@ impl Body {
             health: stream(p, &body, HEALTH, HEALTH_SCHEMA, "motor_health")?,
             battery: stream(p, &body, BATTERY, BATTERY_SCHEMA, "battery")?,
             pointing: stream(p, &body, POINTING, POINTING_SCHEMA, "pointing_request_status")?,
+            native_clock: p.native_clock.clone(),
+            last_native: [0; 4],
         })
+    }
+    /// The session-clock time of a native capture, once per Output; None to
+    /// skip (a repeat, or a capture the measured clock relationship cannot place).
+    fn session_time(&mut self, output: usize, native_timestamp_ns: u64) -> Result<Option<u64>> {
+        if native_timestamp_ns <= self.last_native[output] { return Ok(None); }
+        let converted = self.native_clock.convert(native_timestamp_ns)?;
+        if converted.is_some() { self.last_native[output] = native_timestamp_ns; }
+        Ok(converted)
     }
     pub fn publish(&mut self, sample: Sample) -> Result<()> {
         match sample {
             Sample::Joints {timestamp_ns, positions} => {
+                let Some(timestamp_ns) = self.session_time(0, timestamp_ns)? else { return Ok(()); };
                 let joints = Joints {positions};
                 joints.validate()?;
                 self.joints.publish(timestamp_ns, joints)
             }
             Sample::Health {timestamp_ns, joints} => {
+                let Some(timestamp_ns) = self.session_time(1, timestamp_ns)? else { return Ok(()); };
                 let health = Health {joints, battery: None};
                 health.validate()?;
                 self.health.publish(timestamp_ns, health)
             }
             Sample::Battery {timestamp_ns, battery} => {
+                let Some(timestamp_ns) = self.session_time(2, timestamp_ns)? else { return Ok(()); };
                 battery.validate()?;
                 self.battery.publish(timestamp_ns, battery)
             }
         }
     }
-    /// A pointing phase at the time it happened, on the capture clock (UTC ns
-    /// on this robot). A phase no later than the last one is refused, not restamped.
-    pub fn publish_pointing(&mut self, timestamp_ns: u64, pointing: Pointing) -> Result<()> {
+    /// A pointing phase at the time it happened (`native_timestamp_ns`, this
+    /// host's realtime clock as BBOS uses it), converted into the session clock.
+    /// A phase no later than the last one is refused, not restamped.
+    pub fn publish_pointing(&mut self, native_timestamp_ns: u64, pointing: Pointing) -> Result<()> {
         pointing.validate()?;
-        ensure!(timestamp_ns > self.pointing.last, "Pointing phase {} is not after the previous one", pointing.phase);
+        ensure!(native_timestamp_ns > self.last_native[3], "Pointing phase {} is not after the previous one", pointing.phase);
+        let timestamp_ns = self.native_clock.convert(native_timestamp_ns)?
+            .ok_or_else(|| anyhow::anyhow!("Pointing phase {} has a time the capture clock cannot place", pointing.phase))?;
+        self.last_native[3] = native_timestamp_ns;
         self.pointing.publish(timestamp_ns, pointing)
     }
     pub fn close(self, p: &crate::poses::Publisher) -> Result<()> {

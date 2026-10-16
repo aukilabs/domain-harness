@@ -204,7 +204,7 @@ async fn robot_occupancy(
                     s.runners
                         .get(peer)
                         .map(|r| r.name.as_str())
-                        .unwrap_or("Galbot")
+                        .unwrap_or("Robot")
                 );
                 robots.push(view);
             }
@@ -1749,7 +1749,7 @@ async fn main() -> anyhow::Result<()> {
             runners.insert(
                 profile.peer_id.clone(),
                 RunnerView {
-                    name: format!("Galbot {host}"),
+                    name: format!("Robot {host}"),
                     primary: true,
                     state: remote_rx.clone(),
                 },
@@ -1859,6 +1859,10 @@ async fn main() -> anyhow::Result<()> {
                     include_str!("../web/app.js"),
                 )
             }),
+        )
+        .route(
+            "/peer-presence.js",
+            get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../web/peer-presence.js")) }),
         )
         .route(
             "/phone-trails.js",

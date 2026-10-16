@@ -9,6 +9,8 @@ use auki_scenegraph::{MapConventionConversion, MapFrame, MapSnapshot};
 use auki_voxel_map::{VoxelMapDefinition, VoxelSnapshot};
 use prost::Message;
 use std::collections::BTreeMap;
+// Historical persisted frame identity, not an enabled hardware integration.
+// Renaming it would relabel existing coordinates rather than convert them.
 pub const RUNNER_FRAME: &str = "domain:b2881524-954d-4979-b715-240ed8f02807:galbot-zup";
 /// Translation-only Home rebase; raw imported domain coordinates stay available.
 pub const HOME_ORIGIN: [f64; 3] = [-9.2878, 0., 0.2011];

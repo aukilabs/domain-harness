@@ -33,7 +33,7 @@ impl Shared {
         self.joining.lock().ok()?.as_ref().map(|j| serde_json::json!({
             "role": "joiner", "session": j.session, "alias": j.alias, "marker": j.marker,
             "looking": j.looking, "stage": j.stage, "detail": j.detail, "sightings": j.sightings,
-            "clock_uncertainty_ms": j.clock.map(|c| c.uncertainty_ns as f64 / 1e6),
+            "clock_uncertainty_ms": j.clock.as_ref().map(|c| c.uncertainty_ns as f64 / 1e6),
             "alignment": j.alignment,
         }))
     }
@@ -88,13 +88,16 @@ pub struct Frame {
 #[derive(Clone, Debug)]
 pub struct Sighting {
     pub session: String,
+    pub clock: ClockReference,
     pub timestamp_ns: u64,
+    /// Private app evidence, never sent to another peer.
+    pub native_timestamp_ns: u64,
     pub marker_to_session: auki_odometry::Pose,
     pub range_m: f64,
 }
 
 /// Look for `marker` in a frame. Sync: the app calls it off the main thread.
-pub fn sight(luma: &[u8], frame: &Frame, marker: &str) -> Result<Option<Sighting>> {
+pub fn sight(luma: &[u8], frame: &Frame, marker: &str, timing: &crate::mobile_products::CaptureTiming) -> Result<Option<Sighting>> {
     uuid::Uuid::parse_str(&frame.session)?;
     ensure!(frame.camera_to_session.from_frame_id == format!("phone-camera:{}", frame.session)
         && frame.camera_to_session.to_frame_id == format!("phone-ar:{}", frame.session), "Wrong capture frame");
@@ -107,7 +110,9 @@ pub fn sight(luma: &[u8], frame: &Frame, marker: &str) -> Result<Option<Sighting
     let range_m = in_camera.translation.iter().map(|v| v * v).sum::<f64>().sqrt();
     Ok(Some(Sighting {
         session: frame.session.clone(),
-        timestamp_ns: frame.timestamp_ns,
+        clock: timing.clock_reference()?,
+        timestamp_ns: timing.capture(0, frame.timestamp_ns)?,
+        native_timestamp_ns: frame.timestamp_ns,
         marker_to_session: crate::local_mapper::compose(&camera, &in_camera)?,
         range_m,
     }))
@@ -131,31 +136,38 @@ impl Display {
         let authenticated = |ctx: &InvocationContext| !ctx.caller_peer_id.is_empty();
 
         let s = shared.clone();
+        let timing = products.timing.clone();
         let show = component.operable("show", authenticated, move |ctx, request: ob::Show| {
             s.host(|h| {
                 h.admit(&ctx.caller_peer_id, &request.session)?;
                 h.stage = Some(Stage::Marker);
                 h.detail = "Showing the marker".into();
                 Ok(ob::Marker { session: h.session.clone(), payload: h.marker.clone(), side_length_m: ob::MARKER_SIDE_M,
-                    scene_peer_id: h.scene_peer_id.clone(), scene_frame: h.scene_frame.clone() })
+                    scene_peer_id: h.scene_peer_id.clone(), scene_frame: h.scene_frame.clone(), clock: timing.clock_reference()? })
             }).map_err(rejected)
         })?;
         let s = shared.clone();
+        let timing = products.timing.clone();
         let clock = component.operable("clock", authenticated, move |ctx, request: ob::ReadClock| {
             let session = s.host(|h| { h.answering(&ctx.caller_peer_id, &request.session)?; Ok(h.session.clone()) }).map_err(rejected)?;
-            Ok(ob::ClockReading { session, now_ns: ob::capture_clock_now().map_err(rejected)? })
+            let clock = timing.clock_reference().map_err(rejected)?;
+            if request.clock != clock { return Err(rejected(anyhow!("Clock changed; restart onboarding"))); }
+            Ok(ob::ClockReading { session, clock, now_ns: timing.clock.now_ns() })
         })?;
         let s = shared.clone();
+        let timing = products.timing.clone();
         let marker_at = component.operable("marker_at", authenticated, move |ctx, request: ob::AskMarker| {
             let marker_in_camera = s.host(|h| { h.answering(&ctx.caller_peer_id, &request.session)?; Ok(h.marker_in_camera.clone()) })
                 .map_err(rejected)?;
             let placement = placement.borrow().clone()
                 .ok_or_else(|| rejected(anyhow!("This phone lost its place in the scene")))?;
+            let clock = timing.clock_reference().map_err(rejected)?;
+            if request.clock != clock { return Err(rejected(anyhow!("Clock changed; restart onboarding"))); }
             let at = s.history.lock().map_err(|_| InvocationError::TargetUnavailable)?
-                .at(&placement.session, request.timestamp_ns).map_err(rejected)?;
+                .interval(&clock, &placement.session, request.timestamp_ns, request.uncertainty_ns).map_err(rejected)?;
             let session_to_scene = crate::mobile_declared::pose(&placement.session_to_scene).map_err(rejected)?;
             Ok(ob::MarkerAt {
-                session: request.session, timestamp_ns: request.timestamp_ns,
+                session: request.session, clock, timestamp_ns: request.timestamp_ns, uncertainty_ns: request.uncertainty_ns,
                 marker_to_scene: ob::marker_in_scene(&session_to_scene, &at.pose, &marker_in_camera).map_err(rejected)?,
                 speed_m_s: at.speed_m_s, turn_rad_s: at.turn_rad_s,
             })
@@ -193,6 +205,7 @@ pub async fn join(
     invitation: &ob::Invitation,
     shared: &Shared,
     sightings: &mut tokio::sync::mpsc::Receiver<Sighting>,
+    products: &crate::mobile_products::MobileProducts,
 ) -> Result<crate::mobile_depth::Alignment> {
     ensure!(invitation.home.peer_id == home.peer_id && invitation.home.frame == home.frame,
         "The invitation is for another Home scene");
@@ -212,25 +225,29 @@ pub async fn join(
         "The host is placed in another scene");
 
     say(Some(Stage::Marker), "Timing the other phone's clock");
+    let local_clock = products.registered_clock()?;
+    let remote_clock = crate::clock_sync::resolve_routes(&auki_component_protocol::ComponentProtocolClient::new(peer.protocols()),
+        &auki_protocols::registry::RegistryClient::new(peer.protocols()), invitation.host.peer_id.parse()?,
+        &invitation.host.routes, &marker.clock).await?;
     // Each exchange opens an authenticated stream, and a phone's Wi-Fi dozes
     // between packets, so the first few are slow. The tightest one bounds the
     // offset; the motion check per sighting decides whether it is good enough.
     let mut probes = Vec::new();
     for _ in 0..16 {
-        let sent_ns = ob::capture_clock_now()?;
+        let sent_ns = products.timing.clock.now_ns();
         let (component, operation, caller) = call("clock");
         let reading: ob::ClockReading = host.invoke(component, operation, caller, &request(), Duration::from_secs(2),
-            &ob::ReadClock { session: session.clone() }).await?;
-        let received_ns = ob::capture_clock_now()?;
-        ensure!(reading.session == session, "Clock reading for another session");
+            &ob::ReadClock { session: session.clone(), clock: marker.clock.clone() }).await?;
+        let received_ns = products.timing.clock.now_ns();
+        ensure!(reading.session == session && reading.clock == marker.clock, "Clock reading for another session or clock");
         probes.push(ob::ClockProbe { sent_ns, remote_ns: reading.now_ns, received_ns });
     }
     let rtts: Vec<u64> = probes.iter().map(|p| p.received_ns.saturating_sub(p.sent_ns) / 1_000_000).collect();
     eprintln!("[onboarding] clock exchange round trips (ms): {rtts:?}");
-    let clock = ob::ClockMapping::measure(&probes)?;
+    let clock = ob::ClockMapping::measure(&local_clock, &remote_clock, &probes)?;
     ensure!(clock.uncertainty_ns <= ob::MAX_CLOCK_UNCERTAINTY_NS,
         "The other phone answers too slowly to time it (±{} ms); try again", clock.uncertainty_ns / 1_000_000);
-    shared.join(|j| { j.clock = Some(clock); j.marker = Some(marker.payload.clone()); j.looking = true; });
+    shared.join(|j| { j.clock = Some(clock.clone()); j.marker = Some(marker.payload.clone()); j.looking = true; });
     say(Some(Stage::Marker), &format!("Clock matched to ±{} ms · point this phone's camera at the other phone's screen",
         clock.uncertainty_ns / 1_000_000));
 
@@ -240,19 +257,21 @@ pub async fn join(
     let mut reported = 0;
     let agreed = loop {
         let sighting = sightings.recv().await.ok_or_else(|| anyhow!("Onboarding stopped"))?;
-        let host_time = clock.remote(sighting.timestamp_ns)?;
+        ensure!(sighting.clock == products.timing.clock_reference()?, "Capture clock changed; restart onboarding");
+        let host_time = clock.remote(&sighting.clock, sighting.timestamp_ns)?;
+        let marker_request = ob::AskMarker { session: session.clone(), clock: clock.to_clock.clone(),
+            timestamp_ns: host_time, uncertainty_ns: clock.uncertainty_ns };
         // The host may not have its pose for this instant yet: wait a little, never use a newer one.
         let mut answer = Err(anyhow!("No answer"));
         for attempt in 0..4 {
             if attempt > 0 { tokio::time::sleep(Duration::from_millis(60)).await; }
             let (component, operation, caller) = call("marker_at");
             answer = host.invoke::<_, ob::MarkerAt>(component, operation, caller, &request(), Duration::from_secs(2),
-                &ob::AskMarker { session: session.clone(), timestamp_ns: host_time }).await;
+                &marker_request).await;
             if !answer.as_ref().is_err_and(|e| e.to_string().contains("No pose yet")) { break; }
         }
         let at = match answer {
-            Ok(at) if at.session == session && at.timestamp_ns == host_time => at,
-            Ok(_) => return Err(anyhow!("The host answered for another moment")),
+            Ok(at) => { at.validate_answer(&marker_request)?; at },
             Err(e) => { last_problem = e.to_string(); say(Some(Stage::Measuring), &last_problem); continue; }
         };
         let solution = ob::Solution {
@@ -280,7 +299,7 @@ pub async fn join(
     let (sighting, native_to_scene) = agreed;
     let ar = format!("phone-ar:{}", sighting.session);
     let alignment = crate::mobile_depth::Alignment {
-        timestamp_ns: sighting.timestamp_ns,
+        timestamp_ns: sighting.native_timestamp_ns,
         portal_id: marker.payload.clone(),
         portal_to_session: crate::local_mapper::rigid(&sighting.marker_to_session, &format!("onboarding-marker:{session}"), &ar),
         session_to_home: crate::local_mapper::rigid(&native_to_scene, &ar, &home.frame),

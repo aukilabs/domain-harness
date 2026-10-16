@@ -55,13 +55,27 @@ held `bbos-arm-mount` transform, so a target reaches the arm only through it.
 That declaration assumes BBOS base's origin is on the floor under the axle;
 verify it on each robot before trusting the aim.
 
-Frame, clock and numeric sensor calibration definitionsFrame, clock and numeric sensor calibration definitions are served through the
+Frame, clock and numeric sensor calibration definitions are served through the
 SDK Registry endpoint. Catalog metadata binds their exact references and static
 interpretation to hashed output IDs. Images and detections do not carry repeated
 calibration. The detector consumes the exact observation published on the camera
 output; it does not open another camera. A latest-only worker drops superseded
 frames, limits upscale retries to once per second, and leaves pose/LED handling
 independent of decoding.
+
+Every running mode owns an SDK `SessionClock`. Its registered definition and a
+`spatial-harness.time-transform/v1` Product appear in the Catalog; the Product
+holds the session-start relationship between that exact session clock and UTC.
+All sensor
+observations, detector results, body state and held transforms use this session
+clock. BBOS's native realtime capture timestamps are converted through measured,
+bracketed local clock readings, sampled independently every 250 ms and at capture
+processing; capture-to-publication delay is preserved. A
+capture older than the retained ten-second mapping history or outside measured
+bounds is dropped, never stamped with receipt time. A native clock step stops
+Diagnostics so its controller can start a new session with new clock/frame
+identities. Local UTC mapping does not establish synchronization with another
+device; the contract leaves UTC accuracy unknown and retains read uncertainty.
 
 All peer data uses authenticated SDK libp2p component/registry protocols. The
 Python adapter uses local BBOS shared memory and stdout IPC only. SDK account
@@ -121,8 +135,7 @@ invitation may hold a Wi-Fi password. On an invitation for this runner's Home
 2. names itself in Home with the alias (Home's `name` operation, bound to
    this Peer ID);
 3. asks the phone to show its 50 mm marker, and times the phone's capture
-   clock against this one (BBOS stamps camera frames with wall-clock
-   nanoseconds) over 16 authenticated exchanges;
+   clock against this peer's SDK session clock over 16 authenticated exchanges;
 4. for each sighting of the marker, undistorts its corners with the head
    camera's fisheye model, solves the 50 mm square, asks the phone where the
    marker was in the scene at that instant, and hands the alignment worker
@@ -191,11 +204,12 @@ BBOS `camera.points` measurements. The launcher accepts the same `--points` flag
 It does not start SLAM, enable driving, or create a robot-side voxel map.
 
 - `bbos-depth-points` uses `spatial-harness.depth-points/v2`: compact binary
-  float32 XYZ and optional sRGB bytes through the SDK observation codec. Home
-  also continues to read Annotator's existing v1 JSON Products.
+  float32 XYZ and optional sRGB bytes through the SDK observation codec. Camera
+  and point-cloud Products have no JSON wire fallback.
 - `bbos-depth-extrinsic` is a held compact transform from the registered rectified
   depth optical frame into BBOS base. This is distinct from the raw QR camera.
-- Capture timestamps retain BBOS's capture clock; no receipt-time substitution.
+- BBOS capture timestamps are mapped into the SDK session clock through measured
+  local clock relationships; no receipt-time substitution.
 - The local helper undoes BBOS's calibrated optical-to-base conversion, preserving
   the depth sensor origin for Home's free-space rays. It reads shared memory and
   writes local stdout IPC only. All peer data uses the existing SDK endpoint/libp2p.
@@ -235,14 +249,15 @@ It feeds three Products, each declaring the body it belongs to in
 - `bbos-health`: per-joint motor temperature and current, 1 Hz.
 - `bbos-battery`: the battery from `drive.status`, whenever it updates.
 
-Each observation is one source at that source's own BBOS capture time: one arm's
+Each observation is one source at that source's own BBOS capture time, converted
+from BBOS's native realtime clock into the runner's session clock: one arm's
 state, or one `drive.status` reading. Two arms are never merged under one
 timestamp, and nothing is stamped with the time it was read; Home merges the
 arms by joint name. `bbos-pointing` carries each arm-adapter phase at the time
-`diagnostic-arm.py` reported it, on the same clock.
+`diagnostic-arm.py` reported it, converted the same way.
 
 The declaration names the body model (`bracketbot`) and pins its root to the
-exact `bbos-base` frame reference and `bbos-capture` clock of `bbos-pose`, so a
+exact `bbos-base` frame reference and SDK session clock of `bbos-pose`, so a
 reader draws the model wherever that pose places the base. Output IDs bind the
 declaration. A missing arm or battery leaves the rest running; if the helper
 fails, poses, camera and alignment continue without body state.

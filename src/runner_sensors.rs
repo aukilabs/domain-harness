@@ -1,4 +1,4 @@
-//! Sensor adapters share the runner's Component runtime and authenticated endpoint.
+//! Shared sensor adapters use the runner's Component runtime and authenticated endpoint.
 use auki_component_protocol::ComponentProtocolEndpoint;
 use auki_components::*;
 use auki_registry::FrameRegistryEntry;
@@ -33,6 +33,7 @@ pub struct SensorReading {
     pub measurement: Measurement,
 }
 impl ContractType for SensorReading {
+    // Shared historical wire identity; Bracketbot still uses this contract.
     const DATATYPE: &'static str = "galbot.sensor-reading";
 }
 #[derive(Clone, Serialize, Deserialize)]

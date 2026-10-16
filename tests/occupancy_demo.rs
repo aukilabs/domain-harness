@@ -1,7 +1,6 @@
 use anyhow::Result;
 use auki_components::ComponentRuntime;
 use spatial_home::{
-    model,
     occupancy_fixture::{FakeVoxelSource, Scenario},
     occupancy_mapper::{Config, FREE, OCCUPIED, OccupancyMapper},
 };
@@ -31,7 +30,7 @@ async fn wait_center(mapper: &mut OccupancyMapper, expected: i8) -> Result<()> {
 #[tokio::test]
 async fn synthetic_component_drives_real_mapper_without_peer_or_credentials() -> Result<()> {
     let runtime = ComponentRuntime::new("fixture-test");
-    let clock = model::clock_entry("fixture-test", "test-session");
+    let clock = auki_time::SessionClock::new("fixture-test", "test-session", "session");
     let mut source = FakeVoxelSource::new(&runtime, "fixture-test", clock.clone())?;
     let mut config = Config::new(0.);
     config.interval = Duration::from_millis(100);
@@ -40,7 +39,7 @@ async fn synthetic_component_drives_real_mapper_without_peer_or_credentials() ->
         &runtime,
         &source.product(),
         "fixture-test",
-        model::clock_ref(&clock),
+        clock,
         config,
     )?;
     source.publish(Scenario::Obstacle)?;

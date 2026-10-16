@@ -74,7 +74,7 @@ async fn phone_pose_is_declared_with_frames_and_follows_the_ar_session() -> Resu
             format!("phone-camera:{first}")
         );
         assert_eq!(metadata["value"]["to_frame"]["peer_id"], phone);
-        assert_eq!(metadata["value"]["clock"]["id"], "arkit-capture");
+        assert_eq!(metadata["value"]["clock"], serde_json::to_value(spatial_home::model::clock_ref(&products.timing.clock.registry_entry()))?);
         let contract:spatial_home::compact_pose::Contract=serde_json::from_value(metadata["value"].clone())?;
         let manifest:auki_components::OutputManifest=serde_json::from_value(output.clone())?;
         contract.validate_output(&manifest)?;

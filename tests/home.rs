@@ -220,6 +220,20 @@ fn additional_runner_config_preserves_primary_and_rejects_duplicate_peers() -> a
     let file = dir.path().join("peer.json");
     let mut config: serde_json::Value =
         serde_json::from_str(include_str!("../config/home-peer.example.json"))?;
+    // Two robot runners of its own; the test does not depend on the example's robots.
+    let runner = |peer_id: &str, ip: &str| serde_json::json!({
+        "schema": "spatial-harness.home-connection/v1",
+        "peer_id": peer_id,
+        "domain_id": "b2881524-954d-4979-b715-240ed8f02807",
+        "routes": [format!("/ip4/{ip}/tcp/4321")],
+        "frame": "robot-local",
+        "product_id": "canonical-scene"
+    });
+    config["runner_scene"] = runner("12D3KooWKogrsBMYLjBduXcXzefB7HruGYGxsqJPVYEvgmo1hJy5", "192.168.9.95");
+    config["runner_scenes"] = serde_json::json!([{
+        "name": "Second robot",
+        "connection": runner("12D3KooWP7MFxucx3sPDvdYzXU8vBA1oRTmmx1ARGPxTRHQQYEu4", "192.168.9.87")
+    }]);
     std::fs::write(&file, serde_json::to_vec(&config)?)?;
     let loaded = spatial_home::peer::PeerSettings::load(&file)?;
     assert_eq!(loaded.runner_scenes.len(), 1);

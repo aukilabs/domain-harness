@@ -14,13 +14,7 @@ final class VoxelChunks {
     private var cells: [SIMD3<Int32>: SIMD3<UInt8>] = [:]
     private var byChunk: [SIMD3<Int32>: [SIMD3<Int32>]] = [:]
     private var nodes: [SIMD3<Int32>: SCNNode] = [:]
-    private let material: SCNMaterial = {
-        let m = SCNMaterial()
-        m.lightingModel = .constant
-        m.blendMode = .alpha
-        m.transparencyMode = .aOne
-        return m
-    }()
+    private let material = VoxelSurface.material
 
     var isEmpty: Bool { cells.isEmpty }
 
@@ -81,10 +75,8 @@ final class VoxelChunks {
         return s <= 0.04045 ? s / 12.92 : pow((s + 0.055) / 1.055, 2.4)
     }
 
-    /// The six faces: outward direction, its four corners (counter-clockwise
-    /// seen from outside, as unit-cube offsets), and a fixed shade so blocks
-    /// read as blocks without lighting.
-    private static let faces: [(SIMD3<Int32>, [SIMD3<Float>], Float)] = [
+    /// Outward face normals and counter-clockwise unit-cube corners.
+    static let faces: [(SIMD3<Int32>, [SIMD3<Float>], Float)] = [
         (SIMD3(1, 0, 0), [SIMD3(1,0,0), SIMD3(1,1,0), SIMD3(1,1,1), SIMD3(1,0,1)], 0.8),
         (SIMD3(-1, 0, 0), [SIMD3(0,0,0), SIMD3(0,0,1), SIMD3(0,1,1), SIMD3(0,1,0)], 0.8),
         (SIMD3(0, 1, 0), [SIMD3(0,1,0), SIMD3(0,1,1), SIMD3(1,1,1), SIMD3(1,1,0)], 1.0),
@@ -97,33 +89,107 @@ final class VoxelChunks {
         nodes[key]?.removeFromParentNode()
         nodes[key] = nil
         guard let list = byChunk[key], !list.isEmpty else { return }
-        var vertices = [SCNVector3]()
-        var colors = [Float]()
-        var indices = [UInt32]()
+        var mesh = VoxelSurface.Mesh()
         for index in list {
             guard let rgb = cells[index] else { continue }
             let base = SIMD3<Float>(index) * size
             let color = SIMD3(Self.linear(rgb.x), Self.linear(rgb.y), Self.linear(rgb.z))
-            for (direction, corners, shade) in Self.faces where cells[index &+ direction] == nil {
-                let first = UInt32(vertices.count)
-                for corner in corners {
-                    let p = base + corner * size
-                    vertices.append(SCNVector3(p.x, p.y, p.z))
-                    colors.append(contentsOf: [color.x * shade, color.y * shade, color.z * shade, 0.65])
-                }
-                indices.append(contentsOf: [first, first + 1, first + 2, first, first + 2, first + 3])
+            for (direction, corners, _) in Self.faces where cells[index &+ direction] == nil {
+                mesh.append(base: base, size: size, color: color, direction: direction, corners: corners)
             }
         }
-        guard !indices.isEmpty else { return }
-        let colorSource = SCNGeometrySource(data: colors.withUnsafeBytes { Data($0) }, semantic: .color,
-            vectorCount: vertices.count, usesFloatComponents: true, componentsPerVector: 4,
-            bytesPerComponent: 4, dataOffset: 0, dataStride: 16)
-        let geometry = SCNGeometry(sources: [SCNGeometrySource(vertices: vertices), colorSource],
-                                   elements: [SCNGeometryElement(indices: indices, primitiveType: .triangles)])
+        guard !mesh.indices.isEmpty else { return }
+        let geometry = mesh.geometry()
         geometry.materials = [material]
         let node = SCNNode(geometry: geometry)
         node.renderingOrder = -1
         root.addChildNode(node)
         nodes[key] = node
+    }
+}
+
+/// Shared opaque dielectric material and face attributes for live and snapshot maps.
+/// The small linear-data texture is generated once; no extra bevel triangles or passes.
+enum VoxelSurface {
+    static let material: SCNMaterial = {
+        let m = SCNMaterial()
+        m.lightingModel = .physicallyBased
+        m.metalness.contents = 0.0
+        m.roughness.contents = 0.65
+        m.blendMode = .replace
+        m.transparency = 1
+        m.readsFromDepthBuffer = true
+        m.writesToDepthBuffer = true
+        m.normal.contents = bevelNormalMap()
+        m.normal.wrapS = .clamp
+        m.normal.wrapT = .clamp
+        m.normal.minificationFilter = .linear
+        m.normal.magnificationFilter = .linear
+        m.normal.mipFilter = .linear
+        return m
+    }()
+
+    private static func bevelNormalMap() -> CGImage? {
+        let side = 64
+        var pixels = [UInt8]()
+        pixels.reserveCapacity(side * side * 4)
+        func slope(_ coordinate: Float) -> Float {
+            let width: Float = 0.08
+            return max(0, (coordinate - (1 - width)) / width) - max(0, (width - coordinate) / width)
+        }
+        for y in 0..<side {
+            for x in 0..<side {
+                let u = (Float(x) + 0.5) / Float(side)
+                let v = 1 - (Float(y) + 0.5) / Float(side)
+                let n = simd_normalize(SIMD3(slope(u) * 0.65, slope(v) * 0.65, 1))
+                for value in [n.x, n.y, n.z] { pixels.append(UInt8(clamping: Int((value * 0.5 + 0.5) * 255))) }
+                pixels.append(255)
+            }
+        }
+        guard let provider = CGDataProvider(data: Data(pixels) as CFData),
+              let space = CGColorSpace(name: CGColorSpace.linearSRGB) else { return nil }
+        return CGImage(width: side, height: side, bitsPerComponent: 8, bitsPerPixel: 32,
+                       bytesPerRow: side * 4, space: space,
+                       bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+                       provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
+    }
+
+    struct Mesh {
+        var vertices = [SCNVector3]()
+        var normals = [SCNVector3]()
+        var tangents = [Float]()
+        var uvs = [CGPoint]()
+        var colors = [Float]()
+        var indices = [UInt32]()
+
+        mutating func append(base: SIMD3<Float>, size: Float, color: SIMD3<Float>,
+                             direction: SIMD3<Int32>, corners: [SIMD3<Float>]) {
+            let first = UInt32(vertices.count)
+            let tangent = corners[1] - corners[0]
+            let normal = SIMD3<Float>(direction)
+            for corner in corners {
+                let p = base + corner * size
+                vertices.append(SCNVector3(p.x, p.y, p.z))
+                normals.append(SCNVector3(normal.x, normal.y, normal.z))
+                tangents.append(contentsOf: [tangent.x, tangent.y, tangent.z, 1])
+                colors.append(contentsOf: [color.x, color.y, color.z, 1])
+            }
+            uvs.append(contentsOf: [CGPoint(x: 0, y: 0), CGPoint(x: 1, y: 0), CGPoint(x: 1, y: 1), CGPoint(x: 0, y: 1)])
+            indices.append(contentsOf: [first, first + 1, first + 2, first, first + 2, first + 3])
+        }
+
+        func geometry() -> SCNGeometry {
+            func source(_ values: [Float], _ semantic: SCNGeometrySource.Semantic) -> SCNGeometrySource {
+                SCNGeometrySource(data: values.withUnsafeBytes { Data($0) }, semantic: semantic,
+                    vectorCount: vertices.count, usesFloatComponents: true, componentsPerVector: 4,
+                    bytesPerComponent: 4, dataOffset: 0, dataStride: 16)
+            }
+            let geometry = SCNGeometry(sources: [SCNGeometrySource(vertices: vertices),
+                SCNGeometrySource(normals: normals), SCNGeometrySource(textureCoordinates: uvs),
+                source(tangents, .tangent), source(colors, .color)],
+                elements: [SCNGeometryElement(indices: indices, primitiveType: .triangles)])
+            geometry.materials = [VoxelSurface.material]
+            return geometry
+        }
     }
 }

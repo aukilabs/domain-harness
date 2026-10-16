@@ -3,9 +3,7 @@ use auki_component_protocol::ComponentProtocolEndpoint;
 use auki_components::*;
 use auki_odometry::{Pose, PoseContract, Tracking};
 use auki_protocols::registry::{RegistryEndpoint, v3::*};
-use auki_registry::{
-    ClockBody, ClockMeta, ClockRegistryEntry, CoordinateConvention, FrameRegistryEntry, Scope,
-};
+use auki_registry::{CoordinateConvention, FrameRegistryEntry};
 use auki_sdk::AukiPeer;
 use serde::Deserialize;
 
@@ -22,16 +20,23 @@ pub struct Publisher {
     pub definitions: std::sync::Arc<std::sync::Mutex<Vec<(RegistryKind, String, String, String)>>>,
     _component: Component,
     output: ConfiguredObservable<crate::compact_pose::Update>,
-    _capture: BufferProductCapture<crate::compact_pose::Update>,
+    _capture: Option<BufferProductCapture<crate::compact_pose::Update>>,
     pub endpoint: ComponentProtocolEndpoint,
     pub registry: RegistryEndpoint,
+    pub session_clock: auki_time::SessionClock,
+    pub native_clock: crate::capture_clock::NativeCaptureClock,
     last: u64,
+    last_native: u64,
+    time_transform: crate::capture_time::Publisher,
     source: Option<u32>,
 }
 
 impl Publisher {
-    pub fn product(&self) -> RetainedProduct<crate::compact_pose::Update> {
-        self._capture.product()
+    pub fn registered_clock(&self) -> Result<crate::clock_sync::RegisteredClock> {
+        crate::clock_sync::RegisteredClock::local(&self.time_transform)
+    }
+    pub fn product(&self) -> Option<RetainedProduct<crate::compact_pose::Update>> {
+        self._capture.as_ref().map(BufferProductCapture::product)
     }
     pub fn compact(&self) -> crate::compact_pose::Contract {
         crate::compact_pose::Contract {
@@ -43,20 +48,17 @@ impl Publisher {
         }
     }
     pub fn mount(peer: &AukiPeer) -> Result<Self> {
+        Self::mount_mode(peer, true)
+    }
+    /// The connection-only diagnostic still advertises its clock, but not a
+    /// pose Product with no sensor producing observations.
+    pub fn mount_mode(peer: &AukiPeer, publish_poses: bool) -> Result<Self> {
         let owner = peer.peer_id().to_string();
         let session = uuid::Uuid::new_v4().to_string();
-        // BBOS timestamps are device wall-clock capture ns, not host receipt time.
-        let clock = ClockRegistryEntry {
-            peer_id: owner.clone(),
-            session_id: session.clone(),
-            clock_id: "bbos-capture".into(),
-            body: ClockBody::UtcClock(ClockMeta {
-                unit: "nanoseconds".into(),
-                monotonic: false,
-                epoch: Some("1970-01-01T00:00:00Z".into()),
-                scope: Scope::DeviceLocal,
-            }),
-        };
+        let session_clock = auki_time::SessionClock::new(&owner, &session, "capture");
+        let clock = session_clock.registry_entry();
+        let native_clock = crate::capture_clock::NativeCaptureClock::new(session_clock.clone());
+        native_clock.sample()?;
         let contract = PoseContract {
             from_frame: FrameRegistryEntry::in_convention(
                 &owner,
@@ -160,24 +162,33 @@ impl Publisher {
                 )
                 .in_registered_frame(contract.to_frame.clone()),
             )?;
-        component.expose()?;
         compact.validate_output(&output.manifest())?;
-        let capture = runtime.capture_buffer_with_metadata(
-            "bbos-pose-history",
-            &output,
-            BufferLimits::entries(300),
-            |o| serde_json::to_vec(o).map_or(usize::MAX, |v| v.len()),
-            move |o| {
-                o.payload.validate().map_err(|e| e.to_string())?;
-                Ok(Some(CatalogProductMetadata {
-                    schema: crate::compact_pose::METADATA.into(),
-                    source_sequence: o.sequence,
-                    value: serde_json::to_value(&compact).map_err(|e| e.to_string())?,
-                }))
-            },
-        )?;
+        // SDK captures expose their Product through the Catalog. A mode with
+        // no pose sensor must not construct that capture at all.
+        let capture = if publish_poses {
+            component.expose()?;
+            Some(runtime.capture_buffer_with_metadata(
+                "bbos-pose-history",
+                &output,
+                BufferLimits::entries(300),
+                |o| serde_json::to_vec(o).map_or(usize::MAX, |v| v.len()),
+                move |o| {
+                    o.payload.validate().map_err(|e| e.to_string())?;
+                    Ok(Some(CatalogProductMetadata {
+                        schema: crate::compact_pose::METADATA.into(),
+                        source_sequence: o.sequence,
+                        value: serde_json::to_value(&compact).map_err(|e| e.to_string())?,
+                    }))
+                },
+            )?)
+        } else { None };
         let endpoint = ComponentProtocolEndpoint::mount(peer.protocols(), runtime.clone())?;
-        endpoint.export_product(&capture.product())?;
+        if let Some(capture) = &capture { endpoint.export_product(&capture.product())?; }
+        let mut time_transform = crate::capture_time::Publisher::mount(&runtime, &endpoint, clock)?;
+        time_transform.sample(&crate::capture_time::SessionUtcClock(session_clock.clone()))?;
+        let utc = &time_transform.contract.to_clock;
+        definitions.lock().unwrap().push((RegistryKind::Clock, utc.clock_id.clone(), utc.hash(),
+            String::from_utf8(utc.canonical_bytes())?));
         Ok(Self {
             runtime,
             contract,
@@ -187,12 +198,17 @@ impl Publisher {
             _capture: capture,
             endpoint,
             registry,
+            session_clock,
+            native_clock,
             last: 0,
+            last_native: 0,
+            time_transform,
             source: None,
         })
     }
 
     pub fn publish(&mut self, sample: Sample) -> Result<()> {
+        ensure!(self._capture.is_some(), "Pose sensor is disabled in connection-only mode");
         if let Some(source) = sample.source_id {
             ensure!(
                 self.source.is_none_or(|old| old == source),
@@ -200,8 +216,10 @@ impl Publisher {
             );
             self.source = Some(source);
         }
+        if sample.timestamp_ns <= self.last_native { return Ok(()); }
+        let Some(timestamp_ns) = self.native_clock.convert(sample.timestamp_ns)? else { return Ok(()); };
         // Never replay stale pose timestamps or invent a pose during tracking loss.
-        if sample.timestamp_ns <= self.last {
+        if timestamp_ns <= self.last {
             return Ok(());
         }
         let update = crate::compact_pose::Update {
@@ -212,8 +230,15 @@ impl Publisher {
         };
         update.validate()?;
         self.output
-            .publish(sample.timestamp_ns, std::sync::Arc::new(update))?;
-        self.last = sample.timestamp_ns;
+            .publish(timestamp_ns, std::sync::Arc::new(update))?;
+        self.last = timestamp_ns;
+        self.last_native = sample.timestamp_ns;
+        Ok(())
+    }
+
+    pub fn sample_clocks(&mut self) -> Result<()> {
+        self.native_clock.sample()?;
+        self.time_transform.sample(&crate::capture_time::SessionUtcClock(self.session_clock.clone()))?;
         Ok(())
     }
 }

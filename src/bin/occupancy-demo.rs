@@ -10,7 +10,6 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use spatial_home::{
-    model,
     occupancy_fixture::{FakeVoxelSource, Scenario},
     occupancy_mapper::{Config, OccupancyMapper, OccupancyScene},
 };
@@ -81,13 +80,13 @@ async fn main() -> Result<()> {
         }
     }
     let runtime = ComponentRuntime::new("occupancy-demo");
-    let clock = model::clock_entry("occupancy-demo", &uuid::Uuid::new_v4().to_string());
+    let clock = auki_time::SessionClock::new("occupancy-demo", uuid::Uuid::new_v4().to_string(), "session");
     let mut source = FakeVoxelSource::new(&runtime, "occupancy-demo", clock.clone())?;
     let mut mapper = OccupancyMapper::mount_local(
         &runtime,
         &source.product(),
         "occupancy-demo",
-        model::clock_ref(&clock),
+        clock,
         Config::new(0.),
     )?;
     let state = Arc::new(Mutex::new(Demo::default()));

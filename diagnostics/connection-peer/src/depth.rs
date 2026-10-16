@@ -77,9 +77,11 @@ pub struct Depth {
     mount: BufferProductCapture<crate::compact_pose::Update>,
     _components: Vec<Component>,
     last: u64,
+    last_native: u64,
     enabled: Arc<Mutex<bool>>,
     state: BufferProductCapture<State>,
     _set_enabled: Operable<SetEnabled, State>,
+    native_clock: crate::capture_clock::NativeCaptureClock,
 }
 impl Depth {
     pub fn mount(p: &crate::poses::Publisher, config: Configuration, controller: String) -> Result<Self> {
@@ -102,15 +104,14 @@ impl Depth {
             format!("depth-enabled-{}",p.contract.session_id),p.contract.clock.clone(),
             PayloadContract::Structured(StructuredPayloadContract {datatype:STATE_SCHEMA.into(),schema:STATE_SCHEMA.into(),
                 modality:"state".into(),observes:"publication_enabled".into(),unit:None})))?;
-        // The declared BBOS clock is this device's UTC nanosecond clock.
-        fn now()->u64 {std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos() as u64}
+        let operation_clock=p.session_clock.clone();
         let gate=enabled.clone();
         let operation_output=state_output.clone();
         let set_enabled=component.operable(OPERATION,move |ctx|ctx.caller_peer_id==controller,
             move |_,request:SetEnabled|->std::result::Result<State,InvocationError>{
                 let mut gate=gate.lock().map_err(|_|InvocationError::TargetUnavailable)?;
                 let result=State {enabled:request.enabled};
-                operation_output.publish(now(),Arc::new(result.clone())).map_err(|e|InvocationError::Rejected(e.to_string()))?;
+                operation_output.publish(operation_clock.now_ns(),Arc::new(result.clone())).map_err(|e|InvocationError::Rejected(e.to_string()))?;
                 *gate=request.enabled;
                 Ok(result)
             })?;
@@ -123,7 +124,7 @@ impl Depth {
             BufferLimits {max_entries:Some(1),max_bytes:Some(4096),target_duration:None},|_:&State|64,
             |o|Ok(Some(CatalogProductMetadata {schema:STATE_SCHEMA.into(),source_sequence:o.sequence,
                 value:serde_json::to_value(&*o.payload).map_err(|e|e.to_string())?})))?;
-        state_output.publish(now(),Arc::new(State {enabled:true}))?;
+        state_output.publish(p.session_clock.now_ns(),Arc::new(State {enabled:true}))?;
         let capture = p.runtime.capture_buffer_with_metadata(PRODUCT,&output,
             BufferLimits {max_entries:Some(1),max_bytes:Some(128*1024),target_duration:None},
             |v:&PackedPoints|v.as_bytes().len(),move |o|Ok(Some(CatalogProductMetadata {schema:POINTS_METADATA.into(),
@@ -147,7 +148,8 @@ impl Depth {
         p.endpoint.export_product_with_encoder(&capture.product(),PackedPoints::encoder()?)?;
         p.endpoint.export_product(&state.product())?;
         p.endpoint.export_operable(&set_enabled)?;
-        Ok(Self {output,capture,mount,_components:vec![component,mount_component],last:0,enabled,state,_set_enabled:set_enabled,contract:c})
+        Ok(Self {output,capture,mount,_components:vec![component,mount_component],last:0,last_native:0,enabled,state,_set_enabled:set_enabled,contract:c,
+            native_clock:p.native_clock.clone()})
     }
     pub fn wants_capture(&self,endpoint:&auki_component_protocol::ComponentProtocolEndpoint)->bool {
         self.enabled.lock().is_ok_and(|enabled|*enabled) && endpoint.product_active_subscriptions(PRODUCT)>0
@@ -157,12 +159,15 @@ impl Depth {
         // sample can enter the Product. The BBOS capture process keeps running.
         let enabled=self.enabled.lock().map_err(|_|anyhow::anyhow!("Depth control unavailable"))?;
         if !*enabled || endpoint.product_active_subscriptions(PRODUCT)==0 {return Ok(());}
-        ensure!(sample.timestamp_ns>self.last,"Depth capture timestamp did not advance");
+        ensure!(sample.timestamp_ns>self.last_native,"Depth native capture timestamp did not advance");
+        let Some(timestamp_ns)=self.native_clock.convert(sample.timestamp_ns)? else {return Ok(());};
+        ensure!(timestamp_ns>self.last,"Depth capture timestamp did not advance");
         let points = Points {points:sample.points,colors:sample.colors}; points.validate()?;
         let packed=PackedPoints::from_points(self.contract.clone(),&points)?;
-        self.output.publish(sample.timestamp_ns,std::sync::Arc::new(packed))?;
+        self.output.publish(timestamp_ns,std::sync::Arc::new(packed))?;
         ensure!(self.capture.errors().is_empty(),"Depth capture retention failed");
-        self.last=sample.timestamp_ns;
+        self.last=timestamp_ns;
+        self.last_native=sample.timestamp_ns;
         Ok(())
     }
     pub fn close(self,p:&crate::poses::Publisher)->Result<()> {

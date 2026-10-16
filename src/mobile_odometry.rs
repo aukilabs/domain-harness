@@ -17,9 +17,7 @@ pub fn product_id(session: &str) -> String {
 /// The camera frame and capture clock are the ones phone depth declares, so
 /// a reader can relate a depth sample to the pose of the same AR session.
 /// Both endpoints belong to this phone, independent of Home alignment.
-pub fn contract(owner: &str, _home_peer: &str, sample: &crate::mobile_pose::Sample) -> PoseContract {
-    let mut clock = crate::model::clock_entry(owner, &sample.session);
-    clock.clock_id = "arkit-capture".into();
+pub fn contract(owner: &str, _home_peer: &str, sample: &crate::mobile_pose::Sample, clock: &auki_components::clock::ClockRegistryEntry) -> PoseContract {
     PoseContract {
         from_frame: FrameRegistryEntry::opengl(owner, &sample.pose.from_frame_id),
         to_frame: FrameRegistryEntry::opengl(owner, &sample.pose.to_frame_id),
@@ -39,9 +37,7 @@ fn validate_native(c:&PoseContract)->Result<()> {
         && c.to_frame.frame_id==format!("phone-ar:{}",c.session_id),"Phone pose must be in native AR session space");
     Ok(())
 }
-fn register(entries:&Arc<std::sync::Mutex<Vec<RegistryEntryEnvelope>>>,c:&PoseContract)->Result<()> {
-    let mut clock=crate::model::clock_entry(&c.clock.peer_id,&c.session_id);
-    clock.clock_id=c.clock.id.clone();
+fn register(entries:&Arc<std::sync::Mutex<Vec<RegistryEntryEnvelope>>>,c:&PoseContract,clock:&auki_components::clock::ClockRegistryEntry)->Result<()> {
     ensure!(clock.hash()==c.clock.hash,"Clock definition mismatch");
     let mut entries=entries.lock().map_err(|_|anyhow::anyhow!("Registry unavailable"))?;
     for entry in [
@@ -94,6 +90,8 @@ fn capture(
 }
 
 pub struct Publisher {
+    clock: auki_components::clock::ClockRegistryEntry,
+    session_clock: auki_time::SessionClock,
     contract: PoseContract,
     output: ConfiguredObservable<PoseUpdate>,
     capture: Option<BufferProductCapture<PoseUpdate>>,
@@ -112,9 +110,10 @@ impl Publisher {
     ) -> Result<Self> {
         uuid::Uuid::parse_str(&sample.session)?;
         let runtime = products.runtime.clone();
-        let contract = contract(runtime.peer_id(), home_peer, sample);
+        let clock = products.timing.clock.registry_entry().clone();
+        let contract = contract(runtime.peer_id(), home_peer, sample, &clock);
         validate_native(&contract)?;
-        register(&products.definitions,&contract)?;
+        register(&products.definitions,&contract,&clock)?;
         let component =
             runtime.component(ComponentSpec::new(COMPONENT).observable(ObservableContract {
                 name: SLOT.into(),
@@ -129,6 +128,8 @@ impl Publisher {
         let endpoint = products.endpoint.clone();
         endpoint.export_product(&capture.product())?;
         Ok(Self {
+            clock,
+            session_clock: products.timing.clock.clone(),
             contract,
             output,
             capture: Some(capture),
@@ -145,7 +146,7 @@ impl Publisher {
     }
     /// A sample that does not advance the capture clock is skipped, not an error.
     pub fn publish(&mut self, home_peer: &str, sample: &crate::mobile_pose::Sample) -> Result<()> {
-        let next = contract(self.runtime.peer_id(), home_peer, sample);
+        let next = contract(self.runtime.peer_id(), home_peer, sample, &self.clock);
         if next != self.contract {
             self.reconfigure(next, sample.timestamp_ns)?;
         }
@@ -168,7 +169,9 @@ impl Publisher {
         if self.lost || self.last_timestamp == 0 {
             return Ok(());
         }
-        self.send(self.last_timestamp + 1, Tracking::Lost)?;
+        let at = self.session_clock.now_ns();
+        ensure!(at > self.last_timestamp, "Tracking event precedes its last SDK capture time");
+        self.send(at, Tracking::Lost)?;
         self.lost = true;
         Ok(())
     }
@@ -186,7 +189,7 @@ impl Publisher {
     /// A new AR session or scene is a new Output and Product on the same Component.
     fn reconfigure(&mut self, contract: PoseContract, timestamp_ns: u64) -> Result<()> {
         validate_native(&contract)?;
-        register(&self.definitions,&contract)?;
+        register(&self.definitions,&contract,&self.clock)?;
         let replacement = self
             .component
             .replace_configured_observable(&self.output, spec(&contract), timestamp_ns)?
@@ -211,5 +214,50 @@ impl Publisher {
     }
     pub fn close(mut self) -> Result<()> {
         self.withdraw()
+    }
+}
+
+#[cfg(test)]
+mod session_clock_tests {
+    use super::*;
+    #[test]
+    fn delayed_native_pose_roundtrips_through_sdk_buffer_on_declared_clock() -> Result<()> {
+        let timing = crate::mobile_products::CaptureTiming::new("phone");
+        timing.observe(0, 100_000_000, 50_100_000_010, 100_000_020)?;
+        timing.observe(0, 200_000_000, 50_200_000_010, 200_000_020)?;
+        let session = uuid::Uuid::new_v4().to_string();
+        let native = crate::mobile_pose::Sample {
+            session: session.clone(), timestamp_ns: 50_150_000_000, camera_configuration_id: None,
+            pose: auki_scenegraph::RigidTransform { from_frame_id: format!("phone-camera:{session}"),
+                to_frame_id: format!("phone-ar:{session}"), translation: [1.,2.,3.], rotation_wxyz: [1.,0.,0.,0.] },
+        };
+        let sample = timing.pose(native.clone())?;
+        assert_eq!(sample.timestamp_ns, 150_000_000);
+        assert_eq!(native.timestamp_ns, 50_150_000_000, "Native app evidence is not rewritten");
+        let clock = timing.clock.registry_entry();
+        let contract = contract("phone", "home", &sample, &clock);
+        let runtime = ComponentRuntime::new("phone");
+        let component = runtime.component(ComponentSpec::new(COMPONENT).observable(ObservableContract {
+            name: SLOT.into(), datatype: PoseUpdate::DATATYPE.into(), schema: POSE_SCHEMA.into(),
+            access: vec![ObservationAccess::FollowNew], exposure: Exposure::Cluster,
+        }))?;
+        let output = component.configured_observable(spec(&contract))?;
+        component.expose()?;
+        let retained = capture(&runtime, &output, &contract)?;
+        let definitions = Arc::new(std::sync::Mutex::new(Vec::new()));
+        register(&definitions, &contract, &clock)?;
+        output.publish(sample.timestamp_ns, Arc::new(PoseUpdate { tracking: Tracking::Valid {
+            pose: Pose { translation: sample.pose.translation, rotation_xyzw: [0.,0.,0.,1.] },
+        }}))?;
+        let observed = retained.product().latest_existing()?.unwrap();
+        assert_eq!(observed.timestamp_ns, 150_000_000);
+        assert_eq!(output.manifest().clock, crate::model::clock_ref(&clock));
+        compact(&contract).validate_output(&output.manifest())?;
+        let utc = crate::capture_time::Contract::local(clock.clone());
+        assert_eq!(crate::model::clock_ref(&utc.from_clock), output.manifest().clock,
+            "The declared full clock reference selects the exact UTC-transform Product");
+        assert!(definitions.lock().unwrap().iter().any(|d| d.kind == RegistryKind::Clock && d.hash == clock.hash()));
+        retained.delete()?;
+        Ok(())
     }
 }

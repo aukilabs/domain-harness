@@ -13,6 +13,10 @@ char *spatial_mobile_poll(void);
 void spatial_mobile_stop(void);
 int32_t spatial_mobile_local_map(const char *sample);
 void spatial_mobile_pose(const char *sample);
+uint64_t spatial_mobile_clock_generation(void);
+uint64_t spatial_mobile_session_now(uint64_t generation);
+/* kind: 0 = native AR capture, 1 = ReplayKit host clock. Bracket a current read. */
+int32_t spatial_mobile_clock_sample(uint64_t generation, uint32_t kind, uint64_t before, uint64_t native_now, uint64_t after);
 void spatial_mobile_configure_camera(const char *configuration);
 void spatial_mobile_sleep(int32_t asleep);
 void spatial_mobile_name(const char *name);

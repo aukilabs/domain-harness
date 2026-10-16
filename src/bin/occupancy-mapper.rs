@@ -3,7 +3,6 @@ use anyhow::{Result, bail};
 use auki_component_protocol::{ComponentProtocolEndpoint, RemoteObservationEvent};
 use auki_components::ComponentRuntime;
 use spatial_home::{
-    model::{clock_entry, clock_ref},
     network::subscribe_scene_product,
     occupancy_mapper::{Config, OccupancyMapper},
     peer::{PeerSettings, read_connection},
@@ -68,11 +67,19 @@ async fn main() -> Result<()> {
         let mut subscription = subscribe_scene_product(&running.peer, &connection, &product).await?;
         let runtime = ComponentRuntime::new(running.peer.peer_id().to_string());
         let endpoint = ComponentProtocolEndpoint::mount(running.peer.protocols(), runtime.clone())?;
+        let owner = running.peer.peer_id().to_string();
+        let clock = auki_time::SessionClock::new(&owner, uuid::Uuid::new_v4().to_string(), "session");
+        let mut time = spatial_home::capture_time::Publisher::mount(&runtime, &endpoint, clock.registry_entry())?;
+        time.sample(&spatial_home::capture_time::SessionUtcClock(clock.clone()))?;
+        let definitions = spatial_home::product_registry::Definitions::default();
+        spatial_home::product_registry::clock(&definitions, &clock.registry_entry())?;
+        spatial_home::product_registry::clock(&definitions, &time.contract.to_clock)?;
+        let registry = spatial_home::product_registry::mount(&running.peer, runtime.clone(), definitions)?;
         let work = async {
-            let owner = running.peer.peer_id().to_string();
-            let clock = clock_entry(&owner, &uuid::Uuid::new_v4().to_string());
-            let mut mapper = OccupancyMapper::mount(&runtime, &endpoint, subscription.product(), &owner, clock_ref(&clock), mapping)?;
+            let mut mapper = OccupancyMapper::mount(&runtime, &endpoint, subscription.product(), &owner, clock.clone(), mapping)?;
             let mut tick = tokio::time::interval(mapper.interval());
+            let mut clock_tick = tokio::time::interval(Duration::from_millis(250));
+            clock_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             println!("Publishing occupancy-2d on peer {owner}; source {} / {product}", connection.peer_id);
             loop {
@@ -80,6 +87,7 @@ async fn main() -> Result<()> {
                     _ = tokio::signal::ctrl_c() => break,
                     exit = running.peer.wait_stopped() => bail!("peer stopped: {exit:?}"),
                     _ = tick.tick() => { mapper.tick()?; },
+                    _ = clock_tick.tick() => { time.sample(&spatial_home::capture_time::SessionUtcClock(clock.clone()))?; },
                     event = subscription.next() => match event? {
                         Some(RemoteObservationEvent::Observation(_)) | Some(RemoteObservationEvent::Gap(_)) => {},
                         _ => bail!("source Product disconnected; restart to reconnect"),
@@ -88,9 +96,10 @@ async fn main() -> Result<()> {
             }
             Ok::<_, anyhow::Error>(())
         }.await;
+        let close_registry = registry.close().await;
         let close_input = subscription.close().await;
         let close_output = endpoint.close().await;
-        work.and(close_input.map_err(Into::into)).and(close_output.map_err(Into::into))
+        work.and(close_registry.map_err(Into::into)).and(close_input.map_err(Into::into)).and(close_output.map_err(Into::into))
     }.await;
     let cleanup = running.shutdown().await;
     result.and(cleanup)

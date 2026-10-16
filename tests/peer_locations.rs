@@ -20,7 +20,10 @@ async fn targeted_peer_pose_preserves_capture_provenance_over_authenticated_sdk(
         let home_peer = pair.a.peer_id().to_string();
         let owner = pair.b.peer_id().to_string();
         let session = uuid::Uuid::new_v4().to_string();
-        let capture_time = 1_700_000_000_000_000_003_u64;
+        // These publishers take timestamps already converted into their SDK
+        // session clock, not an unrelated native/Unix epoch.
+        let capture_time = products.timing.clock.now_ns();
+        let mut capture_times = vec![capture_time];
         let mut sample = spatial_home::mobile_pose::Sample {
             session: session.clone(), timestamp_ns: capture_time, camera_configuration_id: None,
             pose: auki_scenegraph::RigidTransform {
@@ -43,7 +46,7 @@ async fn targeted_peer_pose_preserves_capture_provenance_over_authenticated_sdk(
         row["registries"] = spatial_home::product_registry::resolve(&pair.a, pair.b.peer_id(), &row, None, &definitions).await;
         let reference = row["catalog"]["products"].as_array().unwrap().iter()
             .find(|p|p["manifest"]["product_id"]==spatial_home::mobile_odometry::product_id(&session)).unwrap().clone();
-        let expected_contract = spatial_home::mobile_odometry::contract(&owner, &home_peer, &sample);
+        let expected_contract = spatial_home::mobile_odometry::contract(&owner, &home_peer, &sample, &products.timing.clock.registry_entry());
         let catalogs = Catalogs::from([(owner.clone(), row.clone())]);
         let network = json!({"peers":[{"peer_id":"unrelated-offline","catalog":null},row]});
         let (_catalog_tx, catalog_rx) = watch::channel(catalogs);
@@ -64,8 +67,10 @@ async fn targeted_peer_pose_preserves_capture_provenance_over_authenticated_sdk(
                     let lookup = peer_locations::get(&tx, &network, query.clone(), &home_frame);
                     let publish = async {
                         tokio::time::sleep(Duration::from_millis(100)).await;
-                        sample.timestamp_ns += 1;
-                        pose.publish(&home_peer, &sample)
+                        sample.timestamp_ns = products.timing.clock.now_ns();
+                        pose.publish(&home_peer, &sample)?;
+                        capture_times.push(sample.timestamp_ns);
+                        Ok::<_, anyhow::Error>(())
                     };
                     let (result, sent) = tokio::join!(lookup, publish);
                     sent?;
@@ -80,7 +85,7 @@ async fn targeted_peer_pose_preserves_capture_provenance_over_authenticated_sdk(
             assert_eq!(location["frame"], home_frame);
             assert_eq!(location["clock"], json!(expected_contract.clock));
             let received_sequence = location["source"]["sequence"].as_str().unwrap().parse::<u64>()?;
-            assert_eq!(location["capture_timestamp_ns"].as_str().unwrap().parse::<u64>()?, capture_time + received_sequence);
+            assert_eq!(location["capture_timestamp_ns"].as_str().unwrap().parse::<u64>()?, capture_times[usize::try_from(received_sequence)?]);
             assert_eq!(location["alignment_timestamp_ns"], (capture_time - 1).to_string());
             assert_eq!(location["source"]["output"], reference["manifest"]["producer"]);
             assert_eq!(location["source"]["product"]["manifest_hash"], reference["manifest_hash"]);

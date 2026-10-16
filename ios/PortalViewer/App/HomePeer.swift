@@ -2,6 +2,34 @@ import Foundation
 import UIKit
 import Security
 import SpatialPortalBridge
+import CoreMedia
+import Darwin
+
+/// Sample the native host clock, not a frame's earlier capture time.
+/// AR uses CLOCK_UPTIME_RAW, measured against the SDK session clock. Google's
+/// GARFrame reference documents ARFrame timestamps as seconds since boot:
+/// https://developers.google.com/ar/reference/ios/interface/GARFrame
+/// Apple documents CLOCK_UPTIME_RAW as the nanosecond mach_absolute_time API:
+/// https://developer.apple.com/documentation/kernel/1462446-mach_absolute_time
+/// ReplayKit is sampled separately in Core Media host time. On-device epoch
+/// and suspend/resume validation remains required; Rust rejects unmatched
+/// captures and clock steps rather than assigning an arrival timestamp.
+func sampleNativeCaptureClock(_ kind: UInt32) {
+    let generation = spatial_mobile_clock_generation()
+    guard generation > 0 else { return }
+    let before = spatial_mobile_session_now(generation)
+    guard before > 0 else { return }
+    let native: UInt64
+    if kind == 0 {
+        native = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+    } else {
+        let host = CMTimeConvertScale(CMClockGetTime(CMClockGetHostTimeClock()), timescale: 1_000_000_000, method: .default)
+        guard host.isNumeric, host.value >= 0 else { return }
+        native = UInt64(host.value)
+    }
+    let after = spatial_mobile_session_now(generation)
+    _ = spatial_mobile_clock_sample(generation, kind, before, native, after)
+}
 
 @MainActor
 final class HomePeer: ObservableObject {
@@ -231,10 +259,54 @@ final class HomePeer: ObservableObject {
     private var lastVersion: UInt64 = 0
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
 
+    // Local addition: the last login that reached Home is kept in the device
+    // Keychain so the app can connect and start matching Portals on launch.
+    @Published private(set) var hasSavedLogin = false
+    private var pendingLogin: SavedLogin.Entry?
+    /// A sign-in ended without reaching Home, so the sign-in page should open.
+    @Published private(set) var needsSignIn = false
+    private var reachedHome = false
+    private var stopRequested = false
+    private var reconnectWhenFinished = false
+
     init() {
         if let json = UserDefaults.standard.string(forKey: "homeConnectionProfile") {
             try? pair(Data(json.utf8))
         }
+        // Development convenience: a launch environment profile replaces the pairing.
+        if let json = ProcessInfo.processInfo.environment["AUKI_HOME_PROFILE"], !json.isEmpty {
+            do { try pair(Data(json.utf8)); print("[peer] paired from launch environment") }
+            catch { print("[peer] launch profile rejected: \(error.localizedDescription)") }
+        }
+        if let saved = SavedLogin.load() { email = saved.email; hasSavedLogin = true }
+    }
+
+    /// Connect with the saved login. Returns false when there is nothing to use.
+    @discardableResult
+    func autoConnect() -> Bool {
+        // Development convenience: a launch environment login is used when no
+        // Keychain login exists. It is saved to the Keychain once Home is reached.
+        let environment = ProcessInfo.processInfo.environment
+        let launchLogin: SavedLogin.Entry? = {
+            guard let email = environment["AUKI_EMAIL"], let password = environment["AUKI_PASSWORD"],
+                  !email.isEmpty, !password.isEmpty else { return nil }
+            return SavedLogin.Entry(email: email, password: password)
+        }()
+        if running {
+            // A background disconnect may still be closing; reconnect when it ends.
+            if state == "stopping" { reconnectWhenFinished = true }
+            return true
+        }
+        // The app key from the sign-in page, when that is how this phone signs in.
+        if profile != nil, useAppKey, savedAppKey { connect(); return running }
+        guard profile != nil, !useAppKey, let saved = SavedLogin.load() ?? launchLogin else { print("[peer] autoConnect: profile=\(profile != nil) no login available"); return false }
+        email = saved.email; password = saved.password
+        connect()
+        return running
+    }
+
+    func forgetLogin() {
+        SavedLogin.clear(); hasSavedLogin = false; pendingLogin = nil; reconnectWhenFinished = false
     }
 
     func pair(_ data: Data) throws {
@@ -300,6 +372,8 @@ final class HomePeer: ObservableObject {
                     }
                 }
             }
+            pendingLogin = app == nil ? SavedLogin.Entry(email: email, password: password) : nil
+            reachedHome = false; stopRequested = false; needsSignIn = false
             password = ""
             guard accepted == 1 else { throw ViewerError("Previous connection is still closing. Try again shortly.") }
             if let app, typed {
@@ -337,6 +411,8 @@ final class HomePeer: ObservableObject {
 
     func disconnect(background: Bool = false) {
         guard running else { return }
+        reconnectWhenFinished = false
+        stopRequested = true
         if background && backgroundTask == .invalid {
             backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Close Home peer") { [weak self] in
                 Task { @MainActor in self?.endBackgroundTask() }
@@ -413,18 +489,23 @@ final class HomePeer: ObservableObject {
                     state = response.update.state
                     detail = response.update.detail
                     if let portals = response.update.portals { onMap?(portals) }
-                    if state == "live" { joinPending() }
+                    if state == "live" { reachedHome = true; joinPending() }
+                    if state == "live" || detail.hasPrefix("Authorizing"), let login = pendingLogin {
+                        hasSavedLogin = SavedLogin.save(login); pendingLogin = nil
+                    }
                 }
             }
             if response.finished {
                 state = response.update.state; detail = response.update.detail
                 running = false; timer?.invalidate(); timer = nil
                 endBackgroundTask()
+                pendingLogin = nil
+                if !reachedHome && !stopRequested && detail.localizedCaseInsensitiveContains("sign-in failed") { needsSignIn = true }
                 if let switching = switchingTo {
                     // An invitation for another Home: pair with it, then join once live.
                     switchingTo = nil
-                    do { try pair(switching); connect() } catch { pendingInvitation = nil; detail = error.localizedDescription }
-                }
+                    do { try pair(switching); autoConnect() } catch { pendingInvitation = nil; detail = error.localizedDescription }
+                } else if reconnectWhenFinished { reconnectWhenFinished = false; autoConnect() }
             }
         } catch {
             spatial_mobile_stop()
@@ -471,4 +552,30 @@ enum AppKeychain {
     }
 
     static func delete() { SecItemDelete(item as CFDictionary) }
+}
+
+/// Device-only Keychain item; not synced and unreadable while the phone is locked.
+enum SavedLogin {
+    struct Entry: Codable { let email: String; let password: String }
+    private static let query: [String: Any] = [
+        kSecClass as String: kSecClassGenericPassword,
+        kSecAttrService as String: "home-portal-viewer.auki-user",
+        kSecAttrAccount as String: "login",
+    ]
+    static func load() -> Entry? {
+        var q = query; q[kSecReturnData as String] = true; q[kSecMatchLimit as String] = kSecMatchLimitOne
+        var out: CFTypeRef?
+        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let data = out as? Data else { return nil }
+        return try? JSONDecoder().decode(Entry.self, from: data)
+    }
+    @discardableResult
+    static func save(_ entry: Entry) -> Bool {
+        guard let data = try? JSONEncoder().encode(entry) else { return false }
+        SecItemDelete(query as CFDictionary)
+        var q = query
+        q[kSecValueData as String] = data
+        q[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        return SecItemAdd(q as CFDictionary, nil) == errSecSuccess
+    }
+    static func clear() { SecItemDelete(query as CFDictionary) }
 }

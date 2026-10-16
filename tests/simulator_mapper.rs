@@ -52,8 +52,8 @@ async fn robot_runs_both_mappers_and_exports_discoverable_occupancy() -> Result<
     use spatial_home::occupancy_mapper::{Config, OccupancyMapper, render_scene};
     let pair = support::LocalPair::start().await?;
     let camera = Camera::mount(&pair.b)?;
-    let mut lidar = Lidar::mount(&camera.runtime, &camera.endpoint)?;
-    let mut mapper = Mapper::mount(&camera.runtime, &camera.endpoint, &lidar)?;
+    let mut lidar = Lidar::mount(&camera.runtime, &camera.endpoint, &camera.session_clock)?;
+    let mut mapper = Mapper::mount(&camera.runtime, &camera.endpoint, &lidar, camera.session_clock.clone())?;
     let mut first = scan(1, 0., Some(2.));
     first.world_position[1] = 0.85; // Boot body 20 cm above world floor.
     lidar.publish(first)?;
@@ -65,7 +65,7 @@ async fn robot_runs_both_mappers_and_exports_discoverable_occupancy() -> Result<
         &camera.endpoint,
         &product,
         camera.runtime.peer_id(),
-        product.producer.clock.clone(),
+        camera.session_clock.clone(),
         Config::new(mapper.floor_m().unwrap()),
     )?;
     assert_eq!(occupancy.interval(), std::time::Duration::from_secs(1));
@@ -129,8 +129,8 @@ async fn robot_runs_both_mappers_and_exports_discoverable_occupancy() -> Result<
 async fn local_mapping_and_discovered_scene_round_trip() -> Result<()> {
     let pair = support::LocalPair::start().await?;
     let camera = Camera::mount(&pair.b)?;
-    let mut lidar = Lidar::mount(&camera.runtime, &camera.endpoint)?;
-    let mut mapper = Mapper::mount(&camera.runtime, &camera.endpoint, &lidar)?;
+    let mut lidar = Lidar::mount(&camera.runtime, &camera.endpoint, &camera.session_clock)?;
+    let mut mapper = Mapper::mount(&camera.runtime, &camera.endpoint, &lidar, camera.session_clock.clone())?;
     assert!(
         lidar.demanded(&camera.endpoint),
         "Local binding must create demand"

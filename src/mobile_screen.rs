@@ -19,7 +19,7 @@ fn metadata() -> serde_json::Value {
     serde_json::json!({
         "presentation": {"schema": "spatial.video-presentation/v1", "rotation_clockwise_deg": 0},
         "image_geometry": "app_screen",
-        "timestamp_basis": "screen capture presentation time; device-local",
+        "timestamp_basis": "SDK session-monotonic screen capture time; registered UTC transform",
     })
 }
 
@@ -62,12 +62,13 @@ impl Screen {
         ))?;
         let session = uuid::Uuid::new_v4().to_string();
         let owner = component.manifest().peer_id.clone();
-        let mut clock = crate::model::clock_entry(&owner, &session);
-        clock.clock_id = "screen-capture".into();
+        let clock = products.timing.clock.registry_entry();
+        let frame = auki_registry::FrameRegistryEntry::opengl(&owner, format!("phone-screen:{session}"));
+        crate::product_registry::frame(&products.definitions, &frame)?;
         // The picture's own image frame. Nothing relates it to space.
         let output = component.configured_observable(
             ConfiguredObservableSpec::new("frames", session.clone(), crate::model::clock_ref(&clock), payload(size))
-                .in_registered_frame(auki_registry::FrameRegistryEntry::opengl(&owner, format!("phone-screen:{session}"))),
+                .in_registered_frame(frame),
         )?;
         component.expose()?;
         let capture = products.runtime.capture_buffer_with_metadata(

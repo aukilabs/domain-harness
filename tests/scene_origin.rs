@@ -2,7 +2,7 @@ mod support;
 use anyhow::Result;
 use auki_scenegraph::{MapSnapshot,RigidTransform};
 use spatial_home::{local_scenes::LocalScenes,scene_origin::{self,Observation}};
-use std::{sync::Arc,time::Instant};
+use std::sync::Arc;
 
 fn offer(scene:&MapSnapshot,code:&str)->Observation {
     Observation{expected_scene:scene.clone(),code:code.into(),side_length_m:0.15,timestamp_ns:10,
@@ -44,8 +44,7 @@ async fn sdk_first_writer_wins_and_reset_preserves_authored_content()->Result<()
     let result=async {
         let dir=tempfile::tempdir()?;let scenes=Arc::new(LocalScenes::load(dir.path())?);
         let server=spatial_home::network::ScenePublisher::mount(&pair.a)?;
-        let owner=pair.a.peer_id().to_string();let clock=spatial_home::model::clock_entry(&owner,&uuid::Uuid::new_v4().to_string());
-        let mut publishers=spatial_home::local_mobile::Publisher::mount_all(&server.runtime,&server.endpoint,scenes.clone(),clock,Instant::now())?;
+        let mut publishers=spatial_home::local_mobile::Publisher::mount_all(&server.runtime,&server.endpoint,scenes.clone(),server.session_clock.clone())?;
         let home=scenes.connection("humanoid-hub-conference",spatial_home::network::HomeConnection::direct(&pair.a))?;
         let editor=scenes.note_editors.lock().unwrap()["humanoid-hub-conference"].clone();
         let empty=editor.reference()?;
@@ -65,7 +64,7 @@ async fn sdk_first_writer_wins_and_reset_preserves_authored_content()->Result<()
         let stop=tokio_util::sync::CancellationToken::new();
         let mut published=None;
         tokio::time::timeout(std::time::Duration::from_secs(5),
-            spatial_home::mobile::receive_portals(&pair.b,&home,&stop,std::time::Duration::from_secs(5),|value| {
+            spatial_home::mobile::receive_portals(&pair.b,&home,&stop,Some(std::time::Duration::from_secs(5)),|value| {
                 published=Some(value);stop.cancel();
             })).await??;
         let published=published.expect("Home must publish its accepted origin");

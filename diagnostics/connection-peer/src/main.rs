@@ -30,6 +30,11 @@ mod navigate;
 mod point_at;
 mod pointer;
 mod poses;
+mod capture_clock;
+#[path = "../../../src/capture_time.rs"]
+mod capture_time;
+#[path = "../../../src/clock_sync.rs"]
+mod clock_sync;
 #[path = "../../../src/robot_state.rs"]
 mod robot_state;
 #[path = "../../../src/qr_decode.rs"]
@@ -225,20 +230,18 @@ async fn main() -> Result<()> {
         );
         return Ok(());
     }
-    let mut publisher = if publish_poses {
-        Some(poses::Publisher::mount(&peer)?)
-    } else {
-        None
-    };
+    // Even connection-only Diagnostics publishes its session clock and UTC
+    // transform. Pose observations remain conditional on --poses/--portals.
+    let mut publisher = Some(poses::Publisher::mount_mode(&peer, publish_poses)?);
     let known = std::sync::Arc::new(std::sync::Mutex::new(pointer::Frames::default()));
     // Every arm adapter phase, for the bbos-pointing status and robot-side alerts.
     let (pointing_tx, mut pointing_rx) = tokio::sync::mpsc::unbounded_channel::<arm::Reply>();
     let mut pointing_arm: Option<(String, String)> = None;
     let mut pointing_open = true;
-    if let Some(p) = &publisher {
+    if let Some(p) = &publisher && let Some(product) = p.product() {
         known.lock().unwrap().insert(
             &[&p.contract.from_frame, &p.contract.to_frame],
-            pointer::Transform { contract: p.compact(), product: p.product() },
+            pointer::Transform { contract: p.compact(), product },
         );
     }
     let _navigator = match (&publisher, navigate) {
@@ -247,9 +250,9 @@ async fn main() -> Result<()> {
     };
     // With navigation, Home's point_at may turn the robot to face a target first.
     let _pointer = match &publisher {
-        Some(p) => Some(pointer::Pointer::mount(p, known.clone(), arm, pointing_tx,
+        Some(p) if publish_poses => Some(pointer::Pointer::mount(p, known.clone(), arm, pointing_tx,
             _navigator.as_ref().map(|n| n.turner()))?),
-        None => None,
+        _ => None,
     };
     let _greeter = match (&publisher, greet) {
         (Some(p), true) => Some(greeter::Greeter::mount(p)?),
@@ -351,7 +354,11 @@ async fn main() -> Result<()> {
     let mut alignment_error = String::new();
     let client = ComponentProtocolClient::new(peer.protocols());
     // A robot that sees a phone's onboarding code places itself from the phone's marker.
-    let onboarding_task = portals.then(|| tokio::spawn(onboard::run(client.clone(), home.clone())));
+    let onboarding_task = if portals {
+        let source = publisher.as_ref().unwrap();
+        Some(tokio::spawn(onboard::run(client.clone(), auki_protocols::registry::RegistryClient::new(peer.protocols()),
+            home.clone(), source.session_clock.clone(), source.registered_clock()?)))
+    } else { None };
     let (tx, rx) = tokio::sync::watch::channel(None::<Instant>);
     // An essential helper that exits ends this run; the controller that started
     // it (bracketbot_slam_led_diagnostic.py) restarts it, which respawns them all.
@@ -401,10 +408,22 @@ async fn main() -> Result<()> {
     });
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut tick = tokio::time::interval(Duration::from_secs(1));
+    // Keep the native BBOS realtime->session bridge measured even when all
+    // sensors are idle. The Catalog UTC Product holds its session-start anchor;
+    // this periodic measurement must not rewrite that relationship.
+    let mut clock_tick = tokio::time::interval(Duration::from_millis(250));
+    clock_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut demand_tick=tokio::time::interval(Duration::from_millis(100));
     demand_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
+            _=clock_tick.tick()=>{
+                if let Err(error)=publisher.as_mut().unwrap().sample_clocks() {
+                    crate::diagnostic_log!("Capture clock failed: {error}");
+                    failure=Some(error.to_string());
+                    break;
+                }
+            },
             _=demand_tick.tick(),if depth_open=>{
                 let wanted=depth_publisher.as_ref().is_some_and(|d|d.wants_capture(&publisher.as_ref().unwrap().endpoint));
                 depth_demand.send_if_modified(|old|{if *old==wanted {false}else{*old=wanted;true}});
@@ -423,7 +442,10 @@ async fn main() -> Result<()> {
                         if let Some(sample)=sample {depth_publisher.as_mut().unwrap().publish(sample,&publisher.as_ref().unwrap().endpoint)?;}
                         Ok::<(),anyhow::Error>(())
                     })();
-                    if let Err(e)=result {crate::diagnostic_log!("Depth publish failed: {e}");}
+                    if let Err(e)=result {
+                        crate::diagnostic_log!("Depth publish failed: {e}");
+                        if e.downcast_ref::<capture_time::NativeClockReset>().is_some() {failure=Some(e.to_string());break;}
+                    }
                 }
             },
             reply=pointing_rx.recv(),if pointing_open => {
@@ -458,7 +480,10 @@ async fn main() -> Result<()> {
                     if body_publisher.is_none(){body_publisher=Some(body::Body::mount(publisher.as_ref().unwrap())?);}
                     body_publisher.as_mut().unwrap().publish(sample)
                 })();
-                if let Err(e)=result {eprintln!("Robot state publish failed: {e}");}
+                if let Err(e)=result {
+                    eprintln!("Robot state publish failed: {e}");
+                    if e.downcast_ref::<capture_time::NativeClockReset>().is_some() {failure=Some(e.to_string());break;}
+                }
             },
             changed=camera_rx.changed(),if camera_open => {
                 if changed.is_err(){camera_open=false;alignment=None;camera_publisher=None;crate::diagnostic_log!("Camera unavailable; pose diagnostic continues");continue;}
@@ -471,7 +496,10 @@ async fn main() -> Result<()> {
                             Err(error)=>{camera_open=false;crate::diagnostic_log!("Camera unavailable: {error}; pose diagnostic continues");continue;}
                         }
                     }
-                    if let Err(e)=camera_publisher.as_mut().unwrap().publish(t,jpeg){crate::diagnostic_log!("Camera publish failed: {e}");}
+                    if let Err(e)=camera_publisher.as_mut().unwrap().publish(t,jpeg){
+                        crate::diagnostic_log!("Camera publish failed: {e}");
+                        if e.downcast_ref::<capture_time::NativeClockReset>().is_some() {failure=Some(e.to_string());break;}
+                    }
                 }
             },
             line = input.next_line(), if publish_poses => {
@@ -524,7 +552,7 @@ async fn main() -> Result<()> {
         let _ = task.await;
         drop(helper);
     }
-    if let Some(task) = onboarding_task { task.abort(); }
+    if let Some(task) = onboarding_task { task.abort(); let _ = task.await; }
     drop(alignment);
     if let Some(task) = home_task {
         task.abort();

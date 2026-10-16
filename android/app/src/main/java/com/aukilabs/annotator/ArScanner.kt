@@ -23,6 +23,7 @@ import javax.microedition.khronos.opengles.GL10
 class ArScanner(private val activity: Activity, private val session: Session, private val status: (String) -> Unit) :
     GLSurfaceView(activity), GLSurfaceView.Renderer {
     private val depthFreshness = DepthFreshness()
+    private val captureClock = CaptureClock(activity, session)
     private var mapId = UUID.randomUUID().toString()
     private var lastCapture = 0L
     private var lastPublish = 0L
@@ -137,6 +138,7 @@ class ArScanner(private val activity: Activity, private val session: Session, pr
             cameraTimestamp = frame.timestamp
             glClear(GL_COLOR_BUFFER_BIT or GL_DEPTH_BUFFER_BIT)
             if (frame.timestamp == 0L) return
+            if (!captureClock.observe(frame)) captureClock.failure?.let { localStatus = it }
             latestFrameTime = frame.timestamp
             frame.transformCoordinates2d(Coordinates2d.OPENGL_NORMALIZED_DEVICE_COORDINATES, quad, Coordinates2d.TEXTURE_NORMALIZED, uv)
             glDisable(GL_DEPTH_TEST); glUseProgram(background)
@@ -166,7 +168,7 @@ class ArScanner(private val activity: Activity, private val session: Session, pr
             if (frame.timestamp - lastReport >= 1_000_000_000L) {
                 lastReport = frame.timestamp
                 report("$calibrationStatus\n$pointCount local voxels · 10 cm\n$depthStatus\n" +
-                    (if (pointCount >= 10000) "Local map full" else localStatus) + "\n$performance")
+                    (captureClock.failure ?: if (pointCount >= 10000) "Local map full" else localStatus) + "\n$performance")
             }
             camera.getViewMatrix(view,0); camera.getProjectionMatrix(projection,0,.1f,100f); Matrix.multiplyMM(vp,0,projection,0,view,0)
             val markers = annotations.frame(frame,alignment,vp,widthPx,heightPx) { p ->

@@ -36,6 +36,23 @@ use std::{
 
 static CLIENT: Mutex<Option<Arc<MobileClient>>> = Mutex::new(None);
 
+/// Clock adapter handshake. Read this before and after a *current* native
+/// clock read, then submit the three readings. Never pass a captured frame as
+/// native_now: doing that would turn processing latency into clock offset.
+#[unsafe(no_mangle)]
+pub extern "C" fn spatial_mobile_clock_generation() -> u64 {
+    CLIENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map_or(0, |c| c.clock_generation())
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn spatial_mobile_session_now(generation: u64) -> u64 {
+    CLIENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map_or(0, |c| c.session_now_ns(generation))
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn spatial_mobile_clock_sample(generation: u64, kind: u32, before: u64, native_now: u64, after: u64) -> i32 {
+    CLIENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+        .map_or(0, |c| i32::from(c.observe_native_clock(generation, kind as usize, before, native_now, after)))
+}
+
 /// # Safety
 /// `request` must be a NUL-terminated UTF-8 JSON string valid for this call.
 #[unsafe(no_mangle)]

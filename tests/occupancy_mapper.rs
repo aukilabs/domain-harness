@@ -206,7 +206,6 @@ async fn component_binds_remote_product_and_exports_current_occupancy() -> Resul
         let owner = pair.b.peer_id().to_string();
         let runtime = ComponentRuntime::new(owner.as_str());
         let endpoint = ComponentProtocolEndpoint::mount(pair.b.protocols(), runtime.clone())?;
-        let clock = model::clock_entry(&owner, "occupancy-test");
         let mut config = Config::new(0.);
         config.interval = Duration::from_millis(100);
         config.stale_after = Duration::from_millis(200);
@@ -215,7 +214,7 @@ async fn component_binds_remote_product_and_exports_current_occupancy() -> Resul
             &endpoint,
             input.product(),
             &owner,
-            model::clock_ref(&clock),
+            auki_time::SessionClock::new(&owner, "occupancy-test", "session"),
             config,
         )?;
         tokio::time::timeout(Duration::from_secs(5), input.next()).await??;

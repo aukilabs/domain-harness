@@ -55,11 +55,7 @@ async fn subscribe<
             } else {
                 ObservationStart::LatestExisting
             },
-            BufferLimits {
-                max_entries: Some(history),
-                max_bytes: Some(16 * 1024 * 1024),
-                target_duration: None,
-            },
+            crate::observation_history::structured(),
             size::<T>,
         )
         .await?)

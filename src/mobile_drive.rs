@@ -126,7 +126,7 @@ pub struct Stream {
     _component: auki_components::Component,
     output: auki_components::ConfiguredObservable<Pushed>,
     capture: auki_components::BufferProductCapture<Pushed>,
-    started: Instant,
+    session_clock: auki_time::SessionClock,
 }
 impl Stream {
     pub fn mount(
@@ -134,7 +134,7 @@ impl Stream {
         endpoint: &auki_component_protocol::ComponentProtocolEndpoint,
         scene_id: &str,
         clock: auki_components::ClockReference,
-        started: Instant,
+        session_clock: auki_time::SessionClock,
     ) -> Result<Self> {
         use auki_components::*;
         let component = runtime.component(
@@ -172,12 +172,12 @@ impl Stream {
             _component: component,
             output,
             capture,
-            started,
+            session_clock,
         })
     }
     pub fn publish(&self, value: Pushed) -> Result<()> {
         self.output
-            .publish(self.started.elapsed().as_nanos() as u64, std::sync::Arc::new(value))?;
+            .publish(self.session_clock.now_ns(), std::sync::Arc::new(value))?;
         ensure!(self.capture.errors().is_empty(), "Drive stream retention failed");
         Ok(())
     }
