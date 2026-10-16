@@ -14,7 +14,7 @@ const inventory={scene:'demo',frame:'home',commands:[
  {name:'note',description:'Create',args:[{name:'name',kind:'text'},...['x','y','z'].map(name=>({name,kind:'number'}))]},
 ],peers:[{id:'phone',name:"Dan's Phone",status:'connected',cameras:[{product_id:'rgb',reference:ref,frame_id:'optical'}]},{id:'robot',name:'Bracket 0125',status:'connected',cameras:[]}],entities:[{id:'one',name:'cheese',kind:'note'},{id:'two',name:'cheese',kind:'volume'}]};
 
-async function setup(page){
+async function setup(page,{localScene=false}={}){
  const calls=[],errors=[];page.on('pageerror',e=>errors.push(e.message));
  const currentScene=structuredClone(scene);
  // Entire browser fixture is intercepted; no Home process or live peer is used.
@@ -34,7 +34,9 @@ async function setup(page){
   if(p==='/api/scene')return route.fulfill({json:currentScene});
   if(p==='/api/fiducials')return route.fulfill({json:{families:[],fiducials:[]}});
   if(p==='/api/sensors')return route.fulfill({json:u.searchParams.has('sensor')?{width:4,height:3,encoding:'luma8',data:'AAAAAAAAAAAAAAAA',sequence:1}:{sensors:[{id:'phone/rgb',peer_id:'phone',label:"Dan's Phone · RGB"}]}});
-  if(p==='/api/scene-sources')return route.fulfill({json:{local:[{id:'demo',name:'Test scene'}],preferred:'demo',runners:[],scenes:[],phones:[]}});
+  if(p==='/api/scene-sources')return route.fulfill({json:{local:[localScene?{id:'local:settings-test',name:'Settings test'}:{id:'demo',name:'Test scene'}],preferred:localScene?'local:settings-test':'demo',runners:[],scenes:[],phones:[]}});
+  if(p==='/api/local-scenes/settings-test')return route.fulfill({json:currentScene});
+  if(p==='/api/local-scenes/settings-test/wifi')return route.fulfill({json:{ssid:'Fixture network',has_password:true,hidden:false,allowed_peer_ids:[]}});
   if(p.startsWith('/api/'))return route.fulfill({json:{peers:[],sensors:[],poses:[],items:[],status:'disabled'}});
   if(p.startsWith('/vendor/')){
    const root=process.env.HOME_TEST_THREE||path.dirname(path.dirname(require.resolve('three')));
@@ -52,6 +54,26 @@ async function setup(page){
  await expect(page.locator('#scene-chat-input')).toBeVisible();
  return {calls,errors,input:page.locator('#scene-chat-input'),send:page.getByRole('button',{name:'Send message',exact:true})};
 }
+
+test('full Home Settings keeps Scene Wi-Fi after panel construction and reopening',async({page})=>{
+ const {errors,calls}=await setup(page,{localScene:true});
+ await page.getByRole('button',{name:'Settings',exact:true}).click();
+ const settings=page.locator('#panel-settings');
+ await expect(settings.getByRole('region',{name:'Layers',exact:true})).toBeVisible();
+ await expect(settings.getByRole('region',{name:'Display',exact:true})).toBeVisible();
+ const wifi=settings.getByRole('button',{name:'Scene Wi-Fi',exact:true});
+ await expect(wifi).toBeVisible();await expect(wifi).toBeEnabled();
+ await wifi.click();
+ await expect(page.getByRole('dialog')).toBeVisible();
+ await expect(page.getByLabel('Network name (SSID)')).toHaveValue('Fixture network');
+ await expect(page.getByLabel('Password',{exact:true})).toHaveValue('');
+ await page.getByRole('button',{name:'Cancel',exact:true}).click();
+ await page.getByRole('button',{name:'Maps',exact:true}).click();
+ await page.getByRole('button',{name:'Settings',exact:true}).click();
+ await expect(wifi).toBeVisible();await expect(wifi).toHaveCount(1);
+ await page.screenshot({path:'test-results/full-home-scene-wifi.png'});
+ expect(errors).toEqual([]);expect(calls).toEqual([]);
+});
 
 test('slash, peer and camera completion are keyboard accessible and bypass chat',async({page})=>{
  const {input,send,calls,errors}=await setup(page);

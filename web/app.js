@@ -164,7 +164,8 @@ moveTo('fleet','#runner-card, #sensor-select, #sensor-catalog-status');
 $('runner-card').hidden=true;
 $('sensor-catalog-status').hidden=true;
 moveTo('settings','#demo-controls, aside > .section-label, aside > .layer, #robot-volume-status');
-const sceneWifi=createSceneWifi({container:panelBodies.settings,getScene:()=>$('map-select').value,getName:()=>$('map-select').selectedOptions[0]?.textContent||'Local scene'});
+const onboardingSettings=document.createElement('section');onboardingSettings.setAttribute('aria-label','Onboarding');onboardingSettings.append(sectionHeader('Onboarding'));
+const sceneWifi=createSceneWifi({container:onboardingSettings,getScene:()=>$('map-select').value,getName:()=>$('map-select').selectedOptions[0]?.textContent||'Local scene'});
 $('map-select').addEventListener('change',()=>sceneWifi.sync());
 new MutationObserver(()=>sceneWifi.sync()).observe($('map-select'),{childList:true,subtree:true});
 sidebar.querySelectorAll(':scope > .map-label').forEach(el=>el.remove());
@@ -1910,7 +1911,7 @@ const opacityLabel=document.createElement('label');opacityLabel.className='layer
  const toggle=disclosure('Demo tools',{expanded:false,controls:'demo-tools',onToggle:()=>{}});
  toggle.onclick=()=>{const open=region.hidden;toggle.setAttribute('aria-expanded',String(open));if(open){region.hidden=false;reveal(region);}else conceal(region,()=>{region.hidden=true;});};
  demo.append(toggle,region);
- body.replaceChildren(layers,display,demo);
+ body.replaceChildren(layers,display,onboardingSettings,demo);
  applyTheme(document.documentElement.dataset.theme==='light');
 }
 
