@@ -23,7 +23,7 @@ use auki_odometry::Pose;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
-pub const SCHEMA: &str = "spatial-harness.onboarding/v1";
+pub const SCHEMA: &str = "spatial-harness.onboarding/v2";
 /// The host's Component. Its operations answer only the peer that asked first
 /// for the marker of the invitation it is showing.
 pub const COMPONENT: &str = "onboarding-display";
@@ -31,7 +31,7 @@ pub const COMPONENT: &str = "onboarding-display";
 /// onboarding.md: a robot's wide fisheye cameras cannot resolve a 30 mm code.
 pub const MARKER_SIDE_M: f64 = 0.05;
 /// What an invitation QR starts with, so a scanner can tell one apart cheaply.
-pub const PREFIX: &str = r#"{"schema":"spatial-harness.onboarding/v1""#;
+pub const PREFIX: &str = r#"{"schema":"spatial-harness.onboarding/v2""#;
 const MAX_TEXT: usize = 2048;
 
 /// What the invitation QR carries. Public connection details and, when the
@@ -45,10 +45,18 @@ pub struct Invitation {
     pub session: String,
     /// The name the joiner gives itself in Home. Bound to its Peer ID, never an identity.
     pub alias: String,
-    pub home: crate::network::HomeConnection,
+    /// Which Home and scene. The joiner reaches Home over its own connection
+    /// and only checks it is the same one, so nothing else goes in the QR.
+    pub home: SceneRef,
     pub host: Host,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wifi: Option<Wifi>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SceneRef {
+    pub peer_id: String,
+    pub frame: String,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -95,7 +103,7 @@ impl Invitation {
             schema: SCHEMA.into(),
             session: uuid::Uuid::new_v4().to_string(),
             alias: alias.trim().into(),
-            home, host, wifi,
+            home: SceneRef { peer_id: home.peer_id, frame: home.frame }, host, wifi,
         };
         invitation.validate()?;
         Ok(invitation)
@@ -121,14 +129,13 @@ impl Invitation {
         let alias = self.alias.trim();
         ensure!(!alias.is_empty() && alias.chars().count() <= 64 && !alias.chars().any(char::is_control),
             "Alias must be 1–64 printable characters");
-        ensure!(self.home.schema == "spatial-harness.home-connection/v1", "Unknown Home profile");
-        self.home.validate_scene_contract()?;
-        ensure!(!self.home.routes.is_empty() && self.home.routes.len() <= 4, "Home needs 1–4 routes in an invitation");
+        ensure!(!self.home.frame.is_empty() && self.home.frame.len() <= 256 && !self.home.frame.chars().any(char::is_control),
+            "Invalid Home scene frame");
         let _: auki_sdk::PeerId = self.home.peer_id.parse()?;
         let _: auki_sdk::PeerId = self.host.peer_id.parse()?;
         ensure!(self.host.peer_id != self.home.peer_id, "The host is not Home");
         ensure!(!self.host.routes.is_empty() && self.host.routes.len() <= 4, "Host needs 1–4 routes");
-        for route in self.home.routes.iter().chain(&self.host.routes) {
+        for route in &self.host.routes {
             let _: auki_sdk::Multiaddr = route.parse()?;
         }
         if let Some(wifi) = &self.wifi {
@@ -601,6 +608,7 @@ mod tests {
         assert_eq!(invitation.alias, "Tilly");
         let text = invitation.encode().unwrap();
         assert!(text.starts_with(PREFIX), "{text}");
+        assert!(text.len() < 400, "invitation is {} bytes: {text}", text.len());
         let read = Invitation::parse(&text).unwrap();
         assert_eq!(read.session, invitation.session);
         assert_eq!(read.wifi.unwrap().password.as_deref(), Some("correct horse"));

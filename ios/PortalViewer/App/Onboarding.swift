@@ -7,7 +7,7 @@ import SpatialPortalBridge
 /// The bridge does the work; this file is the screens.
 enum Onboarding {
     /// What an invitation QR starts with.
-    static let prefix = #"{"schema":"spatial-harness.onboarding/v1""#
+    static let prefix = #"{"schema":"spatial-harness.onboarding/v2""#
 
     /// This phone's model identifier, e.g. "iPhone16,1".
     static var model: String {
@@ -249,8 +249,6 @@ struct OnboardingHostView: View {
                 }
                 problem = nil
                 invitation = code
-                if brightness == nil { brightness = UIScreen.main.brightness }
-                UIScreen.main.brightness = 1
             }
         }
     }
