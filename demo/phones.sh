@@ -4,7 +4,8 @@
 #   demo/phones.sh [--build] [scene-id] [home-url]
 #
 #   --build    build the Rust bridge and the app, and install them first
-#   scene-id   defaults to humanoid-hub-conference
+#   scene-id   a scene on Home; by default whatever scene Home offers now, so
+#              this works straight after scenegraphs are deleted and recreated
 #   home-url   defaults to Nils's Home, http://192.168.1.26:4329
 #
 #   PHONES="staples spaceship"  which phones (default both)
@@ -17,7 +18,7 @@ cd "$(dirname "$0")/.."
 
 build=0
 if [ "${1:-}" = "--build" ]; then build=1; shift; fi
-scene=${1:-humanoid-hub-conference}
+scene=${1:-}
 home=${2:-http://192.168.1.26:4329}
 phones=${PHONES:-staples spaceship}
 team=${TEAM:-V7LQ934WJD}
@@ -49,8 +50,16 @@ if [ "$build" = 1 ]; then
   done
 fi
 
-profile=$(curl -s -f -m 5 "$home/api/local-scenes/$scene/connection") \
-  || { echo "Home at $home has no scene $scene, or is not ready"; exit 1; }
+# Always a fresh profile: a recreated scenegraph has a new epoch in its frame, and the
+# profile a phone saved earlier would point at the old one.
+if [ -n "$scene" ]; then
+  profile=$(curl -s -f -m 5 "$home/api/local-scenes/$scene/connection") \
+    || { echo "Home at $home has no scene $scene, or is not ready"; exit 1; }
+else
+  profile=$(curl -s -f -m 5 "$home/api/home-connection") \
+    || { echo "Home at $home is not ready"; exit 1; }
+fi
+echo "Pairing to $(echo "$profile" | python3 -c 'import json,sys;print(json.load(sys.stdin)["frame"])')"
 set -a; . demo/demo-login.env; set +a
 env_json=$(AUKI_HOME_PROFILE="$profile" AUKI_HOME_URL="$home" python3 -c 'import json,os;print(json.dumps({k:os.environ[k] for k in ("AUKI_HOME_PROFILE","AUKI_HOME_URL","AUKI_EMAIL","AUKI_PASSWORD") if os.environ.get(k)}))')
 

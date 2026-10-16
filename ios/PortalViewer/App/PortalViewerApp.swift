@@ -11,6 +11,14 @@ import SpatialPortalBridge
 
 @main
 struct PortalViewerApp: App {
+    init() {
+        // A name given at launch (-phoneName) is kept, so opening the app from
+        // its icon later still labels this phone the same way on Home.
+        if let name = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)["phoneName"] as? String,
+           !name.isEmpty {
+            UserDefaults.standard.set(name, forKey: "phoneName")
+        }
+    }
     var body: some Scene {
         WindowGroup { ViewerScreen() }
     }
