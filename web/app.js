@@ -1695,7 +1695,13 @@ async function driveTick(){
  if(!forward&&!turn){if(keyDrive.zeros>=3)return setDriveStatus('Driving · hold arrow keys · Esc to stop');keyDrive.zeros++;}else keyDrive.zeros=0;
  try{await driveCommand(forward,turn);setDriveStatus(forward||turn?`Driving · forward ${forward} · turn ${turn}`:'Driving · stopped');}catch(error){setDriveStatus('Not sent · '+error.message);}
 }
-function startKeyDrive(peer){stopKeyDrive();keyDrive.peer=peer;keyDrive.session=crypto.randomUUID();keyDrive.sequence=0;keyDrive.keys.clear();keyDrive.zeros=3;keyDrive.status='';keyDrive.timer=setInterval(driveTick,100);fleetSignature='';renderFleetRows();setDriveStatus('Driving · hold arrow keys · Esc to stop');}
+// Home is also served over LAN HTTP, where crypto.randomUUID is unavailable.
+function driveSessionId(){
+ const bytes=crypto.getRandomValues(new Uint8Array(16));bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;
+ const hex=Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');
+ return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
+}
+function startKeyDrive(peer){const session=driveSessionId();stopKeyDrive();keyDrive.peer=peer;keyDrive.session=session;keyDrive.sequence=0;keyDrive.keys.clear();keyDrive.zeros=3;keyDrive.status='';keyDrive.timer=setInterval(driveTick,100);fleetSignature='';renderFleetRows();setDriveStatus('Driving · hold arrow keys · Esc to stop');}
 function stopKeyDrive(){
  if(!keyDrive.peer)return;keyDrive.keys.clear();clearInterval(keyDrive.timer);
  driveCommand(0,0).catch(()=>{});keyDrive.peer=null;fleetSignature='';renderFleetRows();
