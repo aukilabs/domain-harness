@@ -275,8 +275,12 @@ final class HomePeer: ObservableObject {
         }
         // Development convenience: a launch environment profile replaces the pairing.
         if let json = ProcessInfo.processInfo.environment["AUKI_HOME_PROFILE"], !json.isEmpty {
-            do { try pair(Data(json.utf8)); print("[peer] paired from launch environment") }
+            do { try pair(Data(json.utf8)); print("[peer] paired from launch environment"); profileFresh = true }
             catch { print("[peer] launch profile rejected: \(error.localizedDescription)") }
+        }
+        // Home's web address is kept so later launches can ask Home for its current scene.
+        if let url = ProcessInfo.processInfo.environment["AUKI_HOME_URL"], !url.isEmpty {
+            UserDefaults.standard.set(url, forKey: "homeURL")
         }
         if let saved = SavedLogin.load() { email = saved.email; hasSavedLogin = true }
     }
@@ -301,8 +305,42 @@ final class HomePeer: ObservableObject {
         if profile != nil, useAppKey, savedAppKey { connect(); return running }
         guard profile != nil, !useAppKey, let saved = SavedLogin.load() ?? launchLogin else { print("[peer] autoConnect: profile=\(profile != nil) no login available"); return false }
         email = saved.email; password = saved.password
+        // A deleted and recreated scenegraph has a new epoch, so the saved profile may
+        // name a scene Home no longer has. Ask Home for its current one first.
+        if !profileFresh, let home = UserDefaults.standard.string(forKey: "homeURL").flatMap(URL.init(string:)) {
+            refreshProfile(from: home)
+            return true
+        }
+        profileFresh = false  // the next reconnect asks Home again
         connect()
         return running
+    }
+
+    /// The profile came from Home just now, at launch or from refreshProfile.
+    private var profileFresh = false
+    private var refreshing = false
+
+    private func refreshProfile(from home: URL) {
+        guard !refreshing else { return }
+        refreshing = true
+        var request = URLRequest(url: home.appendingPathComponent("api/home-connection"))
+        request.timeoutInterval = 4
+        URLSession.shared.dataTask(with: request) { data, response, _ in
+            DispatchQueue.main.async {
+                self.refreshing = false
+                self.profileFresh = true
+                if let data, (response as? HTTPURLResponse)?.statusCode == 200, !self.running,
+                   String(decoding: data, as: UTF8.self) != self.profileJSON {
+                    do { try self.pair(data); print("[peer] paired to Home's current scene") }
+                    catch { print("[peer] Home's current profile rejected: \(error.localizedDescription)") }
+                } else if data == nil {
+                    print("[peer] Home not reachable for a fresh profile; using the saved one")
+                } else {
+                    print("[peer] Home's current scene matches the saved profile")
+                }
+                self.autoConnect()
+            }
+        }.resume()
     }
 
     func forgetLogin() {
