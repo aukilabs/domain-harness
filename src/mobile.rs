@@ -507,7 +507,13 @@ impl MobileClient {
         let wifi = tokio::select! {
             _ = self.stop.cancelled() => anyhow::bail!("Onboarding cancelled"),
             result = tokio::time::timeout(Duration::from_secs(20), crate::scene_wifi::retrieve(&operations, &home)) =>
-                result.map_err(|_| anyhow::anyhow!("Scene Wi-Fi request timed out. Retry"))??,
+                // No Wi-Fi from Home (not permitted, not set up, older Home, no answer)
+                // is not a failure: the invitation goes without it, for a robot
+                // already on this network.
+                match result.map_err(|_| anyhow::anyhow!("Scene Wi-Fi request timed out")).and_then(|r| r) {
+                    Ok(wifi) => wifi,
+                    Err(e) => { eprintln!("[onboarding] invitation without Wi-Fi: {e:#}"); None }
+                },
         };
         ensure!(self.snapshot().state == "live" && self.connection.lock().unwrap_or_else(|e| e.into_inner())
             .as_ref().is_some_and(|(_, _, current)| Arc::ptr_eq(current, &operations)), "Home connection changed. Retry onboarding");
