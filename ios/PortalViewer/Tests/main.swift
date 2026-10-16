@@ -401,7 +401,41 @@ check(registryNote.robot_pose?.health?.battery?.percent == 18, "a registry robot
 check(robotNote.robot_pose?.health?.battery?.percent == 18 && robotNote.robot_pose?.health?.joints?.count == 2,
       "robot health decodes from Home's label")
 check(deviceNote(0).robot_pose?.health == nil, "a robot without health still decodes")
+check(registryNote.robot_pose?.registry == true && robotNote.robot_pose?.registry == nil,
+      "a registry robot is marked; a runner robot is not")
+check(robotNote.robot_pose?.joints?.positions["rj1"] == 0.4, "robot joint angles decode from Home's label")
+let hottest = robotNote.robot_pose?.health?.warning
+check(hottest?.joint == "rj5" && hottest?.level == .warm, "the hottest joint above 42 C is called out")
+check(RobotHealth(timestamp_ns: 0, joints: ["rj1": .init(temperature_c: 40, current_a: 0)]).warning == nil,
+      "joints at or below 42 C raise no warning")
+check(RobotHealth.level(celsius: 50) == .hot && RobotHealth.level(celsius: 42) == .ok && RobotHealth.level(celsius: 42.5) == .warm,
+      "temperature levels match the Home viewer")
+check(RobotHealth.level(batteryPercent: 50) == .ok && RobotHealth.level(batteryPercent: 19.9) == .hot
+      && RobotHealth.level(batteryPercent: 20) == .warm, "battery levels match the Home viewer")
+check(RobotHealth.color(celsius: 20) == RobotHealth.color(celsius: 35) && RobotHealth.color(celsius: 60) == RobotHealth.color(celsius: 50),
+      "temperature colour is green when cool and red at the limit")
 print("Robot health checks passed")
+
+// The phone places joints exactly as the Home viewer's URDF model does
+// (Tests/robot-joints.json comes from web/robot-model.js; see robot-joints-fixture.mjs).
+let kinematics = try RobotKinematics.load(Data(contentsOf: URL(fileURLWithPath: "../../web/robot/robot.urdf")))
+struct JointFixture: Decodable { let angles: [String: Double]; let positions: [String: [Double]] }
+let jointFixtures = try JSONDecoder().decode([String: JointFixture].self,
+                                             from: Data(contentsOf: URL(fileURLWithPath: "Tests/robot-joints.json")))
+for (label, fixture) in jointFixtures {
+    let frames = kinematics.frames(fixture.angles)
+    check(Set(frames.keys) == Set(fixture.positions.keys), "\(label): same movable joints as the Home viewer")
+    for (name, expected) in fixture.positions {
+        let p = frames[name]!.columns.3
+        check(simd_distance(SIMD3(p.x, p.y, p.z), SIMD3(expected[0], expected[1], expected[2])) < 1e-4,
+              "\(label): \(name) is where the Home viewer puts it")
+    }
+}
+let atRest = kinematics.frames([:]), clamped = kinematics.frames(["rj5": 100])
+check(clamped["rj6"] == kinematics.frames(["rj5": 2.094395])["rj6"], "joint angles are clamped to the URDF limits")
+check(kinematics.frames(["left_left_gripper": 0.01])["left_right_gripper"] != atRest["left_right_gripper"],
+      "a mimic joint follows its leader")
+print("Robot kinematics checks passed")
 
 // Retire entire scan groups based on returned map progress, never cell matching.
 var pendingScan = PendingVoxels()

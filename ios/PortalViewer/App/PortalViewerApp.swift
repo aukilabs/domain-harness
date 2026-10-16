@@ -879,6 +879,12 @@ struct MiniMapGestures: UIViewRepresentable {
 
 /// The robot's 3D model drawn over the mini map. Its camera is orthographic and
 /// copies the map's own projection, so the model orbits, trucks and zooms with it.
+extension RobotKinematics {
+    /// The Bracketbot's URDF, the same file the Home viewer draws; nil if it is missing.
+    static let bracketbot: RobotKinematics? = Bundle.main.url(forResource: "robot", withExtension: "urdf")
+        .flatMap { try? Data(contentsOf: $0) }.flatMap { try? load($0) }
+}
+
 struct RobotMapLayer: UIViewRepresentable {
     let robots: [MiniMapRobot]
     let center: SIMD3<Float>
@@ -2368,11 +2374,14 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         // robot that reports its battery: a bubble above its head with the percentage.
         for note in scene.notes {
             if let robot = note.robot_pose, let battery = robot.health?.battery?.percent, let head = Self.robotHead(robot) {
-                addBubble(String(format: "%@ · Battery %.0f%%", note.text, battery), at: head)
+                var text = String(format: "%@ · Battery %.0f%%", note.text, battery)
+                if let warning = robot.health?.warning { text += String(format: " · %@ %.0f°C", warning.joint, warning.celsius) }
+                addBubble(text, at: head)
             } else if note.phone_pose == nil && note.robot_pose == nil {
                 addBubble(note.text, at: note.position, photo: photos[note.id])
             } else { addLabel(note.text, at: note.position, color: .white) }
         }
+        for note in scene.notes { if let robot = note.robot_pose { addJointTemperatures(robot) } }
         // Once Home sends a point back, its copy takes over from the one kept here.
         unsynced.removeAll { kept in scene.notes.contains { $0.id == kept.id } }
         for kept in unsynced where kept.frame == scene.frame { addBubble(kept.text, at: kept.position, photo: photos[kept.id]) }
@@ -2504,6 +2513,53 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
         label.position = SCNVector3(position[0], position[1], position[2])
         label.constraints = [SCNBillboardConstraint()]
         root.addChildNode(label)
+    }
+
+    /// A dot on each of a registry robot's joints, coloured by its motor temperature as
+    /// in the Home viewer, with the temperature beside warm and hot ones. Its pose is
+    /// the body's URDF root link in the scene, so the joints sit at that pose times
+    /// the bundled Bracketbot URDF's kinematics at the reported angles.
+    private func addJointTemperatures(_ robot: RenderScene.PhonePose) {
+        guard robot.registry == true, let joints = robot.health?.joints, !joints.isEmpty,
+              robot.pose.translation.count == 3, robot.pose.rotation_wxyz.count == 4,
+              let kinematics = RobotKinematics.bracketbot else { return }
+        let holder = SCNNode()
+        holder.simdTransform = robot.pose.matrix
+        let frames = kinematics.frames(robot.joints?.positions ?? [:])
+        for (name, joint) in joints {
+            guard let frame = frames[name] else { continue }
+            let position = SIMD3(Float(frame.columns.3.x), Float(frame.columns.3.y), Float(frame.columns.3.z))
+            let rgb = RobotHealth.color(celsius: joint.temperature_c)
+            let color = UIColor(red: rgb.x, green: rgb.y, blue: rgb.z, alpha: 1)
+            let sphere = SCNSphere(radius: 0.022)
+            sphere.firstMaterial?.diffuse.contents = color
+            sphere.firstMaterial?.lightingModel = .constant
+            // Drawn through the robot, like the Home viewer's badges.
+            sphere.firstMaterial?.readsFromDepthBuffer = false
+            let dot = SCNNode(geometry: sphere)
+            dot.renderingOrder = 50
+            dot.simdPosition = position
+            holder.addChildNode(dot)
+            if RobotHealth.level(celsius: joint.temperature_c) != .ok {
+                let tag = SCNNode(geometry: Self.temperatureText(String(format: "%.0f°C", joint.temperature_c), color: color))
+                tag.scale = SCNVector3(0.03, 0.03, 0.03)
+                tag.simdPosition = position + SIMD3(0, 0, 0.04)
+                tag.constraints = [SCNBillboardConstraint()]
+                tag.renderingOrder = 60
+                holder.addChildNode(tag)
+            }
+        }
+        root.addChildNode(holder)
+    }
+
+    private static func temperatureText(_ title: String, color: UIColor) -> SCNText {
+        let text = SCNText(string: title, extrusionDepth: 0)
+        text.font = Theme.uiFont(1, .semibold)
+        text.flatness = 0.2
+        text.firstMaterial?.diffuse.contents = color
+        text.firstMaterial?.lightingModel = .constant
+        text.firstMaterial?.readsFromDepthBuffer = false
+        return text
     }
 
     /// Above a robot's head in the scene: 1.8 m up its own Z axis (robot frames are Z up).

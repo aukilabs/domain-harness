@@ -205,8 +205,14 @@ struct RenderScene: Decodable, Equatable {
         let name: String?
         let state: String?
         let pose: Portal.Pose
-        /// A robot's motor health, when it reports it; the app shows its battery.
+        /// A robot's motor health, when it reports it; the app shows its battery
+        /// and, on a registry robot, each joint's temperature.
         var health: RobotHealth? = nil
+        /// A robot's joint angles, keyed by URDF joint name, when it reports them.
+        var joints: RobotJoints? = nil
+        /// True for a robot that declares its body through the registry: its `pose`
+        /// is then the body's URDF root link in the scene frame (`BodyContract`).
+        var registry: Bool? = nil
     }
     struct Mapping: Decodable, Equatable {
         let robot_pose: RobotPose?
