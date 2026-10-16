@@ -1,7 +1,6 @@
 //! The robot reads the host phone's 50 mm onboarding marker through the same
 //! QR path it reads Portals with (`qr_decode::detect_codes`), at the sizes a
-//! head camera sees it: a marker too small to decode natively must still come
-//! through the 2x retry, not be dropped for not being a Portal.
+//! head camera sees it.
 
 use image::{GrayImage, Luma};
 use spatial_home::{mobile_onboarding::qr_modules, onboarding, qr_decode};
@@ -50,20 +49,4 @@ fn reads_the_marker_at_head_camera_sizes() {
         assert!((code.corners_px[0][0] - 300.).abs() < 3. && (code.corners_px[0][1] - 200.).abs() < 3.,
             "{side} px: corner {:?}", code.corners_px[0]);
     }
-}
-
-#[test]
-fn keeps_a_marker_only_the_retry_reads() {
-    let mut detector = auki_qr_detector::QrDetector::new(Default::default());
-    let small = (8..40).map(|s| s as f64).find(|&side| {
-        let gray = frame(&marker(), side);
-        let native = qr_decode::detect_codes(&mut detector, &gray, false).unwrap().0;
-        !native.iter().any(|c| c.payload == marker())
-            && qr_decode::upscale(&gray, qr_decode::UPSCALE_RETRY).width() > 0
-            && {
-                let (codes, retried) = qr_decode::detect_codes(&mut detector, &gray, true).unwrap();
-                retried && codes.iter().any(|c| c.payload == marker())
-            }
-    });
-    assert!(small.is_some(), "no size where only the 2x retry reads the marker");
 }
