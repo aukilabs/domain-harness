@@ -23,7 +23,7 @@ use auki_odometry::Pose;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
-pub const SCHEMA: &str = "spatial-harness.onboarding/v2";
+pub const SCHEMA: &str = "OB2";
 /// The host's Component. Its operations answer only the peer that asked first
 /// for the marker of the invitation it is showing.
 pub const COMPONENT: &str = "onboarding-display";
@@ -31,32 +31,42 @@ pub const COMPONENT: &str = "onboarding-display";
 /// onboarding.md: a robot's wide fisheye cameras cannot resolve a 30 mm code.
 pub const MARKER_SIDE_M: f64 = 0.05;
 /// What an invitation QR starts with, so a scanner can tell one apart cheaply.
-pub const PREFIX: &str = r#"{"schema":"spatial-harness.onboarding/v2""#;
+pub const PREFIX: &str = "OB2|";
 const MAX_TEXT: usize = 2048;
 
 /// What the invitation QR carries. Public connection details and, when the
 /// joiner must change network, the Wi-Fi it needs. No peer credential: the
 /// joiner still signs in with its own identity and the Domain decides.
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+///
+/// Written as short `|`-separated text, not JSON, so the QR stays coarse:
+/// `OB2|session|alias|home tag|host peer|ip:port[|ssid|password|hidden]`.
+#[derive(Clone)]
 pub struct Invitation {
     pub schema: String,
     /// Pairing session: ties the QR, the marker, the operations and the result together.
     pub session: String,
     /// The name the joiner gives itself in Home. Bound to its Peer ID, never an identity.
     pub alias: String,
-    /// Which Home and scene. The joiner reaches Home over its own connection
-    /// and only checks it is the same one, so nothing else goes in the QR.
-    pub home: SceneRef,
+    /// Which Home and scene, as [`home_tag`]. The joiner reaches Home over its
+    /// own connection and only checks it is the same one.
+    pub home: String,
     pub host: Host,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wifi: Option<Wifi>,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SceneRef {
-    pub peer_id: String,
-    pub frame: String,
+/// Eight hex digits naming a Home peer and scene frame (FNV-1a). A same-Home
+/// check, not security: the Domain still authenticates every peer.
+pub fn home_tag(peer_id: &str, frame: &str) -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in peer_id.bytes().chain([b'|']).chain(frame.bytes()) {
+        h = (h ^ u64::from(b)).wrapping_mul(0x100000001b3);
+    }
+    format!("{:08x}", (h ^ (h >> 32)) as u32)
+}
+fn escape(text: &str) -> String {
+    text.replace('%', "%25").replace('|', "%7C")
+}
+fn unescape(text: &str) -> String {
+    text.replace("%7C", "|").replace("%25", "%")
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -101,9 +111,9 @@ impl Invitation {
     pub fn new(alias: &str, home: crate::network::HomeConnection, host: Host, wifi: Option<Wifi>) -> Result<Self> {
         let invitation = Self {
             schema: SCHEMA.into(),
-            session: uuid::Uuid::new_v4().to_string(),
+            session: uuid::Uuid::new_v4().simple().to_string(),
             alias: alias.trim().into(),
-            home: SceneRef { peer_id: home.peer_id, frame: home.frame }, host, wifi,
+            home: home_tag(&home.peer_id, &home.frame), host, wifi,
         };
         invitation.validate()?;
         Ok(invitation)
@@ -112,28 +122,51 @@ impl Invitation {
     pub fn parse(text: &str) -> Result<Self> {
         ensure!(text.len() <= MAX_TEXT, "Onboarding QR is too large");
         ensure!(text.starts_with(PREFIX), "Not an onboarding QR");
-        let invitation: Self = serde_json::from_str(text)?;
+        let fields: Vec<&str> = text.split('|').collect();
+        ensure!(fields.len() == 6 || fields.len() == 9, "Malformed onboarding QR");
+        let (ip, port) = fields[5].rsplit_once(':').ok_or_else(|| anyhow::anyhow!("Malformed host address"))?;
+        let ip: std::net::Ipv4Addr = ip.parse()?;
+        let port: u16 = port.parse()?;
+        let wifi = (fields.len() == 9).then(|| Wifi {
+            ssid: unescape(fields[6]),
+            password: (!fields[7].is_empty()).then(|| unescape(fields[7])),
+            hidden: fields[8] == "1",
+        });
+        let invitation = Self {
+            schema: fields[0].into(), session: fields[1].into(), alias: unescape(fields[2]), home: fields[3].into(),
+            host: Host { peer_id: fields[4].into(), routes: vec![format!("/ip4/{ip}/tcp/{port}")] }, wifi,
+        };
         invitation.validate()?;
         Ok(invitation)
+    }
+    /// Whether this invitation is for the Home scene `home`.
+    pub fn is_for(&self, home_peer_id: &str, frame: &str) -> bool {
+        self.home == home_tag(home_peer_id, frame)
     }
     /// The QR text. The schema comes first, so a scanner can test `PREFIX`.
     pub fn encode(&self) -> Result<String> {
         self.validate()?;
-        let text = serde_json::to_string(self)?;
+        // One direct IPv4 TCP route: what a phone advertises on the local network.
+        let address = self.host.routes.iter().find_map(|route| {
+            let parts: Vec<&str> = route.split('/').collect();
+            (parts.len() == 5 && parts[1] == "ip4" && parts[3] == "tcp").then(|| format!("{}:{}", parts[2], parts[4]))
+        }).ok_or_else(|| anyhow::anyhow!("The host has no direct IPv4 TCP route"))?;
+        let mut text = [SCHEMA, &self.session, &escape(&self.alias), &self.home, &self.host.peer_id, &address].join("|");
+        if let Some(wifi) = &self.wifi {
+            text += &format!("|{}|{}|{}", escape(&wifi.ssid), escape(wifi.password.as_deref().unwrap_or("")),
+                if wifi.hidden { "1" } else { "0" });
+        }
         ensure!(text.starts_with(PREFIX) && text.len() <= MAX_TEXT, "Onboarding QR would be too large");
         Ok(text)
     }
     pub fn validate(&self) -> Result<()> {
         ensure!(self.schema == SCHEMA, "Unknown onboarding schema");
-        uuid::Uuid::parse_str(&self.session)?;
+        ensure!(self.session.len() == 32 && self.session.chars().all(|c| c.is_ascii_hexdigit()), "Invalid onboarding session");
         let alias = self.alias.trim();
         ensure!(!alias.is_empty() && alias.chars().count() <= 64 && !alias.chars().any(char::is_control),
             "Alias must be 1–64 printable characters");
-        ensure!(!self.home.frame.is_empty() && self.home.frame.len() <= 256 && !self.home.frame.chars().any(char::is_control),
-            "Invalid Home scene frame");
-        let _: auki_sdk::PeerId = self.home.peer_id.parse()?;
+        ensure!(self.home.len() == 8 && self.home.chars().all(|c| c.is_ascii_hexdigit()), "Invalid Home tag");
         let _: auki_sdk::PeerId = self.host.peer_id.parse()?;
-        ensure!(self.host.peer_id != self.home.peer_id, "The host is not Home");
         ensure!(!self.host.routes.is_empty() && self.host.routes.len() <= 4, "Host needs 1–4 routes");
         for route in &self.host.routes {
             let _: auki_sdk::Multiaddr = route.parse()?;
@@ -608,7 +641,7 @@ mod tests {
         assert_eq!(invitation.alias, "Tilly");
         let text = invitation.encode().unwrap();
         assert!(text.starts_with(PREFIX), "{text}");
-        assert!(text.len() < 400, "invitation is {} bytes: {text}", text.len());
+        assert!(text.len() < 160, "invitation is {} bytes: {text}", text.len());
         let read = Invitation::parse(&text).unwrap();
         assert_eq!(read.session, invitation.session);
         assert_eq!(read.wifi.unwrap().password.as_deref(), Some("correct horse"));
@@ -620,11 +653,9 @@ mod tests {
         let good = Invitation::new("Tilly", home(), host(), None).unwrap();
         assert!(Invitation::parse("HTTPS://R8.HR/HNY3JGNLRAE").is_err());
         let text = good.encode().unwrap();
-        assert!(Invitation::parse(&text.replace("\"Tilly\"", "\"\"")).is_err());
-        assert!(Invitation::parse(&text.replace("}", ",\"run\":\"rm -rf /\"}")).is_err());
-        let mut same = good.clone();
-        same.host.peer_id = same.home.peer_id.clone();
-        assert!(same.encode().is_err());
+        assert!(Invitation::parse(&text.replace("|Tilly|", "||")).is_err());
+        assert!(Invitation::parse(&format!("{text}|rm -rf /")).is_err());
+        assert!(good.is_for(&home().peer_id, &home().frame) && !good.is_for(&home().peer_id, "other"));
         let mut short = good.clone();
         short.wifi = Some(Wifi { ssid: "Lab".into(), password: Some("short".into()), hidden: false });
         assert!(short.encode().is_err());

@@ -207,7 +207,7 @@ pub async fn join(
     sightings: &mut tokio::sync::mpsc::Receiver<Sighting>,
     products: &crate::mobile_products::MobileProducts,
 ) -> Result<crate::mobile_depth::Alignment> {
-    ensure!(invitation.home.peer_id == home.peer_id && invitation.home.frame == home.frame,
+    ensure!(invitation.is_for(&home.peer_id, &home.frame),
         "The invitation is for another Home scene");
     let host = crate::mobile_home::HomeOperations::for_peer(peer, &invitation.host.peer_id, &invitation.host.routes, &home.frame)?;
     let session = invitation.session.clone();
@@ -325,9 +325,12 @@ pub fn qr_modules(text: &str) -> Result<(usize, Vec<bool>)> {
         bits.push_terminator(qrcode::EcLevel::M)?;
         qrcode::QrCode::with_bits(bits, qrcode::EcLevel::M)
     };
+    // Invitations use low error correction: a bright, flat screen read up close
+    // needs little, and it keeps the code coarse.
+    let level = if text.starts_with(crate::onboarding::PREFIX) { qrcode::EcLevel::L } else { qrcode::EcLevel::M };
     let code = match smallest() {
         Ok(code) => code,
-        Err(_) => qrcode::QrCode::with_error_correction_level(text, qrcode::EcLevel::M)?,
+        Err(_) => qrcode::QrCode::with_error_correction_level(text, level)?,
     };
     Ok((code.width(), code.to_colors().into_iter().map(|c| c == qrcode::Color::Dark).collect()))
 }

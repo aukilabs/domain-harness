@@ -7,7 +7,7 @@ import SpatialPortalBridge
 /// The bridge does the work; this file is the screens.
 enum Onboarding {
     /// What an invitation QR starts with.
-    static let prefix = #"{"schema":"spatial-harness.onboarding/v2""#
+    static let prefix = "OB2|"
 
     /// This phone's model identifier, e.g. "iPhone16,1".
     static var model: String {

@@ -136,7 +136,7 @@ async fn session(client: &ComponentProtocolClient, home: &crate::Home, invitatio
                  codes: &mut tokio::sync::mpsc::UnboundedReceiver<Seen>,
                  session_clock: &auki_time::SessionClock, local_clock: &crate::clock_sync::RegisteredClock,
                  registry: &auki_protocols::registry::RegistryClient) -> Result<()> {
-    ensure!(invitation.home.peer_id == home.peer_id && invitation.home.frame == home.frame,
+    ensure!(invitation.is_for(&home.peer_id, &home.frame),
         "Invitation is for another Home scene; restart the runner with that Home's profile");
     if let Some(wifi) = &invitation.wifi { join_wifi(wifi).await?; }
     // Name this robot in Home with the alias: bound to its Peer ID, as for a phone.

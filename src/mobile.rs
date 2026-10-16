@@ -555,7 +555,7 @@ impl MobileClient {
         let invitation = crate::onboarding::Invitation::parse(text)?;
         let connected = self.connection.lock().unwrap_or_else(|e| e.into_inner()).clone();
         ensure!(self.snapshot().state == "live" && connected.as_ref().is_some_and(|(home, _, _)|
-            home.peer_id == invitation.home.peer_id && home.frame == invitation.home.frame),
+            invitation.is_for(&home.peer_id, &home.frame)),
             "Connect to the invitation's Home scene first");
         if !self.seen.lock().unwrap_or_else(|e| e.into_inner()).first(&invitation.session) {
             return Ok(false);
