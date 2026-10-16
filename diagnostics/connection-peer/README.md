@@ -93,7 +93,7 @@ is the Home peer in its profile, and hands them to `scripts/drive-bracketbot.py`
 at full teleop speeds. That helper is fail-closed: a command older than 400 ms,
 a centred stick, low battery or another `drive.ctrl` writer is a stop, and it
 holds the writer only while commands are fresh. Home's viewer sends commands
-from the keyboard (WASD/arrows, Esc stops) through
+from the keyboard (arrow keys only, Esc stops) through
 `POST /api/local-scenes/{id}/drive`, as Home's own peer.
 
 ## Navigation from Home

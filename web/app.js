@@ -1098,7 +1098,7 @@ function showRobotCard(name,state,key){
  // Keyboard driving needs only a live pose here; the robot decides whether it accepts this Home.
  if(isLocalScene())buttons.push(actionButton(driving?'Stop driving (Esc)':'Drive with keyboard',{variant:driving?'danger-ghost':'secondary',onClick:()=>{driving?stopKeyDrive():startKeyDrive(peer);again();}}));
  const status=document.createElement('p');status.className='form-status';status.setAttribute('role','status');
- if(driving)status.textContent='WASD or arrow keys · Esc stops';
+ if(driving)status.textContent='Arrow keys · Esc stops';
  if(greeters.length)buttons.push(actionButton('Go say hi',{iconPath:WAVE_ICON,onClick:()=>confirmGreet(robot,greeters)}));
  if(canSend||driving)buttons.push(actionButton('Stop',{variant:'danger-ghost',onClick:()=>{stopKeyDrive();if(canSend)stopRobots([robot],status);else again();}}));
  if(buttons.length)$('selection').append(cardActions(...buttons),status);
@@ -1684,7 +1684,7 @@ function technicalDetails(rows,key){
 // phone joystick uses. Home moves nothing: the robot drives only for the Home
 // it is paired with, at its own speed limits, and stops when commands stop.
 const keyDrive={peer:null,session:null,sequence:0,keys:new Set(),timer:null,zeros:0,status:''};
-const DRIVE_KEYS={KeyW:[1,0],ArrowUp:[1,0],KeyS:[-1,0],ArrowDown:[-1,0],KeyA:[0,1],ArrowLeft:[0,1],KeyD:[0,-1],ArrowRight:[0,-1]};
+const DRIVE_KEYS={ArrowUp:[1,0],ArrowDown:[-1,0],ArrowLeft:[0,1],ArrowRight:[0,-1]};
 function driveStick(){let forward=0,turn=0;for(const key of keyDrive.keys){const [f,t]=DRIVE_KEYS[key];forward+=f;turn+=t;}return [Math.max(-1,Math.min(1,forward)),Math.max(-1,Math.min(1,turn))];}
 function driveCommand(forward,turn){return api(localSceneUrl()+'/drive',{session:keyDrive.session,sequence:++keyDrive.sequence,target_peer_id:keyDrive.peer,forward,turn});}
 function setDriveStatus(text){if(keyDrive.status===text)return;keyDrive.status=text;const hint=fleetList.querySelector('[data-drive-status]');if(hint)hint.textContent=text;}
@@ -1692,10 +1692,10 @@ async function driveTick(){
  if(!keyDrive.peer)return;if(!isLocalScene())return stopKeyDrive();
  const [forward,turn]=driveStick();
  // A released stick sends a few explicit zeros, then nothing: silence is a stop too.
- if(!forward&&!turn){if(keyDrive.zeros>=3)return setDriveStatus('Driving · hold WASD or arrows · Esc to stop');keyDrive.zeros++;}else keyDrive.zeros=0;
+ if(!forward&&!turn){if(keyDrive.zeros>=3)return setDriveStatus('Driving · hold arrow keys · Esc to stop');keyDrive.zeros++;}else keyDrive.zeros=0;
  try{await driveCommand(forward,turn);setDriveStatus(forward||turn?`Driving · forward ${forward} · turn ${turn}`:'Driving · stopped');}catch(error){setDriveStatus('Not sent · '+error.message);}
 }
-function startKeyDrive(peer){stopKeyDrive();keyDrive.peer=peer;keyDrive.session=crypto.randomUUID();keyDrive.sequence=0;keyDrive.keys.clear();keyDrive.zeros=3;keyDrive.status='';keyDrive.timer=setInterval(driveTick,100);fleetSignature='';renderFleetRows();setDriveStatus('Driving · hold WASD or arrows · Esc to stop');}
+function startKeyDrive(peer){stopKeyDrive();keyDrive.peer=peer;keyDrive.session=crypto.randomUUID();keyDrive.sequence=0;keyDrive.keys.clear();keyDrive.zeros=3;keyDrive.status='';keyDrive.timer=setInterval(driveTick,100);fleetSignature='';renderFleetRows();setDriveStatus('Driving · hold arrow keys · Esc to stop');}
 function stopKeyDrive(){
  if(!keyDrive.peer)return;keyDrive.keys.clear();clearInterval(keyDrive.timer);
  driveCommand(0,0).catch(()=>{});keyDrive.peer=null;fleetSignature='';renderFleetRows();
@@ -1705,7 +1705,7 @@ function driveSection(peer){
  const driving=keyDrive.peer===peer.peer_id;
  const button=actionButton(driving?'Stop driving (Esc)':'Drive with keyboard',{variant:driving?'danger-ghost':'secondary',onClick:()=>driving?stopKeyDrive():startKeyDrive(peer.peer_id)});
  button.setAttribute('aria-pressed',String(driving));section.append(button);
- const hint=document.createElement('p');hint.className='device-note';hint.dataset.driveStatus='';hint.textContent=driving?keyDrive.status:'WASD or arrow keys while driving. The robot moves only if it was started with --drive for this Home.';section.append(hint);
+ const hint=document.createElement('p');hint.className='device-note';hint.dataset.driveStatus='';hint.textContent=driving?keyDrive.status:'Arrow keys drive the robot · Esc stops.';section.append(hint);
  return section;
 }
 window.addEventListener('keydown',e=>{
