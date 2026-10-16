@@ -166,7 +166,7 @@ struct OnboardingHostView: View {
     private var caption: String {
         if succeeded { return "\(alias) is in the scene" }
         if showingMarker { return "Hold this phone still, screen toward \(alias)" }
-        return "Display marker to device to begin onboarding"
+        return "Show this code to the robot"
     }
 
     private var askAlias: some View {
