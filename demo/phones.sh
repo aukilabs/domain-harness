@@ -71,8 +71,14 @@ for phone in $phones; do
     > "demo/logs/$phone.log" 2>&1 &
   echo "Launching on $phone (log: demo/logs/$phone.log)"
 done
-sleep 4
-for phone in $phones; do
-  if grep -q "Locked" "demo/logs/$phone.log"; then echo "$phone is locked: unlock it and run again"; fi
+# A locked phone refuses the launch within a few seconds.
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  sleep 1
+  for phone in $phones; do
+    if grep -q "Locked" "demo/logs/$phone.log" 2>/dev/null && ! grep -q "reported" "demo/logs/$phone.log.state" 2>/dev/null; then
+      echo "$phone: phone locked"; echo reported > "demo/logs/$phone.log.state"
+    fi
+  done
 done
+rm -f demo/logs/*.log.state
 wait

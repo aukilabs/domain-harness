@@ -1880,10 +1880,9 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     /// Whether this phone knows where it is in the scene.
     @Published private(set) var calibrated = false
     // MARK: Onboarding (onboarding.md)
-    /// Showing another device the way in: publish every pose, and never doze off.
+    /// Showing another device the way in: publish every pose.
     var onboardingHosting = false {
         didSet {
-            UIApplication.shared.isIdleTimerDisabled = onboardingHosting
             if onboardingHosting { restReference = nil }
         }
     }
@@ -2020,6 +2019,8 @@ final class ViewerController: NSObject, ObservableObject, ARSessionDelegate {
     /// never interrupts tracking.
     var screenAsked = false
     func start() {
+        // Demo phones never lock while the app is open.
+        UIApplication.shared.isIdleTimerDisabled = true
         guard screenAsked else { return }
         guard !snoozed else { return }
         guard ARWorldTrackingConfiguration.isSupported else {
