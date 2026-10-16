@@ -318,8 +318,9 @@ def main():
     with out_lock:
         print(json.dumps(dict(nav_from_world=nav.pose, mode=nav.mode), allow_nan=False), flush=True)
     current = {'id': None, 'outcome': None}
+    current_lock = threading.Lock()
 
-    def on_state(state, reason):
+    def handle_state(state, reason):
         request_id, outcome = current['id'], current['outcome']
         if not (request_id and outcome):
             return
@@ -334,6 +335,10 @@ def main():
             if phase in ('arrived', 'failed'):
                 current['id'] = current['outcome'] = None
 
+    def on_state(state, reason):
+        with current_lock:
+            handle_state(state, reason)
+
     nav.start(on_state)
     parent = os.getppid()
     for line in sys.stdin:
@@ -346,17 +351,23 @@ def main():
             op, request_id, waypoints = parse(line)
             if not nav.ready():
                 raise ValueError('nav app is not running or has no slam.pose yet (:8010)')
-            if op == 'stop':
-                nav.stop()
+            with current_lock:
+                if op == 'stop':
+                    nav.stop()
+                    if current['id']:
+                        emit(current['id'], 'failed', reason='cancelled')
+                    current['id'] = current['outcome'] = None
+                    emit(request_id, 'stopped')
+                    continue
+                # The daemon atomically stops and clears its old plan when a new
+                # command record arrives. The app backend clears before starting.
+                # Do not leave the superseded request waiting for an outcome.
+                nav.go(waypoints)
                 if current['id']:
-                    emit(current['id'], 'failed', reason='cancelled')
-                current['id'] = current['outcome'] = None
-                emit(request_id, 'stopped')
-                continue
-            current['id'] = request_id
-            current['outcome'] = DaemonOutcome() if isinstance(nav, DaemonNav) else Outcome()
-            nav.go(waypoints)
-            emit(request_id, 'accepted', mode=nav.mode, waypoints=len(waypoints))
+                    emit(current['id'], 'failed', reason='replaced by a new navigation command')
+                current['id'] = request_id
+                current['outcome'] = DaemonOutcome() if isinstance(nav, DaemonNav) else Outcome()
+                emit(request_id, 'accepted', mode=nav.mode, waypoints=len(waypoints))
         except (ValueError, KeyError, OSError, ConnectionError, RuntimeError) as e:
             emit(request_id, 'rejected', reason=str(e))
 

@@ -212,6 +212,10 @@ impl<W: World> Navigator<W> {
         Ok((name, point))
     }
     pub fn plan(&self, caller: &str, request: &RouteRequest) -> Result<Route> {
+        self.plan_with_drawing_height(caller, request, None)
+    }
+    fn plan_with_drawing_height(&self, caller: &str, request: &RouteRequest, drawing_y: Option<f64>) -> Result<Route> {
+        ensure!(drawing_y.is_none_or(|y| y.is_finite() && y.abs() <= 100000.), "Invalid route drawing height");
         ensure!(!caller.is_empty(), "Route caller is not authenticated");
         ensure!(request.frame == self.frame, "Scene frame changed; ask for the route again");
         let agent = request.agent.unwrap_or_default();
@@ -236,7 +240,13 @@ impl<W: World> Navigator<W> {
             let mut routes = self.routes.lock().map_err(|_| anyhow!("Routes unavailable"))?;
             if let Some(old) = routes.remove(caller) { self.remove(&old)?; }
             if let Some(path) = &path {
-                self.world.store(&path.id, Some(path.clone()))?;
+                // Save the final drawing once: paths are immutable after creation.
+                // Keep the returned navigation waypoints at their planned height.
+                let mut drawing = path.clone();
+                if let Some(y) = drawing_y {
+                    for point in drawing.segments.iter_mut().flatten() { point[1] = y; }
+                }
+                self.world.store(&path.id, Some(drawing))?;
                 routes.insert(caller.into(), path.id.clone());
             }
         }
@@ -300,7 +310,14 @@ pub fn mount<W: World>(runtime: &ComponentRuntime, endpoint: &auki_component_pro
     // Any authenticated peer of the scene may ask, as any may draw a path.
     let planner = navigator.clone();
     let plan = component.operable("plan", |ctx| !ctx.caller_peer_id.is_empty(),
-        move |ctx, request: RouteRequest| planner.plan(&ctx.caller_peer_id, &request).map_err(rejected))?;
+        move |ctx, request: RouteRequest| {
+            // Home's robot navigation supplies a live start position in this scene.
+            let drawing_y = match (&*ctx.caller_component_id, &request.from) {
+                ("home-navigation", Place::Point(position)) => Some(position[1]),
+                _ => None,
+            };
+            planner.plan_with_drawing_height(&ctx.caller_peer_id, &request, drawing_y).map_err(rejected)
+        })?;
     let clear = component.operable("clear", |ctx| !ctx.caller_peer_id.is_empty(),
         move |ctx, request: Clear| navigator.clear(&ctx.caller_peer_id, &request).map_err(rejected))?;
     component.expose()?;
