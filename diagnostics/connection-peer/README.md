@@ -98,18 +98,33 @@ from the keyboard (arrow keys only, Esc stops) through
 
 ## Navigation from Home
 
-`--navigate` exposes `base-navigator` with `navigate` and `cancel`
-(`src/navigate.rs`), callable only by the Home peer in the profile. Home plans
-a route on its scene map (`scene-navigation:<id>` `plan`, as its own peer and
-shared so viewers draw it) from the robot's live position, and sends the
-thinned waypoints in its scene frame. `scripts/diagnostic-nav.py` declares
-where the BBOS nav app's frame sits relative to the SLAM world by nav's own
-rule (`T_nav_gl.npy` with QR relocalization on, else identity); this peer
-publishes that as the held `bbos-nav-frame` transform, resolves the waypoints
-through declared transforms only, sets the final heading along the last
-segment, and hands nav `clear` / `add_wp` / `start` on `ws://127.0.0.1:8010/ws`.
-Nav plans locally, avoids obstacles and writes `drive.ctrl`; `cancel` sends
-`stop`. The nav app must already be running on the robot.
+`--navigate` exposes `base-navigator` with `navigate`, `cancel`, and the
+read-only `resolve_ground_goal` operation (`src/navigate.rs`), callable only
+by the Home peer in the profile. Home resolves a selected position or note
+before both preview and Send. The robot reads fresh `mapping.voxels` floor
+labels and `mapping.grid2d`, finds the nearest labelled floor point below the
+selection on the floor region connected to the robot, and projects the
+selection onto that point's horizontal plane. It moves the destination 0.50 m
+from the floor point opposite the direction toward the projection. A zero
+horizontal direction keeps the projected point. Missing/stale floor data or
+a setback outside the connected floor is rejected; no scene-Y-zero fallback
+is used. This lookup requires the newer BBOS mapping/daemon backend.
+
+The request and returned floor, projection and destination carry the selected
+scene's full frame reference. The runner uses its published transform chain
+to and from the BBOS navigation frame (Z-up); Home's scene is Y-up. Home draws
+the route at the resolved destination height and sends the thinned waypoints
+in its scene frame. Both Home and the diagnostic runner must be deployed
+with the ground-goal contract; existing navigate/cancel wire schemas remain
+unchanged. Navigate-and-point retains its separate approach-distance policy.
+
+`scripts/diagnostic-nav.py` uses the always-on BBOS nav daemon when available,
+via `nav.command` / `nav.state`; each new command stops the old drive output,
+clears its plan, and starts the replacement. Superseded requests receive a
+terminal replaced result. The older app backend uses `clear` / `add_wp` /
+`start` on `ws://127.0.0.1:8010/ws`. Its declared `T_nav_gl.npy` transform is
+used when present; the daemon uses the SLAM world directly. Navigation plans
+locally, avoids obstacles and writes `drive.ctrl`; `cancel` stops it.
 
 ## Recovery
 

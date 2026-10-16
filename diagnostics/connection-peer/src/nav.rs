@@ -35,6 +35,10 @@ struct Reply {
     phase: String,
     #[serde(default)]
     reason: Option<String>,
+    #[serde(default)] floor: Option<[f64; 3]>,
+    #[serde(default)] projected: Option<[f64; 3]>,
+    #[serde(default)] goal: Option<[f64; 3]>,
+    #[serde(default)] setback_m: Option<f64>,
 }
 
 type Waiting = Arc<Mutex<HashMap<String, mpsc::Sender<Reply>>>>;
@@ -77,7 +81,7 @@ impl Adapter {
                 let reply = rx
                     .recv_timeout(until.saturating_duration_since(Instant::now()))
                     .map_err(|_| anyhow!("Nav adapter did not answer in time"))?;
-                if matches!(reply.phase.as_str(), "accepted" | "rejected" | "stopped") {
+                if matches!(reply.phase.as_str(), "accepted" | "rejected" | "stopped" | "resolved") {
                     return Ok(reply);
                 }
             }
@@ -113,6 +117,30 @@ struct Goals {
     session_clock: auki_time::SessionClock,
 }
 impl Goals {
+    fn ground_goal(&self, request: GroundGoal) -> Result<GroundGoalResolved> {
+        uuid::Uuid::parse_str(&request.request_id)?;
+        ensure!(request.selected.iter().all(|v| v.is_finite() && v.abs() < 1e4), "Invalid selected point");
+        let (selected, goal_from_nav, resolved_from) = {
+            let known = self.known.lock().map_err(|_| anyhow!("Frames unavailable"))?;
+            let now = self.session_clock.now_ns();
+            let (nav_from_goal, mut used) = chain(&known, &request.frame, &self.nav, &self.clock, &self.session, now)?;
+            let (goal_from_nav, back) = chain(&known, &self.nav, &request.frame, &self.clock, &self.session, now)?;
+            used.extend(back);
+            (through(&nav_from_goal, request.selected)?, goal_from_nav, used)
+        };
+        let reply = self.adapter.ask(serde_json::json!({"op":"resolve_ground_goal",
+            "request_id":request.request_id,"selected":selected}), &request.request_id)?;
+        ensure!(reply.phase == "resolved", "{}", reply.reason.unwrap_or_else(|| "Floor goal unavailable".into()));
+        let floor = reply.floor.context("Missing floor point")?;
+        let projected = reply.projected.context("Missing projected point")?;
+        let goal = reply.goal.context("Missing ground goal")?;
+        let setback_m = reply.setback_m.context("Missing setback distance")?;
+        ensure!(setback_m == 0. || setback_m == 0.5, "Invalid setback distance");
+        Ok(GroundGoalResolved { request_id: request.request_id, frame: request.frame,
+            floor: through(&goal_from_nav, floor)?, projected: through(&goal_from_nav, projected)?,
+            goal: through(&goal_from_nav, goal)?, setback_m, nav_frame: self.nav.clone(),
+            clock: self.clock.clone(), resolved_from })
+    }
     fn go(&self, request: Navigate, caller: &str) -> Result<NavigateAccepted> {
         uuid::Uuid::parse_str(&request.request_id).context("request_id must be a UUID")?;
         let (points, h, resolved_from) = {
@@ -327,6 +355,7 @@ pub struct Navigator {
     _inbox: Inbox,
     _component: Component,
     _navigate: Operable<Navigate, NavigateAccepted>,
+    _ground_goal: Operable<GroundGoal, GroundGoalResolved>,
     _cancel: Operable<Cancel, Cancelled>,
     _mount: Component,
     _capture: BufferProductCapture<Update>,
@@ -466,7 +495,7 @@ impl Navigator {
             .insert(&[&p.contract.to_frame, &nav_frame], Transform { contract: held, product: capture.product() });
 
         let component = p.runtime.component(
-            ComponentSpec::new(COMPONENT).operable(contract()).operable(cancel_contract()),
+            ComponentSpec::new(COMPONENT).operable(contract()).operable(cancel_contract()).operable(ground_goal_contract()),
         )?;
         let goals = Arc::new(Goals {
             known,
@@ -478,9 +507,15 @@ impl Navigator {
             session_clock: p.session_clock.clone(),
         });
         let turner = Turner { goals: goals.clone(), home: home.clone() };
+        let floor_home = home.clone();
         let (only_home, also_home) = (home.clone(), home);
         let (go, stop) = (goals.clone(), goals.clone());
         let rejected = |e: anyhow::Error| InvocationError::Rejected(format!("{e:#}"));
+        let resolve = goals.clone();
+        let ground_goal = component.operable(
+            RESOLVE_GOAL, move |ctx| ctx.caller_peer_id == floor_home,
+            move |_ctx, request: GroundGoal| resolve.ground_goal(request).map_err(rejected),
+        )?;
         let navigate = component.operable_ordered(
             OPERATION,
             InvocationOrdering::SerialInAcceptanceOrder,
@@ -497,9 +532,10 @@ impl Navigator {
         let adapter = goals.adapter.clone();
         let inbox = Inbox::start(goals);
         component.expose()?;
+        p.endpoint.export_operable(&ground_goal)?;
         p.endpoint.export_operable(&navigate)?;
         p.endpoint.export_operable(&cancel)?;
-        Ok(Self { adapter, turner, _component: component, _navigate: navigate, _cancel: cancel, _mount: mount, _capture: capture, _inbox: inbox })
+        Ok(Self { adapter, turner, _component: component, _navigate: navigate, _ground_goal: ground_goal, _cancel: cancel, _mount: mount, _capture: capture, _inbox: inbox })
     }
 }
 

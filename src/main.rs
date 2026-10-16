@@ -1185,22 +1185,43 @@ async fn navigate_robot(s:&Shared,key:&str,frame:&str,args:Value)->anyhow::Resul
         "position"=>spatial_home::scene_navigation::Place::Point(a.target.position.ok_or_else(||anyhow::anyhow!("target.position is required for kind position"))?),
         _=>anyhow::bail!("target.kind must be note or position"),
     };
+    let selected = match to {
+        spatial_home::scene_navigation::Place::Point(point) => point,
+        spatial_home::scene_navigation::Place::Note(id) => {
+            s.local_scenes.note_editors.lock().map_err(|_|anyhow::anyhow!("Scene annotations unavailable"))?
+                .get(key).cloned().ok_or_else(||anyhow::anyhow!("Scene annotations unavailable"))?.get_note(&id)?.position
+        }
+    };
+    let floor_candidate = spatial_home::robot_pointing::select_for(&network, Some(&candidate.peer_id),
+        &spatial_home::navigate::ground_goal_contract(), "resolve a ground goal")?;
+    let home_peer=s.peer.borrow()["connection"]["peer_id"].as_str().map(str::to_owned).ok_or_else(||anyhow::anyhow!("Home P2P peer is not ready"))?;
+    let scene_frame=spatial_home::conventions::registry(&home_peer,frame)?;
+    let lookup=spatial_home::navigate::GroundGoal{request_id:uuid::Uuid::new_v4().to_string(),
+        frame:spatial_home::compact_pose::FrameRef::from(&scene_frame),selected};
+    let (reply, receive)=tokio::sync::oneshot::channel();
+    s.navigation.try_send(spatial_home::robot_navigation::Invoke{candidate:floor_candidate,
+        request:spatial_home::robot_navigation::Request::GroundGoal(lookup,reply)})
+        .map_err(|_|anyhow::anyhow!("Robot ground goal lookup unavailable"))?;
+    let ground_goal=receive.await.map_err(|_|anyhow::anyhow!("Robot ground goal lookup dropped"))??;
+    let to=spatial_home::scene_navigation::Place::Point(ground_goal.goal);
     // Where the robot stands now, from the same registry-backed resolver as get_peer_pose.
     let raw=s.peer.borrow().clone();
     let pose=spatial_home::peer_locations::get(&s.previews,&raw,json!({"peer_id":candidate.peer_id}),frame).await
         .map_err(|e|anyhow::anyhow!("No current pose for {robot} in this scene: {e}"))?;
     let from:[f64;3]=serde_json::from_value(pose["location"]["position"].clone())?;
-    let home_peer=s.peer.borrow()["connection"]["peer_id"].as_str().map(str::to_owned).ok_or_else(||anyhow::anyhow!("Home P2P peer is not ready"))?;
     // A Bracketbot is 0.4 m wide and about 1.6 m tall.
-    let route=s.local_scenes.plan_route(key,&home_peer,spatial_home::scene_navigation::RouteRequest{frame:frame.into(),
+    let mut route=s.local_scenes.plan_route(key,&home_peer,spatial_home::scene_navigation::RouteRequest{frame:frame.into(),
         from:spatial_home::scene_navigation::Place::Point(from),to,agent:Some(spatial_home::scene_navigation::Agent{radius_m:0.25,height_m:1.6}),share:Some(true)})?;
     anyhow::ensure!(route.status!=spatial_home::scene_navigation::Status::Unreachable,"The scene map shows no way for {robot} to get there");
+    if let Some(path)=&mut route.path {
+        for point in path.segments.iter_mut().flatten() { point[1]=ground_goal.goal[1]; }
+    }
     let points=route.path.as_ref().and_then(|p|p.segments.first()).cloned().ok_or_else(||anyhow::anyhow!("{robot} is already there"))?;
     let waypoints=spatial_home::robot_navigation::waypoints(&points,0.25)?;
     let known=match route.status {spatial_home::scene_navigation::Status::Direct=>" The map shows nothing in the way, but part of the floor is unseen.",_=>""};
     if a.preview {
         return Ok(json!({"summary":format!("Route for {robot}: {:.1} m, {} waypoint(s).{known}",route.length_m,waypoints.len()),
-            "robot_peer_id":candidate.peer_id,"robot":robot,"route":route,"waypoints":waypoints.len(),"preview":true}));
+            "robot_peer_id":candidate.peer_id,"robot":robot,"route":route,"waypoints":waypoints.len(),"preview":true,"ground_goal":ground_goal}));
     }
     let scene_frame=spatial_home::conventions::registry(&home_peer,frame)?;
     let instruction=spatial_home::navigate::Navigate{request_id:uuid::Uuid::new_v4().to_string(),
@@ -1210,7 +1231,7 @@ async fn navigate_robot(s:&Shared,key:&str,frame:&str,args:Value)->anyhow::Resul
         .map_err(|_|anyhow::anyhow!("Home P2P is not running, or another robot request is pending"))?;
     let accepted=receive.await.map_err(|_|anyhow::anyhow!("Robot navigation request was dropped"))??;
     Ok(json!({"summary":format!("{robot} is on its way: {:.1} m route, {} waypoint(s).{known} Its own navigation avoids obstacles and stops on arrival.",
-        route.length_m,accepted.waypoints_nav.len()),"robot_peer_id":candidate.peer_id,"route":route,"result":accepted}))
+        route.length_m,accepted.waypoints_nav.len()),"robot_peer_id":candidate.peer_id,"route":route,"ground_goal":ground_goal,"result":accepted}))
 }
 /// Stop a robot's navigation through its `cancel` operable.
 async fn stop_robot(s:&Shared,args:Value)->anyhow::Result<Value> {

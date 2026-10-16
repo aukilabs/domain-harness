@@ -311,8 +311,8 @@ pub fn mount<W: World>(runtime: &ComponentRuntime, endpoint: &auki_component_pro
     let planner = navigator.clone();
     let plan = component.operable("plan", |ctx| !ctx.caller_peer_id.is_empty(),
         move |ctx, request: RouteRequest| {
-            // Home's robot navigation supplies a live start position in this scene.
-            let drawing_y = match (&*ctx.caller_component_id, &request.from) {
+            // Home's robot navigation supplies a resolved ground target in this scene.
+            let drawing_y = match (&*ctx.caller_component_id, &request.to) {
                 ("home-navigation", Place::Point(position)) => Some(position[1]),
                 _ => None,
             };
