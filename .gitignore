@@ -24,3 +24,6 @@ android/local.properties
 android/**/build/
 android/native/
 android/**/.cxx/
+
+# Demo phone consoles
+demo/logs/
