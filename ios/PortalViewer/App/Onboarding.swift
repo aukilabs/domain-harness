@@ -29,6 +29,9 @@ enum Onboarding {
         return .success(value)
     }
 
+    /// Standard points per displayed point: 1, or more under Display Zoom.
+    static var zoom: CGFloat { UIScreen.main.nativeScale / UIScreen.main.scale }
+
     /// The marker's side on this phone's screen in points, or why this phone cannot show one.
     static func markerSide() -> Result<CGFloat, ViewerError> {
         call { model.withCString { spatial_mobile_onboarding_screen($0) } }.flatMap { value in
@@ -127,7 +130,7 @@ struct OnboardingHostView: View {
                     if succeeded {
                         done.position(x: bounds.midX, y: bounds.midY)
                     } else if showingMarker, let marker {
-                        card(marker, side: markerSide).position(x: bounds.midX, y: bounds.midY)
+                        card(marker, side: markerSide / Onboarding.zoom).position(x: bounds.midX, y: bounds.midY)
                     } else if let invitation {
                         card(invitation, side: min(bounds.width, bounds.height) * 0.78).position(x: bounds.midX, y: bounds.midY)
                     }
@@ -162,7 +165,7 @@ struct OnboardingHostView: View {
     private var caption: String {
         if succeeded { return "\(alias) is in the scene" }
         if showingMarker { return "Hold this phone still, screen toward \(alias)" }
-        return "Display marker to device to begin onboarding"
+        return "Show this code to the robot"
     }
 
     private var askAlias: some View {
@@ -224,9 +227,11 @@ struct OnboardingHostView: View {
         case .failure(let error): problem = error.message; return
         case .success(let side): markerSide = side
         }
-        let bounds = UIScreen.main.bounds
+        // Geometry is in the screen's standard points; under Display Zoom a
+        // point is bigger, so the marker is drawn smaller to stay 50 mm.
+        let bounds = UIScreen.main.bounds, zoom = Onboarding.zoom
         let request: [String: Any] = ["alias": alias.trimmingCharacters(in: .whitespaces),
-            "display": ["model": Onboarding.model, "center_points": [bounds.midX, bounds.midY], "side_points": markerSide]]
+            "display": ["model": Onboarding.model, "center_points": [bounds.midX * zoom, bounds.midY * zoom], "side_points": markerSide]]
         preparing = true
         problem = nil
         Task { @MainActor in

@@ -316,7 +316,19 @@ pub async fn join(
 /// at an exact physical size. Medium error correction.
 pub fn qr_modules(text: &str) -> Result<(usize, Vec<bool>)> {
     ensure!(text.len() <= 2048, "Too much text for a code");
-    let code = qrcode::QrCode::with_error_correction_level(text, qrcode::EcLevel::M)?;
+    // The marker as one alphanumeric segment fits version 1 (21 modules, the
+    // biggest modules for its 50 mm); the encoder's own split into number and
+    // letter segments can push it to version 2.
+    let smallest = || -> Result<qrcode::QrCode, qrcode::types::QrError> {
+        let mut bits = qrcode::bits::Bits::new(qrcode::Version::Normal(1));
+        bits.push_alphanumeric_data(text.as_bytes())?;
+        bits.push_terminator(qrcode::EcLevel::M)?;
+        qrcode::QrCode::with_bits(bits, qrcode::EcLevel::M)
+    };
+    let code = match smallest() {
+        Ok(code) => code,
+        Err(_) => qrcode::QrCode::with_error_correction_level(text, qrcode::EcLevel::M)?,
+    };
     Ok((code.width(), code.to_colors().into_iter().map(|c| c == qrcode::Color::Dark).collect()))
 }
 

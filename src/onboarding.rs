@@ -195,7 +195,8 @@ const fn mm_per_point(scale: f64, ppi: f64) -> f64 {
     scale / ppi * 25.4
 }
 pub const SCREENS: &[Screen] = &[
-    Screen { model: "iPhone18,2", name: "iPhone 17 Pro Max", mm_per_point: mm_per_point(3., 460.),
+    // Measured 2026-10-15: a 343.2-point code is 56.33 mm by calipers (Apple's 460 ppi gives 56.85).
+    Screen { model: "iPhone18,2", name: "iPhone 17 Pro Max", mm_per_point: 56.33 / 343.2,
         points: [440., 956.], camera_mm: [25., 67.5, -10.], verified: false },
     Screen { model: "iPhone18,1", name: "iPhone 17 Pro", mm_per_point: mm_per_point(3., 460.),
         points: [402., 874.], camera_mm: [22.5, 61., -10.], verified: false },

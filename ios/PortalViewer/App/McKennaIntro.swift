@@ -165,22 +165,32 @@ final class Permissions: NSObject, ObservableObject, CLLocationManagerDelegate {
     }
     var allAnswered: Bool { Kind.allCases.allSatisfy(answered) }
 
-    /// iOS asks about the local network the first time the app reaches a device on it.
-    /// Reach the paired Home's address (or the router) with one tiny packet, now.
+    /// iOS asks about the local network the first time the app reaches a device on it,
+    /// so open a connection to Home's own address, the way the app will later. The row
+    /// is answered once that connects (allowed) or the prompt closes (the app is active again).
     func askLocalNetwork() {
-        let profile = UserDefaults.standard.string(forKey: "homeConnectionProfile") ?? ""
-        let host = profile.components(separatedBy: "/ip4/").dropFirst().first?
-            .components(separatedBy: "/").first.flatMap { $0.isEmpty ? nil : $0 }
-        let target = host ?? "192.168.1.1"
-        let connection = NWConnection(host: NWEndpoint.Host(target), port: 9, using: .udp)
-        connection.start(queue: .main)
-        connection.send(content: Data([0]), completion: .contentProcessed { _ in })
-        probe = connection
-        // iOS does not say what was chosen; the prompt has been shown, so the row is done.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            self?.local = .allowed
-            self?.probe?.cancel(); self?.probe = nil
+        let url = UserDefaults.standard.string(forKey: "homeURL").flatMap(URL.init(string:))
+            ?? URL(string: Demo.homeURL)!
+        guard let host = url.host else { local = .allowed; return }
+        let port = NWEndpoint.Port(rawValue: UInt16(url.port ?? 80)) ?? .http
+        let connection = NWConnection(host: NWEndpoint.Host(host), port: port, using: .tcp)
+        connection.stateUpdateHandler = { [weak self] state in
+            if case .ready = state { Task { @MainActor in self?.answeredLocal(.allowed) } }
         }
+        connection.start(queue: .main)
+        probe = connection
+        localWatch = NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification,
+                                                            object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.answeredLocal(.allowed) }
+        }
+    }
+    private var localWatch: NSObjectProtocol?
+    private func answeredLocal(_ state: State) {
+        guard probe != nil else { return }
+        local = state
+        probe?.cancel(); probe = nil
+        if let localWatch { NotificationCenter.default.removeObserver(localWatch) }
+        localWatch = nil
     }
 
     override init() {

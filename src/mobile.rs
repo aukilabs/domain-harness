@@ -524,7 +524,7 @@ impl MobileClient {
         *hosting = Some(crate::onboarding::Hosting {
             session: invitation.session.clone(), alias: invitation.alias.clone(), invitation: text.clone(),
             marker: invitation.marker_payload(), marker_in_camera, scene_peer_id: home.peer_id, scene_frame: home.frame,
-            joiner: None, stage: None, detail: "Display marker to device to begin onboarding".into(),
+            joiner: None, stage: None, detail: "Show this code to the robot".into(),
         });
         self.onboarding.touch();
         Ok(text)
