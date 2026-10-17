@@ -296,9 +296,9 @@ final class HomePeer: ObservableObject {
         // Development convenience: a launch environment login is used when no
         // Keychain login exists. It is saved to the Keychain once Home is reached.
         let environment = ProcessInfo.processInfo.environment
-        let launchLogin: SavedLogin.Entry = {
+        let launchLogin: SavedLogin.Entry? = {
             guard let email = environment["AUKI_EMAIL"], let password = environment["AUKI_PASSWORD"],
-                  !email.isEmpty, !password.isEmpty else { return SavedLogin.Entry(email: Demo.email, password: Demo.password) }
+                  !email.isEmpty, !password.isEmpty else { return nil }
             return SavedLogin.Entry(email: email, password: password)
         }()
         if running {
@@ -314,7 +314,7 @@ final class HomePeer: ObservableObject {
         }
         // The app key from the sign-in page, when that is how this phone signs in.
         if profile != nil, useAppKey, savedAppKey { connect(); return running }
-        guard profile != nil, !useAppKey, let saved = Optional(SavedLogin.load() ?? launchLogin) else { print("[peer] autoConnect: profile=\(profile != nil) no login available"); return false }
+        guard profile != nil, !useAppKey, let saved = SavedLogin.load() ?? launchLogin else { print("[peer] autoConnect: profile=\(profile != nil) no login available"); return false }
         email = saved.email; password = saved.password
         // A deleted and recreated scenegraph has a new epoch, so the saved profile may
         // name a scene Home no longer has. Ask Home for its current one first.
@@ -581,12 +581,9 @@ final class HomePeer: ObservableObject {
     }
 }
 
-/// Demo build: the shared demo login and Nils's Home, so a plain Xcode
-/// Cmd-R or install opens signed in. Launch environment values override.
+/// Default development Home address. A launch environment URL overrides it.
 enum Demo {
     static let homeURL = "http://192.168.1.26:4329"
-    static let email = "dep.monaghan@gmail.com"
-    static let password = "bynny6-Fohpit-fohkes"
 }
 
 /// The app key and secret, kept only in this iPhone's Keychain: never in defaults,
