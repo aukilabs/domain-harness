@@ -1,7 +1,9 @@
 //! Home's follower for declared robot bodies: one continuing SDK subscription
 //! per robot-state Product in the discovered Catalogs, latest fresh observation
 //! cached for the viewer. Ages are Home receipt ages, so no clocks are compared.
-use crate::robot_state::{BodyContract, HEALTH_SCHEMA, Health, JOINTS_SCHEMA, Joints, METADATA, POINTING_SCHEMA, Pointing};
+//! Joints and health arrive one capture at a time (one arm per observation), so
+//! they are merged by joint name, each reading kept only while it is fresh.
+use crate::robot_state::{BATTERY_SCHEMA, Battery, BodyContract, HEALTH_SCHEMA, Health, JOINTS_SCHEMA, Joints, METADATA, POINTING_SCHEMA, Pointing};
 use anyhow::{Result, ensure};
 use auki_component_protocol::{ComponentProtocolClient, ObservationStart, RemoteObservationEvent};
 use auki_components::*;
@@ -19,6 +21,7 @@ const MAX_PRODUCTS: usize = 64;
 enum Kind {
     Joints,
     Health,
+    Battery,
     Pointing,
 }
 impl Kind {
@@ -26,6 +29,7 @@ impl Kind {
         match schema {
             JOINTS_SCHEMA => Some(Self::Joints),
             HEALTH_SCHEMA => Some(Self::Health),
+            BATTERY_SCHEMA => Some(Self::Battery),
             POINTING_SCHEMA => Some(Self::Pointing),
             _ => None,
         }
@@ -34,7 +38,17 @@ impl Kind {
         match self {
             Self::Joints => "joints",
             Self::Health => "health",
+            Self::Battery => "battery",
             Self::Pointing => "pointing",
+        }
+    }
+    /// The field merged by key across observations, and how long a reading
+    /// stays without a newer one (the viewer's own staleness limits).
+    fn merged(self) -> Option<(&'static str, Duration)> {
+        match self {
+            Self::Joints => Some(("positions", Duration::from_secs(3))),
+            Self::Health => Some(("joints", Duration::from_secs(5))),
+            Self::Battery | Self::Pointing => None,
         }
     }
 }
@@ -52,6 +66,25 @@ struct Entry {
     product: ProductReference,
     output: OutputReference,
     latest: Option<Latest>,
+    /// For merged kinds: (field, key) → (reading, when Home received it). An
+    /// empty key holds a whole field, such as an older publisher's battery.
+    parts: BTreeMap<(String, String), (Value, Instant)>,
+}
+impl Entry {
+    fn state(&self, latest: &Latest) -> Value {
+        let Some((_, keep)) = self.kind.merged() else { return latest.payload.clone() };
+        let mut state = serde_json::Map::new();
+        for ((field, key), (value, received)) in &self.parts {
+            if received.elapsed() > keep { continue; }
+            if key.is_empty() {
+                state.insert(field.clone(), value.clone());
+            } else {
+                let map = state.entry(field.clone()).or_insert_with(|| json!({}));
+                map[key.as_str()] = value.clone();
+            }
+        }
+        Value::Object(state)
+    }
 }
 
 #[derive(Clone, Default)]
@@ -79,11 +112,12 @@ impl RobotStates {
         for e in entries.values() {
             let key = serde_json::to_string(&(&e.owner, &e.body)).unwrap();
             let robot = robots.entry(key).or_insert_with(|| json!({"peer_id":e.owner,"model":e.body.model,
-                "base_frame":e.body.base_frame,"session_id":e.body.session_id,"joints":null,"health":null,"pointing":null}));
+                "base_frame":e.body.base_frame,"session_id":e.body.session_id,"joints":null,"health":null,"battery":null,"pointing":null}));
             if let Some(l) = &e.latest {
+                // timestamp_ns and age_ms are the newest observation's.
                 robot[e.kind.name()] = json!({"sequence":l.sequence,"timestamp_ns":l.timestamp_ns.to_string(),
                     "clock":e.body.clock,"source":{"product":e.product,"output":e.output},
-                    "age_ms":l.received.elapsed().as_millis() as u64,"state":l.payload});
+                    "age_ms":l.received.elapsed().as_millis() as u64,"state":e.state(l)});
             }
         }
         json!({"robots":robots.into_values().collect::<Vec<_>>()})
@@ -112,7 +146,7 @@ impl RobotStates {
                         route:row["catalog_route"].as_str().and_then(|s| s.parse().ok()),
                         datatype:kind.name().into(), metadata:p.metadata.clone(), ar_supported:false};
                     desired.insert(key, (fingerprint, sensor, Entry {owner:owner.clone(), kind, body,
-                        product:reference,output:p.manifest.producer.clone(),latest:None}));
+                        product:reference,output:p.manifest.producer.clone(),latest:None,parts:BTreeMap::new()}));
                 }
             }
             let removed = workers.iter().filter(|(key, (fingerprint, _, _))|
@@ -132,6 +166,7 @@ impl RobotStates {
                 let task = match kind {
                     Kind::Joints => tokio::spawn(follow::<Joints>(client.clone(), sensor, self.clone(), key.clone(), cancel.clone(), Joints::validate)),
                     Kind::Health => tokio::spawn(follow::<Health>(client.clone(), sensor, self.clone(), key.clone(), cancel.clone(), Health::validate)),
+                    Kind::Battery => tokio::spawn(follow::<Battery>(client.clone(), sensor, self.clone(), key.clone(), cancel.clone(), Battery::validate)),
                     Kind::Pointing => tokio::spawn(follow::<Pointing>(client.clone(), sensor, self.clone(), key.clone(), cancel.clone(), Pointing::validate)),
                 };
                 workers.insert(key, (fingerprint, cancel, task));
@@ -154,7 +189,21 @@ impl RobotStates {
             ensure!(output == &e.output && clock == &e.body.clock, "Robot state source or capture clock changed");
             // Never step backwards within one Output.
             if e.latest.as_ref().is_some_and(|l| sequence <= l.sequence) { return Ok(()); }
-            e.latest = Some(Latest {sequence, timestamp_ns, payload, received: Instant::now()});
+            let received = Instant::now();
+            if let (Some((keyed, _)), Value::Object(fields)) = (e.kind.merged(), &payload) {
+                for (field, value) in fields {
+                    match value {
+                        Value::Object(map) if field == keyed => for (key, reading) in map {
+                            e.parts.insert((field.clone(), key.clone()), (reading.clone(), received));
+                        },
+                        Value::Null => {}
+                        _ => { e.parts.insert((field.clone(), String::new()), (value.clone(), received)); }
+                    }
+                }
+                // Bound the merge to what is still fresh.
+                if let Some((_, keep)) = e.kind.merged() { e.parts.retain(|_, (_, at)| at.elapsed() <= keep); }
+            }
+            e.latest = Some(Latest {sequence, timestamp_ns, payload, received});
         }
         Ok(())
     }

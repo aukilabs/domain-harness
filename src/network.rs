@@ -624,6 +624,7 @@ pub async fn serve_scene(
     controls: tokio::sync::mpsc::Receiver<crate::component_control::Request>,
     pointing: tokio::sync::mpsc::Receiver<crate::robot_pointing::Invoke>,
     navigation: tokio::sync::mpsc::Receiver<crate::robot_navigation::Invoke>,
+    greetings: tokio::sync::mpsc::Sender<crate::peer_greeter::Request>,
     occupancy: crate::robot_occupancy::Cache,
     robot_states: crate::robot_states::RobotStates,
     ar_frames: crate::ar_preview::Frames,
@@ -703,6 +704,7 @@ pub async fn serve_scene(
                     publisher.session_clock.clone(),
                 )?;
                 let mut traffic = crate::peer_traffic::Publisher::mount(&publisher.runtime, &publisher.endpoint, &publisher.clock, publisher.session_clock.clone())?;
+                let _peer_greeter = crate::peer_greeter::mount(&publisher.runtime, &publisher.endpoint, greetings.clone())?;
                 let mut local_mobile = crate::local_mobile::Publisher::mount_all(
                     &publisher.runtime, &publisher.endpoint, local_scenes.clone(),
                     publisher.session_clock.clone(),

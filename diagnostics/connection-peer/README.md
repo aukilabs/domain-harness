@@ -93,23 +93,38 @@ is the Home peer in its profile, and hands them to `scripts/drive-bracketbot.py`
 at full teleop speeds. That helper is fail-closed: a command older than 400 ms,
 a centred stick, low battery or another `drive.ctrl` writer is a stop, and it
 holds the writer only while commands are fresh. Home's viewer sends commands
-from the keyboard (WASD/arrows, Esc stops) through
+from the keyboard (arrow keys only, Esc stops) through
 `POST /api/local-scenes/{id}/drive`, as Home's own peer.
 
 ## Navigation from Home
 
-`--navigate` exposes `base-navigator` with `navigate` and `cancel`
-(`src/navigate.rs`), callable only by the Home peer in the profile. Home plans
-a route on its scene map (`scene-navigation:<id>` `plan`, as its own peer and
-shared so viewers draw it) from the robot's live position, and sends the
-thinned waypoints in its scene frame. `scripts/diagnostic-nav.py` declares
-where the BBOS nav app's frame sits relative to the SLAM world by nav's own
-rule (`T_nav_gl.npy` with QR relocalization on, else identity); this peer
-publishes that as the held `bbos-nav-frame` transform, resolves the waypoints
-through declared transforms only, sets the final heading along the last
-segment, and hands nav `clear` / `add_wp` / `start` on `ws://127.0.0.1:8010/ws`.
-Nav plans locally, avoids obstacles and writes `drive.ctrl`; `cancel` sends
-`stop`. The nav app must already be running on the robot.
+`--navigate` exposes `base-navigator` with `navigate`, `cancel`, and the
+read-only `resolve_ground_goal` operation (`src/navigate.rs`), callable only
+by the Home peer in the profile. Home resolves a selected position or note
+before both preview and Send. The robot reads fresh `mapping.voxels` floor
+labels and `mapping.grid2d`, finds the nearest labelled floor point below the
+selection on the floor region connected to the robot, and projects the
+selection onto that point's horizontal plane. It moves the destination 0.50 m
+from the floor point opposite the direction toward the projection. A zero
+horizontal direction keeps the projected point. Missing/stale floor data or
+a setback outside the connected floor is rejected; no scene-Y-zero fallback
+is used. This lookup requires the newer BBOS mapping/daemon backend.
+
+The request and returned floor, projection and destination carry the selected
+scene's full frame reference. The runner uses its published transform chain
+to and from the BBOS navigation frame (Z-up); Home's scene is Y-up. Home draws
+the route at the resolved destination height and sends the thinned waypoints
+in its scene frame. Both Home and the diagnostic runner must be deployed
+with the ground-goal contract; existing navigate/cancel wire schemas remain
+unchanged. Navigate-and-point retains its separate approach-distance policy.
+
+`scripts/diagnostic-nav.py` uses the always-on BBOS nav daemon when available,
+via `nav.command` / `nav.state`; each new command stops the old drive output,
+clears its plan, and starts the replacement. Superseded requests receive a
+terminal replaced result. The older app backend uses `clear` / `add_wp` /
+`start` on `ws://127.0.0.1:8010/ws`. Its declared `T_nav_gl.npy` transform is
+used when present; the daemon uses the SLAM world directly. Navigation plans
+locally, avoids obstacles and writes `drive.ctrl`; `cancel` stops it.
 
 ## Recovery
 
@@ -242,11 +257,19 @@ wire layout and coordinated producer/consumer rollout requirements.
 Any pose mode (`--poses`, `--portals`, `--points`) also starts
 `scripts/diagnostic-robot-state.py`, which reads BBOS arm states and
 `drive.status` from shared memory (no motor commands) and writes local stdout IPC.
-It feeds two Products, both declaring the body they belong to in
+It feeds three Products, each declaring the body it belongs to in
 `spatial-harness.robot-body/v1` metadata (`src/robot_state.rs` in Home):
 
 - `bbos-joints`: URDF joint positions from each arm's own `q2urdf`, 5 Hz.
-- `bbos-health`: per-joint motor temperature and current, and the battery, 1 Hz.
+- `bbos-health`: per-joint motor temperature and current, 1 Hz.
+- `bbos-battery`: the battery from `drive.status`, whenever it updates.
+
+Each observation is one source at that source's own BBOS capture time, converted
+from BBOS's native realtime clock into the runner's session clock: one arm's
+state, or one `drive.status` reading. Two arms are never merged under one
+timestamp, and nothing is stamped with the time it was read; Home merges the
+arms by joint name. `bbos-pointing` carries each arm-adapter phase at the time
+`diagnostic-arm.py` reported it, converted the same way.
 
 The declaration names the body model (`bracketbot`) and pins its root to the
 exact `bbos-base` frame reference and SDK session clock of `bbos-pose`, so a
@@ -263,3 +286,34 @@ declared Registry axes.
 
 `tests/diagnostic_body.rs` runs this module against Home's follower over
 authenticated loopback peers.
+
+# Greeting (`--greet`)
+
+`--greet` adds a `greeter` component with a `greet` Operable
+(`spatial-harness.greet/v1`, `src/greet.rs`): the robot says "Hi <name>! Nice
+to meet you." through BBOS's speaker, where it stands. Nothing moves. The words
+come from [piper](https://github.com/rhasspy/piper) (offline text to speech) in
+`scripts/diagnostic-greet.py`, played by `play-bracketbot-speech.py`; one
+greeting at a time, and names are reduced to letters, digits and a few marks
+before they are spoken. The text reaches piper on stdin only.
+
+piper lives in the robot user's `~/tools`, nothing system-wide:
+
+```sh
+mkdir -p ~/tools/piper-voices && cd ~/tools
+curl -sSLO https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_aarch64.tar.gz
+tar -xzf piper_linux_aarch64.tar.gz && rm piper_linux_aarch64.tar.gz
+cd piper-voices && for f in en_US-lessac-medium.onnx en_US-lessac-medium.onnx.json; do
+  curl -sSLO https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/$f; done
+```
+
+Without it the greeter still mounts but refuses every greeting.
+
+Home's `peer-greeter` component (`greet_peer`, `src/peer_greeter.rs`) uses it:
+a robot that offers both `navigate` and `greet` goes to a peer, following the
+peer's live pose, re-sending its route when they move more than 0.5 m (or every
+8 s) and aiming 0.7 m short of them; within 1 m it cancels navigation and calls
+`greet` with the peer's name. Over the Operable a peer may only ask to be greeted
+itself; the Home viewer's "Go say hi" asks before the robot moves, and Stop
+cancels the job and the robot's navigation. A job gives up after 3 minutes or 15
+failures in a row.

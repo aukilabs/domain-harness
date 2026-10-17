@@ -52,9 +52,18 @@ def nav_from_world(maps=MAPS):
 
 def parse(line):
     request = json.loads(line)
-    if not isinstance(request, dict) or request.get('op') not in ('go', 'stop'):
-        raise ValueError('op must be go or stop')
+    if not isinstance(request, dict) or request.get('op') not in ('go', 'stop', 'resolve_ground_goal'):
+        raise ValueError('unknown navigation operation')
     request_id = str(uuid.UUID(str(request['request_id'])))
+    if request['op'] == 'resolve_ground_goal':
+        if set(request) != {'op', 'request_id', 'selected'}:
+            raise ValueError('ground goal takes only request_id and selected')
+        point = request['selected']
+        if not isinstance(point, list) or len(point) != 3 or not all(
+                isinstance(v, (int, float)) and not isinstance(v, bool)
+                and math.isfinite(v) and abs(v) < 1e4 for v in point):
+            raise ValueError('selected point must be finite nav-frame XYZ')
+        return 'resolve_ground_goal', request_id, point
     if request['op'] == 'stop':
         if set(request) != {'op', 'request_id'}:
             raise ValueError('stop takes only request_id')
@@ -189,6 +198,68 @@ class DaemonNav:
             daemon_record(buffer, [], enabled=False)
 
 
+def resolve_ground_goal(selected):
+    """Use BBOS's labelled floor voxels and navigation grid in SLAM-world Z-up.
+
+    No command writer is opened. Zero projected direction keeps the floor point.
+    """
+    import numpy as np
+    from bbos import Config, Reader
+    from scipy.ndimage import label
+
+    def snapshot(topic):
+        with Reader(topic, keeptime=False) as reader:
+            reader.ready()
+            if not reader.readable:
+                raise ValueError(f'{topic} is unavailable')
+            data = reader.data.copy()
+        age = (time.time_ns() - int(data['timestamp'].astype('int64'))) / 1e9
+        if not 0 <= age <= 1.5:
+            raise ValueError(f'{topic} is stale')
+        return data
+
+    cloud, grid_record = snapshot('mapping.voxels'), snapshot('mapping.grid2d')
+    count = int(cloud['num_voxels'])
+    if not 0 <= count <= len(cloud['coords']):
+        raise ValueError('invalid floor map size')
+    points = cloud['coords'][:count].astype(float)
+    floor = points[(cloud['labels'][:count] == -1) & np.isfinite(points).all(axis=1)]
+    target = np.asarray(selected, dtype=float)
+    floor = floor[floor[:, 2] <= target[2]]
+    if not len(floor):
+        raise ValueError('robot has no labelled floor below the selected point')
+    grid = grid_record['grid']
+    origin = grid_record['origin'].astype(float)
+    resolution = float(Config('mapping').voxel_size_m)
+    if not np.isfinite(origin).all() or not math.isfinite(resolution) or resolution <= 0:
+        raise ValueError('invalid navigation grid geometry')
+    def cell(point):
+        return np.floor((np.asarray(point[:2]) - origin) / resolution).astype(int)
+    def inside(c):
+        return 0 <= c[0] < grid.shape[0] and 0 <= c[1] < grid.shape[1]
+    robot_cell = cell(grid_record['robot_pos'])
+    components, _ = label(grid == 1, structure=np.ones((3, 3), dtype=int))
+    connected = int(components[tuple(robot_cell)]) if inside(robot_cell) else 0
+    if not connected:
+        raise ValueError('robot is not on a known connected floor region')
+    cells = np.floor((floor[:, :2] - origin) / resolution).astype(int)
+    valid = (cells[:, 0] >= 0) & (cells[:, 0] < grid.shape[0]) & (cells[:, 1] >= 0) & (cells[:, 1] < grid.shape[1])
+    floor, cells = floor[valid], cells[valid]
+    floor = floor[components[cells[:, 0], cells[:, 1]] == connected]
+    if not len(floor):
+        raise ValueError('no labelled floor below the target connects to the robot')
+    nearest = floor[np.argmin(np.sum((floor - target) ** 2, axis=1))]
+    projected = np.array([target[0], target[1], nearest[2]])
+    direction = projected - nearest
+    distance = float(np.linalg.norm(direction[:2]))
+    setback = 0.5 if distance > 1e-6 else 0.0
+    goal = nearest - direction * (setback / distance) if setback else projected
+    goal_cell = cell(goal)
+    if not inside(goal_cell) or components[tuple(goal_cell)] != connected:
+        raise ValueError('the 50 cm setback falls outside the robot-connected floor')
+    return dict(floor=nearest.tolist(), projected=projected.tolist(), goal=goal.tolist(), setback_m=setback)
+
+
 def daemon_available():
     try:
         from bbos import Type
@@ -318,8 +389,9 @@ def main():
     with out_lock:
         print(json.dumps(dict(nav_from_world=nav.pose, mode=nav.mode), allow_nan=False), flush=True)
     current = {'id': None, 'outcome': None}
+    current_lock = threading.Lock()
 
-    def on_state(state, reason):
+    def handle_state(state, reason):
         request_id, outcome = current['id'], current['outcome']
         if not (request_id and outcome):
             return
@@ -334,6 +406,10 @@ def main():
             if phase in ('arrived', 'failed'):
                 current['id'] = current['outcome'] = None
 
+    def on_state(state, reason):
+        with current_lock:
+            handle_state(state, reason)
+
     nav.start(on_state)
     parent = os.getppid()
     for line in sys.stdin:
@@ -344,19 +420,30 @@ def main():
             if len(line) > 16384:
                 raise ValueError('request too large')
             op, request_id, waypoints = parse(line)
+            if op == 'resolve_ground_goal':
+                if not isinstance(nav, DaemonNav):
+                    raise ValueError('this navigation backend does not expose labelled floor mapping')
+                emit(request_id, 'resolved', **resolve_ground_goal(waypoints))
+                continue
             if not nav.ready():
                 raise ValueError('nav app is not running or has no slam.pose yet (:8010)')
-            if op == 'stop':
-                nav.stop()
+            with current_lock:
+                if op == 'stop':
+                    nav.stop()
+                    if current['id']:
+                        emit(current['id'], 'failed', reason='cancelled')
+                    current['id'] = current['outcome'] = None
+                    emit(request_id, 'stopped')
+                    continue
+                # The daemon atomically stops and clears its old plan when a new
+                # command record arrives. The app backend clears before starting.
+                # Do not leave the superseded request waiting for an outcome.
+                nav.go(waypoints)
                 if current['id']:
-                    emit(current['id'], 'failed', reason='cancelled')
-                current['id'] = current['outcome'] = None
-                emit(request_id, 'stopped')
-                continue
-            current['id'] = request_id
-            current['outcome'] = DaemonOutcome() if isinstance(nav, DaemonNav) else Outcome()
-            nav.go(waypoints)
-            emit(request_id, 'accepted', mode=nav.mode, waypoints=len(waypoints))
+                    emit(current['id'], 'failed', reason='replaced by a new navigation command')
+                current['id'] = request_id
+                current['outcome'] = DaemonOutcome() if isinstance(nav, DaemonNav) else Outcome()
+                emit(request_id, 'accepted', mode=nav.mode, waypoints=len(waypoints))
         except (ValueError, KeyError, OSError, ConnectionError, RuntimeError) as e:
             emit(request_id, 'rejected', reason=str(e))
 

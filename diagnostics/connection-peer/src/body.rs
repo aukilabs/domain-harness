@@ -1,23 +1,31 @@
-//! Bracketbot body state: `bbos-joints`, `bbos-health` and `bbos-pointing`, each
-//! declaring the body model rooted at the published pose's base frame, on the pose clock.
+//! Bracketbot body state: `bbos-joints`, `bbos-health`, `bbos-battery` and
+//! `bbos-pointing`, each declaring the body model rooted at the published pose's
+//! base frame, on the pose clock. Every observation is stamped with the capture
+//! time of what it holds (one arm's state, the battery, or a pointing phase),
+//! converted from BBOS's native realtime clock into this peer's session clock.
 use anyhow::{Result, ensure};
 use auki_components::*;
 use serde::Deserialize;
 use std::sync::Arc;
-use crate::robot_state::{Battery, BodyContract, Health, JointHealth, Joints, Pointing, HEALTH_SCHEMA, JOINTS_SCHEMA, METADATA, POINTING_SCHEMA};
+use crate::robot_state::{Battery, BodyContract, Health, JointHealth, Joints, Pointing, BATTERY_SCHEMA, HEALTH_SCHEMA, JOINTS_SCHEMA, METADATA, POINTING_SCHEMA};
 use std::collections::BTreeMap;
 
 /// The URDF the Home viewer serves for this body.
 const MODEL: &str = "bracketbot";
 const JOINTS: &str = "bbos-joints";
 const HEALTH: &str = "bbos-health";
+const BATTERY: &str = "bbos-battery";
 const POINTING: &str = "bbos-pointing";
 
 #[derive(Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Sample {
+    /// One arm's positions, at its BBOS arm-state capture time (native).
     Joints { timestamp_ns: u64, positions: BTreeMap<String, f64> },
-    Health { timestamp_ns: u64, #[serde(default)] joints: BTreeMap<String, JointHealth>, battery: Option<Battery> },
+    /// One arm's motor readings, at its BBOS arm-state capture time (native).
+    Health { timestamp_ns: u64, joints: BTreeMap<String, JointHealth> },
+    /// The battery, at its BBOS `drive.status` capture time (native).
+    Battery { timestamp_ns: u64, battery: Battery },
 }
 
 pub fn start() -> (tokio::task::JoinHandle<()>, tokio::sync::mpsc::Receiver<Sample>) {
@@ -86,11 +94,12 @@ impl<T: ContractType + Send + Sync + 'static> Stream<T> {
 pub struct Body {
     joints: Stream<Joints>,
     health: Stream<Health>,
+    battery: Stream<Battery>,
     pointing: Stream<Pointing>,
-    clock: auki_time::SessionClock,
     native_clock: crate::capture_clock::NativeCaptureClock,
-    last_joints_native: u64,
-    last_health_native: u64,
+    /// The last native capture time sent per Output, so a repeat is skipped
+    /// before conversion.
+    last_native: [u64; 4],
 }
 impl Body {
     pub fn mount(p: &crate::poses::Publisher) -> Result<Self> {
@@ -99,52 +108,61 @@ impl Body {
         body.validate()?;
         Ok(Self {
             joints: stream(p, &body, JOINTS, JOINTS_SCHEMA, "urdf_joint_positions")?,
-            health: stream(p, &body, HEALTH, HEALTH_SCHEMA, "motor_and_battery_health")?,
+            health: stream(p, &body, HEALTH, HEALTH_SCHEMA, "motor_health")?,
+            battery: stream(p, &body, BATTERY, BATTERY_SCHEMA, "battery")?,
             pointing: stream(p, &body, POINTING, POINTING_SCHEMA, "pointing_request_status")?,
-            clock: p.session_clock.clone(),
             native_clock: p.native_clock.clone(),
-            last_joints_native: 0,
-            last_health_native: 0,
+            last_native: [0; 4],
         })
+    }
+    /// The session-clock time of a native capture, once per Output; None to
+    /// skip (a repeat, or a capture the measured clock relationship cannot place).
+    fn session_time(&mut self, output: usize, native_timestamp_ns: u64) -> Result<Option<u64>> {
+        if native_timestamp_ns <= self.last_native[output] { return Ok(None); }
+        let converted = self.native_clock.convert(native_timestamp_ns)?;
+        if converted.is_some() { self.last_native[output] = native_timestamp_ns; }
+        Ok(converted)
     }
     pub fn publish(&mut self, sample: Sample) -> Result<()> {
         match sample {
             Sample::Joints {timestamp_ns, positions} => {
-                if timestamp_ns <= self.last_joints_native { return Ok(()); }
-                let native_timestamp_ns=timestamp_ns;
-                let Some(timestamp_ns) = self.native_clock.convert(timestamp_ns)? else { return Ok(()); };
+                let Some(timestamp_ns) = self.session_time(0, timestamp_ns)? else { return Ok(()); };
                 let joints = Joints {positions};
                 joints.validate()?;
-                self.joints.publish(timestamp_ns, joints)?;
-                self.last_joints_native=native_timestamp_ns;
-                Ok(())
+                self.joints.publish(timestamp_ns, joints)
             }
-            Sample::Health {timestamp_ns, joints, battery} => {
-                if timestamp_ns <= self.last_health_native { return Ok(()); }
-                let native_timestamp_ns=timestamp_ns;
-                let Some(timestamp_ns) = self.native_clock.convert(timestamp_ns)? else { return Ok(()); };
-                let health = Health {joints, battery};
+            Sample::Health {timestamp_ns, joints} => {
+                let Some(timestamp_ns) = self.session_time(1, timestamp_ns)? else { return Ok(()); };
+                let health = Health {joints, battery: None};
                 health.validate()?;
-                self.health.publish(timestamp_ns, health)?;
-                self.last_health_native=native_timestamp_ns;
-                Ok(())
+                self.health.publish(timestamp_ns, health)
+            }
+            Sample::Battery {timestamp_ns, battery} => {
+                let Some(timestamp_ns) = self.session_time(2, timestamp_ns)? else { return Ok(()); };
+                battery.validate()?;
+                self.battery.publish(timestamp_ns, battery)
             }
         }
     }
-    /// The latest pointing phase, captured now on this peer's session clock.
-    pub fn publish_pointing(&mut self, pointing: Pointing) -> Result<()> {
+    /// A pointing phase at the time it happened (`native_timestamp_ns`, this
+    /// host's realtime clock as BBOS uses it), converted into the session clock.
+    /// A phase no later than the last one is refused, not restamped.
+    pub fn publish_pointing(&mut self, native_timestamp_ns: u64, pointing: Pointing) -> Result<()> {
         pointing.validate()?;
-        let now = self.clock.now_ns();
-        // Phases can share a nanosecond; keep every one, in order.
-        let timestamp_ns = now.max(self.pointing.last + 1);
+        ensure!(native_timestamp_ns > self.last_native[3], "Pointing phase {} is not after the previous one", pointing.phase);
+        let timestamp_ns = self.native_clock.convert(native_timestamp_ns)?
+            .ok_or_else(|| anyhow::anyhow!("Pointing phase {} has a time the capture clock cannot place", pointing.phase))?;
+        self.last_native[3] = native_timestamp_ns;
         self.pointing.publish(timestamp_ns, pointing)
     }
     pub fn close(self, p: &crate::poses::Publisher) -> Result<()> {
         p.endpoint.unexport_product(JOINTS);
         p.endpoint.unexport_product(HEALTH);
+        p.endpoint.unexport_product(BATTERY);
         p.endpoint.unexport_product(POINTING);
         self.joints.capture.delete()?;
         self.health.capture.delete()?;
+        self.battery.capture.delete()?;
         self.pointing.capture.delete()?;
         Ok(())
     }
@@ -157,9 +175,12 @@ mod tests {
     fn helper_lines_parse_into_typed_state() {
         let joints: Sample = serde_json::from_str(r#"{"kind":"joints","timestamp_ns":5,"positions":{"left_shoulder":0.5}}"#).unwrap();
         assert!(matches!(joints, Sample::Joints {timestamp_ns: 5, ..}));
-        let health: Sample = serde_json::from_str(r#"{"kind":"health","timestamp_ns":6,"joints":{"left_shoulder":{"temperature_c":41.0,"current_a":0.2}},"battery":null}"#).unwrap();
-        let Sample::Health {joints, battery, ..} = health else { panic!() };
-        Health {joints, battery}.validate().unwrap();
-        assert!(serde_json::from_str::<Sample>(r#"{"kind":"health","timestamp_ns":6,"joints":{},"battery":null,"extra":1}"#).is_err());
+        let health: Sample = serde_json::from_str(r#"{"kind":"health","timestamp_ns":6,"joints":{"left_shoulder":{"temperature_c":41.0,"current_a":0.2}}}"#).unwrap();
+        let Sample::Health {joints, ..} = health else { panic!() };
+        Health {joints, battery: None}.validate().unwrap();
+        // The battery has its own capture time, so it never rides in a health sample.
+        assert!(serde_json::from_str::<Sample>(r#"{"kind":"health","timestamp_ns":6,"joints":{},"battery":null}"#).is_err());
+        let battery: Sample = serde_json::from_str(r#"{"kind":"battery","timestamp_ns":7,"battery":{"voltage":18.5,"percent":90.0}}"#).unwrap();
+        assert!(matches!(battery, Sample::Battery {timestamp_ns: 7, ..}));
     }
 }

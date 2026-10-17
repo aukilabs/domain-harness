@@ -41,6 +41,10 @@ pub struct Reply {
     pub arm: Option<String>,
     #[serde(default)]
     pub code: Option<String>,
+    /// When this phase happened, on this host's realtime clock (as BBOS stamps
+    /// captures); the body publisher converts it into the session clock.
+    #[serde(default)]
+    pub timestamp_ns: Option<u64>,
 }
 impl Reply {
     /// The request no longer holds the arm.
@@ -272,7 +276,7 @@ impl Drop for Arm {
 mod tests {
     use super::*;
     fn reply(phase: &str, executes: Option<bool>) -> Reply {
-        Reply { request_id: Some("r".into()), phase: phase.into(), reason: None, executes, arm: None, code: None }
+        Reply { request_id: Some("r".into()), phase: phase.into(), reason: None, executes, arm: None, code: None, timestamp_ns: Some(1) }
     }
     #[test]
     fn a_request_holds_the_arm_until_its_move_ends() {

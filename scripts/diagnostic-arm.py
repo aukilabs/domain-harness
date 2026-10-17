@@ -311,7 +311,10 @@ def main():
             request_id = None
 
             def emit(phase, **details):
-                print(json.dumps(dict(request_id=request_id, phase=phase, **details), allow_nan=False), flush=True)
+                # When the phase happened, on this host's realtime clock as BBOS stamps
+                # captures; the runner converts it into its session clock.
+                print(json.dumps(dict(request_id=request_id, phase=phase, timestamp_ns=time.time_ns(), **details),
+                                 allow_nan=False), flush=True)
             try:
                 request_id, name, target = parse_request(line)
                 *poses, report = plan(arms, name, target)

@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 pub const JOINTS_SCHEMA: &str = "spatial-harness.robot-joints/v1";
 pub const HEALTH_SCHEMA: &str = "spatial-harness.robot-health/v1";
 pub const POINTING_SCHEMA: &str = "spatial-harness.robot-pointing/v1";
+pub const BATTERY_SCHEMA: &str = "spatial-harness.robot-battery/v1";
 pub const METADATA: &str = "spatial-harness.robot-body/v1";
 const MAX_JOINTS: usize = 64;
 
@@ -46,6 +47,8 @@ fn joint_name(name: &str) -> bool {
 }
 
 /// Joint positions keyed by URDF joint name: radians, or metres for prismatic joints.
+/// Each observation holds positions captured together (one arm, say); a reader
+/// merges observations by joint name.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Joints {
@@ -63,7 +66,9 @@ impl Joints {
     }
 }
 
-/// Motor health keyed like `Joints`, and the battery. Presentation only.
+/// Motor health keyed like `Joints`. Presentation only. Each observation holds
+/// readings captured together, at its timestamp; a reader merges them by key.
+/// `battery` is for publishers without a separate `Battery` Output.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Health {
@@ -84,6 +89,15 @@ pub struct Battery {
     pub voltage: f64,
     pub percent: f64,
 }
+impl ContractType for Battery {
+    const DATATYPE: &'static str = BATTERY_SCHEMA;
+}
+impl Battery {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(self.voltage.is_finite() && self.voltage >= 0. && (0. ..=100.).contains(&self.percent), "Invalid battery");
+        Ok(())
+    }
+}
 impl ContractType for Health {
     const DATATYPE: &'static str = HEALTH_SCHEMA;
 }
@@ -93,10 +107,7 @@ impl Health {
         ensure!(self.joints.len() <= MAX_JOINTS && self.joints.iter().all(|(name, j)|
             joint_name(name) && j.temperature_c.is_finite() && j.current_a.is_finite()),
             "Invalid joint health");
-        if let Some(b) = &self.battery {
-            ensure!(b.voltage.is_finite() && b.voltage >= 0. && (0. ..=100.).contains(&b.percent), "Invalid battery");
-        }
-        Ok(())
+        self.battery.as_ref().map_or(Ok(()), Battery::validate)
     }
 }
 

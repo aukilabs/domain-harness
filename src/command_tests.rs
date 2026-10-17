@@ -15,6 +15,7 @@ fn state(dir:&std::path::Path)->anyhow::Result<Shared>{
         previews:tokio::sync::mpsc::channel(1).0,controls:tokio::sync::mpsc::channel(1).0,
         pointing:tokio::sync::mpsc::channel(1).0,
         navigation:tokio::sync::mpsc::channel(1).0,
+        greetings:Mutex::new(Default::default()),
         store:Arc::new(Mutex::new(store)),changes:tokio::sync::watch::channel(()).0,
         peer:tokio::sync::watch::channel(json!({"peers":[]})).1,
         runner:tokio::sync::watch::channel(Default::default()).1,

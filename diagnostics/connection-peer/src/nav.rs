@@ -35,6 +35,10 @@ struct Reply {
     phase: String,
     #[serde(default)]
     reason: Option<String>,
+    #[serde(default)] floor: Option<[f64; 3]>,
+    #[serde(default)] projected: Option<[f64; 3]>,
+    #[serde(default)] goal: Option<[f64; 3]>,
+    #[serde(default)] setback_m: Option<f64>,
 }
 
 type Waiting = Arc<Mutex<HashMap<String, mpsc::Sender<Reply>>>>;
@@ -77,7 +81,7 @@ impl Adapter {
                 let reply = rx
                     .recv_timeout(until.saturating_duration_since(Instant::now()))
                     .map_err(|_| anyhow!("Nav adapter did not answer in time"))?;
-                if matches!(reply.phase.as_str(), "accepted" | "rejected" | "stopped") {
+                if matches!(reply.phase.as_str(), "accepted" | "rejected" | "stopped" | "resolved") {
                     return Ok(reply);
                 }
             }
@@ -113,6 +117,30 @@ struct Goals {
     session_clock: auki_time::SessionClock,
 }
 impl Goals {
+    fn ground_goal(&self, request: GroundGoal) -> Result<GroundGoalResolved> {
+        uuid::Uuid::parse_str(&request.request_id)?;
+        ensure!(request.selected.iter().all(|v| v.is_finite() && v.abs() < 1e4), "Invalid selected point");
+        let (selected, goal_from_nav, resolved_from) = {
+            let known = self.known.lock().map_err(|_| anyhow!("Frames unavailable"))?;
+            let now = self.session_clock.now_ns();
+            let (nav_from_goal, mut used) = chain(&known, &request.frame, &self.nav, &self.clock, &self.session, now)?;
+            let (goal_from_nav, back) = chain(&known, &self.nav, &request.frame, &self.clock, &self.session, now)?;
+            used.extend(back);
+            (through(&nav_from_goal, request.selected)?, goal_from_nav, used)
+        };
+        let reply = self.adapter.ask(serde_json::json!({"op":"resolve_ground_goal",
+            "request_id":request.request_id,"selected":selected}), &request.request_id)?;
+        ensure!(reply.phase == "resolved", "{}", reply.reason.unwrap_or_else(|| "Floor goal unavailable".into()));
+        let floor = reply.floor.context("Missing floor point")?;
+        let projected = reply.projected.context("Missing projected point")?;
+        let goal = reply.goal.context("Missing ground goal")?;
+        let setback_m = reply.setback_m.context("Missing setback distance")?;
+        ensure!(setback_m == 0. || setback_m == 0.5, "Invalid setback distance");
+        Ok(GroundGoalResolved { request_id: request.request_id, frame: request.frame,
+            floor: through(&goal_from_nav, floor)?, projected: through(&goal_from_nav, projected)?,
+            goal: through(&goal_from_nav, goal)?, setback_m, nav_frame: self.nav.clone(),
+            clock: self.clock.clone(), resolved_from })
+    }
     fn go(&self, request: Navigate, caller: &str) -> Result<NavigateAccepted> {
         uuid::Uuid::parse_str(&request.request_id).context("request_id must be a UUID")?;
         let (points, h, resolved_from) = {
@@ -160,8 +188,13 @@ impl Goals {
     }
 }
 
-/// A turn in place takes at most this long (nav turns at 0.15 rad/s by default).
+/// A turn in place takes at most this long.
 pub const TURN_TIMEOUT: Duration = Duration::from_secs(45);
+/// Driving a route of `route_m` and then turning takes at most this long;
+/// nav's slow-downs near obstacles keep it well under its 0.25 m/s.
+pub fn allowance(route_m: f64) -> Duration {
+    TURN_TIMEOUT + Duration::from_secs_f64((route_m.max(0.) / 0.1).min(600.))
+}
 
 /// Turns the robot in place for the arm pointer: one nav goal at the robot's
 /// own position whose heading faces a point. Nav reaches a goal inside its
@@ -173,27 +206,42 @@ pub struct Turner {
     pub home: String,
 }
 impl Turner {
-    /// Face `point` in `frame`, resolved like a goal; returns the nav heading
-    /// once nav reports arrival. Stops nav and fails when `stop` is set.
-    pub fn face(&self, request_id: &str, frame: &FrameRef, point: [f64; 3],
+    /// Drive `approach` (waypoints in `frame`; empty to stay put) and end
+    /// facing `point` in `frame`, all resolved like a goal; returns the nav
+    /// heading once nav reports arrival. Stops nav and fails when `stop` is set.
+    pub fn face(&self, request_id: &str, frame: &FrameRef, approach: &[[f64; 3]], point: [f64; 3],
         stop: &std::sync::atomic::AtomicBool) -> Result<f64> {
         let g = &self.goals;
-        let (robot, target) = {
+        ensure!(approach.len() <= MAX_WAYPOINTS, "Send at most {MAX_WAYPOINTS} approach waypoints");
+        ensure!(approach.iter().flatten().all(|v| v.is_finite()), "Approach waypoints must be finite");
+        let (robot, points, target) = {
             let known = g.known.lock().map_err(|_| anyhow!("Frames unavailable"))?;
             let now = g.session_clock.now_ns();
             let (nav_from_target, _) = chain(&known, frame, &g.nav, &g.clock, &g.session, now)?;
             let (nav_from_base, _) = chain(&known, &g.base, &g.nav, &g.clock, &g.session, now)?;
-            (through(&nav_from_base, [0.; 3])?, through(&nav_from_target, point)?)
+            let points = approach.iter().map(|p| through(&nav_from_target, *p).map(|q| [q[0], q[1]])).collect::<Result<Vec<_>>>()?;
+            (through(&nav_from_base, [0.; 3])?, points, through(&nav_from_target, point)?)
         };
-        ensure!((target[0] - robot[0]).hypot(target[1] - robot[1]) > 0.05, "Target is straight above or below the robot");
-        let h = heading([robot[0], robot[1]], [target[0], target[1]]);
+        let robot = [robot[0], robot[1]];
+        let end = points.last().copied().unwrap_or(robot);
+        ensure!((target[0] - end[0]).hypot(target[1] - end[1]) > 0.05, "Target is straight above or below where the robot would stand");
+        let h = heading(end, [target[0], target[1]]);
+        let route: f64 = std::iter::once(robot).chain(points.iter().copied()).collect::<Vec<_>>()
+            .windows(2).map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1])).sum();
+        let mut list: Vec<serde_json::Value> = points.iter().map(|p| serde_json::json!([p[0], p[1], null])).collect();
+        list.pop();
+        list.push(serde_json::json!([end[0], end[1], h]));
         let (tx, rx) = mpsc::channel();
         g.adapter.waiting.lock().unwrap().insert(request_id.into(), tx);
         let result = (|| {
-            g.adapter.send(&serde_json::json!({"op":"go","request_id":request_id,
-                "waypoints":[[robot[0], robot[1], h]]}))?;
-            crate::diagnostic_log!("point_at {request_id}: turning to face the target (nav heading {:.0}°)", h.to_degrees());
-            let until = Instant::now() + TURN_TIMEOUT;
+            g.adapter.send(&serde_json::json!({"op":"go","request_id":request_id,"waypoints":list}))?;
+            if points.is_empty() {
+                crate::diagnostic_log!("point_at {request_id}: turning to face the target (nav heading {:.0}°)", h.to_degrees());
+            } else {
+                crate::diagnostic_log!("point_at {request_id}: driving {route:.1} m over {} waypoint(s), then facing the target (nav heading {:.0}°)",
+                    points.len(), h.to_degrees());
+            }
+            let until = Instant::now() + allowance(route);
             loop {
                 let halt = |why: &str| {
                     let _ = g.stop(&uuid::Uuid::new_v4().to_string());
@@ -307,6 +355,7 @@ pub struct Navigator {
     _inbox: Inbox,
     _component: Component,
     _navigate: Operable<Navigate, NavigateAccepted>,
+    _ground_goal: Operable<GroundGoal, GroundGoalResolved>,
     _cancel: Operable<Cancel, Cancelled>,
     _mount: Component,
     _capture: BufferProductCapture<Update>,
@@ -446,7 +495,7 @@ impl Navigator {
             .insert(&[&p.contract.to_frame, &nav_frame], Transform { contract: held, product: capture.product() });
 
         let component = p.runtime.component(
-            ComponentSpec::new(COMPONENT).operable(contract()).operable(cancel_contract()),
+            ComponentSpec::new(COMPONENT).operable(contract()).operable(cancel_contract()).operable(ground_goal_contract()),
         )?;
         let goals = Arc::new(Goals {
             known,
@@ -458,9 +507,15 @@ impl Navigator {
             session_clock: p.session_clock.clone(),
         });
         let turner = Turner { goals: goals.clone(), home: home.clone() };
+        let floor_home = home.clone();
         let (only_home, also_home) = (home.clone(), home);
         let (go, stop) = (goals.clone(), goals.clone());
         let rejected = |e: anyhow::Error| InvocationError::Rejected(format!("{e:#}"));
+        let resolve = goals.clone();
+        let ground_goal = component.operable(
+            RESOLVE_GOAL, move |ctx| ctx.caller_peer_id == floor_home,
+            move |_ctx, request: GroundGoal| resolve.ground_goal(request).map_err(rejected),
+        )?;
         let navigate = component.operable_ordered(
             OPERATION,
             InvocationOrdering::SerialInAcceptanceOrder,
@@ -477,9 +532,10 @@ impl Navigator {
         let adapter = goals.adapter.clone();
         let inbox = Inbox::start(goals);
         component.expose()?;
+        p.endpoint.export_operable(&ground_goal)?;
         p.endpoint.export_operable(&navigate)?;
         p.endpoint.export_operable(&cancel)?;
-        Ok(Self { adapter, turner, _component: component, _navigate: navigate, _cancel: cancel, _mount: mount, _capture: capture, _inbox: inbox })
+        Ok(Self { adapter, turner, _component: component, _navigate: navigate, _ground_goal: ground_goal, _cancel: cancel, _mount: mount, _capture: capture, _inbox: inbox })
     }
 }
 

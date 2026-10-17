@@ -390,9 +390,10 @@ def arm_joint_sources(Config, Reader):
     return arms
 
 
-def arm_joint_positions(arms, latest, now_ns):
-    """URDF joint positions from fresh arm states, using BBOS's own q2urdf."""
-    positions, stamps = {}, []
+def arm_joint_samples(arms, latest, now_ns):
+    """URDF joint positions from each fresh arm state, using BBOS's own q2urdf:
+    (BBOS capture ns, positions) per arm, oldest first."""
+    samples = []
     for name, (cfg, reader) in arms.items():
         if reader.ready():
             latest[name] = reader.data.copy()
@@ -400,22 +401,43 @@ def arm_joint_positions(arms, latest, now_ns):
         if d is None or not 0 <= now_ns-timestamp(d) <= MAX_JOINT_AGE_NS:
             continue
         angles = cfg.q2urdf(np.array(d['pos'], np.float64))
-        positions.update(zip(cfg.joint_names, (float(a) for a in angles)))
-        stamps.append(timestamp(d))
-    return (max(stamps), positions) if positions else None
+        samples.append((timestamp(d), dict(zip(cfg.joint_names, (float(a) for a in angles)))))
+    return sorted(samples, key=lambda sample: sample[0])
 
 
-def arm_joint_health(arms, latest, now_ns):
+def arm_joint_positions(arms, latest, now_ns):
+    """Both arms' positions in one sample, at the newer arm's capture time (the
+    full runner's local mapping view); Products use arm_joint_samples."""
+    samples = arm_joint_samples(arms, latest, now_ns)
+    positions = {}
+    for _, p in samples:
+        positions.update(p)
+    return (samples[-1][0], positions) if samples else None
+
+
+def arm_health_samples(arms, latest, now_ns):
     """Per-joint motor temperature (C) and current (A), keyed like the joint
-    positions, from the arm states arm_joint_positions last read."""
-    joints = {}
+    positions, from the arm states arm_joint_samples last read: (BBOS capture
+    ns, joints) per arm, oldest first."""
+    samples = []
     for name, (cfg, _) in arms.items():
         d = latest.get(name)
         if d is None or not 0 <= now_ns-timestamp(d) <= MAX_JOINT_AGE_NS:
             continue
+        joints = {}
         for joint, temp, current in zip(cfg.joint_names, d['temp'], d['current']):
             if np.isfinite(temp) and np.isfinite(current):
                 joints[joint] = dict(temperature_c=round(float(temp), 1), current_a=round(float(current), 3))
+        if joints:
+            samples.append((timestamp(d), joints))
+    return sorted(samples, key=lambda sample: sample[0])
+
+
+def arm_joint_health(arms, latest, now_ns):
+    """Both arms' motor health merged (the full runner's local mapping view)."""
+    joints = {}
+    for _, j in arm_health_samples(arms, latest, now_ns):
+        joints.update(j)
     return joints
 
 
@@ -429,8 +451,15 @@ def battery_source(Reader):
 
 
 def battery_reading(reader, latest, now_ns):
+    """The battery without its capture time (the full runner's local mapping view)."""
+    sample = battery_sample(reader, latest, now_ns)
+    return sample[1] if sample else None
+
+
+def battery_sample(reader, latest, now_ns):
     """BBOS's battery voltage and percentage (its smoothed estimate between the
-    low and full voltages); drive.status updates slowly, so up to 30 s old."""
+    low and full voltages) at its drive.status capture ns; drive.status updates
+    slowly, so up to 30 s old."""
     if reader is None:
         return None
     if reader.ready():
@@ -441,4 +470,4 @@ def battery_reading(reader, latest, now_ns):
     voltage, percent = float(d['voltage']), float(d['battery_percentage'])
     if not (np.isfinite(voltage) and np.isfinite(percent)):
         return None
-    return dict(voltage=round(voltage, 2), percent=round(min(max(percent, 0.), 100.), 1))
+    return timestamp(d), dict(voltage=round(voltage, 2), percent=round(min(max(percent, 0.), 100.), 1))

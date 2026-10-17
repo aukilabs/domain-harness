@@ -37,8 +37,11 @@ pub fn waypoints(points: &[[f64; 3]], gap_m: f64) -> Result<Vec<[f64; 3]>> {
 }
 
 pub enum Request {
+    GroundGoal(navigate::GroundGoal, tokio::sync::oneshot::Sender<Result<navigate::GroundGoalResolved>>),
     Navigate(Navigate, tokio::sync::oneshot::Sender<Result<NavigateAccepted>>),
     Cancel(Cancel, tokio::sync::oneshot::Sender<Result<Cancelled>>),
+    /// A robot's `greet` (see `greet`): said where it stands, nothing moves.
+    Greet(crate::greet::Greet, tokio::sync::oneshot::Sender<Result<crate::greet::GreetAccepted>>),
 }
 /// A Home-side invocation, served by the task that owns Home's peer.
 pub struct Invoke {
@@ -67,6 +70,23 @@ pub async fn serve(
             };
             let deadline = Some(Duration::from_secs(8));
             match request {
+                Request::GroundGoal(instruction, reply) => {
+                    let work = async {
+                        let (expected, route) = target()?;
+                        let resolved = client.invoke_exact::<_, navigate::GroundGoalResolved>(expected, route, candidate.component.clone(),
+                            navigate::RESOLVE_GOAL, "home-navigation", uuid::Uuid::new_v4().to_string(), deadline, &instruction)
+                            .await?.result;
+                        ensure!(resolved.request_id == instruction.request_id && resolved.frame == instruction.frame,
+                            "Ground goal response does not match the request");
+                        ensure!(resolved.goal.iter().chain(resolved.floor.iter()).chain(resolved.projected.iter()).all(|v| v.is_finite()),
+                            "Ground goal coordinates must be finite");
+                        Ok(resolved)
+                    };
+                    let result = tokio::time::timeout(Duration::from_secs(10), work).await
+                        .unwrap_or_else(|_| Err(anyhow!("Robot ground goal lookup timed out")));
+                    let _ = reply.send(result);
+                }
+
                 Request::Navigate(instruction, reply) => {
                     let work = async {
                         let (expected, route) = target()?;
@@ -79,6 +99,19 @@ pub async fn serve(
                     };
                     let result = tokio::time::timeout(Duration::from_secs(10), work).await
                         .unwrap_or_else(|_| Err(anyhow!("Robot navigation request timed out")));
+                    let _ = reply.send(result);
+                }
+                Request::Greet(instruction, reply) => {
+                    let work = async {
+                        let (expected, route) = target()?;
+                        let accepted = client.invoke_exact::<_, crate::greet::GreetAccepted>(expected, route, candidate.component.clone(),
+                            crate::greet::OPERATION, "home-greeting", uuid::Uuid::new_v4().to_string(), deadline, &instruction)
+                            .await?.result;
+                        ensure!(accepted.request_id == instruction.request_id, "Robot greeting result does not match the request");
+                        Ok(accepted)
+                    };
+                    let result = tokio::time::timeout(Duration::from_secs(10), work).await
+                        .unwrap_or_else(|_| Err(anyhow!("Robot greeting request timed out")));
                     let _ = reply.send(result);
                 }
                 Request::Cancel(instruction, reply) => {

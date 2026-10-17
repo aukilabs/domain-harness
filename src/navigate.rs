@@ -87,3 +87,33 @@ pub struct Cancelled {
 impl ContractType for Cancelled {
     const DATATYPE: &'static str = CANCEL_RESULT;
 }
+
+/// Read-only resolution against the robot's own labelled floor map.
+pub const RESOLVE_GOAL: &str = "resolve_ground_goal";
+pub fn ground_goal_contract() -> OperableContract {
+    OperableContract { name: RESOLVE_GOAL.into(), instruction: GroundGoal::DATATYPE.into(),
+        result: GroundGoalResolved::DATATYPE.into(), exposure: Exposure::Cluster }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GroundGoal {
+    pub request_id: String,
+    pub frame: FrameRef,
+    pub selected: [f64; 3],
+}
+impl ContractType for GroundGoal { const DATATYPE: &'static str = "spatial-harness.ground-goal/v1"; }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GroundGoalResolved {
+    pub request_id: String,
+    /// All three positions below are in this exact request frame.
+    pub frame: FrameRef,
+    pub floor: [f64; 3],
+    pub projected: [f64; 3],
+    pub goal: [f64; 3],
+    pub setback_m: f64,
+    pub nav_frame: FrameRef,
+    pub clock: ClockReference,
+    pub resolved_from: Vec<Used>,
+}
+impl ContractType for GroundGoalResolved { const DATATYPE: &'static str = "spatial-harness.ground-goal-resolved/v1"; }
