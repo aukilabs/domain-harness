@@ -7,7 +7,7 @@ import SpatialPortalBridge
 /// The bridge does the work; this file is the screens.
 enum Onboarding {
     /// What an invitation QR starts with.
-    static let prefix = #"{"schema":"spatial-harness.onboarding/v1""#
+    static let prefix = "OB2|"
 
     /// This phone's model identifier, e.g. "iPhone16,1".
     static var model: String {
@@ -101,9 +101,8 @@ struct OnboardingHostView: View {
     @ObservedObject var peer: HomePeer
     let close: () -> Void
     @State private var alias = ""
-    @State private var ssid = ""
-    @State private var wifiPassword = ""
-    @State private var withWifi = false
+    @State private var preparing = false
+    @State private var closed = false
     @State private var asked = false
     @State private var problem: String?
     @State private var invitation: Onboarding.Code?
@@ -160,7 +159,7 @@ struct OnboardingHostView: View {
             }
         }
         .onChange(of: state?.marker) { _, payload in marker = payload.flatMap(Onboarding.code) }
-        .onDisappear { release() }
+        .onDisappear { closed = true; peer.stopOnboarding(); release() }
     }
 
     private var caption: String {
@@ -175,12 +174,8 @@ struct OnboardingHostView: View {
             Text("A name for the robot or phone you are adding.").themeText(11).foregroundStyle(Theme.dim)
             TextField("Alias", text: $alias).textFieldStyle(SoftFieldStyle()).autocorrectionDisabled()
                 .textInputAutocapitalization(.words).submitLabel(.next).onSubmit(next)
-            Toggle("It needs to join a Wi-Fi network", isOn: $withWifi).toggleStyle(CheckToggleStyle())
-            if withWifi {
-                TextField("Wi-Fi name", text: $ssid).textFieldStyle(SoftFieldStyle()).autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                SecureField("Wi-Fi password", text: $wifiPassword).textFieldStyle(SoftFieldStyle())
-            }
+            Text("The invitation includes this scene's Wi-Fi settings from Home. Authorize this phone in Home's Scene Wi-Fi settings first.")
+                .themeText(11).foregroundStyle(Theme.dim)
             if let problem { Text(problem).themeText(11).foregroundStyle(Theme.accent) }
             HStack {
                 Button("Cancel") { finish() }
@@ -194,10 +189,14 @@ struct OnboardingHostView: View {
 
     private var calibrating: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Calibrate this phone").themeLabel(17, .medium)
+            Text(preparing ? "Preparing invitation" : "Calibrate this phone").themeLabel(17, .medium)
+            if preparing { ProgressView("Retrieving scene Wi-Fi from Home…") }
             Text("Point the camera at a Portal of this scene. The code for \(alias) appears as soon as this phone knows where it is.")
                 .themeText(11).foregroundStyle(Theme.dim)
             if let problem { Text(problem).themeText(11).foregroundStyle(Theme.accent) }
+            if problem != nil && controller.calibrated && !preparing {
+                Button("Retry", action: start).buttonStyle(PillButtonStyle())
+            }
             HStack { Spacer(); Button("Cancel") { finish() }.buttonStyle(PillButtonStyle()) }
         }
         .themePanel()
@@ -216,9 +215,6 @@ struct OnboardingHostView: View {
 
     private func next() {
         guard !alias.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-        if withWifi && (ssid.isEmpty || (!wifiPassword.isEmpty && wifiPassword.count < 8)) {
-            problem = "Enter the Wi-Fi name, and a password of at least 8 characters if it has one"; return
-        }
         problem = nil
         asked = true
         controller.onboardingHosting = true
@@ -226,6 +222,7 @@ struct OnboardingHostView: View {
     }
 
     private func start() {
+        guard !preparing && !closed else { return }
         switch Onboarding.markerSide() {
         case .failure(let error): problem = error.message; return
         case .success(let side): markerSide = side
@@ -233,28 +230,39 @@ struct OnboardingHostView: View {
         // Geometry is in the screen's standard points; under Display Zoom a
         // point is bigger, so the marker is drawn smaller to stay 50 mm.
         let bounds = UIScreen.main.bounds, zoom = Onboarding.zoom
-        print("[onboarding] screen \(bounds.size) scale \(UIScreen.main.scale) native \(UIScreen.main.nativeScale) zoom \(zoom)")
-        let wifi: [String: Any]? = withWifi ? ["ssid": ssid].merging(wifiPassword.isEmpty ? [:] : ["password": wifiPassword]) { a, _ in a } : nil
-        var request: [String: Any] = ["alias": alias.trimmingCharacters(in: .whitespaces),
+        let request: [String: Any] = ["alias": alias.trimmingCharacters(in: .whitespaces),
             "display": ["model": Onboarding.model, "center_points": [bounds.midX * zoom, bounds.midY * zoom], "side_points": markerSide]]
-        if let wifi { request["wifi"] = wifi }
-        switch peer.hostOnboarding(request) {
-        case .failure(let error): problem = error.message
-        case .success(let text):
-            problem = nil
-            invitation = Onboarding.code(text)
-            if brightness == nil { brightness = UIScreen.main.brightness }
-            UIScreen.main.brightness = 1
+        preparing = true
+        problem = nil
+        Task { @MainActor in
+            guard !closed else { return }
+            let result = await peer.hostOnboarding(request)
+            preparing = false
+            guard !closed else { return }
+            switch result {
+            case .failure(let error): problem = error.message
+            case .success(let text):
+                guard let code = Onboarding.code(text) else {
+                    peer.stopOnboarding()
+                    problem = "The invitation could not be rendered. Retry."
+                    return
+                }
+                problem = nil
+                invitation = code
+            }
         }
     }
 
     private func release() {
+        invitation = nil
+        marker = nil
         controller.onboardingHosting = false
         if let brightness { UIScreen.main.brightness = brightness }
         brightness = nil
     }
 
     private func finish() {
+        closed = true
         peer.stopOnboarding()
         release()
         close()

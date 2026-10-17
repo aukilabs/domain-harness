@@ -66,12 +66,12 @@ pub struct Request {
 }
 
 fn entity<'a>(arg:&Argument,inventory:&'a Value)->Result<&'a Value> {
-    let Argument::Entity{kind,id}=arg else {bail!("Select an @entity from autocomplete")};
+    let Argument::Entity{kind,id}=arg else {bail!("Select a #scene node from autocomplete")};
     inventory["entities"].as_array().into_iter().flatten().find(|e|e["id"]==*id&&e["kind"]==*kind)
         .ok_or_else(||anyhow::anyhow!("Entity no longer exists in the selected scene; select it again"))
 }
 fn peer<'a>(arg:&Argument,inventory:&'a Value)->Result<&'a Value> {
-    let Argument::Peer{id}=arg else {bail!("Select a #peer from autocomplete")};
+    let Argument::Peer{id}=arg else {bail!("Select an @peer from autocomplete")};
     inventory["peers"].as_array().into_iter().flatten().find(|p|p["id"]==*id)
         .ok_or_else(||anyhow::anyhow!("Peer is no longer discovered; select it again"))
 }

@@ -1,4 +1,4 @@
-// Slash input is parsed locally into typed arguments. It never submits chat.
+// Shared completion: @peer and #scene node. Only slash input executes directly.
 export function tokens(text) {
  const result=[];let i=0;
  while(i<text.length){
@@ -29,6 +29,39 @@ export function rebaseBindings(before,after,bindings) {
 }
 function parameter(def,index){return def?.args[index]||(def?.args.at(-1)?.variadic?def.args.at(-1):null);}
 function usage(def){return `/${def.name} ${def.args.map(a=>a.variadic?`<${a.name}> <${a.name}> …`:`<${a.name}>`).join(' ')}`;}
+// Unlike command arguments, prose mentions can touch punctuation. A prefix
+// inside a word/email is ordinary text, not a reference.
+export function mentionTokens(text){
+ const result=[],pattern=/(^|[\s([{])([@#])/g;let match;
+ while((match=pattern.exec(text))){
+  const start=match.index+match[1].length,prefix=match[2];let end=pattern.lastIndex,value='',complete=true;
+  if(text[end]==='"'){
+   const from=end++;let escaped=false,closed=false;
+   while(end<text.length){const c=text[end++];if(c==='"'&&!escaped){closed=true;break;}escaped=c==='\\'&&!escaped;}
+   complete=closed;
+   try{value=JSON.parse(text.slice(from,end));}catch{value=text.slice(from+1,closed?end-1:end);complete=false;}
+  }else{const from=end;while(end<text.length&&!/[\s.,!?;:()[\]{}"]/.test(text[end]))end++;value=text.slice(from,end);}
+  result.push({start,end,prefix,value,complete,raw:text.slice(start,end)});pattern.lastIndex=end;
+ }
+ return result;
+}
+export function prepareChat(input,bindings,inventory,scene){
+ const mentions=mentionTokens(input);
+ if(!mentions.length)return input.trim();
+ if(!inventory||inventory.scene!==scene)throw Error('Reference suggestions are not ready for this scene.');
+ const references=mentions.map(t=>{
+  const b=bindings.find(b=>b.start===t.start&&b.end===t.end&&b.raw===t.raw);
+  if(!t.complete||!b)throw Error(`Select ${t.raw} from autocomplete to confirm its identity.`);
+  const a=b.argument;
+  const valid=t.prefix==='@'?a.type==='peer'&&inventory.peers.some(p=>p.id===a.id):a.type==='entity'&&inventory.entities.some(e=>e.id===a.id&&e.kind===a.kind);
+  if(!valid)throw Error('Reference is no longer available. Select it again from autocomplete.');
+  return {text:t.raw,...a};
+ });
+ // Keep readable text in the UI, but retain exact selected identities in the
+ // user message sent to Qwen (and subsequent conversation history). These are
+ // references, not trusted state or instructions; tools still validate targets.
+ return input.trim()+'\n\nSelected references (identity only; use scene tools for current state):\n'+JSON.stringify({scene,frame:inventory.frame,references});
+}
 export function parseCommand(input,bindings,inventory,scene) {
  if(!inventory||inventory.scene!==scene)throw new Error('Command suggestions are not ready for this scene.');
  const list=tokens(input),command=list.shift()?.value.slice(1);
@@ -48,6 +81,7 @@ export function parseCommand(input,bindings,inventory,scene) {
   const bound=bindings.find(b=>b.start===t.start&&b.end===t.end&&b.raw===t.raw);
   if(!bound)throw new Error(`Select ${param.name} from autocomplete to confirm its identity.`);
   const arg=bound.argument;
+  if((arg.type==='peer'&&t.prefix!=='@')||(arg.type==='entity'&&t.prefix!=='#'))throw new Error('Use @ for peers and # for scene nodes.');
   const allowed=kind==='camera'?arg.type==='camera':kind==='peer'?arg.type==='peer':kind==='volume'?arg.type==='entity'&&arg.kind==='volume':kind==='editable_entity'?arg.type==='entity'&&['note','volume'].includes(arg.kind):kind==='editable_target'?arg.type==='peer'||arg.type==='entity'&&['note','volume'].includes(arg.kind):['peer','entity'].includes(arg.type);
   if(!allowed)throw new Error(`Invalid ${param.name}; select a matching suggestion.`);
   return arg;
@@ -56,7 +90,7 @@ export function parseCommand(input,bindings,inventory,scene) {
 }
 
 export function createSlashCommands({input,container,getScene,fetchInventory}) {
- const menu=document.createElement('div');menu.id='slash-suggestions';menu.className='slash-suggestions';menu.hidden=true;menu.setAttribute('role','listbox');menu.setAttribute('aria-label','Command suggestions');
+ const menu=document.createElement('div');menu.id='slash-suggestions';menu.className='slash-suggestions';menu.hidden=true;menu.setAttribute('role','listbox');menu.setAttribute('aria-label','Command and reference suggestions');
  const hint=document.createElement('div');hint.className='slash-hint';hint.id='slash-hint';hint.hidden=true;hint.setAttribute('role','status');
  // The current agent bar nests its form inside the shell. Keep the popup on
  // the outer bar so it is not clipped or squeezed into the inline input row.
@@ -73,7 +107,9 @@ export function createSlashCommands({input,container,getScene,fetchInventory}) {
   finally{if(ticket===generation){loading=false;render();}}
  }
  function context(){
-  const all=tokens(input.value),cursor=input.selectionStart??input.value.length;
+  const slash=input.value.trimStart().startsWith('/'),cursor=input.selectionStart??input.value.length;
+  const all=slash?tokens(input.value):mentionTokens(input.value);
+  if(!slash)return {all,index:-1,token:all.find(t=>cursor>=t.start&&cursor<=t.end)||{start:cursor,end:cursor,value:'',prefix:''}};
   let index=all.findIndex(t=>cursor>=t.start&&cursor<=t.end);
   if(index<0)index=all.filter(t=>t.end<cursor).length;
   return {all,index,token:all[index]||{start:cursor,end:cursor,value:'',prefix:''}};
@@ -82,16 +118,18 @@ export function createSlashCommands({input,container,getScene,fetchInventory}) {
   if(!inventory||inventory.scene!==getScene())return [];
   const {all,index,token}=context(),query=token.value.toLowerCase();
   if(index===0)return inventory.commands.filter(c=>c.name.startsWith(query.replace(/^\//,''))).map(c=>({label:`/${c.name}`,detail:c.description,insert:`/${c.name}`,command:true}));
+  if(index===-1&&!token.prefix)return [];
   const def=inventory.commands.find(c=>'/'+c.name===all[0]?.value),param=parameter(def,index-1);
-  if(!param)return [];
+  const kind=index===-1?'target':param?.kind;
+  if(!kind)return [];
   // After enough waypoints, don't consume Enter by inventing another selection.
   // Typing # or @ explicitly opens autocomplete for every additional waypoint.
-  if(param.variadic&&!token.prefix&&!token.value&&index-1>=param.min)return [];
+  if(param?.variadic&&!token.prefix&&!token.value&&index-1>=param.min)return [];
   const match=(name,id)=>`${name} ${id}`.toLowerCase().includes(query);
   let choices=[];
-  if(['peer','target','editable_target'].includes(param.kind)&&token.prefix!=='@')choices.push(...inventory.peers.filter(p=>match(p.name,p.id)).map(p=>({label:'#'+p.name,detail:`${p.status||'discovered'} · ${p.id}`,insert:'#'+JSON.stringify(p.name),argument:{type:'peer',id:p.id}})));
-  if(['target','editable_target','editable_entity','volume'].includes(param.kind)&&token.prefix!=='#')choices.push(...inventory.entities.filter(e=>(param.kind!=='volume'||e.kind==='volume')&&(!['editable_entity','editable_target'].includes(param.kind)||['note','volume'].includes(e.kind))&&match(e.name,e.id)).map(e=>({label:'@'+(e.name||e.id),detail:`${e.kind} · ${e.id}`,insert:'@'+JSON.stringify(e.name||e.id),argument:{type:'entity',kind:e.kind,id:e.id}})));
-  if(param.kind==='camera'){
+  if(['peer','target','editable_target'].includes(kind)&&token.prefix!=='#')choices.push(...inventory.peers.filter(p=>match(p.name,p.id)).map(p=>({label:'@'+p.name,detail:`${p.status||'discovered'} · ${p.id}`,insert:'@'+JSON.stringify(p.name),argument:{type:'peer',id:p.id}})));
+  if(['target','editable_target','editable_entity','volume'].includes(kind)&&token.prefix!=='@')choices.push(...inventory.entities.filter(e=>(kind!=='volume'||e.kind==='volume')&&(!['editable_entity','editable_target'].includes(kind)||['note','volume'].includes(e.kind))&&match(e.name,e.id)).map(e=>({label:'#'+(e.name||e.id),detail:`${e.kind} · ${e.id}`,insert:'#'+JSON.stringify(e.name||e.id),argument:{type:'entity',kind:e.kind,id:e.id}})));
+  if(kind==='camera'){
    const ref=bindings.find(b=>b.start===all[1]?.start&&b.end===all[1]?.end)?.argument;
    const peer=inventory.peers.find(p=>p.id===ref?.id);
    choices=(peer?.cameras||[]).filter(c=>match(c.product_id,'')&&(def.name!=='attach'||c.frame_id)).map(c=>({label:c.product_id,detail:c.frame_id||'Camera product',insert:JSON.stringify(c.product_id),argument:{type:'camera',reference:c.reference}}));
@@ -99,20 +137,21 @@ export function createSlashCommands({input,container,getScene,fetchInventory}) {
   return choices.slice(0,30);
  }
  function choose(row){
-  const {token}=context(),before=input.value,tail=before.slice(token.end),spacer=/^\s/.test(tail)?'':' ';
+  const {token}=context(),before=input.value,tail=before.slice(token.end),spacer=/^[\s.,!?;:)\]}]/.test(tail)?'':' ';
   input.value=before.slice(0,token.start)+row.insert+spacer+tail;
   bindings=rebaseBindings(before,input.value,bindings).filter(b=>b.start!==token.start);
   if(row.argument)bindings.push({start:token.start,end:token.start+row.insert.length,raw:row.insert,argument:row.argument});
-  previous=input.value;input.setSelectionRange(token.start+row.insert.length+1,token.start+row.insert.length+1);selected=0;dismissed=false;
+  const caret=token.start+row.insert.length+(spacer||/^\s/.test(tail)?1:0);
+  previous=input.value;input.setSelectionRange(caret,caret);selected=0;dismissed=false;
   input.dispatchEvent(new Event('input',{bubbles:true}));input.focus();render();
  }
  function render(){
-  const slash=input.value.trimStart().startsWith('/');hint.hidden=!slash;
-  if(!slash){close();return;}
+  const slash=input.value.trimStart().startsWith('/'),mention=!!context().token.prefix;hint.hidden=!slash&&!mention;
+  if(!slash&&!mention){close();return;}
   const command=tokens(input.value)[0]?.value.slice(1),def=inventory?.commands.find(c=>c.name===command);
-  hint.textContent=error|| (loading?'Loading current scene and Catalog…':def?`Direct · ${usage(def)} · ${def.args.at(-1)?.variadic?'#/@ adds another waypoint; Send draws the path':'names with spaces use quotes'}`:'Direct commands · #peer · @entity · no Qwen');
+  hint.textContent=error|| (loading?'Loading current scene and Catalog…':!slash?'Qwen · @peer · #scene node · select to bind its identity':def?`Direct · ${usage(def)} · ${def.args.at(-1)?.variadic?'@/# adds another waypoint; Send draws the path':'@peer · #scene node · names with spaces use quotes'}`:'Direct commands · @peer · #scene node · no Qwen');
   rows=candidates();selected=Math.min(selected,Math.max(0,rows.length-1));menu.replaceChildren();
-  if(dismissed||!rows.length){close();return;}
+  if(dismissed||!rows.length||document.activeElement!==input){close();return;}
   rows.forEach((row,i)=>{
    const item=document.createElement('div');item.id=`slash-option-${i}`;item.className='slash-option';item.setAttribute('role','option');item.setAttribute('aria-selected',String(i===selected));
    const title=document.createElement('strong'),detail=document.createElement('small');title.textContent=row.label;detail.textContent=row.detail;item.append(title,detail);
@@ -122,12 +161,15 @@ export function createSlashCommands({input,container,getScene,fetchInventory}) {
  }
  input.addEventListener('input',()=>{
   bindings=rebaseBindings(previous,input.value,bindings);previous=input.value;selected=0;dismissed=false;
-  if(input.value.trimStart().startsWith('/')&&!loading&&(!inventory||inventory.scene!==getScene()))load();else render();
+  if((input.value.trimStart().startsWith('/')||context().token.prefix)&&!loading&&(!inventory||inventory.scene!==getScene()||Date.now()-loadedAt>5000))load();else render();
  });
- input.addEventListener('focus',()=>{dismissed=false;if(input.value.trimStart().startsWith('/')&&!loading&&Date.now()-loadedAt>5000)load();else render();});
- input.addEventListener('click',()=>{dismissed=false;render();});
+ const refresh=()=>{dismissed=false;if((input.value.trimStart().startsWith('/')||context().token.prefix)&&!loading&&(!inventory||inventory.scene!==getScene()||Date.now()-loadedAt>5000))load();else render();};
+ input.addEventListener('focus',refresh);
+ input.addEventListener('click',refresh);
+ input.addEventListener('keyup',e=>{if(['ArrowLeft','ArrowRight','Home','End'].includes(e.key))refresh();});
  input.addEventListener('blur',close);
  input.addEventListener('keydown',e=>{
+  if(e.isComposing)return;
   if(e.key==='Escape'&&!menu.hidden){e.preventDefault();e.stopPropagation();dismissed=true;close();return;}
   if(menu.hidden)return;
   if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();selected=(selected+(e.key==='ArrowDown'?1:-1)+rows.length)%rows.length;render();}
@@ -135,6 +177,9 @@ export function createSlashCommands({input,container,getScene,fetchInventory}) {
  });
  return {
   prepare:()=>parseCommand(input.value,bindings,inventory,getScene()),
+  prepareChat:()=>prepareChat(input.value,bindings,inventory,getScene()),
+  draft:()=>({text:input.value,bindings:bindings.slice(),scene:getScene(),frame:inventory?.frame}),
+  restore:draft=>{if(draft.scene!==getScene())return;input.value=draft.text;previous=input.value;bindings=draft.frame===inventory?.frame?draft.bindings:[];dismissed=true;render();},
   submitted:()=>{bindings=[];previous=input.value;close();hint.hidden=true;},
   reset,
  };

@@ -15,6 +15,7 @@ pub struct LocalScenes {
     pub note_editors: std::sync::Mutex<BTreeMap<String, crate::local_mobile::NoteEditor>>,
     pub volumes: crate::semantic_volumes::Storage,
     pub paths: crate::scene_paths::Storage,
+    pub wifi: std::sync::Arc<crate::scene_wifi::Storage>,
     pub snapshots: BTreeMap<String, MapSnapshot>,
     pub(crate) directory: std::path::PathBuf,
     pub(crate) mobile_views: std::sync::Mutex<BTreeMap<String, Value>>,
@@ -61,7 +62,7 @@ impl Settings {
             // the enclosing data directory. A completed move is restart-safe.
             for relative in [format!("{id}.json"), format!("mobile-notes/{id}.json"),
                 format!("semantic-volumes/{id}.json"), format!("paths/{id}.json"),
-                format!(".origin-resets/{id}.pending")] {
+                format!(".origin-resets/{id}.pending"), format!(".settings/wifi/{id}.json")] {
                 let from = directory.join(&relative);
                 if !from.exists() { continue; }
                 let to = directory.join(".deleted").join(&relative);
@@ -94,7 +95,7 @@ pub fn mobile_product(id: &str) -> String {
     format!("local-scene:{id}:mobile")
 }
 
-fn valid_id(id: &str) -> bool {
+pub(crate) fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 64
         && id
@@ -207,6 +208,7 @@ impl LocalScenes {
             note_editors: Default::default(),
             volumes: crate::semantic_volumes::Storage::new(directory.join("semantic-volumes")),
             paths: crate::scene_paths::Storage::new(directory.join("paths")),
+            wifi: std::sync::Arc::new(crate::scene_wifi::Storage::load(directory.join(".settings/wifi"), snapshots.keys().cloned())?),
             snapshots,
             directory: directory.into(),
             mobile_views: Default::default(),

@@ -341,11 +341,7 @@ impl Publisher {
             .join("mobile-notes")
             .join(format!("{id}.json"));
         let notes = if notes_path.exists() {
-            ensure!(
-                std::fs::metadata(&notes_path)?.len() <= 256 * 1024,
-                "Scene notes exceed bounds"
-            );
-            serde_json::from_slice::<Notes>(&std::fs::read(&notes_path)?)?
+            read_notes(&notes_path)?
         } else {
             Notes::empty(&frame)
         };
@@ -750,6 +746,7 @@ impl Publisher {
             NavigationWorld { state: state.clone(), scenes: scenes.clone(), scene: id.into(), frame: paths_frame.clone(), session_clock: session_clock.clone() })?;
         scenes.planners.lock().map_err(|_| anyhow!("Route planner unavailable"))?.insert(id.into(), planner);
         components.push(navigation);
+        components.push(crate::scene_wifi::mount(runtime, endpoint, id, scenes.wifi.clone())?);
         let mut publisher = Self {
             id: id.into(),
             reference,
@@ -998,7 +995,18 @@ fn place(
     state.notes = notes;
     Ok(note)
 }
+// Photo notes can exceed the former 256 KiB startup limit. Match the existing
+// scene payload bound on both disk reads and writes, so saved notes can reload.
+fn read_notes(path: &std::path::Path) -> Result<Notes> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?.take(MAX_BYTES as u64 + 1).read_to_end(&mut bytes)?;
+    ensure!(bytes.len() <= MAX_BYTES, "Scene notes exceed bounds");
+    Ok(serde_json::from_slice(&bytes)?)
+}
 fn persist_notes(notes: &Notes, path: &std::path::Path) -> Result<()> {
+    let bytes = serde_json::to_vec_pretty(notes)?;
+    ensure!(bytes.len() <= MAX_BYTES, "Scene notes exceed bounds");
     std::fs::create_dir_all(path.parent().unwrap())?;
     let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
     use std::io::Write;
@@ -1006,10 +1014,46 @@ fn persist_notes(notes: &Notes, path: &std::path::Path) -> Result<()> {
         .write(true)
         .create_new(true)
         .open(&temporary)?;
-    file.write_all(&serde_json::to_vec_pretty(&notes)?)?;
+    file.write_all(&bytes)?;
     file.sync_all()?;
     std::fs::rename(temporary, path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod saved_note_tests {
+    use super::*;
+    #[test]
+    fn photo_notes_reload_and_oversized_write_preserves_saved_notes() -> Result<()> {
+        use base64::Engine;
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("notes.json");
+        let mut jpeg = vec![0u8; 300_000];
+        jpeg[..3].copy_from_slice(&[0xff, 0xd8, 0xff]);
+        jpeg[299_998..].copy_from_slice(&[0xff, 0xd9]);
+        let mut notes = Notes::empty("test-frame");
+        notes.items.push(crate::notes::TextNote {
+            id: "photo-note".into(), text: "Photo".into(),
+            details: crate::notes::NoteDetails {
+                photo: Some(format!("data:image/jpeg;base64,{}", base64::engine::general_purpose::STANDARD.encode(jpeg))),
+                ..Default::default()
+            },
+            position: [0.; 3], anchor_portal: "HNY3JGNLRAE".into(),
+            anchor_robot: None, anchor_surface: None, height_m: 0.,
+        });
+        notes.validate("test-frame")?;
+        persist_notes(&notes, &path)?;
+        assert!(std::fs::metadata(&path)?.len() > 256 * 1024);
+        assert_eq!(read_notes(&path)?, notes);
+        let before = std::fs::read(&path)?;
+        notes.items[0].details.description = "x".repeat(MAX_BYTES);
+        assert!(persist_notes(&notes, &path).is_err());
+        assert_eq!(std::fs::read(&path)?, before);
+        let file = std::fs::File::create(directory.path().join("oversized.json"))?;
+        file.set_len(MAX_BYTES as u64 + 1)?;
+        assert!(read_notes(&directory.path().join("oversized.json")).is_err());
+        Ok(())
+    }
 }
 
 /// Wait for `next`, giving up after `limit`; `None` waits for as long as it takes.

@@ -69,6 +69,13 @@ Keep routes to a useful bounded set and test the complete payload's QR density a
 
 ### Authentication prerequisite
 
+Home now owns per-scene Wi-Fi settings, separate from resettable geometry.
+Annotator retrieves them through the generic `scene-wifi:<scene-id>` SDK Operable
+after calibration, before generating the first QR. Home explicitly authorizes
+onboarding host Peer IDs; there is no peer HTTP fallback. See
+[Scene Wi-Fi](docs/scene-wifi.md) for the editor, access contract, persistence and
+coordinated Home/Annotator rollout.
+
 The Wi-Fi password and Home profile alone do not authorize an unprovisioned runner in the Auki domain.
 
 For the first demo, use the runner's existing SDK identity and valid domain credentials. Verify they work for the intended domain before building the UI. This gives zero manual connection entry during the demonstration, but is not proof of factory-fresh credential enrollment.
