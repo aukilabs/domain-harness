@@ -82,7 +82,11 @@ User credentials are used for SDK authentication and in-memory authority renewal
 The password is cleared from the Swift form immediately after submission. After
 a successful sign-in, the login is retained in this device’s protected Keychain
 and reused with the saved Home pairing on launch and foregrounding. The sign-in
-screen provides **Forget saved login**. No credential is embedded in the app. A persistent phone peer identity is stored
+screen provides **Forget saved login**. No credential is embedded in the app.
+Development launches may supply both `AUKI_EMAIL` and `AUKI_PASSWORD` through
+an untracked launch environment when no Keychain login exists. Without a saved
+login or both nonempty environment values, sign in through the app; there is no
+shared demo-account fallback. A persistent phone peer identity is stored
 in the app's protected Application Support directory and excluded from backups.
 The authentication service endpoints are fixed in Rust; a pairing file cannot
 redirect credentials to another host.
